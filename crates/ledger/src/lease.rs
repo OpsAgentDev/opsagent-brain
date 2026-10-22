@@ -198,9 +198,6 @@ where
 {
     let started = Instant::now();
     let mut cp = storage.load_run(run_id).await?.checkpoint;
-    storage
-        .set_status(run_id, lease.fence, RunStatus::Running, None)
-        .await?;
     let partial = |reason: &'static str| async move {
         match storage
             .set_status(run_id, lease.fence, RunStatus::Partial, Some(reason.into()))

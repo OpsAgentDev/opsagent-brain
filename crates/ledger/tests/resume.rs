@@ -173,3 +173,87 @@ async fn dropping_run_chunked_stops_heartbeat() {
         .unwrap()
         .is_some());
 }
+
+/// Delegates to MemoryStorage but a newer holder bumps the fence right after the run is loaded.
+struct Usurped(MemoryStorage);
+#[async_trait::async_trait]
+impl Storage for Usurped {
+    async fn create_run(
+        &self,
+        k: opsagent_core::run::RunKey,
+    ) -> opsagent_ledger::Result<opsagent_ledger::RunRow> {
+        self.0.create_run(k).await
+    }
+    async fn load_run(&self, id: uuid::Uuid) -> opsagent_ledger::Result<opsagent_ledger::RunRow> {
+        let row = self.0.load_run(id).await?;
+        self.0.bump_fence(id).await?;
+        Ok(row)
+    }
+    async fn bump_fence(&self, id: uuid::Uuid) -> opsagent_ledger::Result<u64> {
+        self.0.bump_fence(id).await
+    }
+    async fn write_checkpoint(
+        &self,
+        id: uuid::Uuid,
+        f: u64,
+        cp: &opsagent_ledger::Checkpoint,
+    ) -> opsagent_ledger::Result<()> {
+        self.0.write_checkpoint(id, f, cp).await
+    }
+    async fn set_status(
+        &self,
+        id: uuid::Uuid,
+        f: u64,
+        s: RunStatus,
+        r: Option<String>,
+    ) -> opsagent_ledger::Result<()> {
+        self.0.set_status(id, f, s, r).await
+    }
+    async fn effect_begin(
+        &self,
+        id: uuid::Uuid,
+        k: &str,
+    ) -> opsagent_ledger::Result<opsagent_ledger::EffectState> {
+        self.0.effect_begin(id, k).await
+    }
+    async fn effect_done(
+        &self,
+        id: uuid::Uuid,
+        k: &str,
+        r: Option<String>,
+    ) -> opsagent_ledger::Result<()> {
+        self.0.effect_done(id, k, r).await
+    }
+    async fn schedule_retry(
+        &self,
+        id: uuid::Uuid,
+        a: u32,
+        n: chrono::DateTime<chrono::Utc>,
+    ) -> opsagent_ledger::Result<()> {
+        self.0.schedule_retry(id, a, n).await
+    }
+}
+
+#[tokio::test]
+async fn stale_fence_on_initial_running_returns_partial() {
+    let (r, s) = (common::redis(), Usurped(MemoryStorage::default()));
+    let run = s.create_run(common::key()).await.unwrap();
+    let ran = AtomicU32::new(0);
+    let st = run_chunked(
+        &s,
+        &r,
+        run.id,
+        vec!["a".into()],
+        opts("w"),
+        |_c, _l| async {
+            ran.fetch_add(1, SeqCst);
+            Ok(ChunkOutcome { stats: json!({}) })
+        },
+    )
+    .await;
+    assert_eq!(st.unwrap(), RunStatus::Partial);
+    assert_eq!(ran.load(SeqCst), 0);
+    let row = s.0.load_run(run.id).await.unwrap();
+    assert_eq!(row.status, RunStatus::Queued);
+    assert!(row.checkpoint.chunks_done.is_empty());
+}
