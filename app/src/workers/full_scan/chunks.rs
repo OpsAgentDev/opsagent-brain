@@ -130,6 +130,8 @@ fn run_checks(
         resources,
         cost,
         metrics: &metrics,
+        // Task 8 fills restore simulations
+        simulations: &std::collections::HashMap::new(),
         now,
     };
     let (mut drafts, mut check_errors) = (vec![], vec![]);

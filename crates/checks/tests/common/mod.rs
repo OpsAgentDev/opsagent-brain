@@ -23,6 +23,7 @@ pub fn run(check: &dyn Check, resources: &[Resource], cost: &[CostRow]) -> Vec<F
         resources,
         cost,
         metrics: &metrics,
+        simulations: &Default::default(),
         now,
     };
     let out = check.run(&ctx);
