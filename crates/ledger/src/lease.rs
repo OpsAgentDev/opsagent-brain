@@ -112,6 +112,33 @@ pub async fn release(redis: &Client, lease: &Lease) {
     }
 }
 
+const CLAIM: &str = r#"local v = redis.call('GET',KEYS[1]) if not v then redis.call('SET',KEYS[1],ARGV[1],'PX',ARGV[2]) return 1 elseif v == ARGV[1] then redis.call('PEXPIRE',KEYS[1],ARGV[2]) return 1 end return 0"#;
+
+/// Claims `key` for `owner` for `ttl`; re-entrant, so the same owner (a resumed run) claims it
+/// again and refreshes the TTL. `false`: another owner holds it.
+pub async fn claim(redis: &Client, key: &str, owner: &str, ttl: Duration) -> Result<bool> {
+    let n: i32 = Script::new(CLAIM)
+        .key(key)
+        .arg(owner)
+        .arg(ttl.as_millis() as u64)
+        .invoke_async(&mut conn(redis).await?)
+        .await?;
+    Ok(n == 1)
+}
+
+/// Releases `key` if `owner` still holds it. Best effort.
+pub async fn unclaim(redis: &Client, key: &str, owner: &str) {
+    let Ok(mut c) = conn(redis).await else { return };
+    let r: redis::RedisResult<i32> = Script::new(CAS_DEL)
+        .key(key)
+        .arg(owner)
+        .invoke_async(&mut c)
+        .await;
+    if let Err(e) = r {
+        tracing::warn!(error = %e, key, "unclaim failed");
+    }
+}
+
 /// `stats` merge into the checkpoint by key; a `partial_reason` string there ends the run `Partial`.
 pub struct ChunkOutcome {
     pub stats: serde_json::Value,

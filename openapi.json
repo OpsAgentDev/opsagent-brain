@@ -1909,7 +1909,7 @@
               "string",
               "null"
             ],
-            "description": "`HH:MM`."
+            "description": "`HH:MM` in the organisation's timezone; the nightly scan moves there from the next day."
           }
         }
       },

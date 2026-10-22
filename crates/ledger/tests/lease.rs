@@ -113,3 +113,22 @@ async fn with_effect_rules() {
     with_effect(&s, a.id, "j", true, f).await.unwrap();
     assert_eq!(n.load(SeqCst), 2);
 }
+
+#[tokio::test]
+async fn claim_is_exclusive_and_reentrant() {
+    use opsagent_ledger::lease::{claim, unclaim};
+    let r = common::redis();
+    let key = format!("lease:conn:{}:full_scan", uuid::Uuid::now_v7());
+    let ttl = Duration::from_secs(5);
+    assert!(claim(&r, &key, "run-a", ttl).await.unwrap());
+    assert!(
+        claim(&r, &key, "run-a", ttl).await.unwrap(),
+        "same owner again"
+    );
+    assert!(!claim(&r, &key, "run-b", ttl).await.unwrap());
+    unclaim(&r, &key, "run-b").await; // not the owner: no effect
+    assert!(!claim(&r, &key, "run-b", ttl).await.unwrap());
+    unclaim(&r, &key, "run-a").await;
+    assert!(claim(&r, &key, "run-b", ttl).await.unwrap());
+    unclaim(&r, &key, "run-b").await;
+}

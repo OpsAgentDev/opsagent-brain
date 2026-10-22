@@ -26,13 +26,12 @@ async fn count(ctx: &AppContext, sql: &str) -> i64 {
         .unwrap()
 }
 
+/// Drops every schedule and run (and what hangs off runs, such as a first scan's rows).
 async fn reset(ctx: &AppContext) {
-    for t in ["schedules", "runs"] {
-        ctx.db
-            .execute_raw(stmt(&format!("DELETE FROM {t}"), vec![]))
-            .await
-            .unwrap();
-    }
+    ctx.db
+        .execute_raw(stmt("TRUNCATE schedules, runs CASCADE", vec![]))
+        .await
+        .unwrap();
 }
 
 /// An org-less schedule for a job type with no worker, so ticks only create run rows.
@@ -223,9 +222,12 @@ async fn connecting_creates_default_schedules_once() {
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
         assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
         let q = format!("SELECT count(*) n FROM schedules WHERE connection_id = '{id}'");
-        assert_eq!(count(&ctx, &q).await, 3);
+        assert_eq!(count(&ctx, &q).await, 2);
         assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
-        assert_eq!(count(&ctx, &q).await, 3);
+        assert_eq!(count(&ctx, &q).await, 2);
+        // No briefing schedule until its worker exists (Plan 2).
+        let q = "SELECT count(*) n FROM schedules WHERE job_type = 'deliver_briefing'";
+        assert_eq!(count(&ctx, q).await, 0);
     })
     .await;
 }

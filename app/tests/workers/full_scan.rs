@@ -986,3 +986,70 @@ async fn provider_messages_never_reach_the_logs() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn second_scan_while_one_runs_is_skipped_as_overlap() {
+    use opsagent_ledger::{lease::claim, redis};
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        // The app's own Redis (the environment may have changed since boot).
+        let Some(loco_rs::config::QueueConfig::Redis(q)) = &ctx.config.queue else {
+            panic!("tests run with the redis queue")
+        };
+        let r = redis::Client::open(q.uri.as_str()).unwrap();
+        let key = format!("lease:conn:{conn}:full_scan");
+        let ttl = std::time::Duration::from_secs(60);
+        // Another run of this connection holds the scan claim.
+        assert!(claim(&r, &key, "another-run", ttl).await.unwrap());
+        let k = rigged(None);
+        let run = scan(&ctx, conn, 0, &k).await;
+        let row = run_row(&ctx, run).await;
+        assert_eq!(
+            (row.status.as_str(), row.partial_reason.as_deref()),
+            ("skipped", Some("overlap"))
+        );
+        assert_eq!(k.calls.load(SeqCst), 0);
+        opsagent_ledger::lease::unclaim(&r, &key, "another-run").await;
+        // A finished scan leaves the claim free for the next one.
+        let run = scan(&ctx, conn, 1, &noisy()).await;
+        assert_eq!(run_row(&ctx, run).await.status, "done");
+        assert!(claim(&r, &key, "next-run", ttl).await.unwrap());
+        opsagent_ledger::lease::unclaim(&r, &key, "next-run").await;
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn each_scan_run_writes_one_scan_started_audit_row() {
+    use opsagent_brain::models::_entities::audit_events;
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        let run = new_run(&ctx, conn, 0).await;
+        let k = noisy();
+        harness::kill_after_each_checkpoint(|ks| {
+            let (ctx, k) = (ctx.clone(), &k);
+            async move {
+                let opts = RunChunkedOptions {
+                    after_checkpoint: Some(ks),
+                    ..Default::default()
+                };
+                full_scan::scan(&ctx, run, k, opts).await
+            }
+        })
+        .await
+        .unwrap();
+        let rows = audit_events::Entity::find()
+            .filter(audit_events::Column::Action.eq("connection.scan_started"))
+            .all(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "one row despite 11 resumes");
+        let a = &rows[0];
+        assert_eq!(a.actor_type, "system");
+        assert_eq!(a.target_id, Some(conn.to_string()));
+        assert_eq!(a.metadata["run_id"], json!(run.to_string()));
+    })
+    .await;
+}

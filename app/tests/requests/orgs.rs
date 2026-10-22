@@ -220,7 +220,10 @@ async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
             .exec(&ctx.db)
             .await
             .unwrap();
-        runs::Entity::delete_many().exec(&ctx.db).await.unwrap();
+        ctx.db
+            .execute_unprepared("TRUNCATE runs CASCADE")
+            .await
+            .unwrap();
         assert_eq!(tick(&ctx, now).await.unwrap().unwrap(), Default::default());
         assert_eq!(runs::Entity::find().count(&ctx.db).await.unwrap(), 0);
 

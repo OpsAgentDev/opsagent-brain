@@ -13,8 +13,9 @@ use opsagent_checks::{Check, CheckCtx, MetricStore};
 use opsagent_connectors::{registry as providers, CallContext, Connector, Credentials, Scope};
 use opsagent_core::{connection::ConnectionStatus as S, resource::Resource, run::RunStatus};
 use opsagent_ledger::{
-    lease, retry::settle, run_chunked, ChunkOutcome, LedgerError, RunChunkedOptions, RunRow,
-    Storage,
+    lease::{self, claim, unclaim},
+    retry::settle,
+    run_chunked, ChunkOutcome, LedgerError, RunChunkedOptions, RunRow, Storage,
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, TransactionTrait};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,7 @@ use crate::{
     app::{kek, registry},
     models::{
         _entities::connections,
+        audit,
         connections::{load_creds, status_of},
         ledger_storage::{db_err, hold_fence, stmt, PgStorage},
         organisations,
@@ -130,37 +132,99 @@ async fn scan_run(
         let skip = End::Set(RunStatus::Skipped, format!("status:{}", c.status));
         return end(ctx, &storage, &run, &opts, skip).await;
     }
+    // At most one full scan per connection (PRD 7.3); the run id owns the claim, so a resumed
+    // run passes and any other run is skipped.
+    let redis = redis_client(ctx).map_err(lerr)?;
+    let (key, owner) = (format!("lease:conn:{}:{JOB}", c.id), run_id.to_string());
+    if !claim(&redis, &key, &owner, opts.time_cap + opts.lease_ttl).await? {
+        let skip = End::Set(RunStatus::Skipped, "overlap".into());
+        return end(ctx, &storage, &run, &opts, skip).await;
+    }
+    let res = claimed(ctx, &storage, &run, &c, k, opts, checks).await;
+    // A worker that took over this run's lease is still scanning: leave the claim to it.
+    if !matches!(
+        storage.load_run(run_id).await.map(|r| r.status),
+        Ok(RunStatus::Running)
+    ) {
+        unclaim(&redis, &key, &owner).await;
+    }
+    res
+}
+
+/// The scan proper, once the connection is claimed: credentials, discovery, chunks.
+async fn claimed(
+    ctx: &AppContext,
+    storage: &PgStorage,
+    run: &RunRow,
+    c: &connections::Model,
+    k: Option<&dyn Connector>,
+    opts: RunChunkedOptions,
+    checks: fn() -> Vec<Box<dyn Check>>,
+) -> LResult<RunStatus> {
     let owned;
-    let k = match (k, connector(ctx, &c)) {
-        (Some(k), _) => k,
-        (None, Ok(b)) => {
-            owned = b;
-            owned.as_ref()
-        }
-        (None, Err(e)) => return end(ctx, &storage, &run, &opts, End::Failed(e)).await,
+    let k = match k {
+        Some(k) => k,
+        None => match connector(ctx, c) {
+            Ok(b) => {
+                owned = b;
+                owned.as_ref()
+            }
+            Err(e) => return end(ctx, storage, run, &opts, End::Failed(e)).await,
+        },
     };
-    let cr = match call_credentials(ctx, &c, run_id).await {
+    let cr = match call_credentials(ctx, c, run.id).await {
         Ok(cr) => cr,
-        Err(e) => return end(ctx, &storage, &run, &opts, End::Failed(e)).await,
+        Err(e) => return end(ctx, storage, run, &opts, End::Failed(e)).await,
     };
+    if let Err(e) = audit_start(&ctx.db, c, run.id).await {
+        return end(ctx, storage, run, &opts, End::Failed(e)).await;
+    }
     let chunks = match discover(k, &cr).await {
         Ok(chunks) => chunks,
-        Err(e) => return end(ctx, &storage, &run, &opts, e).await,
+        Err(e) => return end(ctx, storage, run, &opts, e).await,
     };
     let redis = redis_client(ctx).map_err(lerr)?;
     let scan = Scan {
         db: &ctx.db,
-        storage: &storage,
-        run_id,
-        c: &c,
+        storage,
+        run_id: run.id,
+        c,
         k,
         cr: &cr,
         checks,
     };
-    run_chunked(&storage, &redis, run_id, chunks, opts, |chunk, lease| {
+    run_chunked(storage, &redis, run.id, chunks, opts, |chunk, lease| {
         scan.chunk(chunk, lease.fence)
     })
     .await
+}
+
+/// `connection.scan_started`, once per run: a resumed or retried run does not repeat it.
+async fn audit_start(db: &DatabaseConnection, c: &connections::Model, run_id: Uuid) -> LResult<()> {
+    let seen = db
+        .query_one_raw(stmt(
+            "SELECT 1 FROM audit_events WHERE organisation_id = $1 \
+             AND action = 'connection.scan_started' AND metadata->>'run_id' = $2",
+            vec![c.organisation_id.into(), run_id.to_string().into()],
+        ))
+        .await
+        .map_err(db_err)?
+        .is_some();
+    if seen {
+        return Ok(());
+    }
+    let target = ("connection", c.id.to_string());
+    let meta = json!({ "run_id": run_id });
+    audit::record_system(
+        db,
+        c.organisation_id,
+        "connection.scan_started",
+        target,
+        "success",
+        meta,
+    )
+    .await
+    .map_err(db_err)
 }
 
 async fn connection(db: &DatabaseConnection, run: &RunRow) -> LResult<connections::Model> {

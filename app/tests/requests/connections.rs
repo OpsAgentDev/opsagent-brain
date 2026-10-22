@@ -311,3 +311,44 @@ async fn changing_the_role_of_a_live_connection_needs_a_reconnect() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn new_scan_time_moves_the_nightly_scan_from_tomorrow() {
+    use opsagent_brain::models::{
+        _entities::schedules,
+        schedules::{end_of_local_day, next_after},
+    };
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
+        assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
+        let res = req
+            .patch(&format!("/v1/orgs/{org}/connections/{id}"))
+            .add_header("X-CSRF-Token", &t)
+            .json(&json!({"scan_time_local": "06:30"}))
+            .await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        let s = schedules::Entity::find()
+            .filter(schedules::Column::ConnectionId.eq(id.parse::<uuid::Uuid>().unwrap()))
+            .filter(schedules::Column::JobType.eq("full_scan"))
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.cron_local, "30 6 * * *");
+        let now = chrono::Utc::now();
+        let want = next_after(
+            "30 6 * * *",
+            &s.timezone,
+            end_of_local_day(&s.timezone, now).unwrap(),
+        );
+        let due = s.next_due_at.map(|d| d.with_timezone(&chrono::Utc));
+        assert_eq!(due, want);
+        assert!(
+            due.unwrap() - now > chrono::Duration::hours(1),
+            "not today: {due:?}"
+        );
+    })
+    .await;
+}

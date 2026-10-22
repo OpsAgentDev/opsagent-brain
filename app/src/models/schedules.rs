@@ -1,7 +1,9 @@
 //! Schedule maths and default schedules (PRD 7.3). Cron is evaluated in the org's IANA zone.
 use std::str::FromStr;
 
-use chrono::{DateTime, Duration, LocalResult, NaiveDateTime, Offset, TimeZone, Utc};
+use chrono::{
+    DateTime, Duration, LocalResult, NaiveDateTime, NaiveTime, Offset, TimeZone, Timelike, Utc,
+};
 use chrono_tz::Tz;
 use cron::Schedule;
 use sea_orm::{ConnectionTrait, DbErr};
@@ -9,12 +11,16 @@ use uuid::Uuid;
 
 use super::ledger_storage::stmt;
 
-/// (job_type, 5-field cron in the org's local time)
-pub const DEFAULTS: &[(&str, &str)] = &[
-    ("full_scan", "0 2 * * *"),
-    ("verify", "0 3 * * 1"),
-    ("deliver_briefing", "0 8 * * *"),
-];
+/// Nightly full scan at 02:00 local unless the connection sets `scan_time_local`.
+pub const FULL_SCAN: &str = "0 2 * * *";
+/// Weekly verification; daily while the connection is revoked, so a returned role recovers.
+pub const VERIFY_WEEKLY: &str = "0 3 * * 1";
+pub const VERIFY_REVOKED: &str = "0 4 * * *";
+
+/// `HH:MM` local as a daily cron (`M H * * *`).
+pub fn daily_at(t: NaiveTime) -> String {
+    format!("{} {} * * *", t.minute(), t.hour())
+}
 
 const DOW: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -73,14 +79,16 @@ pub fn next_after(cron_local: &str, tz: &str, after: DateTime<Utc>) -> Option<Da
         .find(|t| *t > after)
 }
 
-/// Default schedules for a newly connected connection. Idempotent on `(connection_id, job_type)`.
-pub async fn create_defaults(
-    db: &impl ConnectionTrait,
-    organisation_id: Uuid,
-    connection_id: Uuid,
-    now: DateTime<Utc>,
-) -> Result<(), DbErr> {
-    let tz: String = db
+/// The first instant of the local day after `now`'s, minus a second: `next_after` from here
+/// yields the first occurrence tomorrow.
+pub fn end_of_local_day(tz: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let tz = Tz::from_str(tz).ok()?;
+    let tomorrow = now.with_timezone(&tz).date_naive().succ_opt()?;
+    Some(instant(tz, tomorrow.and_hms_opt(0, 0, 0)?)? - Duration::seconds(1))
+}
+
+async fn org_timezone(db: &impl ConnectionTrait, organisation_id: Uuid) -> Result<String, DbErr> {
+    Ok(db
         .query_one_raw(stmt(
             "SELECT timezone FROM organisations WHERE id = $1",
             vec![organisation_id.into()],
@@ -88,8 +96,57 @@ pub async fn create_defaults(
         .await?
         .map(|r| r.try_get("", "timezone"))
         .transpose()?
-        .unwrap_or_else(|| "UTC".into());
-    for (job, cron) in DEFAULTS {
+        .unwrap_or_else(|| "UTC".into()))
+}
+
+/// Points the connection's `job_type` schedule at `cron` (in its stored zone), next due after
+/// `from(zone)`. No-op if the schedule is missing or already on `cron`.
+pub async fn set_cron(
+    db: &impl ConnectionTrait,
+    organisation_id: Uuid,
+    connection_id: Uuid,
+    job_type: &str,
+    cron: &str,
+    from: impl Fn(&str) -> Option<DateTime<Utc>>,
+) -> Result<(), DbErr> {
+    let Some(row) = db
+        .query_one_raw(stmt(
+            "SELECT id, timezone FROM schedules WHERE organisation_id = $1 AND connection_id = $2 \
+             AND job_type = $3 AND cron_local <> $4",
+            vec![
+                organisation_id.into(),
+                connection_id.into(),
+                job_type.into(),
+                cron.into(),
+            ],
+        ))
+        .await?
+    else {
+        return Ok(());
+    };
+    let (id, tz): (Uuid, String) = (row.try_get("", "id")?, row.try_get("", "timezone")?);
+    let next = from(&tz).and_then(|t| next_after(cron, &tz, t));
+    db.execute_raw(stmt(
+        "UPDATE schedules SET cron_local = $3, next_due_at = $4, updated_at = now() \
+         WHERE organisation_id = $1 AND id = $2",
+        vec![organisation_id.into(), id.into(), cron.into(), next.into()],
+    ))
+    .await?;
+    Ok(())
+}
+
+/// Default schedules for a newly connected connection: the nightly scan (at `scan_time` when
+/// set) and the weekly verify. Idempotent on `(connection_id, job_type)`.
+pub async fn create_defaults(
+    db: &impl ConnectionTrait,
+    organisation_id: Uuid,
+    connection_id: Uuid,
+    scan_time: Option<NaiveTime>,
+    now: DateTime<Utc>,
+) -> Result<(), DbErr> {
+    let tz = org_timezone(db, organisation_id).await?;
+    let scan = scan_time.map_or_else(|| FULL_SCAN.to_owned(), daily_at);
+    for (job, cron) in [("full_scan", scan.as_str()), ("verify", VERIFY_WEEKLY)] {
         db.execute_raw(stmt(
             "INSERT INTO schedules (id, organisation_id, connection_id, job_type, cron_local, timezone, next_due_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (connection_id, job_type) DO NOTHING",
@@ -97,8 +154,8 @@ pub async fn create_defaults(
                 Uuid::now_v7().into(),
                 organisation_id.into(),
                 connection_id.into(),
-                (*job).into(),
-                (*cron).into(),
+                job.into(),
+                cron.into(),
                 tz.clone().into(),
                 next_after(cron, &tz, now).into(),
             ],
@@ -114,6 +171,19 @@ mod tests {
 
     fn at(s: &str) -> DateTime<Utc> {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn scan_time_becomes_a_daily_cron_from_tomorrow() {
+        let t = NaiveTime::from_hms_opt(6, 30, 0).unwrap();
+        assert_eq!(daily_at(t), "30 6 * * *");
+        // 23:00 UTC on the 22nd is the 23rd in Berlin: "tomorrow" is the 24th there.
+        let end = end_of_local_day("Europe/Berlin", at("2026-10-22T23:00:00Z")).unwrap();
+        assert_eq!(end, at("2026-10-23T21:59:59Z"));
+        assert_eq!(
+            next_after(&daily_at(t), "Europe/Berlin", end),
+            Some(at("2026-10-24T04:30:00Z"))
+        );
     }
 
     #[test]

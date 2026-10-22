@@ -2,7 +2,7 @@ use chrono::{Duration, Utc};
 use loco_rs::{bgworker::BackgroundWorker, prelude::*};
 use opsagent_brain::{
     models::{
-        _entities::{audit_events, connection_verifications, connections, runs},
+        _entities::{audit_events, connection_verifications, connections, runs, schedules},
         ledger_storage::PgStorage,
     },
     workers::verify::{VerifyArgs, VerifyWorker},
@@ -90,6 +90,7 @@ async fn same_run_key_is_one_run_and_one_verification() {
         assert_eq!(r1, r2);
         let n = runs::Entity::find()
             .filter(runs::Column::ConnectionId.eq(id))
+            .filter(runs::Column::JobType.eq("verify"))
             .count(&ctx.db)
             .await
             .unwrap();
@@ -192,6 +193,101 @@ async fn non_retryable_connector_error_is_recorded_on_first_run() {
             .unwrap();
         assert_eq!(a.outcome.as_deref(), Some("error"));
         assert_eq!(a.metadata["code"], "not_found");
+    })
+    .await;
+}
+
+async fn set_fixture(ctx: &AppContext, id: Uuid, account: &str) {
+    use opsagent_brain::models::connections::{load_creds, save_creds};
+    let kek = opsagent_brain::app::kek(ctx).unwrap();
+    let c = conn(ctx, id).await;
+    let mut creds = load_creds(&ctx.db, kek.as_ref(), &c).await.unwrap();
+    creds.fake_account = Some(account.into());
+    save_creds(&ctx.db, kek.as_ref(), &c, &creds).await.unwrap();
+}
+
+async fn verify_cron(ctx: &AppContext, id: Uuid) -> String {
+    schedules::Entity::find()
+        .filter(schedules::Column::ConnectionId.eq(id))
+        .filter(schedules::Column::JobType.eq("verify"))
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .cron_local
+}
+
+async fn scans(ctx: &AppContext, id: Uuid) -> Vec<runs::Model> {
+    runs::Entity::find()
+        .filter(runs::Column::ConnectionId.eq(id))
+        .filter(runs::Column::JobType.eq("full_scan"))
+        .all(&ctx.db)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn first_connect_queues_one_first_scan() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
+        assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
+        let id: Uuid = id.parse().unwrap();
+        let first = scans(&ctx, id).await;
+        assert_eq!(first.len(), 1);
+        // Foreground workers: the scan ran inline and the outbox marker is cleared.
+        assert_eq!(first[0].status, "done");
+        assert!(first[0].next_attempt_at.is_none());
+        // Later verifications of a connected connection queue nothing.
+        run_worker(&ctx, id, 7).await;
+        assert_eq!(scans(&ctx, id).await.len(), 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn revoked_connection_is_rechecked_daily_and_recovers() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
+        assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
+        let id: Uuid = id.parse().unwrap();
+        assert_eq!(verify_cron(&ctx, id).await, "0 3 * * 1");
+
+        // The customer deletes the stack: three denials over more than an hour revoke it.
+        set_fixture(&ctx, id, "denied").await;
+        for n in 0..3 {
+            run_worker(&ctx, id, n).await;
+        }
+        set(&ctx, id, |a| {
+            a.verify_denied_first_at = Set(Some((Utc::now() - Duration::hours(2)).into()))
+        })
+        .await;
+        run_worker(&ctx, id, 3).await;
+        assert_eq!(conn(&ctx, id).await.status, "revoked");
+        assert_eq!(verify_cron(&ctx, id).await, "0 4 * * *");
+
+        // A daily check while the role is still gone: stays revoked, no retry parked.
+        let r = run_worker(&ctx, id, 4).await;
+        let run = runs::Entity::find_by_id(r)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((run.status.as_str(), run.attempts), ("done", 0));
+        assert_eq!(conn(&ctx, id).await.status, "revoked");
+
+        // The role returns: the next daily check re-verifies in full and recovers.
+        set_fixture(&ctx, id, "clean").await;
+        run_worker(&ctx, id, 5).await;
+        let c = conn(&ctx, id).await;
+        assert_eq!(
+            (c.status.as_str(), c.verify_denied_streak),
+            ("connected", 0)
+        );
+        assert_eq!(verify_cron(&ctx, id).await, "0 3 * * 1");
     })
     .await;
 }

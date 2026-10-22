@@ -1,6 +1,6 @@
 //! Connection use cases: create, request verification, disconnect (PRD 7.2).
 use axum::http::StatusCode;
-use chrono::{DurationRound, TimeDelta, Utc};
+use chrono::{DurationRound, NaiveTime, TimeDelta, Utc};
 use loco_rs::app::AppContext;
 use opsagent_connectors::{
     registry::{self, ProviderSpec},
@@ -24,7 +24,7 @@ use crate::{
             cas, insert_creds, load_creds, save_creds, status_of, status_str, Creds,
             TEMPLATE_VERSION,
         },
-        now,
+        now, schedules,
     },
     services::runs,
 };
@@ -210,4 +210,56 @@ pub async fn end(
     a.updated_at = Set(now());
     a.update(db).await?;
     Ok(true)
+}
+
+/// Validated `PATCH` fields; `None` leaves a field as it is.
+pub struct Patch {
+    pub display_name: Option<String>,
+    pub scan_time_local: Option<NaiveTime>,
+    pub briefing_time_local: Option<NaiveTime>,
+    pub api_rate_ceiling: Option<i32>,
+}
+
+/// Applies `p`. A new scan time rewrites the nightly `full_scan` schedule, effective from the
+/// next local day so today's scan neither repeats nor moves (PRD 7.3).
+pub async fn update(
+    db: &DatabaseConnection,
+    c: connections::Model,
+    p: Patch,
+) -> Result<connections::Model, ApiError> {
+    if status_of(&c)? == S::Disconnected {
+        return Err(disconnected());
+    }
+    let (org_id, conn_id) = (c.organisation_id, c.id);
+    let mut a: connections::ActiveModel = c.into();
+    if let Some(n) = p.display_name {
+        a.display_name = Set(Some(n));
+    }
+    if let Some(t) = p.scan_time_local {
+        a.scan_time_local = Set(Some(t));
+    }
+    if let Some(t) = p.briefing_time_local {
+        a.briefing_time_local = Set(Some(t));
+    }
+    if let Some(r) = p.api_rate_ceiling {
+        a.api_rate_ceiling = Set(Some(r));
+    }
+    a.updated_at = Set(now());
+    let txn = db.begin().await?;
+    let updated = a.update(&txn).await?;
+    if let Some(t) = p.scan_time_local {
+        let now = Utc::now();
+        let from = |tz: &str| schedules::end_of_local_day(tz, now);
+        schedules::set_cron(
+            &txn,
+            org_id,
+            conn_id,
+            "full_scan",
+            &schedules::daily_at(t),
+            from,
+        )
+        .await?;
+    }
+    txn.commit().await?;
+    Ok(updated)
 }

@@ -9,7 +9,7 @@ use opsagent_connectors::{
 };
 use opsagent_core::{
     connection::{transition, ConnectionEvent as E, ConnectionStatus as S},
-    run::RunStatus,
+    run::{RunKey, RunStatus},
 };
 use opsagent_ledger::{
     lease,
@@ -21,7 +21,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::common::{classify, err, lerr, redis_client, LResult};
+use super::{
+    common::{classify, err, lerr, redis_client, LResult},
+    full_scan,
+};
 use crate::{
     app::{kek, registry},
     models::{
@@ -31,6 +34,7 @@ use crate::{
         ledger_storage::PgStorage,
         now, organisations, schedules,
     },
+    services::runs,
 };
 
 const LEASE_TTL: Duration = Duration::from_secs(120);
@@ -245,10 +249,17 @@ impl VerifyWorker {
         account: Option<String>,
         o: &VerifyOutcome,
     ) -> LResult<()> {
+        // A revoked connection whose role works again is re-verified in full (RoleReturned).
+        let from = match status {
+            S::Revoked if !matches!(decide(o), Verdict::Denied) => {
+                transition(status, E::RoleReturned).map_err(lerr)?
+            }
+            s => s,
+        };
         match decide(o) {
             Verdict::Denied => self.denied(storage, run, fence, c, status, o).await,
             Verdict::Event(ev, reason) => {
-                let to = match transition(status, ev) {
+                let to = match transition(from, ev) {
                     Ok(to) => to,
                     Err(e) => {
                         return storage
@@ -256,12 +267,19 @@ impl VerifyWorker {
                             .await
                     }
                 };
-                let (st, why) = if self.apply(c, account, run.id, to, reason, o).await? {
-                    (RunStatus::Done, None)
-                } else {
-                    (RunStatus::Skipped, Some("connection_changed".into()))
+                let Some(written) = self.apply(c, account, run.id, to, reason, o).await? else {
+                    let why = Some("connection_changed".into());
+                    return storage
+                        .set_status(run.id, fence, RunStatus::Skipped, why)
+                        .await;
                 };
-                storage.set_status(run.id, fence, st, why).await
+                storage
+                    .set_status(run.id, fence, RunStatus::Done, None)
+                    .await?;
+                if written == S::Connected && c.first_connected_at.is_none() {
+                    self.first_scan(c).await;
+                }
+                Ok(())
             }
         }
     }
@@ -291,6 +309,20 @@ impl VerifyWorker {
         }
         a.updated_at = Set(now());
         let txn = self.ctx.db.begin().await.map_err(lerr)?;
+        if revoke.is_some() {
+            // Daily re-checks while revoked, so a returned role recovers within a day.
+            let now = Utc::now();
+            schedules::set_cron(
+                &txn,
+                c.organisation_id,
+                c.id,
+                "verify",
+                schedules::VERIFY_REVOKED,
+                |_| Some(now),
+            )
+            .await
+            .map_err(lerr)?;
+        }
         if !cas(&txn, c, a).await.map_err(lerr)? {
             return storage
                 .set_status(
@@ -309,7 +341,8 @@ impl VerifyWorker {
         self.record_in(&txn, c, run.id, Some(o), outcome, None)
             .await?;
         txn.commit().await.map_err(lerr)?;
-        if revoke.is_some() {
+        // Already revoked: the daily re-check found the role still gone; nothing to retry.
+        if revoke.is_some() || status == S::Revoked {
             storage
                 .set_status(run.id, fence, RunStatus::Done, None)
                 .await
@@ -352,7 +385,7 @@ impl VerifyWorker {
         to: S,
         reason: Option<String>,
         o: &VerifyOutcome,
-    ) -> LResult<bool> {
+    ) -> LResult<Option<S>> {
         let txn = self.ctx.db.begin().await.map_err(lerr)?;
         let mut a = <connections::ActiveModel as ActiveModelTrait>::default();
         a.status = Set(status_str(to));
@@ -367,21 +400,28 @@ impl VerifyWorker {
         if to == S::Connected && c.first_connected_at.is_none() {
             a.first_connected_at = Set(Some(now()));
             a.billable_from = Set(Some(now()));
-            // TODO(full_scan): enqueue the first scan on first connect (Task 10).
         }
         if to == S::Connected {
-            schedules::create_defaults(&txn, c.organisation_id, c.id, Utc::now())
+            let now = Utc::now();
+            let (org, id) = (c.organisation_id, c.id);
+            schedules::create_defaults(&txn, org, id, c.scan_time_local, now)
                 .await
                 .map_err(lerr)?;
+            // Back to weekly after a revoked spell.
+            schedules::set_cron(&txn, org, id, "verify", schedules::VERIFY_WEEKLY, |_| {
+                Some(now)
+            })
+            .await
+            .map_err(lerr)?;
         }
         // Savepoint, so a unique violation does not abort the outer transaction.
         let sp = txn.begin().await.map_err(lerr)?;
-        let outcome = match cas(&sp, c, a).await {
+        let written = match cas(&sp, c, a).await {
             Ok(true) => {
                 sp.commit().await.map_err(lerr)?;
-                status_str(to)
+                to
             }
-            Ok(false) => return Ok(false),
+            Ok(false) => return Ok(None),
             Err(e) if is_unique_violation(&e) => {
                 sp.rollback().await.map_err(lerr)?;
                 // TODO(notify): email the owners of the organisation that holds the account.
@@ -392,16 +432,31 @@ impl VerifyWorker {
                     ..Default::default()
                 };
                 if !cas(&txn, c, blocked).await.map_err(lerr)? {
-                    return Ok(false);
+                    return Ok(None);
                 }
-                status_str(S::Blocked)
+                S::Blocked
             }
             Err(e) => return Err(lerr(e)),
         };
-        self.record_in(&txn, c, run_id, Some(o), &outcome, None)
+        self.record_in(&txn, c, run_id, Some(o), &status_str(written), None)
             .await?;
         txn.commit().await.map_err(lerr)?;
-        Ok(true)
+        Ok(Some(written))
+    }
+
+    /// Queues the connection's first full scan, right after its first connect. A failed
+    /// hand-off is logged; the run's outbox marker gets it sent by the scheduler.
+    async fn first_scan(&self, c: &connections::Model) {
+        let now = Utc::now();
+        let key = RunKey {
+            organisation_id: Some(c.organisation_id),
+            connection_id: Some(c.id),
+            job_type: full_scan::JOB.into(),
+            scheduled_at: now,
+        };
+        if let Err(e) = runs::enqueue(&self.ctx, key, now).await {
+            tracing::error!(connection = %c.id, error = %e, "first scan not queued");
+        }
     }
 
     /// One `connection_verifications` row plus the audit event, per verify outcome.

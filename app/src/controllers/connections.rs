@@ -6,8 +6,7 @@ use axum::{
 use chrono::NaiveTime;
 use loco_rs::app::AppContext;
 use opsagent_connectors::aws::client::short_id;
-use opsagent_core::connection::ConnectionStatus as S;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -20,8 +19,8 @@ use crate::{
     middleware::org_scope::OrgScope,
     models::{
         _entities::{connection_verifications, connections},
-        connections::{status_of, TEMPLATE_VERSION},
-        find_in_org, now,
+        connections::TEMPLATE_VERSION,
+        find_in_org,
         organisations::valid_name,
     },
     services::connections as service,
@@ -152,7 +151,7 @@ async fn show(
 #[derive(Deserialize, ToSchema)]
 pub struct ConnectionPatch {
     pub display_name: Option<String>,
-    /// `HH:MM`.
+    /// `HH:MM` in the organisation's timezone; the nightly scan moves there from the next day.
     pub scan_time_local: Option<String>,
     /// `HH:MM`.
     pub briefing_time_local: Option<String>,
@@ -179,27 +178,18 @@ async fn update(
 ) -> Result<Json<Connection>, ApiError> {
     scope.require_owner()?;
     let c = find(&ctx, &scope, &id).await?;
-    if status_of(&c)? == S::Disconnected {
-        return Err(service::disconnected());
+    let hhmm =
+        |field: &str, v: &Option<String>| v.as_deref().map(|t| valid_hhmm(field, t)).transpose();
+    if body.api_rate_ceiling.is_some_and(|r| r < 1) {
+        return Err(ApiError::invalid("api_rate_ceiling must be at least 1"));
     }
-    let mut a: connections::ActiveModel = c.into();
-    if let Some(n) = &body.display_name {
-        a.display_name = Set(Some(valid_name(n)?));
-    }
-    if let Some(t) = &body.scan_time_local {
-        a.scan_time_local = Set(Some(valid_hhmm("scan_time_local", t)?));
-    }
-    if let Some(t) = &body.briefing_time_local {
-        a.briefing_time_local = Set(Some(valid_hhmm("briefing_time_local", t)?));
-    }
-    if let Some(r) = body.api_rate_ceiling {
-        if r < 1 {
-            return Err(ApiError::invalid("api_rate_ceiling must be at least 1"));
-        }
-        a.api_rate_ceiling = Set(Some(r));
-    }
-    a.updated_at = Set(now());
-    Ok(Json(view(&a.update(&ctx.db).await?, None)))
+    let patch = service::Patch {
+        display_name: body.display_name.as_deref().map(valid_name).transpose()?,
+        scan_time_local: hhmm("scan_time_local", &body.scan_time_local)?,
+        briefing_time_local: hhmm("briefing_time_local", &body.briefing_time_local)?,
+        api_rate_ceiling: body.api_rate_ceiling,
+    };
+    Ok(Json(view(&service::update(&ctx.db, c, patch).await?, None)))
 }
 
 #[derive(Deserialize, ToSchema)]
