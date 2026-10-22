@@ -1,0 +1,8 @@
+target/
+.env
+**/config/local.yaml
+**/config/*.local.yaml
+**/*.rs.bk
+*.pdb
+*.sqlite
+*.sqlite-*
