@@ -106,8 +106,9 @@ impl Out<'_> {
             })?;
         let (client, msg_id) = (slack(self.ctx), format!("{}:{key}", self.run.id));
         let mut failed = None;
-        // shortcut: a crash between the post and the ledger record reposts on resume, since Slack
-        // does not guarantee `client_msg_id` dedupe; accept until Slack offers an idempotent post.
+        // shortcut: a crash between the post and the ledger record, or a retried lost response,
+        // reposts, since Slack does not guarantee `client_msg_id` dedupe; accept until Slack
+        // offers an idempotent post.
         let res = with_effect(self.storage, self.run.id, key, true, || async {
             match client.post_message(&token, channel, text, &msg_id).await {
                 Ok(ts) => Ok(Some(ts)),
