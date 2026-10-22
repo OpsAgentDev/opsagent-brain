@@ -79,6 +79,28 @@ async fn migrations_slice_schema_constraints_and_roundtrip() {
     assert!(exec(&db, &integ("bogus")).await.is_err());
     exec(&db, &integ("failing")).await.unwrap();
 
+    // email_suppressions: `ignored` needs an organisation; `confirm_blocked` must be global.
+    let supp = |org_id: &str, reason: &str, expires: &str| {
+        format!(
+            "INSERT INTO email_suppressions (id, organisation_id, email_hash, reason, expires_at) \
+             VALUES (gen_random_uuid(), {org_id}, md5(random()::text), '{reason}', {expires})"
+        )
+    };
+    assert!(exec(&db, &supp("NULL", "ignored", "now()")).await.is_err());
+    assert!(exec(&db, &supp(org, "confirm_blocked", "now()"))
+        .await
+        .is_err());
+    assert!(exec(&db, &supp("NULL", "confirm_blocked", "NULL"))
+        .await
+        .is_err());
+    exec(&db, &supp(org, "ignored", "now()")).await.unwrap();
+    exec(&db, &supp("NULL", "confirm_blocked", "now()"))
+        .await
+        .unwrap();
+    exec(&db, &supp("NULL", "unsubscribed", "NULL"))
+        .await
+        .unwrap();
+
     // audit_events is insert-only.
     exec(&db, "INSERT INTO audit_events (id, actor_type, action) VALUES ('00000000-0000-0000-0000-0000000000aa', 'system', 'x')")
         .await

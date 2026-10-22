@@ -883,41 +883,70 @@ async fn add_and_confirm(
     }
 }
 
+async fn blocked(ctx: &AppContext) -> Option<email_suppressions::Model> {
+    email_suppressions::Entity::find()
+        .filter(email_suppressions::Column::Reason.eq("confirm_blocked"))
+        .one(&ctx.db)
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 #[serial]
-async fn three_orgs_unconfirmed_suppress_the_address_globally() {
+async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
     serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
-        for (i, owner) in [
+        // A recipient that confirmed before the block.
+        let (t, org_z, _) = org_with_routes(&mut req, &mail, "z@example.com").await;
+        add_and_confirm(&req, &mail, &t, &org_z, "target@example.com", &Value::Null).await;
+        let owners = [
             "a@example.com",
             "b@example.com",
             "c@example.com",
             "d@example.com",
-        ]
-        .iter()
-        .enumerate()
-        {
+            "e@example.com",
+        ];
+        for (i, owner) in owners.iter().enumerate() {
             let (t, org, _) = org_with_routes(&mut req, &mail, owner).await;
             add_recipient(&req, &t, &org, json!({"email": "target@example.com"})).await;
-            // Two organisations' mails go out unconfirmed; the third trips the global row.
+            // Four owners' mails go out unconfirmed; the fifth owner's trips the block.
             assert_eq!(
                 mails_to(&mail, "target@example.com"),
-                [1, 2, 2, 2][i],
+                1 + (i + 1).min(4),
                 "{owner}"
             );
         }
-        assert_eq!(mails_to(&mail, "target@example.com"), 2);
-        let row = email_suppressions::Entity::find()
-            .filter(email_suppressions::Column::OrganisationId.is_null())
+        let row = blocked(&ctx).await.expect("confirm_blocked row");
+        assert!(row.organisation_id.is_none());
+        let left = row.expires_at.unwrap() - chrono::Utc::now().fixed_offset();
+        assert!(left.num_days() >= 89, "{left}");
+        assert_eq!(
+            email_suppressions::Entity::find()
+                .filter(email_suppressions::Column::Reason.eq("ignored"))
+                .count(&ctx.db)
+                .await
+                .unwrap(),
+            0
+        );
+        // The confirmed recipient still gets deliveries; confirm mails are blocked everywhere.
+        let z = organisations::Entity::find()
+            .filter(organisations::Column::Slug.eq(&org_z))
             .one(&ctx.db)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(row.reason, "ignored");
-        let left = row.expires_at.unwrap() - chrono::Utc::now().fixed_offset();
-        assert!(left.num_days() >= 89, "{left}");
-        // An unsubscribe then makes the global row permanent.
+        assert!(mail_guard::may_deliver(&ctx.db, z.id, "target@example.com")
+            .await
+            .unwrap());
+        let redis = redis_of(&ctx);
+        assert!(
+            !mail_guard::may_send_confirm(&ctx.db, &redis, z.id, "target@example.com")
+                .await
+                .unwrap()
+        );
+        // An unsubscribe then replaces the block with a permanent global row.
         let r = recipients::Entity::find()
+            .filter(recipients::Column::OrganisationId.eq(z.id))
             .one(&ctx.db)
             .await
             .unwrap()
@@ -938,6 +967,27 @@ async fn three_orgs_unconfirmed_suppress_the_address_globally() {
             (row.reason.as_str(), row.expires_at),
             ("unsubscribed", None)
         );
+        assert!(
+            !mail_guard::may_deliver(&ctx.db, z.id, "target@example.com")
+                .await
+                .unwrap()
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn many_orgs_of_one_owner_do_not_block_confirms() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "one@example.com").await;
+        for i in 0..3 {
+            let org = slug(&create_org(&req, &t, &format!("Org {i}")).await);
+            add_recipient(&req, &t, &org, json!({"email": "target@example.com"})).await;
+        }
+        assert_eq!(mails_to(&mail, "target@example.com"), 3);
+        assert!(blocked(&ctx).await.is_none());
     })
     .await;
 }

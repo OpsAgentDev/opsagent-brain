@@ -253,7 +253,7 @@ pub async fn confirm(
     )
     .await?;
     txn.commit().await?;
-    mail_guard::confirmed(redis, row.organisation_id, &row.email).await;
+    mail_guard::confirmed(db, redis, row.organisation_id, &row.email).await?;
     Ok(())
 }
 
