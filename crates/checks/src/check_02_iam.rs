@@ -16,6 +16,7 @@ impl Check for IamHygiene {
         &[Capability::IamReport]
     }
 
+    // shortcut: ~52 lines, one match arm per IAM variant; split per variant when a fourth appears.
     fn run(&self, ctx: &CheckCtx) -> Vec<FindingDraft> {
         let mut out = vec![];
         for r in ctx.resources.iter().filter(|r| r.service() == "iam") {

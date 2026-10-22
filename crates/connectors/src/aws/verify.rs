@@ -78,6 +78,20 @@ pub fn principal_from_caller(arn: &str) -> String {
     }
 }
 
+/// The ARN customer trust policies must name: configured, or derived from our own identity.
+async fn principal(c: &AwsConnector, sts: &aws_sdk_sts::Client) -> Result<String> {
+    if let Some(p) = &c.outbound.principal_arn {
+        return Ok(p.clone());
+    }
+    let me = sts
+        .get_caller_identity()
+        .send()
+        .await
+        .map_err(provider_err)?;
+    Ok(principal_from_caller(me.arn().unwrap_or_default()))
+}
+
+// shortcut: ~63 lines, the two assumes and the diff are one protocol (PRD 7.2); split if a provider shares it.
 pub(crate) async fn verify(
     c: &AwsConnector,
     role_arn: &str,
@@ -89,17 +103,7 @@ pub(crate) async fn verify(
     let base = c.base().await;
     let policy = session_policy(VERIFY_ACTIONS);
     let sts = aws_sdk_sts::Client::new(base);
-    let principal = match &c.outbound.principal_arn {
-        Some(p) => p.clone(),
-        None => {
-            let me = sts
-                .get_caller_identity()
-                .send()
-                .await
-                .map_err(provider_err)?;
-            principal_from_caller(me.arn().unwrap_or_default())
-        }
-    };
+    let principal = principal(c, &sts).await?;
     let with = assume(
         &sts,
         base,

@@ -103,8 +103,8 @@ fn role_error(e: ConnectorError) -> ApiError {
     }
 }
 
-/// Stores the reported role and queues a `verify` run; returns the run id. A duplicate
-/// request in the same minute is the same run.
+// shortcut: ~53 lines, one use case in one transaction; split when a step gains a second caller.
+/// Stores the reported role and queues a `verify` run; returns the run id.
 pub async fn request_verify(
     ctx: &AppContext,
     kek: &dyn Kek,
@@ -116,20 +116,7 @@ pub async fn request_verify(
     if from == S::Disconnected {
         return Err(disconnected());
     }
-    let role = registry::reported_role(&c.provider, role_arn).map_err(role_error)?;
-    let mut creds = load_creds(&ctx.db, kek, c).await?;
-    // A live connection only re-verifies the role it was verified with: scans must never run
-    // under a role that has not passed verification.
-    if role.is_some() && role != creds.role_arn && matches!(from, S::Connected | S::Degraded) {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "role_change_requires_reconnect",
-            "This connection is verified with a different role. Disconnect it and connect again to use a new role.",
-        ));
-    }
-    if role.is_some() {
-        creds.role_arn = role;
-    }
+    let creds = with_reported_role(&ctx.db, kek, c, from, role_arn).await?;
     let to = match from {
         S::Pending => transition(from, E::StackReported),
         S::Revoked => transition(from, E::RoleReturned),
@@ -160,6 +147,7 @@ pub async fn request_verify(
     )
     .await?;
     txn.commit().await?;
+    // A duplicate request in the same minute is the same run.
     let key = RunKey {
         organisation_id: Some(c.organisation_id),
         connection_id: Some(c.id),
@@ -169,6 +157,31 @@ pub async fn request_verify(
             .map_err(ApiError::internal)?,
     };
     Ok(runs::enqueue(ctx, key, Utc::now()).await?.run.id)
+}
+
+/// The stored credentials with the reported role. A live connection only re-verifies the
+/// role it was verified with: scans must never run under a role that has not passed
+/// verification.
+async fn with_reported_role(
+    db: &DatabaseConnection,
+    kek: &dyn Kek,
+    c: &connections::Model,
+    from: S,
+    raw: &str,
+) -> Result<Creds, ApiError> {
+    let role = registry::reported_role(&c.provider, raw).map_err(role_error)?;
+    let mut creds = load_creds(db, kek, c).await?;
+    if role.is_some() && role != creds.role_arn && matches!(from, S::Connected | S::Degraded) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "role_change_requires_reconnect",
+            "This connection is verified with a different role. Disconnect it and connect again to use a new role.",
+        ));
+    }
+    if role.is_some() {
+        creds.role_arn = role;
+    }
+    Ok(creds)
 }
 
 /// Disconnects for owner `actor`; already disconnected is a no-op (idempotent DELETE).

@@ -24,63 +24,80 @@ pub async fn s3_buckets(
     while let Some(page) = pages.next().await {
         for b in page.map_err(provider_err)?.buckets() {
             let name = b.name().unwrap_or_default();
-            let res: Result<Resource> = async {
-                let region = match b.bucket_region() {
-                    Some(r) => r.to_owned(),
-                    None => {
-                        let loc = s3
-                            .get_bucket_location()
-                            .bucket(name)
-                            .send()
-                            .await
-                            .map_err(provider_err)?;
-                        match loc.location_constraint().map(|c| c.as_str()) {
-                            None | Some("") => "us-east-1".to_owned(),
-                            Some("EU") => "eu-west-1".to_owned(),
-                            Some(r) => r.to_owned(),
-                        }
-                    }
-                };
-                let c = clients.entry(region.clone()).or_insert_with(|| {
-                    aws_sdk_s3::Client::new(
-                        &session.to_builder().region(Region::new(region.clone())).build(),
-                    )
-                });
-                let block = match c.get_public_access_block().bucket(name).send().await {
-                    Ok(o) => o.public_access_block_configuration().is_some_and(|p| {
-                        p.block_public_acls() == Some(true)
-                            && p.ignore_public_acls() == Some(true)
-                            && p.block_public_policy() == Some(true)
-                            && p.restrict_public_buckets() == Some(true)
-                    }),
-                    Err(e) if e.code() == Some("NoSuchPublicAccessBlockConfiguration") => false,
-                    Err(e) => return Err(provider_err(e)),
-                };
-                let public = match c.get_bucket_policy_status().bucket(name).send().await {
-                    Ok(o) => o.policy_status().and_then(|p| p.is_public()).unwrap_or(false),
-                    Err(e) if e.code() == Some("NoSuchBucketPolicy") => false,
-                    Err(e) => return Err(provider_err(e)),
-                };
-                // Without s3:GetBucketPolicy the public prefix is unknown; "" means "some or all".
-                let prefix = public.then_some("");
-                let bt = Target {
-                    region: &region,
-                    ..*t
-                };
-                Ok(bt.resource(
-                    ResourceKind::Storage,
-                    format!("arn:{}:s3:::{name}", t.partition),
-                    name,
-                    BTreeMap::new(),
-                    json!({"service": "s3", "block_public_access": block, "public_policy_prefix": prefix}),
-                ))
-            }
-            .await;
-            match res {
+            match bucket(session, &s3, &mut clients, t, b).await {
                 Ok(r) => out.push(r),
                 Err(e) => errors.push(service_error("s3", &format!("bucket:{name}"), &e)),
             }
         }
     }
     Ok(out)
+}
+
+/// The bucket's region: from the listing, else `GetBucketLocation` (legacy names mapped).
+async fn region_of(s3: &aws_sdk_s3::Client, b: &aws_sdk_s3::types::Bucket) -> Result<String> {
+    if let Some(r) = b.bucket_region() {
+        return Ok(r.to_owned());
+    }
+    let loc = s3
+        .get_bucket_location()
+        .bucket(b.name().unwrap_or_default())
+        .send()
+        .await
+        .map_err(provider_err)?;
+    Ok(match loc.location_constraint().map(|c| c.as_str()) {
+        None | Some("") => "us-east-1".to_owned(),
+        Some("EU") => "eu-west-1".to_owned(),
+        Some(r) => r.to_owned(),
+    })
+}
+
+/// One bucket's public-access posture, read with a client in the bucket's region.
+async fn bucket(
+    session: &SdkConfig,
+    s3: &aws_sdk_s3::Client,
+    clients: &mut HashMap<String, aws_sdk_s3::Client>,
+    t: &Target<'_>,
+    b: &aws_sdk_s3::types::Bucket,
+) -> Result<Resource> {
+    let name = b.name().unwrap_or_default();
+    let region = region_of(s3, b).await?;
+    let c = clients.entry(region.clone()).or_insert_with(|| {
+        aws_sdk_s3::Client::new(
+            &session
+                .to_builder()
+                .region(Region::new(region.clone()))
+                .build(),
+        )
+    });
+    let block = match c.get_public_access_block().bucket(name).send().await {
+        Ok(o) => o.public_access_block_configuration().is_some_and(|p| {
+            p.block_public_acls() == Some(true)
+                && p.ignore_public_acls() == Some(true)
+                && p.block_public_policy() == Some(true)
+                && p.restrict_public_buckets() == Some(true)
+        }),
+        Err(e) if e.code() == Some("NoSuchPublicAccessBlockConfiguration") => false,
+        Err(e) => return Err(provider_err(e)),
+    };
+    let public = match c.get_bucket_policy_status().bucket(name).send().await {
+        Ok(o) => o
+            .policy_status()
+            .and_then(|p| p.is_public())
+            .unwrap_or(false),
+        Err(e) if e.code() == Some("NoSuchBucketPolicy") => false,
+        Err(e) => return Err(provider_err(e)),
+    };
+    // Without s3:GetBucketPolicy the public prefix is unknown; "" means "some or all".
+    let prefix = public.then_some("");
+    let bt = Target {
+        region: &region,
+        ..*t
+    };
+    Ok(bt.resource(
+        ResourceKind::Storage,
+        format!("arn:{}:s3:::{name}", t.partition),
+        name,
+        BTreeMap::new(),
+        json!({"service": "s3", "block_public_access": block, "public_policy_prefix": prefix}),
+    ))
 }

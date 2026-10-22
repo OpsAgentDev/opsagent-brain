@@ -1,13 +1,12 @@
 //! Finding lifecycle per `full_scan` (PRD 7.4): open, seen, escalate, resolve, reopen, flap.
 //! Re-applying the same run is a no-op: findings already stamped with the run are skipped and
 //! events are unique per (run, finding, type).
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
 use opsagent_core::finding::{FindingDraft, Severity};
 use opsagent_ledger::{LedgerError, Result};
-use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, Value};
-use serde_json::{json, Value as Json};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 use uuid::Uuid;
 
 use super::{inventory_upsert::exec, redact::redact};
@@ -136,6 +135,70 @@ async fn insert(
     Ok(id)
 }
 
+/// A seen finding's next state: status, events to write, flap counter, stable-run counter.
+struct Next {
+    status: String,
+    events: Vec<&'static str>,
+    flap_count: i32,
+    stable: i32,
+}
+
+/// The lifecycle rules for a finding seen again in this run (PRD 7.4).
+async fn next_state(
+    db: &impl ConnectionTrait,
+    f: &findings::Model,
+    now: DateTime<Utc>,
+) -> Result<Next> {
+    let expired = |until: Option<sea_orm::prelude::DateTimeWithTimeZone>| {
+        until.is_some_and(|u| u.with_timezone(&Utc) <= now)
+    };
+    let next = |status: &str, events: Vec<&'static str>, flap_count| Next {
+        status: status.into(),
+        events,
+        flap_count,
+        stable: f.stable_runs + 1,
+    };
+    Ok(match f.status.as_str() {
+        "open" => next("open", vec!["seen"], f.flap_count),
+        "flapping" if f.stable_runs + 1 >= STABLE_RUNS => next("open", vec!["reopened"], 0),
+        // Reported once when it started flapping; afterwards only counters move.
+        "flapping" => next("flapping", vec![], f.flap_count),
+        "accepted" if expired(f.accepted_until) => next("open", vec!["reopened"], f.flap_count),
+        "snoozed" if expired(f.snoozed_until) => next("open", vec!["reopened"], f.flap_count),
+        "accepted" | "snoozed" => next(&f.status, vec![], f.flap_count),
+        _ => reappeared(db, f, now).await?,
+    })
+}
+
+/// A resolved finding is back: reopened, or flapping once it came back quickly too often.
+async fn reappeared(
+    db: &impl ConnectionTrait,
+    f: &findings::Model,
+    now: DateTime<Utc>,
+) -> Result<Next> {
+    let quick = f
+        .resolved_at
+        .is_some_and(|r| now - r.with_timezone(&Utc) <= FLAP_WINDOW);
+    let flap_count = f.flap_count + i32::from(quick);
+    let (status, events) =
+        if flap_count >= FLAP_TIMES && count_events(db, f.id, "flapping", now).await? > 0 {
+            ("flapping", vec![])
+        } else if quick
+            && flap_count >= FLAP_TIMES
+            && count_events(db, f.id, "reopened", now).await? + 1 >= i64::from(FLAP_TIMES)
+        {
+            ("flapping", vec!["reopened", "flapping"])
+        } else {
+            ("open", vec!["reopened"])
+        };
+    Ok(Next {
+        status: status.into(),
+        events,
+        flap_count,
+        stable: 1,
+    })
+}
+
 async fn seen_again(
     db: &impl ConnectionTrait,
     f: &findings::Model,
@@ -143,53 +206,12 @@ async fn seen_again(
     d: &FindingDraft,
     now: DateTime<Utc>,
 ) -> Result<()> {
-    let expired = |until: Option<sea_orm::prelude::DateTimeWithTimeZone>| {
-        until.is_some_and(|u| u.with_timezone(&Utc) <= now)
-    };
-    let mut flap_count = f.flap_count;
-    let mut stable = f.stable_runs + 1;
-    let mut events: Vec<&str> = vec![];
-    let status = match f.status.as_str() {
-        "open" => {
-            events.push("seen");
-            "open"
-        }
-        "flapping" if stable >= STABLE_RUNS => {
-            flap_count = 0;
-            events.push("reopened");
-            "open"
-        }
-        // Reported once when it started flapping; afterwards only counters move.
-        "flapping" => "flapping",
-        "accepted" if expired(f.accepted_until) => {
-            events.push("reopened");
-            "open"
-        }
-        "snoozed" if expired(f.snoozed_until) => {
-            events.push("reopened");
-            "open"
-        }
-        "accepted" | "snoozed" => f.status.as_str(),
-        _ => {
-            stable = 1;
-            let quick = f
-                .resolved_at
-                .is_some_and(|r| now - r.with_timezone(&Utc) <= FLAP_WINDOW);
-            flap_count += i32::from(quick);
-            if flap_count >= FLAP_TIMES && count_events(db, f.id, "flapping", now).await? > 0 {
-                "flapping"
-            } else if quick
-                && flap_count >= FLAP_TIMES
-                && count_events(db, f.id, "reopened", now).await? + 1 >= i64::from(FLAP_TIMES)
-            {
-                events.extend(["reopened", "flapping"]);
-                "flapping"
-            } else {
-                events.push("reopened");
-                "open"
-            }
-        }
-    };
+    let Next {
+        status,
+        events,
+        flap_count,
+        stable,
+    } = next_state(db, f, now).await?;
     exec(
         db,
         "UPDATE findings SET status = $2, severity = $3, title = $4, summary = $5, next_step = $6, \
@@ -197,7 +219,7 @@ async fn seen_again(
          resolved_reason = NULL, updated_at = now() WHERE id = $1 AND organisation_id = $11",
         vec![
             f.id.into(),
-            status.into(),
+            status.clone().into(),
             enum_str(d.severity).into(),
             d.title.clone().into(),
             d.summary.clone().into(),
@@ -343,35 +365,4 @@ async fn evidence(
         .await?;
     }
     Ok(())
-}
-
-/// Posture score per checks.md: `max(0, 100 − Σ weight(open))`; accepted, snoozed and flapping
-/// are excluded by counting `open` only.
-pub async fn posture(db: &impl ConnectionTrait, c: &connections::Model) -> Result<Json> {
-    let rows = db
-        .query_all_raw(stmt(
-            "SELECT severity, count(*) AS n FROM findings WHERE organisation_id = $2 AND connection_id = $1 \
-             AND status = 'open' GROUP BY severity",
-            vec![Value::from(c.id), Value::from(c.organisation_id)],
-        ))
-        .await
-        .map_err(db_err)?;
-    let mut counts: BTreeMap<String, i64> = [
-        Severity::Critical,
-        Severity::High,
-        Severity::Medium,
-        Severity::Low,
-        Severity::Info,
-    ]
-    .into_iter()
-    .map(|s| (enum_str(s), 0))
-    .collect();
-    let mut sum = 0f32;
-    for r in rows {
-        let s: String = r.try_get("", "severity").map_err(db_err)?;
-        let n: i64 = r.try_get("", "n").map_err(db_err)?;
-        sum += enum_of(&s).map_or(0.0, Severity::weight) * n as f32;
-        counts.insert(s, n);
-    }
-    Ok(json!({ "score": f64::from((100.0 - sum).max(0.0)), "counts_by_severity": counts }))
 }

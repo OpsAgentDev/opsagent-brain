@@ -33,6 +33,7 @@ fn csv_fields(line: &str) -> Vec<String> {
     out
 }
 
+// shortcut: ~74 lines, one pass over the CSV columns; split into a row parser when more columns are read.
 /// Parses the IAM credential report CSV into identity resources. The `<root_account>` row
 /// becomes a `root: true` resource; `admin` for users comes from `admins`.
 pub fn credential_report_users(

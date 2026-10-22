@@ -7,6 +7,7 @@ use chrono::{Days, NaiveDate};
 
 pub(crate) const COST_ACTIONS: &[&str] = &["ce:GetCostAndUsage"];
 
+// shortcut: ~54 lines, one paginated Cost Explorer call; split if a second cost query lands.
 /// One `GetCostAndUsage` request (pages followed): DAILY, grouped by SERVICE, UnblendedCost,
 /// for the `days` days ending yesterday (`End` is exclusive).
 pub async fn cost_daily(

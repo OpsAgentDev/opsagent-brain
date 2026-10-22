@@ -6,6 +6,7 @@ pub mod manual_scan;
 pub mod members;
 pub mod orgs;
 pub mod pagination;
+pub mod posture;
 pub mod redact;
 pub mod runs;
 pub mod sign_in;

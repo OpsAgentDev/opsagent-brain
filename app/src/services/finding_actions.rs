@@ -101,6 +101,7 @@ pub fn decide(status: &str, action: Action, now: DateTime<Utc>) -> Result<Change
     }
 }
 
+// shortcut: ~57 lines, mostly the column list of one CAS update; split if the action set grows.
 /// Applies `action` to `f` for `actor`: status compare-and-set, event and audit row, one
 /// transaction. Returns the updated finding.
 pub async fn apply(

@@ -181,9 +181,19 @@ async fn tick_locked(
             Err(e) => tracing::error!(schedule = %id, error = %e, "schedule failed"),
         }
     }
+    report.retries_run = retry_pass(ctx, db, now).await?;
+    Ok(report)
+}
 
-    // Runs parked with `schedule_retry` (status queued + next_attempt_at), and runs whose
-    // enqueue was interrupted after `due_schedule` committed them.
+/// Runs parked with `schedule_retry` (status queued + next_attempt_at), and runs whose
+/// enqueue was interrupted after they were committed (the outbox marker). Returns how many
+/// were handed to a worker.
+async fn retry_pass(
+    ctx: &AppContext,
+    db: &DatabaseConnection,
+    now: DateTime<Utc>,
+) -> Result<usize> {
+    let mut sent_total = 0;
     let retries = db
         .query_all_raw(stmt(
             "SELECT r.id, r.job_type, r.next_attempt_at FROM runs r WHERE r.status = 'queued' \
@@ -200,9 +210,9 @@ async fn tick_locked(
             r.try_get("", "next_attempt_at")?,
         );
         match dispatch(ctx, id, &job, marker).await {
-            Ok(sent) => report.retries_run += usize::from(sent),
+            Ok(sent) => sent_total += usize::from(sent),
             Err(e) => tracing::error!(run = %id, error = %e, "retry enqueue failed"),
         }
     }
-    Ok(report)
+    Ok(sent_total)
 }

@@ -100,6 +100,19 @@ pub async fn accept(
         .one(db)
         .await?
         .ok_or_else(gone)?;
+    let role = join(db, &inv, user_id).await?;
+    Ok((org, role))
+}
+
+/// Consumes the invite and adds the membership (an existing one keeps its role), one
+/// transaction. Returns the role held.
+async fn join(
+    db: &DatabaseConnection,
+    inv: &invites::Model,
+    user_id: Uuid,
+) -> Result<String, ApiError> {
+    let gone = || ApiError::gone("invite_invalid");
+    let org_id = inv.organisation_id;
     let txn = db.begin().await?;
     // Compare-and-set so a concurrent double accept consumes the invite once.
     let claimed = invites::Entity::update_many()
@@ -114,30 +127,31 @@ pub async fn accept(
         return Err(gone());
     }
     let existing = members::Entity::find()
-        .filter(members::Column::OrganisationId.eq(org.id))
+        .filter(members::Column::OrganisationId.eq(org_id))
         .filter(members::Column::UserId.eq(user_id))
         .one(&txn)
         .await?;
     let role = match existing {
         Some(m) => m.role,
         None => {
-            member_model::add(&txn, org.id, user_id, &inv.role)
+            member_model::add(&txn, org_id, user_id, &inv.role)
                 .await?
                 .role
         }
     };
     audit::record(
         &txn,
-        Some(org.id),
+        Some(org_id),
         user_id,
         "invite.accept",
         Some(("invite", inv.id.to_string())),
     )
     .await?;
     txn.commit().await?;
-    Ok((org, role))
+    Ok(role)
 }
 
+// shortcut: ~51 lines, one serialised transaction; split if member removal gains steps.
 /// Removes member `member_id` for owner `actor`; `last_owner` if it would leave no owner.
 pub async fn remove(
     db: &DatabaseConnection,

@@ -18,6 +18,7 @@ impl Check for PublicExposure {
         &[Capability::PublicAccess]
     }
 
+    // shortcut: ~76 lines, one match arm per exposure kind (snapshot, bucket, SG); split into a fn per service when a fourth appears.
     fn run(&self, ctx: &CheckCtx) -> Vec<FindingDraft> {
         let mut out = vec![];
         for r in ctx.resources {

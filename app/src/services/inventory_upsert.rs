@@ -23,6 +23,7 @@ pub struct Chunk<'a> {
     pub region: &'a str,
 }
 
+// shortcut: ~56 lines, one fenced transaction; split the stats write out when a second job writes api_call_stats.
 /// Returns `true` when the chunk's inventory was partial (a failed call or `partial_errors`).
 pub async fn upsert_chunk(
     db: &DatabaseConnection,

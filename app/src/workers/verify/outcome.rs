@@ -154,6 +154,7 @@ impl VerifyWorker {
         tx.into_inner().commit().await.map_err(lerr)
     }
 
+    // shortcut: ~51 lines, one outcome transaction by design (atomic with the run status); split only with a second outcome kind.
     /// Writes status `to` (or `blocked` when another org holds the account), the record and
     /// the run's `done`, and on a first connect the first scan's run. `false`: the connection
     /// changed since it was read, nothing written.

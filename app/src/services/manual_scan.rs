@@ -34,6 +34,7 @@ fn not_scannable(status: &str) -> ApiError {
     )
 }
 
+// shortcut: ~51 lines, one locked transaction; split if the rate-limit rule gains a second caller.
 /// For `actor`: creates the run (`scheduled_at = now`) and a `connection.scan_requested` audit
 /// row, or `rate_limited` within the window, or `connection_not_scannable` unless the connection
 /// is connected or degraded, then hands the run to the worker. Runs under the connection row

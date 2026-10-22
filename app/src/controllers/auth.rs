@@ -214,35 +214,11 @@ fn bad_gateway(e: impl std::fmt::Display) -> ApiError {
     )
 }
 
-#[utoipa::path(get, path = "/auth/sign-in/github/callback", tag = "auth", params(CallbackQuery),
-    responses((status = 302, description = "Session cookie set; redirects to the web dashboard"),
-        (status = 400, body = Problem), (status = 502, body = Problem)))]
-async fn github_callback(
-    State(ctx): State<AppContext>,
-    session: Session,
-    Query(q): Query<CallbackQuery>,
-) -> Result<Response, ApiError> {
-    let s = Settings::get(&ctx);
-    let client = github_client!(s);
-    let stored = session.remove::<(String, String)>(GH_KEY).await?;
-    let Some((_, verifier)) = stored.filter(|(st, _)| *st == q.state) else {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "oauth_state",
-            "OAuth state mismatch; start sign-in again.",
-        ));
-    };
-    let http = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(ApiError::internal)?;
-    let token = client
-        .exchange_code(AuthorizationCode::new(q.code))
-        .set_pkce_verifier(PkceCodeVerifier::new(verifier))
-        .request_async(&http)
-        .await
-        .map_err(bad_gateway)?;
-    let access = token.access_token().secret();
+/// The GitHub user and their verified primary email, for an access token.
+async fn github_identity(
+    http: &reqwest::Client,
+    access: &str,
+) -> Result<(GhUser, String), ApiError> {
     let get = |url: &str| http.get(url).bearer_auth(access).header("User-Agent", UA);
     let gh: GhUser = get("https://api.github.com/user")
         .send()
@@ -271,6 +247,38 @@ async fn github_callback(
                 "The GitHub account has no verified primary email.",
             )
         })?;
+    Ok((gh, email))
+}
+
+#[utoipa::path(get, path = "/auth/sign-in/github/callback", tag = "auth", params(CallbackQuery),
+    responses((status = 302, description = "Session cookie set; redirects to the web dashboard"),
+        (status = 400, body = Problem), (status = 502, body = Problem)))]
+async fn github_callback(
+    State(ctx): State<AppContext>,
+    session: Session,
+    Query(q): Query<CallbackQuery>,
+) -> Result<Response, ApiError> {
+    let s = Settings::get(&ctx);
+    let client = github_client!(s);
+    let stored = session.remove::<(String, String)>(GH_KEY).await?;
+    let Some((_, verifier)) = stored.filter(|(st, _)| *st == q.state) else {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "oauth_state",
+            "OAuth state mismatch; start sign-in again.",
+        ));
+    };
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(ApiError::internal)?;
+    let token = client
+        .exchange_code(AuthorizationCode::new(q.code))
+        .set_pkce_verifier(PkceCodeVerifier::new(verifier))
+        .request_async(&http)
+        .await
+        .map_err(bad_gateway)?;
+    let (gh, email) = github_identity(&http, token.access_token().secret()).await?;
     let user = user_model::find_or_create_github(
         &ctx.db,
         &gh.id.to_string(),

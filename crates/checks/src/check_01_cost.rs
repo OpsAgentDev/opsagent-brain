@@ -35,6 +35,7 @@ impl Check for CostAndIdle {
         &[Capability::Inventory]
     }
 
+    // shortcut: ~51 lines, one match arm per resource kind; split per variant when a fourth appears.
     fn run(&self, ctx: &CheckCtx) -> Vec<FindingDraft> {
         let mut out = vec![];
         for r in ctx.resources {

@@ -1,7 +1,7 @@
 #[cfg(feature = "test-support")]
 use crate::harness::KillSwitch;
 use crate::retry::settle;
-use crate::storage::{LedgerError, Result, Storage};
+use crate::storage::{Checkpoint, LedgerError, Result, Storage};
 use opsagent_core::run::RunStatus;
 use redis::{aio::MultiplexedConnection, Client, Script};
 use std::future::Future;
@@ -29,6 +29,7 @@ async fn conn(redis: &Client) -> Result<MultiplexedConnection> {
 const CAS_SET: &str = r#"if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('SET',KEYS[1],ARGV[2],'PX',ARGV[3]) and 1 end return 0"#;
 const CAS_DEL: &str = r#"if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) else return 0 end"#;
 
+// shortcut: ~51 lines, the two-phase Redis claim must stay readable in one place.
 /// Claims `lease:{run}` with a `pending:` marker first, so a failed acquire never touches storage
 /// (and cannot bump the live holder's fence). Only the winner bumps the fence, then upgrades the
 /// marker to `{worker}:{fence}` via compare-and-set.
@@ -214,6 +215,63 @@ where
     res
 }
 
+/// Ends the run `Partial` with `reason`; another holder owning the row decides instead.
+async fn partial<S: Storage + ?Sized>(
+    storage: &S,
+    run_id: Uuid,
+    fence: u64,
+    reason: &str,
+) -> Result<RunStatus> {
+    match storage
+        .set_status(run_id, fence, RunStatus::Partial, Some(reason.into()))
+        .await
+    {
+        Ok(()) | Err(LedgerError::StaleFence) => Ok(RunStatus::Partial),
+        Err(e) => Err(e),
+    }
+}
+
+/// Why the run must stop before its next chunk, if it must.
+fn stop_reason(lost: &AtomicBool, started: Instant, cap: Duration) -> Option<&'static str> {
+    if lost.load(SeqCst) {
+        Some("lease_lost")
+    } else if started.elapsed() >= cap {
+        Some("time_cap")
+    } else {
+        None
+    }
+}
+
+/// Records `chunk` as done and merges its stats by key.
+fn merge(cp: &mut Checkpoint, chunk: &str, out: &ChunkOutcome) {
+    cp.chunks_done.insert(chunk.to_owned());
+    if let (Some(dst), Some(src)) = (cp.stats.as_object_mut(), out.stats.as_object()) {
+        dst.extend(src.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+}
+
+/// The final status once every chunk is done. A chunk may decide it by writing
+/// `stats.partial_reason`; that is in the checkpoint, so a resumed run reaches the same verdict.
+async fn finish<S: Storage + ?Sized>(
+    storage: &S,
+    run_id: Uuid,
+    fence: u64,
+    cp: &Checkpoint,
+) -> Result<RunStatus> {
+    let reason = cp.stats["partial_reason"].as_str().map(str::to_owned);
+    let status = if reason.is_some() {
+        RunStatus::Partial
+    } else {
+        RunStatus::Done
+    };
+    match storage.set_status(run_id, fence, status, reason).await {
+        Ok(()) => Ok(status),
+        Err(LedgerError::StaleFence) => Ok(RunStatus::Partial),
+        Err(e) => Err(e),
+    }
+}
+
+// shortcut: ~60 lines, the chunk loop with its early exits; split further only with a second loop policy.
 async fn drive<S, F, Fut>(
     storage: &S,
     run_id: Uuid,
@@ -228,55 +286,43 @@ where
     F: Fn(String, Lease) -> Fut,
     Fut: Future<Output = Result<ChunkOutcome>>,
 {
-    let started = Instant::now();
+    let (started, fence) = (Instant::now(), lease.fence);
     let run = storage.load_run(run_id).await?;
     let mut cp = run.checkpoint;
-    let partial = |reason: &'static str| async move {
-        match storage
-            .set_status(run_id, lease.fence, RunStatus::Partial, Some(reason.into()))
-            .await
-        {
-            // Another holder owns the row now; it decides the final status.
-            Ok(()) | Err(LedgerError::StaleFence) => Ok(RunStatus::Partial),
-            Err(e) => Err(e),
-        }
-    };
     match storage
-        .set_status(run_id, lease.fence, RunStatus::Running, None)
+        .set_status(run_id, fence, RunStatus::Running, None)
         .await
     {
         Ok(()) => {}
-        Err(LedgerError::StaleFence) => return partial("lease_lost").await,
+        Err(LedgerError::StaleFence) => return partial(storage, run_id, fence, "lease_lost").await,
         Err(e) => return Err(e),
     }
     for chunk in chunks {
         if cp.chunks_done.contains(chunk) {
             continue;
         }
-        if lost.load(SeqCst) {
-            return partial("lease_lost").await;
-        }
-        if started.elapsed() >= opts.time_cap {
-            return partial("time_cap").await;
+        if let Some(why) = stop_reason(lost, started, opts.time_cap) {
+            return partial(storage, run_id, fence, why).await;
         }
         let out = match f(chunk.clone(), lease.clone()).await {
             Ok(out) => out,
-            Err(LedgerError::StaleFence) => return partial("lease_lost").await,
+            Err(LedgerError::StaleFence) => {
+                return partial(storage, run_id, fence, "lease_lost").await
+            }
             #[cfg(feature = "test-support")]
             Err(e @ LedgerError::Killed) => return Err(e),
             // The run must still end: retry later, or fail with the error's code.
-            Err(e) => return settle(storage, run_id, run.attempts, lease.fence, &e).await,
+            Err(e) => return settle(storage, run_id, run.attempts, fence, &e).await,
         };
         if lost.load(SeqCst) {
-            return partial("lease_lost").await;
+            return partial(storage, run_id, fence, "lease_lost").await;
         }
-        cp.chunks_done.insert(chunk.clone());
-        if let (Some(dst), Some(src)) = (cp.stats.as_object_mut(), out.stats.as_object()) {
-            dst.extend(src.iter().map(|(k, v)| (k.clone(), v.clone())));
-        }
-        match storage.write_checkpoint(run_id, lease.fence, &cp).await {
+        merge(&mut cp, chunk, &out);
+        match storage.write_checkpoint(run_id, fence, &cp).await {
             Ok(()) => {}
-            Err(LedgerError::StaleFence) => return partial("lease_lost").await,
+            Err(LedgerError::StaleFence) => {
+                return partial(storage, run_id, fence, "lease_lost").await
+            }
             Err(e) => return Err(e),
         }
         #[cfg(feature = "test-support")]
@@ -284,20 +330,5 @@ where
             k.after_checkpoint()?;
         }
     }
-    // A chunk may decide the final status by writing `stats.partial_reason`; it is in the
-    // checkpoint, so a resumed run reaches the same verdict.
-    let reason = cp.stats["partial_reason"].as_str().map(str::to_owned);
-    let status = if reason.is_some() {
-        RunStatus::Partial
-    } else {
-        RunStatus::Done
-    };
-    match storage
-        .set_status(run_id, lease.fence, status, reason)
-        .await
-    {
-        Ok(()) => Ok(status),
-        Err(LedgerError::StaleFence) => Ok(RunStatus::Partial),
-        Err(e) => Err(e),
-    }
+    finish(storage, run_id, fence, &cp).await
 }
