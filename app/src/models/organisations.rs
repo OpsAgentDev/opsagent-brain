@@ -1,4 +1,16 @@
+use sea_orm::{ConnectionTrait, DbErr, EntityTrait};
+use uuid::Uuid;
+
+use super::_entities::organisations;
 use crate::api_error::ApiError;
+
+/// Whether the organisation is soft-deleted (or gone). Workers check it before any call.
+pub async fn deleted(db: &impl ConnectionTrait, id: Uuid) -> Result<bool, DbErr> {
+    Ok(organisations::Entity::find_by_id(id)
+        .one(db)
+        .await?
+        .is_none_or(|o| o.deleted_at.is_some()))
+}
 
 /// URL slug from an org name: lowercase ASCII alphanumerics and single dashes, at most 48.
 pub fn slugify(name: &str) -> String {

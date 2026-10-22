@@ -236,3 +236,53 @@ async fn cors_allows_only_the_web_origin_with_credentials() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn magic_links_are_capped_per_address_without_revealing_it() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        for _ in 0..6 {
+            let res = req
+                .post("/v1/auth/magic-link")
+                .json(&json!({"email": "busy@example.com"}))
+                .await;
+            assert_eq!(res.status_code(), 202);
+        }
+        assert_eq!(mail.sent().len(), 5);
+        // Another address is unaffected.
+        req.post("/v1/auth/magic-link")
+            .json(&json!({"email": "calm@example.com"}))
+            .await;
+        assert_eq!(mail.sent().len(), 6);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn magic_links_are_capped_per_client_ip() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        // A fresh address per run: the counter lives in the shared Redis for an hour.
+        let b = uuid::Uuid::new_v4().into_bytes();
+        let ip = format!("10.{}.{}.{}", b[0], b[1], b[2]);
+        for i in 0..31 {
+            let res = req
+                .post("/v1/auth/magic-link")
+                .add_header("X-Forwarded-For", &ip)
+                .json(&json!({ "email": format!("u{i}@example.com") }))
+                .await;
+            assert_eq!(res.status_code(), 202);
+        }
+        assert_eq!(mail.sent().len(), 30);
+        // The rightmost entry (set by the trusted proxy) is the client; another one is unaffected.
+        let other = format!("10.{}.{}.{}", b[3], b[4], b[5]);
+        req.post("/v1/auth/magic-link")
+            .add_header("X-Forwarded-For", format!("{ip}, {other}"))
+            .json(&json!({"email": "other@example.com"}))
+            .await;
+        assert_eq!(mail.sent().len(), 31);
+    })
+    .await;
+}

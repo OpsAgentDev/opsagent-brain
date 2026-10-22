@@ -22,6 +22,10 @@ server:
   host: http://localhost
   # Out of the box middleware configuration. to disable middleware you can changed the `enable` field to `false` of comment the middleware block
   middlewares:
+    # Client IP for the magic-link rate limit: the rightmost X-Forwarded-For entry, which the
+    # single trusted proxy in front of the app (Railway's edge) sets.
+    remote_ip:
+      enable: true
 
 # Worker Configuration
 workers:

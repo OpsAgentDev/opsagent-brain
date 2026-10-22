@@ -4,7 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use loco_rs::app::AppContext;
+use loco_rs::{app::AppContext, controller::middleware::remote_ip::RemoteIP};
 use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
@@ -18,10 +18,11 @@ use uuid::Uuid;
 
 use crate::{
     api_error::{ApiError, ApiJson, Problem},
-    mailers::magic_link as mail,
     middleware::{csrf, mailer, org_scope::AuthUser, session::USER_KEY},
     models::{_entities::users, audit, magic_links, users as user_model},
+    services::sign_in,
     settings::Settings,
+    workers::common::redis_client,
 };
 
 const GH_KEY: &str = "github_oauth";
@@ -32,25 +33,29 @@ pub struct MagicLinkRequest {
     pub email: String,
 }
 
-/// Always 202, so the response never reveals whether an address is valid or known.
+/// Always 202, so the response never reveals whether an address is valid or known, or whether
+/// it was rate limited (5 per address and 30 per client IP per hour).
 #[utoipa::path(post, path = "/auth/magic-link", tag = "auth", request_body = MagicLinkRequest,
-    responses((status = 202, description = "Sent if the address is valid")))]
+    responses((status = 202, description = "Sent if the address is valid and under the rate limit")))]
 async fn request_link(
     State(ctx): State<AppContext>,
+    ip: RemoteIP,
     ApiJson(body): ApiJson<MagicLinkRequest>,
 ) -> Result<StatusCode, ApiError> {
-    if let Some(email) = user_model::normalize_email(&body.email) {
-        let user = user_model::find_or_create_by_email(&ctx.db, &email).await?;
-        let token = magic_links::issue(&ctx.db, user.id, &email).await?;
-        // The web page POSTs the token to `/auth/magic-link/redeem` after a click (login-CSRF safe).
-        let link = format!(
-            "{}/auth/callback?token={token}",
-            Settings::get(&ctx).web_base_url.trim_end_matches('/')
-        );
-        if let Err(e) = mailer(&ctx).send(mail::magic_link(&email, &link)).await {
-            tracing::error!(error = %e, "magic link mail failed");
-        }
-    }
+    // Only a proxy-reported address is a client; without one (local runs) there is no IP cap.
+    let ip = match ip {
+        RemoteIP::Forwarded(ip) => Some(ip),
+        RemoteIP::Socket(_) | RemoteIP::None => None,
+    };
+    sign_in::request_link(
+        &ctx.db,
+        &redis_client(&ctx)?,
+        mailer(&ctx).as_ref(),
+        &Settings::get(&ctx).web_base_url,
+        &body.email,
+        ip,
+    )
+    .await?;
     Ok(StatusCode::ACCEPTED)
 }
 

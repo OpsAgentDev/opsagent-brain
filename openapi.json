@@ -43,7 +43,7 @@
         "tags": [
           "auth"
         ],
-        "summary": "Always 202, so the response never reveals whether an address is valid or known.",
+        "summary": "Always 202, so the response never reveals whether an address is valid or known, or whether\nit was rate limited (5 per address and 30 per client IP per hour).",
         "operationId": "auth_request_link",
         "requestBody": {
           "content": {
@@ -57,7 +57,7 @@
         },
         "responses": {
           "202": {
-            "description": "Sent if the address is valid"
+            "description": "Sent if the address is valid and under the rate limit"
           }
         }
       }

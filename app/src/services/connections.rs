@@ -11,7 +11,7 @@ use opsagent_core::{
     run::RunKey,
 };
 use opsagent_secrets::Kek;
-use sea_orm::{ActiveModelTrait, DatabaseConnection, Set, TransactionTrait};
+use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseConnection, Set, TransactionTrait};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -118,6 +118,15 @@ pub async fn request_verify(
     }
     let role = registry::reported_role(&c.provider, role_arn).map_err(role_error)?;
     let mut creds = load_creds(&ctx.db, kek, c).await?;
+    // A live connection only re-verifies the role it was verified with: scans must never run
+    // under a role that has not passed verification.
+    if role.is_some() && role != creds.role_arn && matches!(from, S::Connected | S::Degraded) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "role_change_requires_reconnect",
+            "This connection is verified with a different role. Disconnect it and connect again to use a new role.",
+        ));
+    }
     if role.is_some() {
         creds.role_arn = role;
     }
@@ -168,16 +177,11 @@ pub async fn disconnect(
     c: connections::Model,
     actor: Uuid,
 ) -> Result<(), ApiError> {
-    let Ok(to) = transition(status_of(&c)?, E::Disconnect) else {
-        return Ok(());
-    };
     let (org_id, conn_id) = (c.organisation_id, c.id);
     let txn = db.begin().await?;
-    let mut a: connections::ActiveModel = c.into();
-    a.status = Set(status_str(to));
-    a.status_reason = Set(Some("customer_disconnected".into()));
-    a.updated_at = Set(now());
-    a.update(&txn).await?;
+    if !end(&txn, c, "customer_disconnected").await? {
+        return Ok(());
+    }
     audit::record(
         &txn,
         Some(org_id),
@@ -188,4 +192,22 @@ pub async fn disconnect(
     .await?;
     txn.commit().await?;
     Ok(())
+}
+
+/// Moves `c` to `disconnected` with `reason` on `db` (the caller's transaction); `false` if it
+/// already was.
+pub async fn end(
+    db: &impl ConnectionTrait,
+    c: connections::Model,
+    reason: &str,
+) -> Result<bool, ApiError> {
+    let Ok(to) = transition(status_of(&c)?, E::Disconnect) else {
+        return Ok(false);
+    };
+    let mut a: connections::ActiveModel = c.into();
+    a.status = Set(status_str(to));
+    a.status_reason = Set(Some(reason.into()));
+    a.updated_at = Set(now());
+    a.update(db).await?;
+    Ok(true)
 }

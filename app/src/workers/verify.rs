@@ -29,7 +29,7 @@ use crate::{
         audit,
         connections::{cas, load_creds, status_of, status_str},
         ledger_storage::PgStorage,
-        now, schedules,
+        now, organisations, schedules,
     },
 };
 
@@ -154,6 +154,15 @@ impl VerifyWorker {
             .map_err(lerr)?
             .ok_or(LedgerError::NotFound)?;
         let status = status_of(&c).map_err(lerr)?;
+        if organisations::deleted(&self.ctx.db, c.organisation_id)
+            .await
+            .map_err(lerr)?
+        {
+            let reason = Some("organisation_deleted".into());
+            return storage
+                .set_status(run.id, fence, RunStatus::Skipped, reason)
+                .await;
+        }
         if matches!(status, S::Pending | S::Disconnected) {
             let reason = Some(format!("connection_{}", c.status));
             return storage
@@ -217,7 +226,7 @@ impl VerifyWorker {
         e: &ConnectorError,
     ) -> LResult<()> {
         let (code, transient) = classify(e);
-        tracing::warn!(error = %e, run = %run.id, code, transient, "verify: connector error");
+        tracing::warn!(run = %run.id, code, transient, "verify: connector error");
         if transient && retry_or_fail(storage, run.id, run.attempts, fence).await? {
             return Ok(());
         }

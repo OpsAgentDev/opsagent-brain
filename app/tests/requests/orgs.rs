@@ -1,5 +1,5 @@
 use loco_rs::prelude::*;
-use opsagent_brain::models::_entities::{audit_events, organisations};
+use opsagent_brain::models::_entities::{audit_events, connections, organisations, schedules};
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -165,6 +165,89 @@ async fn invites_owner_only_and_bound_to_email() {
         // Token is single use.
         let res = req.post(&accept).add_header("X-CSRF-Token", &tm).await;
         assert_eq!(res.status_code(), 410);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
+    use opsagent_brain::{
+        models::{_entities::runs, ledger_storage::PgStorage},
+        tasks::scheduler_tick::tick,
+        workers::verify::{VerifyArgs, VerifyWorker},
+    };
+    use opsagent_core::run::RunKey;
+    use opsagent_ledger::Storage;
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
+        assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
+        let conn_id: uuid::Uuid = id.parse().unwrap();
+        let res = req
+            .delete(&format!("/v1/orgs/{org}"))
+            .add_header("X-CSRF-Token", &t)
+            .await;
+        assert_eq!(res.status_code(), 204);
+        let c = connections::Entity::find_by_id(conn_id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (c.status.as_str(), c.status_reason.as_deref()),
+            ("disconnected", Some("organisation_deleted"))
+        );
+        let enabled = |ctx: AppContext| async move {
+            schedules::Entity::find()
+                .filter(schedules::Column::ConnectionId.eq(conn_id))
+                .filter(schedules::Column::Enabled.eq(true))
+                .count(&ctx.db)
+                .await
+                .unwrap()
+        };
+        assert_eq!(enabled(ctx.clone()).await, 0);
+
+        // Defence in depth: a schedule re-enabled by hand is still not run for a deleted org.
+        let now = chrono::Utc::now();
+        schedules::Entity::update_many()
+            .col_expr(schedules::Column::Enabled, true.into())
+            .col_expr(
+                schedules::Column::NextDueAt,
+                (now - chrono::Duration::minutes(1)).into(),
+            )
+            .filter(schedules::Column::ConnectionId.eq(conn_id))
+            .exec(&ctx.db)
+            .await
+            .unwrap();
+        runs::Entity::delete_many().exec(&ctx.db).await.unwrap();
+        assert_eq!(tick(&ctx, now).await.unwrap().unwrap(), Default::default());
+        assert_eq!(runs::Entity::find().count(&ctx.db).await.unwrap(), 0);
+
+        // And a run that slipped through is skipped by the worker.
+        let run = PgStorage::new(ctx.db.clone())
+            .create_run(RunKey {
+                organisation_id: Some(c.organisation_id),
+                connection_id: Some(conn_id),
+                job_type: "verify".into(),
+                scheduled_at: now,
+            })
+            .await
+            .unwrap()
+            .run;
+        VerifyWorker::build(&ctx)
+            .perform(VerifyArgs { run_id: run.id })
+            .await
+            .unwrap();
+        let r = runs::Entity::find_by_id(run.id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (r.status.as_str(), r.partial_reason.as_deref()),
+            ("skipped", Some("organisation_deleted"))
+        );
     })
     .await;
 }

@@ -8,7 +8,10 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::models::ledger_storage::{db_err, hold_fence, stmt};
+use crate::{
+    models::ledger_storage::{db_err, hold_fence, stmt},
+    workers::common::classify,
+};
 
 pub struct Chunk<'a> {
     pub run_id: Uuid,
@@ -44,7 +47,8 @@ pub async fn upsert_chunk(
             !inv.partial_errors.is_empty()
         }
         Err(e) => {
-            tracing::warn!(error = %e, run = %c.run_id, service = c.service, region = c.region, "inventory chunk failed");
+            let (code, _) = classify(e);
+            tracing::warn!(code, run = %c.run_id, service = c.service, region = c.region, "inventory chunk failed");
             stats.insert((c.service.into(), c.region.into(), "error"), 1);
             true
         }

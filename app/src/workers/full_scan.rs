@@ -21,13 +21,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::common::{err, job_err, lerr, redis_client, revoked, LResult};
+use super::common::{classify, err, job_err, lerr, redis_client, revoked, LResult};
 use crate::{
     app::{kek, registry},
     models::{
         _entities::connections,
         connections::{load_creds, status_of},
         ledger_storage::{db_err, hold_fence, stmt, PgStorage},
+        organisations,
     },
     services::{
         finding_lifecycle,
@@ -118,6 +119,13 @@ async fn scan_run(
         return Ok(run.status); // duplicate delivery of a finished run
     }
     let c = connection(&ctx.db, &run).await?;
+    if organisations::deleted(&ctx.db, c.organisation_id)
+        .await
+        .map_err(lerr)?
+    {
+        let skip = End::Set(RunStatus::Skipped, "organisation_deleted".into());
+        return end(ctx, &storage, &run, &opts, skip).await;
+    }
     if !matches!(status_of(&c).map_err(lerr)?, S::Connected | S::Degraded) {
         let skip = End::Set(RunStatus::Skipped, format!("status:{}", c.status));
         return end(ctx, &storage, &run, &opts, skip).await;
@@ -299,7 +307,8 @@ impl Scan<'_> {
         let now = Utc::now();
         let cost = k.cost_daily(self.cr, 30).await.unwrap_or_else(|e| {
             // Cost visibility is optional (PRD 7.3): cost checks see no rows.
-            tracing::warn!(error = %e, run = %run_id, "full_scan: cost unavailable");
+            let (code, _) = classify(&e);
+            tracing::warn!(code, run = %run_id, "full_scan: cost unavailable");
             vec![]
         });
         let txn = db.begin().await.map_err(db_err)?;

@@ -2,7 +2,7 @@
 use opsagent_secrets::{generate_dek, Kek};
 use rand::RngCore;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set,
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QuerySelect, Set,
     TransactionTrait,
 };
 use uuid::Uuid;
@@ -10,12 +10,13 @@ use uuid::Uuid;
 use crate::{
     api_error::ApiError,
     models::{
-        _entities::organisations,
+        _entities::{connections, organisations, schedules},
         audit,
         members::{self, OWNER},
         now,
         organisations::slugify,
     },
+    services::connections as connections_service,
 };
 
 /// Creates the org with a fresh wrapped DEK and makes `user_id` its owner.
@@ -70,7 +71,8 @@ pub async fn create(
     Ok(org)
 }
 
-/// Soft-deletes the organisation for owner `actor`.
+/// Soft-deletes the organisation for owner `actor`, in one transaction: every connection is
+/// disconnected and every schedule disabled, so nothing is scanned for it again.
 pub async fn delete(
     db: &DatabaseConnection,
     organisation_id: Uuid,
@@ -79,6 +81,7 @@ pub async fn delete(
     // TODO(billing): cancel the Stripe subscription before marking the org deleted.
     let txn = db.begin().await?;
     let org = organisations::Entity::find_by_id(organisation_id)
+        .lock_exclusive()
         .one(&txn)
         .await?
         .ok_or_else(ApiError::not_found)?;
@@ -86,6 +89,19 @@ pub async fn delete(
     a.deleted_at = Set(Some(now()));
     a.updated_at = Set(now());
     a.update(&txn).await?;
+    let live = connections::Entity::find()
+        .filter(connections::Column::OrganisationId.eq(organisation_id))
+        .all(&txn)
+        .await?;
+    for c in live {
+        connections_service::end(&txn, c, "organisation_deleted").await?;
+    }
+    schedules::Entity::update_many()
+        .col_expr(schedules::Column::Enabled, false.into())
+        .col_expr(schedules::Column::UpdatedAt, now().into())
+        .filter(schedules::Column::OrganisationId.eq(organisation_id))
+        .exec(&txn)
+        .await?;
     audit::record(
         &txn,
         Some(organisation_id),

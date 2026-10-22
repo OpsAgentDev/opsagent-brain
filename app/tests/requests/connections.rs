@@ -266,3 +266,48 @@ async fn patch_validates_and_delete_disconnects() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn changing_the_role_of_a_live_connection_needs_a_reconnect() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "owner@example.com").await;
+        let org = slug(&create_org(&req, &t, "Acme").await);
+        let c = create_connection(&req, &t, &org, "aws", "Production").await;
+        let id = c["id"].as_str().unwrap();
+        assert_eq!(
+            verify(&req, &t, &org, id, ROLE_ARN).await.status_code(),
+            202
+        );
+        let other = "arn:aws:iam::123456789012:role/SomeoneElsesRole";
+        for status in ["connected", "degraded"] {
+            let mut a: connections::ActiveModel = row(&ctx, id).await.into();
+            a.status = Set(status.into());
+            a.external_account_id = Set(Some("123456789012".into()));
+            a.update(&ctx.db).await.unwrap();
+            let res = verify(&req, &t, &org, id, other).await;
+            assert_eq!(res.status_code(), 409, "{status}");
+            assert_eq!(
+                res.json::<Value>()["code"],
+                "role_change_requires_reconnect"
+            );
+            let kek = opsagent_brain::app::kek(&ctx).unwrap();
+            let creds = opsagent_brain::models::connections::load_creds(
+                &ctx.db,
+                kek.as_ref(),
+                &row(&ctx, id).await,
+            )
+            .await
+            .unwrap();
+            assert_eq!(creds.role_arn.as_deref(), Some(ROLE_ARN), "{status}");
+            assert_eq!(row(&ctx, id).await.status, status);
+        }
+        // Re-verifying the same role stays allowed.
+        assert_eq!(
+            verify(&req, &t, &org, id, ROLE_ARN).await.status_code(),
+            202
+        );
+    })
+    .await;
+}

@@ -86,8 +86,10 @@ async fn lock_and_load(
 ) -> Result<Option<Due>> {
     let Some(s) = txn
         .query_one_raw(stmt(
-            "SELECT organisation_id, connection_id, job_type, cron_local, timezone, next_due_at \
-             FROM schedules WHERE id = $1 AND enabled AND next_due_at <= $2 FOR UPDATE SKIP LOCKED",
+            "SELECT s.organisation_id, s.connection_id, s.job_type, s.cron_local, s.timezone, s.next_due_at \
+             FROM schedules s WHERE s.id = $1 AND s.enabled AND s.next_due_at <= $2 \
+             AND NOT EXISTS (SELECT 1 FROM organisations o WHERE o.id = s.organisation_id AND o.deleted_at IS NOT NULL) \
+             FOR UPDATE OF s SKIP LOCKED",
             vec![id.into(), now.into()],
         ))
         .await?
@@ -156,7 +158,10 @@ async fn tick_locked(
     let mut report = Report::default();
     let due = db
         .query_all_raw(stmt(
-            "SELECT id FROM schedules WHERE enabled AND next_due_at <= $1 ORDER BY next_due_at",
+            // Deleted organisations are never scheduled (their schedules are disabled on delete too).
+            "SELECT s.id FROM schedules s WHERE s.enabled AND s.next_due_at <= $1 AND NOT EXISTS \
+             (SELECT 1 FROM organisations o WHERE o.id = s.organisation_id AND o.deleted_at IS NOT NULL) \
+             ORDER BY s.next_due_at",
             vec![now.into()],
         ))
         .await?;
@@ -179,8 +184,10 @@ async fn tick_locked(
     // enqueue was interrupted after `due_schedule` committed them.
     let retries = db
         .query_all_raw(stmt(
-            "SELECT id, job_type, next_attempt_at FROM runs WHERE status = 'queued' AND next_attempt_at IS NOT NULL \
-             AND next_attempt_at <= $1 ORDER BY next_attempt_at",
+            "SELECT r.id, r.job_type, r.next_attempt_at FROM runs r WHERE r.status = 'queued' \
+             AND r.next_attempt_at IS NOT NULL AND r.next_attempt_at <= $1 AND NOT EXISTS \
+             (SELECT 1 FROM organisations o WHERE o.id = r.organisation_id AND o.deleted_at IS NOT NULL) \
+             ORDER BY r.next_attempt_at",
             vec![now.into()],
         ))
         .await?;

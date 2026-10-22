@@ -94,6 +94,8 @@ enum Fault {
     Denied,
     /// The unscoped discovery call fails with this AWS error code.
     Discovery(&'static str),
+    /// `verify` fails with this AWS error code.
+    Verify(&'static str),
 }
 
 /// An AWS-style error whose message names the customer role, as real ones do.
@@ -130,7 +132,10 @@ impl Connector for Rigged {
         self.inner.capabilities()
     }
     async fn verify(&self, c: &Credentials) -> opsagent_connectors::Result<VerifyOutcome> {
-        self.inner.verify(c).await
+        match self.fault {
+            Some(Fault::Verify(code)) => Err(api(code)),
+            _ => self.inner.verify(c).await,
+        }
     }
     async fn inventory(
         &self,
@@ -162,7 +167,10 @@ impl Connector for Rigged {
         c: &Credentials,
         d: u32,
     ) -> opsagent_connectors::Result<Vec<CostRow>> {
-        self.inner.cost_daily(c, d).await
+        match self.fault {
+            Some(Fault::Error) => Err(api("AccessDeniedException")),
+            _ => self.inner.cost_daily(c, d).await,
+        }
     }
     async fn metrics(
         &self,
@@ -897,6 +905,84 @@ async fn undecryptable_credentials_fail_the_run() {
             (r.status.as_str(), r.partial_reason.as_deref()),
             ("failed", Some("credentials_unavailable"))
         );
+    })
+    .await;
+}
+
+/// Everything logged while `f` runs.
+async fn logged<F: std::future::Future<Output = ()>>(f: F) -> String {
+    use std::sync::{Arc, Mutex};
+    #[derive(Clone, Default)]
+    struct Buf(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let buf = Buf::default();
+    let w = buf.clone();
+    let sub = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
+        .with_writer(move || w.clone())
+        .finish();
+    let guard = tracing::subscriber::set_default(sub);
+    f.await;
+    drop(guard);
+    let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    out
+}
+
+#[tokio::test]
+#[serial]
+async fn provider_messages_never_reach_the_logs() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        let logs = logged(async {
+            // A chunk error, a cost error, a discovery error and a verify error.
+            scan(&ctx, conn, 0, &rigged(Some(Fault::Error))).await;
+            scan(
+                &ctx,
+                conn,
+                1,
+                &rigged(Some(Fault::Discovery("ValidationError"))),
+            )
+            .await;
+            let c = connections::Entity::find_by_id(conn)
+                .one(&ctx.db)
+                .await
+                .unwrap()
+                .unwrap();
+            let run = PgStorage::new(ctx.db.clone())
+                .create_run(RunKey {
+                    organisation_id: Some(c.organisation_id),
+                    connection_id: Some(conn),
+                    job_type: "verify".into(),
+                    scheduled_at: chrono::Utc::now(),
+                })
+                .await
+                .unwrap()
+                .run;
+            let k = rigged(Some(Fault::Verify("MalformedPolicyDocument")));
+            opsagent_brain::workers::verify::verify(&ctx, run.id, Some(&k))
+                .await
+                .unwrap();
+        })
+        .await;
+        for code in [
+            "ServiceUnavailable",
+            "AccessDeniedException",
+            "ValidationError",
+            "MalformedPolicyDocument",
+        ] {
+            assert!(logs.contains(code), "{code} not logged:\n{logs}");
+        }
+        assert!(!logs.contains(SECRET_ARN), "{logs}");
+        assert!(!logs.contains("123456789012"), "{logs}");
     })
     .await;
 }

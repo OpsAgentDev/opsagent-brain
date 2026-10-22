@@ -23,8 +23,10 @@ pub enum ConnectorError {
     InvalidCredentials(String),
     #[error("provider error: {0}")]
     Provider(String),
-    /// A provider API error, with the provider's error code when it sent one.
-    #[error("{message}")]
+    /// A provider API error, with the provider's error code when it sent one. `message` is the
+    /// provider's text and can name the customer's role and account: it is never displayed,
+    /// so logging or wrapping this error shows the code only.
+    #[error("provider API error {}", code.as_deref().unwrap_or("without a code"))]
     Api {
         code: Option<String>,
         message: String,
