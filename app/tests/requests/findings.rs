@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use serial_test::serial;
 
 use super::support::*;
-use crate::workers::full_scan::{noisy, scan};
+use crate::workers::full_scan::{expected, noisy, scan};
 
 async fn finding_id(ctx: &AppContext, identity: &str) -> String {
     findings::Entity::find()
@@ -51,14 +51,16 @@ async fn list_pages_with_cursor_and_filters() {
             .json();
         assert_eq!(rest["next_cursor"], Value::Null);
         let all: HashSet<String> = ids(&first).into_iter().chain(ids(&rest)).collect();
-        assert_eq!(ids(&first).len() + ids(&rest).len(), 15);
-        assert_eq!(all.len(), 15, "pages overlap");
+        let want = expected().await;
+        assert_eq!(ids(&first).len() + ids(&rest).len(), want.len());
+        assert_eq!(all.len(), want.len(), "pages overlap");
 
         let crit: Value = req
             .get(&format!("{base}?severity=critical&connection={conn}"))
             .await
             .json();
-        assert_eq!(ids(&crit).len(), 2);
+        let n_crit = want.iter().filter(|f| f.3 == "critical").count();
+        assert_eq!(ids(&crit).len(), n_crit);
         let iam: Value = req.get(&format!("{base}?check=02")).await.json();
         assert_eq!(ids(&iam).len(), 3, "admin_user, key_over_90d, no_mfa");
         let accepted: Value = req.get(&format!("{base}?status=accepted")).await.json();

@@ -97,6 +97,7 @@ async fn run_chunked_completes_on_pg_storage() {
         |c, _| async move {
             Ok(ChunkOutcome {
                 stats: serde_json::json!({ c: 1 }),
+                ..Default::default()
             })
         },
     )

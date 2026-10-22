@@ -1,16 +1,19 @@
-//! The chunks of one full scan: `service@region` inventory, then `finalize`.
-use std::panic::{catch_unwind, AssertUnwindSafe};
+//! The chunks of one full scan: `service@region` inventory, `simulate`, then `finalize`.
+use std::{
+    collections::{BTreeSet, HashMap},
+    panic::{catch_unwind, AssertUnwindSafe},
+};
 
 use chrono::Utc;
 use opsagent_checks::{Check, CheckCtx, MetricStore};
-use opsagent_connectors::{Connector, Credentials, Scope};
+use opsagent_connectors::{Connector, Credentials, Scope, SimulationResult};
 use opsagent_core::resource::Resource;
 use opsagent_ledger::{ChunkOutcome, LedgerError, Storage};
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
-use serde_json::json;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::FINALIZE;
+use super::{FINALIZE, SIMULATE};
 use crate::{
     models::{
         _entities::connections,
@@ -36,10 +39,27 @@ pub(super) struct Scan<'a> {
     pub(super) checks: fn() -> Vec<Box<dyn Check>>,
 }
 
+/// Reads checkpoint JSON this process wrote: missing or `Null` is empty, anything else must parse.
+fn parse<T: serde::de::DeserializeOwned + Default>(v: &Value) -> LResult<T> {
+    if v.is_null() {
+        return Ok(T::default());
+    }
+    serde_json::from_value(v.clone()).map_err(|_| LedgerError::Job {
+        code: "checkpoint_corrupt".into(),
+        retry: false,
+    })
+}
+
+/// Restore simulations per scan; roles past the cap stay unsimulated (check 04: coverage unknown).
+const MAX_SIMULATED_ROLES: usize = 20;
+
 impl Scan<'_> {
     pub(super) async fn chunk(&self, chunk: String, fence: u64) -> LResult<ChunkOutcome> {
         if chunk == FINALIZE {
             return self.finalize(fence).await;
+        }
+        if chunk == SIMULATE {
+            return self.simulate().await;
         }
         let (svc, region) = chunk.rsplit_once('@').ok_or(LedgerError::NotFound)?;
         self.inventory(svc, region, fence).await
@@ -65,18 +85,92 @@ impl Scan<'_> {
         // Only ever set `partial`, never clear it: chunk stats merge by key. `partial_reason`
         // makes `run_chunked` end the run `Partial`; `revoked` is turned into the reason by
         // `finalize`, so a later chunk cannot overwrite it.
-        let stats = match &inv {
+        let mut stats = match &inv {
             Err(e) if revoked(e) => json!({ "partial": true, "revoked": true }),
             _ if partial => json!({ "partial": true, "partial_reason": "partial_inventory" }),
             _ => json!({}),
         };
-        Ok(ChunkOutcome { stats })
+        let down = match &inv {
+            Ok(inv) => inv
+                .partial_errors
+                .iter()
+                .map(|e| e.service.clone())
+                .collect(),
+            Err(_) => BTreeSet::from([svc.to_owned()]),
+        };
+        self.unavailable(&mut stats, down).await?;
+        Ok(ChunkOutcome {
+            stats,
+            ..Default::default()
+        })
+    }
+
+    /// Adds `down` to the run's `stats.unavailable` (the services whose reads failed so far).
+    /// Stats merge by key, so the chunk writes the union.
+    async fn unavailable(&self, stats: &mut Value, mut down: BTreeSet<String>) -> LResult<()> {
+        if down.is_empty() {
+            return Ok(());
+        }
+        let so_far = self.storage.load_run(self.run_id).await?.checkpoint.stats;
+        down.extend(parse::<BTreeSet<String>>(&so_far["unavailable"])?);
+        stats["unavailable"] = json!(down);
+        Ok(())
+    }
+
+    /// Restore simulation for each distinct backup-plan role seen this run, stored in the
+    /// checkpoint cursor so a resumed run does not repeat the calls. A failed call leaves its
+    /// role out and marks `iam` unavailable. The run is `partial` (but with no `partial_reason`,
+    /// so it still ends `done`): lifecycle must not resolve findings from checks it could not feed.
+    async fn simulate(&self) -> LResult<ChunkOutcome> {
+        let resources = seen(self.db, self.c, self.k, self.run_id).await?;
+        let roles: BTreeSet<&str> = resources
+            .iter()
+            .filter(|r| r.service() == "backup" && r.attributes["plan"] == true)
+            .flat_map(|r| {
+                r.attributes["iam_role_arns"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+            })
+            .filter_map(Value::as_str)
+            .collect();
+        let over_cap = roles.len() > MAX_SIMULATED_ROLES;
+        let (mut sims, mut failed_calls) = (serde_json::Map::new(), false);
+        for role in roles.into_iter().take(MAX_SIMULATED_ROLES) {
+            match self.k.simulate_restore(self.cr, role).await {
+                Ok(s) => {
+                    sims.insert(role.to_owned(), json!(s));
+                }
+                Err(e) => {
+                    let (code, _) = classify(&e);
+                    tracing::warn!(code, run = %self.run_id, "full_scan: restore simulation failed");
+                    failed_calls = true;
+                }
+            }
+        }
+        let mut stats = json!({});
+        let mut down = BTreeSet::new();
+        if failed_calls || over_cap {
+            // Unsimulated roles (failed or past the cap) must not let lifecycle resolve their findings.
+            stats["partial"] = json!(true);
+        }
+        if failed_calls {
+            down.insert("iam".to_owned());
+        }
+        self.unavailable(&mut stats, down).await?;
+        Ok(ChunkOutcome {
+            stats,
+            cursor: json!({ "simulations": sims }),
+        })
     }
 
     /// Gone-marking, checks, lifecycle and posture, in one fenced transaction.
     async fn finalize(&self, fence: u64) -> LResult<ChunkOutcome> {
         let (db, run_id, c, k) = (self.db, self.run_id, self.c, self.k);
-        let so_far = self.storage.load_run(run_id).await?.checkpoint.stats;
+        let cp = self.storage.load_run(run_id).await?.checkpoint;
+        let so_far = cp.stats;
+        let simulations: HashMap<String, SimulationResult> = parse(&cp.cursor["simulations"])?;
+        let unavailable: BTreeSet<String> = parse(&so_far["unavailable"])?;
         let partial = so_far["partial"] == json!(true);
         let now = Utc::now();
         let cost = k.cost_daily(self.cr, 30).await.unwrap_or_else(|e| {
@@ -98,7 +192,18 @@ impl Scan<'_> {
             .await?;
         }
         let resources = seen(&txn, c, k, run_id).await?;
-        let (drafts, check_errors) = run_checks(self.checks, k, c, &resources, &cost, now, run_id);
+        // Checks read utilisation (CPU, GPU) from inventory attributes; no metric pulls yet.
+        let metrics = MetricStore::default();
+        let cx = CheckCtx {
+            connection_id: c.id,
+            resources: &resources,
+            cost: &cost,
+            metrics: &metrics,
+            simulations: &simulations,
+            now,
+            unavailable: &unavailable,
+        };
+        let (drafts, check_errors) = run_checks(self.checks, k, &cx, run_id);
         finding_lifecycle::apply(&txn, c, run_id, &drafts, now, partial).await?;
         let mut stats = posture::posture(&txn, c).await?;
         stats["partial"] = json!(partial);
@@ -107,7 +212,10 @@ impl Scan<'_> {
             stats["partial_reason"] = json!("revoked");
         }
         txn.commit().await.map_err(db_err)?;
-        Ok(ChunkOutcome { stats })
+        Ok(ChunkOutcome {
+            stats,
+            ..Default::default()
+        })
     }
 }
 
@@ -116,32 +224,16 @@ impl Scan<'_> {
 fn run_checks(
     checks: fn() -> Vec<Box<dyn Check>>,
     k: &dyn Connector,
-    c: &connections::Model,
-    resources: &[Resource],
-    cost: &[opsagent_connectors::CostRow],
-    now: chrono::DateTime<Utc>,
+    cx: &CheckCtx,
     run_id: Uuid,
 ) -> (Vec<opsagent_core::finding::FindingDraft>, Vec<&'static str>) {
     let (provider, caps) = (k.provider(), k.capabilities());
-    // Checks read utilisation from inventory attributes today; no metric pulls yet.
-    let metrics = MetricStore::default();
-    let cx = CheckCtx {
-        connection_id: c.id,
-        resources,
-        cost,
-        metrics: &metrics,
-        // Task 8 fills restore simulations
-        simulations: &std::collections::HashMap::new(),
-        now,
-        // Task 8 fills unavailable services
-        unavailable: &std::collections::BTreeSet::new(),
-    };
     let (mut drafts, mut check_errors) = (vec![], vec![]);
     for ch in checks() {
         if !ch.supported().contains(&provider) || !ch.required().iter().all(|r| caps.contains(r)) {
             continue;
         }
-        match catch_unwind(AssertUnwindSafe(|| ch.run(&cx))) {
+        match catch_unwind(AssertUnwindSafe(|| ch.run(cx))) {
             Ok(d) => drafts.extend(d),
             Err(_) => {
                 tracing::error!(check_id = ch.id(), run = %run_id, "full_scan: check panicked");
@@ -191,4 +283,17 @@ async fn seen(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_treats_null_as_empty_and_rejects_corrupt_json() {
+        assert!(parse::<BTreeSet<String>>(&Value::Null).unwrap().is_empty());
+        assert_eq!(parse::<BTreeSet<String>>(&json!(["a"])).unwrap().len(), 1);
+        let e = parse::<BTreeSet<String>>(&json!("oops")).unwrap_err();
+        assert!(format!("{e:?}").contains("checkpoint_corrupt"));
+    }
 }
