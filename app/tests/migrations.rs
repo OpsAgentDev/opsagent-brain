@@ -110,6 +110,19 @@ async fn migrations_slice_schema_constraints_and_roundtrip() {
         .is_err());
     assert!(exec(&db, "DELETE FROM audit_events").await.is_err());
 
+    // Rows in statuses added by 000010 must not block rolling it back.
+    for st in ["fallback_email", "suppressed"] {
+        exec(
+            &db,
+            &format!(
+                "INSERT INTO deliveries (id, organisation_id, kind, channel, target, status) \
+             VALUES (gen_random_uuid(), {org}, 'briefing', 'email', 'x', '{st}')"
+            ),
+        )
+        .await
+        .unwrap();
+    }
+
     Migrator::down(&db, None).await.unwrap();
     Migrator::up(&db, None).await.unwrap();
 }

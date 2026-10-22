@@ -15,7 +15,7 @@ use uuid::Uuid;
 use wiremock::MockServer;
 
 use super::deliver_briefing::{
-    mock_post, new_run, posted, rows, scan, slack_on, sql, world, World,
+    mock_post, new_run, posted, rows, scan, slack_on, sql, stats, world, World,
 };
 use crate::requests::support::*;
 
@@ -125,6 +125,20 @@ async fn organisation_summary_goes_only_to_owners() {
         recipient(&ctx, &w, "optin@example.com", None).await;
         scan(&ctx, &w, Utc::now()).await;
 
+        // One connection: its own weekly already says it all, so no summary.
+        let (one, status) = weekly(&ctx, &w, None).await;
+        assert_eq!(status, RunStatus::Done);
+        assert!(mail.sent().is_empty(), "summary skipped for a single connection");
+        assert_eq!(stats(&ctx, one).await["skipped"], "single_connection");
+
+        sql(
+            &ctx,
+            "INSERT INTO connections (id, organisation_id, provider, external_account_id, status, display_name, \
+             recipients) \
+             VALUES ($1, $2, 'aws', $1::text, 'connected', 'second', '[]')",
+            vec![Uuid::new_v4().into(), w.org.into()],
+        )
+        .await;
         let (_, status) = weekly(&ctx, &w, None).await;
         assert_eq!(status, RunStatus::Done);
         let sent = mail.sent();

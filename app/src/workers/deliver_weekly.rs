@@ -181,7 +181,8 @@ fn weekly_mail(w: &Weekly, to: &Recipient, s: &Settings) -> Mail {
     }
 }
 
-/// One email to each owner with every deliverable connection's weekly, in creation order.
+/// One email to each owner with every deliverable connection's weekly, in creation order;
+/// skipped with fewer than two, where it would only repeat the connection's own weekly.
 async fn summary(out: &Out<'_>) -> LResult<ChunkOutcome> {
     let (ctx, org) = (out.ctx, out.organisation_id);
     if organisations::deleted(&ctx.db, org).await.map_err(lerr)? {
@@ -194,12 +195,15 @@ async fn summary(out: &Out<'_>) -> LResult<ChunkOutcome> {
         .map_err(lerr)?;
     let mut parts = Vec::new();
     let mut live: Vec<_> = all.into_iter().filter(deliverable).collect();
+    match live.len() {
+        0 => return Ok(outcome("skipped", "no_connections")),
+        // The connection's own weekly already reaches the owners; a summary would repeat it.
+        1 => return Ok(outcome("skipped", "single_connection")),
+        _ => {}
+    }
     live.sort_by_key(|c| c.created_at);
     for c in &live {
         parts.push(render_text(&weekly(ctx, c).await?));
-    }
-    if parts.is_empty() {
-        return Ok(outcome("skipped", "no_connections"));
     }
     let name = orgs::Entity::find_by_id(org)
         .one(&ctx.db)

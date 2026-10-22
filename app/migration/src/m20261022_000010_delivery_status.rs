@@ -12,8 +12,11 @@ ALTER TABLE deliveries ADD CONSTRAINT deliveries_status_check CHECK (status IN
 CREATE UNIQUE INDEX schedules_org_job_idx ON schedules (organisation_id, job_type)
   WHERE connection_id IS NULL;"#;
 
+// Rows in the new statuses fold back into the nearest old one so the old CHECK can return.
 const DOWN: &str = r#"DROP INDEX IF EXISTS schedules_org_job_idx;
 ALTER TABLE deliveries DROP CONSTRAINT deliveries_status_check;
+UPDATE deliveries SET status = 'sent' WHERE status = 'fallback_email';
+UPDATE deliveries SET status = 'skipped' WHERE status = 'suppressed';
 ALTER TABLE deliveries ADD CONSTRAINT deliveries_status_check CHECK (status IN
   ('pending','sent','failed','skipped'));"#;
 
