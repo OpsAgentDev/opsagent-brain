@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>OpsAgent weekly report: {{ w.connection_name }}</title></head>
+<body>
+<h1>OpsAgent weekly report: {{ w.connection_name }}</h1>
+{% if w.first_week %}
+<p>This is the first week; baselines forming.</p>
+<p>Inventory: {{ self.inventory() }}</p>
+{% else %}
+<h2>Spend</h2>
+<p>{{ self.usd(w.spend.this_week_usd) }} this week vs {{ self.usd(w.spend.last_week_usd) }} last week ({{ self.signed_usd(w.spend.delta_usd) }})</p>
+{% if !w.spend.anomalies.is_empty() %}
+<ul>
+{% for (day, amount, baseline) in w.spend.anomalies %}
+<li>Anomaly {{ day }}: {{ self.usd(amount) }} vs baseline {{ self.usd(baseline) }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+<h2>Recommended cost action</h2>
+{% if let Some(a) = w.recommended_cost_action %}
+<p>{{ a.title }} (saves {{ self.usd(a.savings_monthly_usd) }}/month)</p>
+{% else %}
+<p>None this week.</p>
+{% endif %}
+<h2>Posture score</h2>
+{% if let Some(score) = w.posture.score %}
+<p>{{ score }}{% if let Some(d) = w.posture.delta %} ({{ self.signed(d) }}){% endif %}</p>
+{% else %}
+<p>Not yet scored.</p>
+{% endif %}
+<h2>IAM</h2>
+<p>{{ w.iam.open }} open ({{ w.iam.opened }} new, {{ w.iam.resolved }} resolved this week)</p>
+<h2>Backups</h2>
+<p>{{ w.backups.open_issues }} open issues; last successful restore test {% if let Some(d) = w.backups.last_restore_test_on %}{{ d }}{% else %}not recorded{% endif %}</p>
+<h2>Certificate calendar</h2>
+<ul>
+{% for i in w.certificates %}<li>[{{ self.sev(i.severity) }}] {{ i.title }}</li>{% else %}<li>None</li>{% endfor %}
+</ul>
+<h2>Untagged spend</h2>
+<p>{% if let Some(p) = w.untagged_spend_pct %}{{ "{:.1}"|format(p) }}%{% else %}Unknown{% endif %}</p>
+<h2>Awaiting your decision</h2>
+<ul>
+{% for i in w.awaiting_decision %}<li>[{{ self.sev(i.severity) }}] {{ i.title }}</li>{% else %}<li>None</li>{% endfor %}
+</ul>
+<h2>What the agent would have done</h2>
+<ul>
+{% for line in w.would_have_done %}<li>{{ line }}</li>{% else %}<li>Nothing</li>{% endfor %}
+</ul>
+{% endif %}
+<p><a href="{{ w.link }}">Open the dashboard</a></p>
+<p>Need a human? <a href="{{ w.need_a_human_url }}">{{ w.need_a_human_url }}</a></p>
+</body>
+</html>
