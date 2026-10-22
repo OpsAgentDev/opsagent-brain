@@ -2,17 +2,24 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::run::{RunKey, RunStatus};
-use opsagent_ledger::{Checkpoint, EffectState, LedgerError, Result, RunRow, Storage};
+use opsagent_ledger::{
+    Checkpoint, CreateRunOutcome, EffectState, LedgerError, Result, RunRow, Storage,
+};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, QueryResult, Statement, Value};
 use uuid::Uuid;
 
-pub struct PgStorage {
-    db: DatabaseConnection,
+/// Bound to the pool by default, or to a transaction to commit run writes with other work.
+pub struct PgStorage<C = DatabaseConnection> {
+    db: C,
 }
 
-impl PgStorage {
-    pub fn new(db: DatabaseConnection) -> Self {
+impl<C: ConnectionTrait> PgStorage<C> {
+    pub fn new(db: C) -> Self {
         Self { db }
+    }
+
+    pub fn into_inner(self) -> C {
+        self.db
     }
 
     async fn one(&self, sql: &str, values: Vec<Value>) -> Result<Option<QueryResult>> {
@@ -89,8 +96,8 @@ fn cp_json(cp: &Checkpoint) -> Result<serde_json::Value> {
 }
 
 #[async_trait]
-impl Storage for PgStorage {
-    async fn create_run(&self, key: RunKey) -> Result<RunRow> {
+impl<C: ConnectionTrait + Send + Sync> Storage for PgStorage<C> {
+    async fn create_run(&self, key: RunKey) -> Result<CreateRunOutcome> {
         let k = || {
             vec![
                 key.organisation_id.into(),
@@ -102,18 +109,21 @@ impl Storage for PgStorage {
         let mut v = k();
         v.push(Uuid::now_v7().into());
         v.push(cp_json(&Checkpoint::default())?.into());
-        self.exec(
+        let created = self
+            .exec(
             "INSERT INTO runs (organisation_id, connection_id, job_type, scheduled_at, id, checkpoint) \
              VALUES ($1, $2, $3, $4, $5, $6) \
              ON CONFLICT (organisation_id, connection_id, job_type, scheduled_at) DO NOTHING",
             v,
         )
-        .await?;
+        .await?
+            == 1;
         let sql = format!(
             "SELECT {COLS} FROM runs WHERE organisation_id IS NOT DISTINCT FROM $1 \
              AND connection_id IS NOT DISTINCT FROM $2 AND job_type = $3 AND scheduled_at = $4"
         );
-        row(&self.one(&sql, k()).await?.ok_or(LedgerError::NotFound)?)
+        let run = row(&self.one(&sql, k()).await?.ok_or(LedgerError::NotFound)?)?;
+        Ok(CreateRunOutcome { run, created })
     }
 
     async fn load_run(&self, id: Uuid) -> Result<RunRow> {

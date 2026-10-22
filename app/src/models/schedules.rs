@@ -1,7 +1,7 @@
 //! Schedule maths and default schedules (PRD 7.3). Cron is evaluated in the org's IANA zone.
 use std::str::FromStr;
 
-use chrono::{DateTime, Duration, LocalResult, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, LocalResult, NaiveDateTime, Offset, TimeZone, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
 use sea_orm::{ConnectionTrait, DbErr};
@@ -45,16 +45,18 @@ fn to_crate_syntax(expr: &str) -> Option<String> {
     Some(format!("0 {} {} {} {} {}", f[0], f[1], f[2], f[3], dow))
 }
 
-/// A local wall-clock time as an instant: overlap takes the first occurrence, a gap shifts
-/// forward by the gap (02:30 on spring-forward day runs at 03:30).
-// shortcut: assumes a 1h gap (true for every zone we support), upgrade for 30min-gap zones.
+/// A local wall-clock time as an instant: overlap takes the first occurrence; a time inside a
+/// gap is read with the offset in effect before the gap, i.e. shifted forward by the gap size
+/// (02:30 on spring-forward day runs at 03:30; Lord Howe's 30min gap shifts by 30min).
 fn instant(tz: Tz, local: NaiveDateTime) -> Option<DateTime<Utc>> {
     match tz.from_local_datetime(&local) {
         LocalResult::Single(t) | LocalResult::Ambiguous(t, _) => Some(t.to_utc()),
-        LocalResult::None => tz
-            .from_local_datetime(&(local + Duration::hours(1)))
-            .earliest()
-            .map(|t| t.to_utc()),
+        LocalResult::None => {
+            // No zone has two transitions within a day, so a day earlier is before the gap.
+            let before = tz.offset_from_utc_datetime(&(local - Duration::days(1)));
+            let off = Duration::seconds(before.fix().local_minus_utc().into());
+            Some((local - off).and_utc())
+        }
     }
 }
 
@@ -145,6 +147,25 @@ mod tests {
         assert_eq!(
             next_after("30 1 * * *", "America/New_York", first.unwrap()),
             Some(at("2026-11-02T06:30:00Z"))
+        );
+    }
+
+    #[test]
+    fn dst_gaps_of_other_sizes_are_never_skipped() {
+        // Lord Howe springs forward 02:00 -> 02:30 on 2026-10-04 (+10:30 -> +11:00).
+        // 02:15 does not exist; it runs at 02:45 (+11:00) = 15:45Z on the 3rd.
+        assert_eq!(
+            next_after(
+                "15 2 * * *",
+                "Australia/Lord_Howe",
+                at("2026-10-03T12:00:00Z")
+            ),
+            Some(at("2026-10-03T15:45:00Z"))
+        );
+        // Troll: 2h gap, 01:00 -> 03:00 UTC on 2026-03-29; 01:30 runs at 03:30 (+2) = 01:30Z.
+        assert_eq!(
+            next_after("30 1 * * *", "Antarctica/Troll", at("2026-03-28T12:00:00Z")),
+            Some(at("2026-03-29T01:30:00Z"))
         );
     }
 }

@@ -8,4 +8,6 @@ pub mod testing;
 
 pub use lease::{run_chunked, ChunkOutcome, Lease, RunChunkedOptions};
 pub use redis;
-pub use storage::{Checkpoint, EffectState, LedgerError, Result, RunRow, Storage};
+pub use storage::{
+    Checkpoint, CreateRunOutcome, EffectState, LedgerError, Result, RunRow, Storage,
+};

@@ -24,8 +24,8 @@ async fn pg_storage_dedupes_keys_and_enforces_fence() {
     let s = PgStorage::new(boot.app_context.db.clone());
 
     // NULL scope columns still dedupe (NULLS NOT DISTINCT).
-    let a = s.create_run(key()).await.unwrap();
-    let b = s.create_run(key()).await.unwrap();
+    let a = s.create_run(key()).await.unwrap().run;
+    let b = s.create_run(key()).await.unwrap().run;
     assert_eq!(a.id, b.id);
     assert_eq!(a.status, RunStatus::Queued);
     assert_eq!(a.key, key());
@@ -85,7 +85,7 @@ async fn run_chunked_completes_on_pg_storage() {
     let s = PgStorage::new(boot.app_context.db.clone());
     let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:56379".into());
     let redis = redis::Client::open(url).unwrap();
-    let run = s.create_run(key()).await.unwrap();
+    let run = s.create_run(key()).await.unwrap().run;
     let status = run_chunked(
         &s,
         &redis,

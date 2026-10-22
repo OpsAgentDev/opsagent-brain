@@ -34,7 +34,8 @@ async fn run_worker(ctx: &AppContext, id: Uuid, minute: i64) -> Uuid {
             scheduled_at: chrono::DateTime::from_timestamp(1_800_000_000 + minute * 60, 0).unwrap(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .run;
     VerifyWorker::build(ctx)
         .perform(VerifyArgs { run_id: run.id })
         .await

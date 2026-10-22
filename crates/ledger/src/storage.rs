@@ -50,6 +50,13 @@ pub struct RunRow {
     pub partial_reason: Option<String>,
 }
 
+/// `created` is false when the run key already existed (a duplicate request).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateRunOutcome {
+    pub run: RunRow,
+    pub created: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum EffectState {
     New,
@@ -60,7 +67,7 @@ pub enum EffectState {
 #[async_trait]
 pub trait Storage: Send + Sync {
     /// Returns the existing row if the key is a duplicate.
-    async fn create_run(&self, key: RunKey) -> Result<RunRow>;
+    async fn create_run(&self, key: RunKey) -> Result<CreateRunOutcome>;
     async fn load_run(&self, id: Uuid) -> Result<RunRow>;
     async fn bump_fence(&self, id: Uuid) -> Result<u64>;
     /// `Err(StaleFence)` when `fence` is not the run's current fence.

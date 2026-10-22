@@ -26,10 +26,13 @@ impl MemoryStorage {
 
 #[async_trait]
 impl Storage for MemoryStorage {
-    async fn create_run(&self, key: RunKey) -> Result<RunRow> {
+    async fn create_run(&self, key: RunKey) -> Result<CreateRunOutcome> {
         let mut g = self.0.lock().unwrap();
         if let Some(id) = g.keys.get(&key) {
-            return Ok(g.runs[id].clone());
+            return Ok(CreateRunOutcome {
+                run: g.runs[id].clone(),
+                created: false,
+            });
         }
         let row = RunRow {
             id: Uuid::now_v7(),
@@ -42,7 +45,10 @@ impl Storage for MemoryStorage {
         };
         g.keys.insert(key, row.id);
         g.runs.insert(row.id, row.clone());
-        Ok(row)
+        Ok(CreateRunOutcome {
+            run: row,
+            created: true,
+        })
     }
     async fn load_run(&self, id: Uuid) -> Result<RunRow> {
         self.with(id, |r| Ok(r.clone()))

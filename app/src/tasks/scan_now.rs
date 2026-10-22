@@ -43,7 +43,8 @@ impl Task for ScanNow {
                 scheduled_at: chrono::Utc::now(),
             })
             .await
-            .map_err(err)?;
+            .map_err(err)?
+            .run;
         let status = scan(
             ctx,
             run.id,

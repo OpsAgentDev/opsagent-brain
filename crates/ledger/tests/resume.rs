@@ -22,7 +22,7 @@ fn opts(w: &str) -> RunChunkedOptions {
 #[tokio::test]
 async fn killed_after_each_checkpoint_resumes_with_effects_once() {
     let (r, s) = (common::redis(), MemoryStorage::default());
-    let run = s.create_run(common::key()).await.unwrap();
+    let run = s.create_run(common::key()).await.unwrap().run;
     let counts: Vec<AtomicU32> = (0..3).map(|_| AtomicU32::new(0)).collect();
     let chunks: Vec<String> = (0..3).map(|i| format!("c{i}")).collect();
     let runs = kill_after_each_checkpoint(|kill| {
@@ -56,7 +56,7 @@ async fn killed_after_each_checkpoint_resumes_with_effects_once() {
 #[tokio::test]
 async fn lease_lost_returns_partial() {
     let (r, s) = (common::redis(), MemoryStorage::default());
-    let run = s.create_run(common::key()).await.unwrap();
+    let run = s.create_run(common::key()).await.unwrap().run;
     let st = run_chunked(
         &s,
         &r,
@@ -91,7 +91,7 @@ async fn lease_lost_returns_partial() {
 #[tokio::test]
 async fn time_cap_returns_partial() {
     let (r, s) = (common::redis(), MemoryStorage::default());
-    let run = s.create_run(common::key()).await.unwrap();
+    let run = s.create_run(common::key()).await.unwrap().run;
     let mut o = opts("w");
     o.time_cap = Duration::from_millis(50);
     let st = run_chunked(
@@ -118,7 +118,7 @@ async fn time_cap_returns_partial() {
 async fn kill_between_effect_done_and_checkpoint_runs_effect_once() {
     use std::sync::atomic::AtomicBool;
     let (r, s) = (common::redis(), MemoryStorage::default());
-    let run = s.create_run(common::key()).await.unwrap();
+    let run = s.create_run(common::key()).await.unwrap().run;
     let (n, killed) = (AtomicU32::new(0), AtomicBool::new(false));
     let go = || {
         run_chunked(&s, &r, run.id, vec!["c0".into()], opts("w"), |c, _l| {
@@ -158,7 +158,7 @@ async fn kill_between_effect_done_and_checkpoint_runs_effect_once() {
 #[tokio::test]
 async fn dropping_run_chunked_stops_heartbeat() {
     let (r, s) = (common::redis(), MemoryStorage::default());
-    let run = s.create_run(common::key()).await.unwrap();
+    let run = s.create_run(common::key()).await.unwrap().run;
     let mut o = opts("w");
     o.lease_ttl = Duration::from_millis(200);
     o.heartbeat_every = Duration::from_millis(40);
@@ -181,7 +181,7 @@ impl Storage for Usurped {
     async fn create_run(
         &self,
         k: opsagent_core::run::RunKey,
-    ) -> opsagent_ledger::Result<opsagent_ledger::RunRow> {
+    ) -> opsagent_ledger::Result<opsagent_ledger::CreateRunOutcome> {
         self.0.create_run(k).await
     }
     async fn load_run(&self, id: uuid::Uuid) -> opsagent_ledger::Result<opsagent_ledger::RunRow> {
@@ -237,7 +237,7 @@ impl Storage for Usurped {
 #[tokio::test]
 async fn stale_fence_on_initial_running_returns_partial() {
     let (r, s) = (common::redis(), Usurped(MemoryStorage::default()));
-    let run = s.create_run(common::key()).await.unwrap();
+    let run = s.create_run(common::key()).await.unwrap().run;
     let ran = AtomicU32::new(0);
     let st = run_chunked(
         &s,
@@ -261,7 +261,7 @@ async fn stale_fence_on_initial_running_returns_partial() {
 #[tokio::test]
 async fn partial_reason_in_stats_ends_partial_even_after_resume() {
     let (r, s) = (common::redis(), MemoryStorage::default());
-    let run = s.create_run(common::key()).await.unwrap();
+    let run = s.create_run(common::key()).await.unwrap().run;
     let chunks: Vec<String> = vec!["a".into(), "b".into()];
     let runs = kill_after_each_checkpoint(|kill| {
         let (r, s, chunks) = (&r, &s, chunks.clone());

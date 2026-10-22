@@ -360,7 +360,8 @@ async fn verify(
                 .map_err(ApiError::internal)?,
         })
         .await
-        .map_err(ApiError::internal)?;
+        .map_err(ApiError::internal)?
+        .run;
     VerifyWorker::perform_later(&ctx, VerifyArgs { run_id: run.id }).await?;
     Ok((StatusCode::ACCEPTED, Json(json!({ "run_id": run.id }))))
 }

@@ -258,6 +258,7 @@ async fn new_run(ctx: &AppContext, conn: Uuid, n: i64) -> Uuid {
         })
         .await
         .unwrap()
+        .run
         .id
 }
 

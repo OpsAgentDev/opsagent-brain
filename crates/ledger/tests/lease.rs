@@ -7,7 +7,7 @@ use std::time::Duration;
 #[tokio::test]
 async fn acquire_twice_some_then_none() {
     let (r, s) = (common::redis(), MemoryStorage::default());
-    let run = s.create_run(common::key()).await.unwrap();
+    let run = s.create_run(common::key()).await.unwrap().run;
     let l = acquire(&s, &r, run.id, "w1", Duration::from_secs(5))
         .await
         .unwrap();
@@ -33,7 +33,7 @@ async fn acquire_twice_some_then_none() {
 #[tokio::test]
 async fn expiry_gives_higher_fence_and_old_fence_is_stale() {
     let (r, s) = (common::redis(), MemoryStorage::default());
-    let run = s.create_run(common::key()).await.unwrap();
+    let run = s.create_run(common::key()).await.unwrap().run;
     let old = acquire(&s, &r, run.id, "w1", Duration::from_millis(150))
         .await
         .unwrap()
@@ -69,8 +69,8 @@ async fn memory_storage_unique_key_and_effects() {
     use opsagent_ledger::EffectState;
     let s = MemoryStorage::default();
     let k = common::key();
-    let a = s.create_run(k.clone()).await.unwrap();
-    assert_eq!(s.create_run(k).await.unwrap().id, a.id);
+    let a = s.create_run(k.clone()).await.unwrap().run;
+    assert_eq!(s.create_run(k).await.unwrap().run.id, a.id);
     assert_eq!(s.effect_begin(a.id, "e").await.unwrap(), EffectState::New);
     assert_eq!(
         s.effect_begin(a.id, "e").await.unwrap(),
@@ -88,7 +88,7 @@ async fn with_effect_rules() {
     use opsagent_ledger::{effects::with_effect, EffectState};
     use std::sync::atomic::{AtomicU32, Ordering::SeqCst};
     let s = MemoryStorage::default();
-    let a = s.create_run(common::key()).await.unwrap();
+    let a = s.create_run(common::key()).await.unwrap().run;
     let n = AtomicU32::new(0);
     let f = || async {
         n.fetch_add(1, SeqCst);
