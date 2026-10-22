@@ -21,13 +21,17 @@ pub trait Mailer: Send + Sync {
     async fn send(&self, mail: Mail) -> std::result::Result<(), String>;
 }
 
-/// Local default when neither `MAILER_SMTP_URL` nor `RESEND_API_KEY` is set: logs the mail (including its link).
+/// Local default when neither `MAILER_SMTP_URL` nor `RESEND_API_KEY` is set: logs recipient and subject only.
+/// The body carries a magic-link or invite token, so it is emitted at debug in debug builds only.
 pub struct LogMailer;
 
 #[async_trait]
 impl Mailer for LogMailer {
     async fn send(&self, mail: Mail) -> std::result::Result<(), String> {
-        tracing::info!(to = %mail.to, subject = %mail.subject, "mail (not sent, no MAILER_SMTP_URL or RESEND_API_KEY):\n{}", mail.text);
+        tracing::info!(to = %mail.to, subject = %mail.subject, "mail not sent (no MAILER_SMTP_URL or RESEND_API_KEY)");
+        // Development-only: the body holds a token. Compiled out of release builds.
+        #[cfg(debug_assertions)]
+        tracing::debug!(to = %mail.to, body = %mail.text, "mail body (development only)");
         Ok(())
     }
 }
@@ -167,6 +171,46 @@ pub fn from_env(production: bool) -> Result<Arc<dyn Mailer>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct Buf(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn log_mailer_at_info_never_logs_the_token() {
+        let buf = Buf(Arc::default());
+        let sub = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer({
+                let b = buf.clone();
+                move || b.clone()
+            })
+            .finish();
+        let _g = tracing::subscriber::set_default(sub);
+        LogMailer
+            .send(Mail {
+                to: "a@example.com".into(),
+                subject: "Sign in".into(),
+                text: "https://x.test/auth/callback?token=SECRET123".into(),
+            })
+            .await
+            .unwrap();
+        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            out.contains("a@example.com") && out.contains("Sign in"),
+            "{out}"
+        );
+        assert!(!out.contains("SECRET123"), "{out}");
+    }
 
     fn s(v: &str) -> Option<String> {
         Some(v.into())
