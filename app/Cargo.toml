@@ -27,6 +27,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 chrono = "0.4"
 chrono-tz = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
+regex = "1"
+opsagent-checks = { path = "../crates/checks" }
 opsagent-secrets = { path = "../crates/secrets" }
 opsagent-core = { path = "../crates/core" }
 opsagent-ledger = { path = "../crates/ledger" }
