@@ -12,7 +12,7 @@ use loco_rs::{
 use migration::Migrator;
 use std::path::Path;
 
-use crate::controllers;
+use crate::{controllers, middleware::AuthInitializer};
 
 pub struct App;
 #[async_trait]
@@ -40,11 +40,15 @@ impl Hooks for App {
     }
 
     async fn initializers(_ctx: &AppContext) -> Result<Vec<Box<dyn Initializer>>> {
-        Ok(vec![])
+        Ok(vec![Box::new(AuthInitializer)])
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {
-        AppRoutes::with_default_routes().add_route(controllers::health::routes())
+        AppRoutes::with_default_routes()
+            .add_route(controllers::health::routes())
+            .add_route(controllers::auth::routes())
+            .add_route(controllers::orgs::routes())
+            .add_route(controllers::members::routes())
     }
 
     async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {

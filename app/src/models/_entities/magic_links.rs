@@ -9,12 +9,7 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
     pub user_id: Option<Uuid>,
-    #[sea_orm(
-        ignore,
-        column_type = "custom(\"citext\")",
-        select_as = "text",
-        nullable
-    )]
+    #[sea_orm(column_type = "Text", nullable)]
     pub email: Option<String>,
     #[sea_orm(column_type = "Text")]
     pub token_hash: String,

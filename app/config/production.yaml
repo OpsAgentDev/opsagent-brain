@@ -92,3 +92,13 @@ database:
   # Recreating schema when application loaded.  This is a dangerous operation, make sure that you using this flag only on dev environments or test mode
   dangerously_recreate: false
 
+
+# Auth, sessions and mail links (read by src/settings.rs).
+settings:
+  web_base_url: "<%= get_env(name="WEB_BASE_URL", default="https://opsagent.dev") %>"
+  api_base_url: "<%= get_env(name="API_BASE_URL", default="https://brain.opsagent.dev") %>"
+  session_secret: "<%= get_env(name="SESSION_SECRET") %>"
+  cookie_secure: <%= get_env(name="COOKIE_SECURE", default="true") %>
+  cookie_domain: "<%= get_env(name="COOKIE_DOMAIN", default="opsagent.dev") %>"
+  github_client_id: "<%= get_env(name="GITHUB_CLIENT_ID", default="") %>"
+  github_client_secret: "<%= get_env(name="GITHUB_CLIENT_SECRET", default="") %>"
