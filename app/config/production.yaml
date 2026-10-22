@@ -7,8 +7,8 @@
 # secret or a localhost database is worse than one that refuses to boot.
 #
 # The variables this file requires:
-#   DATABASE_URL, JWT_SECRET, HOST, and the MAILER_* / REDIS_URL set below,
-#   depending on which features you generated.
+#   DATABASE_URL and REDIS_URL,
+#   (HOST and PORT have defaults).
 
 # Application logging configuration
 logger:
@@ -36,7 +36,7 @@ server:
   binding: <%= get_env(name="BINDING", default="0.0.0.0") %>
   # The UI hostname or IP address that mailers will point to.
   # Required: links in outgoing mail have to name the real host.
-  host: <%= get_env(name="HOST") %>
+  host: <%= get_env(name="HOST", default="http://localhost") %>
   # Out of the box middleware configuration. to disable middleware you can changed the `enable` field to `false` of comment the middleware block
   middlewares:
 
@@ -58,24 +58,6 @@ queue:
   # Dangerously flush all data in Redis on startup. dangerous operation, make sure that you using this flag only on dev environments or test mode
   dangerously_flush: false
   
-
-# Mailer Configuration.
-mailer:
-  # SMTP mailer configuration.
-  smtp:
-    # Enable/Disable smtp mailer.
-    enable: true
-    # SMTP server host. e.x localhost, smtp.gmail.com
-    host: <%= get_env(name="MAILER_HOST") %>
-    # SMTP server port
-    port: <%= get_env(name="MAILER_PORT", default="587") %>
-    # Use secure connection (SSL/TLS).
-    secure: true
-    auth:
-      user: <%= get_env(name="MAILER_USER") %>
-      password: <%= get_env(name="MAILER_PASSWORD") %>
-    # Override the SMTP hello name (default is the machine's hostname)
-    # hello_name:
 
 # Initializers Configuration
 # initializers:
