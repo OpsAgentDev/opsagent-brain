@@ -6,9 +6,10 @@
 # is what you want — a production app that silently falls back to a development
 # secret or a localhost database is worse than one that refuses to boot.
 #
-# The variables this file requires:
-#   DATABASE_URL and REDIS_URL,
-#   (HOST and PORT have defaults).
+# Required (no default, boot fails if unset; same list as docs/tech-spec/deployment.md and
+# deploy/README.md): DATABASE_URL, REDIS_URL, APP_BASE_URL, WEB_BASE_URL, SESSION_SECRET,
+# OPSAGENT_KEK, OPSAGENT_CONNECTORS, OPSAGENT_AWS_OUTBOUND_ROLE_ARN, OPSAGENT_TEMPLATE_BASE_URL.
+# RESEND_API_KEY is checked at api boot by the mailer (unless a loopback MAILER_SMTP_URL is set).
 
 # Application logging configuration
 logger:
@@ -95,13 +96,20 @@ database:
 
 # Auth, sessions and mail links (read by src/settings.rs).
 settings:
-  web_base_url: "<%= get_env(name="WEB_BASE_URL", default="https://opsagent.dev") %>"
-  api_base_url: "<%= get_env(name="API_BASE_URL", default="https://brain.opsagent.dev") %>"
+  web_base_url: "<%= get_env(name="WEB_BASE_URL") %>"
+  api_base_url: "<%= get_env(name="APP_BASE_URL") %>"
   session_secret: "<%= get_env(name="SESSION_SECRET") %>"
   cookie_secure: <%= get_env(name="COOKIE_SECURE", default="true") %>
   cookie_domain: "<%= get_env(name="COOKIE_DOMAIN", default="opsagent.dev") %>"
   github_client_id: "<%= get_env(name="GITHUB_CLIENT_ID", default="") %>"
   github_client_secret: "<%= get_env(name="GITHUB_CLIENT_SECRET", default="") %>"
+  # Boot guard only: these are read from the environment at use, but must exist at boot in
+  # every mode (api, worker, scheduler). Unknown keys are ignored by Settings.
+  required_env:
+    - "<%= get_env(name="OPSAGENT_KEK") %>"
+    - "<%= get_env(name="OPSAGENT_CONNECTORS") %>"
+    - "<%= get_env(name="OPSAGENT_AWS_OUTBOUND_ROLE_ARN") %>"
+    - "<%= get_env(name="OPSAGENT_TEMPLATE_BASE_URL") %>"
 
 # Scheduler (`cargo loco scheduler`, exactly one instance): tick every minute.
 scheduler:

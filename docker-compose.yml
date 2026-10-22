@@ -14,5 +14,23 @@ services:
     image: axllent/mailpit
     ports: ["1025:1025", "8025:8025"]
 
+  # `docker compose --profile brain up`: the brain image, three roles. Env: .env.docker.example.
+  brain-api: &brain
+    profiles: [brain]
+    build: .
+    image: opsagent-brain:compose
+    env_file: .env.docker.example
+    depends_on: [postgres, redis, mailpit]
+    restart: on-failure
+    ports: ["3000:3000"]
+  brain-worker:
+    <<: *brain
+    command: ["opsagent-brain", "start", "--worker"]
+    ports: []
+  brain-scheduler:
+    <<: *brain
+    command: ["opsagent-brain", "scheduler"]
+    ports: []
+
 volumes:
   pg-data:

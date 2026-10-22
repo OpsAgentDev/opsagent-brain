@@ -74,7 +74,7 @@ database:
 # Auth, sessions and mail links (read by src/settings.rs).
 settings:
   web_base_url: "<%= get_env(name="WEB_BASE_URL", default="http://localhost:3000") %>"
-  api_base_url: "<%= get_env(name="API_BASE_URL", default="http://localhost:5150") %>"
+  api_base_url: "<%= get_env(name="APP_BASE_URL", default="http://localhost:5150") %>"
   session_secret: "<%= get_env(name="SESSION_SECRET", default="test-session-secret-not-for-prod") %>"
   cookie_secure: <%= get_env(name="COOKIE_SECURE", default="true") %>
   cookie_domain: "<%= get_env(name="COOKIE_DOMAIN", default="") %>"
