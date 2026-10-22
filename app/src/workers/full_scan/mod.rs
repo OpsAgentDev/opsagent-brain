@@ -10,7 +10,7 @@ use opsagent_connectors::{registry as providers, CallContext, Connector, Credent
 use opsagent_core::{connection::ConnectionStatus as S, run::RunStatus};
 use opsagent_ledger::{
     lease::{self, claim, unclaim},
-    retry::settle,
+    retry::{fail_on_storage_error, settle},
     run_chunked, LedgerError, RunChunkedOptions, RunRow, Storage,
 };
 use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
@@ -301,6 +301,7 @@ async fn end(
             .map(|()| status),
         End::Failed(e) => settle(storage, run.id, run.attempts, l.fence, &e).await,
     };
+    let res = fail_on_storage_error(storage, run.id, l.fence, res).await;
     lease::release(&redis, &l).await;
     res
 }

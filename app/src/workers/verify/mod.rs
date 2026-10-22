@@ -183,7 +183,8 @@ impl VerifyWorker {
     ) -> LResult<()> {
         let (code, transient) = classify(e);
         let run = step.run;
-        tracing::warn!(run = %run.id, code, transient, "verify: connector error");
+        let service = &step.c.provider;
+        tracing::warn!(run = %run.id, error_code = %code, service, transient, "verify: connector error");
         if transient && retry_or_fail(storage, run.id, run.attempts, step.fence).await? {
             return Ok(());
         }

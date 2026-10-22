@@ -72,3 +72,22 @@ pub async fn settle<S: Storage + ?Sized>(
         RunStatus::Failed
     })
 }
+
+/// A storage error ends the run `Failed` with `storage_error`, so a run never stays
+/// `running` on one; any other result (`StaleFence` included) passes through. If that write
+/// fails too, the original error stands and lease expiry recovers the run.
+pub async fn fail_on_storage_error<S: Storage + ?Sized>(
+    storage: &S,
+    run_id: Uuid,
+    fence: u64,
+    res: Result<RunStatus>,
+) -> Result<RunStatus> {
+    let Err(e @ LedgerError::Storage(_)) = res else {
+        return res;
+    };
+    tracing::warn!(run = %run_id, error = %e, "run storage write failed, failing the run");
+    match storage.fail_run(run_id, fence, "storage_error").await {
+        Ok(()) => Ok(RunStatus::Failed),
+        Err(_) => Err(e),
+    }
+}

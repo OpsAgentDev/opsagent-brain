@@ -1,6 +1,6 @@
 #[cfg(feature = "test-support")]
 use crate::harness::KillSwitch;
-use crate::retry::settle;
+use crate::retry::{fail_on_storage_error, settle};
 use crate::storage::{Checkpoint, LedgerError, Result, Storage};
 use opsagent_core::run::RunStatus;
 use redis::{aio::MultiplexedConnection, Client, Script};
@@ -211,6 +211,7 @@ where
         })
     });
     let res = drive(storage, run_id, &chunks, &opts, &lease, &lost, &f).await;
+    let res = fail_on_storage_error(storage, run_id, lease.fence, res).await;
     release(redis, &lease).await;
     res
 }

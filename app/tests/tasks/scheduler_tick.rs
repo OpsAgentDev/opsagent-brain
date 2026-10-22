@@ -387,3 +387,43 @@ async fn api_run_whose_enqueue_failed_is_sent_by_the_next_tick() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn retry_for_a_deleted_org_is_skipped_not_enqueued() {
+    serve(|req, ctx| async move {
+        reset(&ctx).await;
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "gone@example.com").await;
+        let org = create_org(&req, &t, "Gone").await;
+        let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
+        let now = at("2026-10-22T10:00:00Z");
+        let storage = PgStorage::new(ctx.db.clone());
+        let run = storage
+            .create_run(RunKey {
+                organisation_id: Some(org_id),
+                connection_id: None,
+                job_type: "full_scan".into(),
+                scheduled_at: now - Duration::hours(2),
+            })
+            .await
+            .unwrap()
+            .run;
+        storage
+            .schedule_retry(run.id, 1, now - Duration::minutes(1))
+            .await
+            .unwrap();
+        ctx.db
+            .execute_raw(stmt(
+                "UPDATE organisations SET deleted_at = now() WHERE id = $1",
+                vec![org_id.into()],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(run_tick(&ctx, now).await, Report::default());
+        let row = storage.load_run(run.id).await.unwrap();
+        assert_eq!(row.status, opsagent_core::run::RunStatus::Skipped);
+        assert_eq!(row.partial_reason.as_deref(), Some("org_deleted"));
+    })
+    .await;
+}

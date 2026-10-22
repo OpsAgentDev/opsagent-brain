@@ -30,7 +30,27 @@ where
     request_with_config::<App, F, Fut>(cookie_config(), callback).await;
 }
 
+/// The Redis the app's queue (and the magic-link limiter) uses.
+pub fn redis_of(ctx: &AppContext) -> opsagent_ledger::redis::Client {
+    let Some(loco_rs::config::QueueConfig::Redis(cfg)) = &ctx.config.queue else {
+        panic!("tests need the redis queue config");
+    };
+    opsagent_ledger::redis::Client::open(cfg.uri.as_str()).unwrap()
+}
+
+/// Captures mail and resets the magic-link limiter, whose counters outlive a test by an hour.
 pub fn prepare(ctx: &AppContext) -> Arc<CaptureMailer> {
+    let mut c = redis_of(ctx).get_connection().unwrap();
+    let keys: Vec<String> = opsagent_ledger::redis::cmd("KEYS")
+        .arg("ratelimit:magic_link:*")
+        .query(&mut c)
+        .unwrap();
+    if !keys.is_empty() {
+        let _: () = opsagent_ledger::redis::cmd("DEL")
+            .arg(&keys)
+            .query(&mut c)
+            .unwrap();
+    }
     let mail = Arc::new(CaptureMailer::default());
     let dynamic: Arc<dyn Mailer> = mail.clone();
     ctx.shared_store.insert(dynamic);

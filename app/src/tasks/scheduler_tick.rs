@@ -186,13 +186,22 @@ async fn tick_locked(
 }
 
 /// Runs parked with `schedule_retry` (status queued + next_attempt_at), and runs whose
-/// enqueue was interrupted after they were committed (the outbox marker). Returns how many
-/// were handed to a worker.
+/// enqueue was interrupted after they were committed (the outbox marker); those of deleted
+/// organisations are skipped. Returns how many were handed to a worker.
 async fn retry_pass(
     ctx: &AppContext,
     db: &DatabaseConnection,
     now: DateTime<Utc>,
 ) -> Result<usize> {
+    // Deleted organisations get no more work: their parked runs end instead of waiting forever.
+    db.execute_raw(stmt(
+        "UPDATE runs r SET status = 'skipped', partial_reason = 'org_deleted', \
+         next_attempt_at = NULL, finished_at = now(), updated_at = now() \
+         WHERE r.status = 'queued' AND r.next_attempt_at IS NOT NULL AND r.next_attempt_at <= $1 \
+         AND EXISTS (SELECT 1 FROM organisations o WHERE o.id = r.organisation_id AND o.deleted_at IS NOT NULL)",
+        vec![now.into()],
+    ))
+    .await?;
     let mut sent_total = 0;
     let retries = db
         .query_all_raw(stmt(

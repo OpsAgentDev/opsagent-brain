@@ -39,6 +39,24 @@ pub enum ConnectorError {
 }
 pub type Result<T> = std::result::Result<T, ConnectorError>;
 
+impl ConnectorError {
+    /// Stable code for logs and run reasons; never the provider's message.
+    pub fn code(&self) -> &str {
+        match self {
+            Self::Api { code: Some(c), .. } => c,
+            // No code: the request never got an answer (timeout, connection reset).
+            Self::Api { code: None, .. } => "network",
+            Self::Provider(_) => "provider_error",
+            Self::NotFound => "not_found",
+            Self::InvalidCredentials(_) => "invalid_credentials",
+            Self::Auth(_) => "auth",
+            Self::Template(_) => "template",
+            Self::Fixture(_) => "fixture",
+            Self::Unknown(_) => "unknown_connector",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {

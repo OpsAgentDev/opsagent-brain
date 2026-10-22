@@ -96,10 +96,18 @@ pub async fn create(
     Ok(Created { id, creds, spec })
 }
 
-fn role_error(e: ConnectorError) -> ApiError {
+fn role_error(e: ConnectorError, service: &str) -> ApiError {
     match e {
         ConnectorError::InvalidCredentials(m) => ApiError::invalid(m),
-        e => ApiError::internal(e),
+        e => {
+            // The code only: provider text can name the customer's role and account.
+            tracing::error!(error_code = %e.code(), service, "reported role check failed");
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "Internal error.",
+            )
+        }
     }
 }
 
@@ -169,7 +177,7 @@ async fn with_reported_role(
     from: S,
     raw: &str,
 ) -> Result<Creds, ApiError> {
-    let role = registry::reported_role(&c.provider, raw).map_err(role_error)?;
+    let role = registry::reported_role(&c.provider, raw).map_err(|e| role_error(e, &c.provider))?;
     let mut creds = load_creds(db, kek, c).await?;
     if role.is_some() && role != creds.role_arn && matches!(from, S::Connected | S::Degraded) {
         return Err(ApiError::new(

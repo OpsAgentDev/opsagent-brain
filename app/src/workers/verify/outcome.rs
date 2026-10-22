@@ -182,12 +182,10 @@ impl VerifyWorker {
             a.billable_from = Set(Some(now()));
         }
         let tx = self.fenced(step).await?;
-        if to == S::Connected {
-            self.connected_schedules(tx.db(), c).await?;
-        }
         let Some(written) = self.write_status(tx.db(), c, a, to).await? else {
             return Ok(false);
         };
+        self.outcome_schedules(tx.db(), c, written).await?;
         self.record_in(tx.db(), c, run.id, Some(o), &enum_str(written), None)
             .await?;
         let now = Utc::now();
@@ -210,17 +208,22 @@ impl VerifyWorker {
         Ok(true)
     }
 
-    /// Default schedules, and the weekly verify back after a revoked spell.
-    async fn connected_schedules(
+    /// Default schedules once the connection is (or was) connected, never for `blocked`; and
+    /// on any outcome here (none is `revoked`) the weekly verify back after a revoked spell.
+    async fn outcome_schedules(
         &self,
         db: &impl ConnectionTrait,
         c: &connections::Model,
+        written: S,
     ) -> LResult<()> {
         let now = Utc::now();
         let (org, id) = (c.organisation_id, c.id);
-        schedules::create_defaults(db, org, id, c.scan_time_local, now)
-            .await
-            .map_err(lerr)?;
+        let was_connected = c.first_connected_at.is_some();
+        if written == S::Connected || (written == S::Degraded && was_connected) {
+            schedules::create_defaults(db, org, id, c.scan_time_local, now)
+                .await
+                .map_err(lerr)?;
+        }
         let weekly = schedules::VERIFY_WEEKLY;
         schedules::set_cron(db, org, id, "verify", weekly, |_| Some(now))
             .await

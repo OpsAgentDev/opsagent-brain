@@ -286,3 +286,62 @@ async fn magic_links_are_capped_per_client_ip() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn magic_links_from_one_ipv6_64_share_one_cap() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let b = uuid::Uuid::new_v4().into_bytes();
+        let net = format!("2001:db8:{:x}:{:x}", b[0], b[1]);
+        for i in 0..30 {
+            let res = req
+                .post("/v1/auth/magic-link")
+                .add_header("X-Forwarded-For", format!("{net}::{:x}", i + 1))
+                .json(&json!({ "email": format!("v{i}@example.com") }))
+                .await;
+            assert_eq!(res.status_code(), 202);
+        }
+        assert_eq!(mail.sent().len(), 30);
+        // Another address in the same /64 is the same client: dropped, still 202.
+        let res = req
+            .post("/v1/auth/magic-link")
+            .add_header("X-Forwarded-For", format!("{net}:ffff:ffff:ffff:ffff"))
+            .json(&json!({"email": "v30@example.com"}))
+            .await;
+        assert_eq!(res.status_code(), 202);
+        assert_eq!(mail.sent().len(), 30);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn concurrent_magic_links_for_one_address_send_exactly_the_cap() {
+    use opsagent_brain::{mailers::Mailer, models::_entities::magic_links, services::sign_in};
+    serve(|_req, ctx| async move {
+        let mail = prepare(&ctx);
+        let redis = redis_of(&ctx);
+        let tasks: Vec<_> = (0..6)
+            .map(|_| {
+                let (db, redis, mail) = (ctx.db.clone(), redis.clone(), mail.clone());
+                tokio::spawn(async move {
+                    let m: &dyn Mailer = mail.as_ref();
+                    sign_in::request_link(&db, &redis, m, WEB_ORIGIN, "race@example.com", None)
+                        .await
+                        .unwrap();
+                })
+            })
+            .collect();
+        for t in tasks {
+            t.await.unwrap();
+        }
+        let n = magic_links::Entity::find()
+            .filter(magic_links::Column::Email.eq("race@example.com"))
+            .count(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(n, 5);
+    })
+    .await;
+}

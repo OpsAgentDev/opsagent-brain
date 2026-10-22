@@ -174,10 +174,16 @@ async fn dropping_run_chunked_stops_heartbeat() {
         .is_some());
 }
 
-/// Delegates to MemoryStorage but a newer holder bumps the fence right after the run is loaded.
-struct Usurped(MemoryStorage);
+/// Delegates to MemoryStorage with one injected fault.
+enum Fault {
+    /// A newer holder bumps the fence right after the run is loaded.
+    Usurp,
+    /// Every checkpoint write fails with a storage error.
+    Checkpoint,
+}
+struct Faulty(MemoryStorage, Fault);
 #[async_trait::async_trait]
-impl Storage for Usurped {
+impl Storage for Faulty {
     async fn create_run(
         &self,
         k: opsagent_core::run::RunKey,
@@ -186,7 +192,9 @@ impl Storage for Usurped {
     }
     async fn load_run(&self, id: uuid::Uuid) -> opsagent_ledger::Result<opsagent_ledger::RunRow> {
         let row = self.0.load_run(id).await?;
-        self.0.bump_fence(id).await?;
+        if let Fault::Usurp = self.1 {
+            self.0.bump_fence(id).await?;
+        }
         Ok(row)
     }
     async fn bump_fence(&self, id: uuid::Uuid) -> opsagent_ledger::Result<u64> {
@@ -198,6 +206,9 @@ impl Storage for Usurped {
         f: u64,
         cp: &opsagent_ledger::Checkpoint,
     ) -> opsagent_ledger::Result<()> {
+        if let Fault::Checkpoint = self.1 {
+            return Err(opsagent_ledger::LedgerError::Storage("disk full".into()));
+        }
         self.0.write_checkpoint(id, f, cp).await
     }
     async fn set_status(
@@ -250,7 +261,10 @@ impl Storage for Usurped {
 
 #[tokio::test]
 async fn stale_fence_on_initial_running_returns_partial() {
-    let (r, s) = (common::redis(), Usurped(MemoryStorage::default()));
+    let (r, s) = (
+        common::redis(),
+        Faulty(MemoryStorage::default(), Fault::Usurp),
+    );
     let run = s.create_run(common::key()).await.unwrap().run;
     let ran = AtomicU32::new(0);
     let st = run_chunked(
@@ -329,4 +343,27 @@ async fn failing_chunk_ends_the_run_failed_or_queued_for_retry() {
         // The finished chunk stays checkpointed for the retry.
         assert!(row.checkpoint.chunks_done.contains("a"));
     }
+}
+
+#[tokio::test]
+async fn storage_error_on_checkpoint_ends_the_run_failed() {
+    let (r, s) = (
+        common::redis(),
+        Faulty(MemoryStorage::default(), Fault::Checkpoint),
+    );
+    let run = s.create_run(common::key()).await.unwrap().run;
+    let st = run_chunked(
+        &s,
+        &r,
+        run.id,
+        vec!["a".into()],
+        opts("w"),
+        |_c, _l| async { Ok(ChunkOutcome { stats: json!({}) }) },
+    )
+    .await
+    .unwrap();
+    assert_eq!(st, RunStatus::Failed);
+    let row = s.0.load_run(run.id).await.unwrap();
+    assert_eq!(row.status, RunStatus::Failed);
+    assert_eq!(row.partial_reason.as_deref(), Some("storage_error"));
 }
