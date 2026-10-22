@@ -15,7 +15,7 @@ use std::path::Path;
 use crate::{
     controllers,
     middleware::AuthInitializer,
-    tasks::scan_now::ScanNow,
+    tasks::{scan_now::ScanNow, scheduler_tick::SchedulerTick},
     workers::{full_scan::FullScanWorker, verify::VerifyWorker},
 };
 
@@ -64,6 +64,7 @@ impl Hooks for App {
 
     fn register_tasks(tasks: &mut Tasks) {
         tasks.register(ScanNow);
+        tasks.register(SchedulerTick);
     }
 
     async fn truncate(_ctx: &AppContext) -> Result<()> {

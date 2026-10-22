@@ -5,6 +5,7 @@ pub mod ledger_storage;
 pub mod magic_links;
 pub mod members;
 pub mod organisations;
+pub mod schedules;
 pub mod users;
 
 use sea_orm::prelude::DateTimeWithTimeZone;

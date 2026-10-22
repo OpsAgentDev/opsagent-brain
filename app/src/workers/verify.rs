@@ -23,7 +23,7 @@ use crate::models::{
     audit,
     connections::{account_of, cas, load_creds, status_of, status_str, Creds},
     ledger_storage::PgStorage,
-    now,
+    now, schedules,
 };
 
 const LEASE_TTL: Duration = Duration::from_secs(120);
@@ -331,6 +331,11 @@ impl VerifyWorker {
             a.first_connected_at = Set(Some(now()));
             a.billable_from = Set(Some(now()));
             // TODO(full_scan): enqueue the first scan on first connect (Task 10).
+        }
+        if to == S::Connected {
+            schedules::create_defaults(&txn, c.organisation_id, c.id, Utc::now())
+                .await
+                .map_err(lerr)?;
         }
         // Savepoint, so a unique violation does not abort the outer transaction.
         let sp = txn.begin().await.map_err(lerr)?;

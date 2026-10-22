@@ -102,3 +102,10 @@ settings:
   cookie_domain: "<%= get_env(name="COOKIE_DOMAIN", default="opsagent.dev") %>"
   github_client_id: "<%= get_env(name="GITHUB_CLIENT_ID", default="") %>"
   github_client_secret: "<%= get_env(name="GITHUB_CLIENT_SECRET", default="") %>"
+
+# Scheduler (`cargo loco scheduler`, exactly one instance): tick every minute.
+scheduler:
+  jobs:
+    tick:
+      run: "scheduler:tick"
+      schedule: "0 * * * * *"
