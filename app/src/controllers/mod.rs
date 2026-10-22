@@ -2,9 +2,11 @@ pub mod auth;
 pub mod connections;
 pub mod findings;
 pub mod health;
+pub mod integrations;
 pub mod members;
 pub mod openapi;
 pub mod orgs;
+pub mod recipients;
 pub mod resources;
 pub mod runs;
 

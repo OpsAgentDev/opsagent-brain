@@ -42,6 +42,8 @@ pub enum Relation {
     ConnectionCredentials,
     #[sea_orm(has_many = "super::connection_verifications::Entity")]
     ConnectionVerifications,
+    #[sea_orm(has_many = "super::deliveries::Entity")]
+    Deliveries,
     #[sea_orm(has_many = "super::findings::Entity")]
     Findings,
     #[sea_orm(
@@ -52,6 +54,8 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     Organisations,
+    #[sea_orm(has_many = "super::recipients::Entity")]
+    Recipients,
     #[sea_orm(has_many = "super::resources::Entity")]
     Resources,
     #[sea_orm(has_many = "super::runs::Entity")]
@@ -72,6 +76,12 @@ impl Related<super::connection_verifications::Entity> for Entity {
     }
 }
 
+impl Related<super::deliveries::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deliveries.def()
+    }
+}
+
 impl Related<super::findings::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Findings.def()
@@ -81,6 +91,12 @@ impl Related<super::findings::Entity> for Entity {
 impl Related<super::organisations::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Organisations.def()
+    }
+}
+
+impl Related<super::recipients::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Recipients.def()
     }
 }
 

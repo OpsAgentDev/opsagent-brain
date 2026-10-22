@@ -157,6 +157,22 @@ pub struct ConnectionPatch {
     pub briefing_time_local: Option<String>,
     /// At least 1.
     pub api_rate_ceiling: Option<i32>,
+    /// Slack channel id (`C…` or `G…`) for this connection's deliveries; `""` clears it.
+    /// Email recipients are managed through `/orgs/{org}/recipients` with `connection_id`.
+    pub slack_channel_id: Option<String>,
+}
+
+/// `""` clears; otherwise a Slack conversation id.
+fn valid_channel(s: &str) -> Result<Option<String>, ApiError> {
+    if s.is_empty() {
+        return Ok(None);
+    }
+    let ok = (9..=21).contains(&s.len())
+        && matches!(s.as_bytes()[0], b'C' | b'G')
+        && s.bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+    ok.then(|| Some(s.to_owned()))
+        .ok_or_else(|| ApiError::invalid("slack_channel_id must be a Slack channel id"))
 }
 
 fn valid_hhmm(field: &str, s: &str) -> Result<NaiveTime, ApiError> {
@@ -188,6 +204,11 @@ async fn update(
         scan_time_local: hhmm("scan_time_local", &body.scan_time_local)?,
         briefing_time_local: hhmm("briefing_time_local", &body.briefing_time_local)?,
         api_rate_ceiling: body.api_rate_ceiling,
+        slack_channel_id: body
+            .slack_channel_id
+            .as_deref()
+            .map(valid_channel)
+            .transpose()?,
     };
     Ok(Json(view(&service::update(&ctx.db, c, patch).await?, None)))
 }

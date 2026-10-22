@@ -5,7 +5,7 @@ use loco_rs::{
     bgworker::{BackgroundWorker, Queue},
     boot::{create_app, BootResult, StartMode},
     config::Config,
-    controller::AppRoutes,
+    controller::{middleware::MiddlewareLayer, AppRoutes},
     environment::Environment,
     task::Tasks,
     Result,
@@ -17,7 +17,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use crate::{
     controllers,
-    middleware::AuthInitializer,
+    middleware::{self, AuthInitializer},
     tasks::{openapi_dump::OpenapiDump, scan_now::ScanNow, scheduler_tick::SchedulerTick},
     workers::{full_scan::FullScanWorker, verify::VerifyWorker},
 };
@@ -105,6 +105,10 @@ impl Hooks for App {
     /// OpenAPI document. Merged here (not in `after_routes`) so Loco's middleware stack wraps them.
     async fn before_routes(_ctx: &AppContext) -> Result<AxumRouter<AppContext>> {
         Ok(controllers::openapi::routes())
+    }
+
+    fn middlewares(ctx: &AppContext) -> Vec<Box<dyn MiddlewareLayer>> {
+        middleware::request_span::stack(ctx)
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {

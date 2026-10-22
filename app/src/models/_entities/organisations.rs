@@ -30,12 +30,20 @@ pub struct Model {
 pub enum Relation {
     #[sea_orm(has_many = "super::connections::Entity")]
     Connections,
+    #[sea_orm(has_many = "super::deliveries::Entity")]
+    Deliveries,
+    #[sea_orm(has_many = "super::email_suppressions::Entity")]
+    EmailSuppressions,
     #[sea_orm(has_many = "super::findings::Entity")]
     Findings,
+    #[sea_orm(has_many = "super::integrations::Entity")]
+    Integrations,
     #[sea_orm(has_many = "super::invites::Entity")]
     Invites,
     #[sea_orm(has_many = "super::members::Entity")]
     Members,
+    #[sea_orm(has_many = "super::recipients::Entity")]
+    Recipients,
     #[sea_orm(has_many = "super::resources::Entity")]
     Resources,
     #[sea_orm(has_many = "super::runs::Entity")]
@@ -50,9 +58,27 @@ impl Related<super::connections::Entity> for Entity {
     }
 }
 
+impl Related<super::deliveries::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deliveries.def()
+    }
+}
+
 impl Related<super::findings::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Findings.def()
+    }
+}
+
+impl Related<super::email_suppressions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EmailSuppressions.def()
+    }
+}
+
+impl Related<super::integrations::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Integrations.def()
     }
 }
 
@@ -65,6 +91,12 @@ impl Related<super::invites::Entity> for Entity {
 impl Related<super::members::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Members.def()
+    }
+}
+
+impl Related<super::recipients::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Recipients.def()
     }
 }
 

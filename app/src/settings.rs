@@ -12,6 +12,17 @@ pub struct Settings {
     pub cookie_domain: String,
     pub github_client_id: String,
     pub github_client_secret: String,
+    /// Empty disables Slack (`slack_not_configured`).
+    #[serde(default)]
+    pub slack_client_id: String,
+    #[serde(default)]
+    pub slack_client_secret: String,
+    #[serde(default = "slack_api_base_url")]
+    pub slack_api_base_url: String,
+}
+
+fn slack_api_base_url() -> String {
+    crate::adapters::slack::API_BASE.into()
 }
 
 impl Settings {

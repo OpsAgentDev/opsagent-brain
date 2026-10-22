@@ -239,6 +239,8 @@ pub struct Patch {
     pub scan_time_local: Option<NaiveTime>,
     pub briefing_time_local: Option<NaiveTime>,
     pub api_rate_ceiling: Option<i32>,
+    /// `Some(None)` clears the channel.
+    pub slack_channel_id: Option<Option<String>>,
 }
 
 /// Applies `p`. A new scan time rewrites the nightly `full_scan` schedule, effective from the
@@ -264,6 +266,9 @@ pub async fn update(
     }
     if let Some(r) = p.api_rate_ceiling {
         a.api_rate_ceiling = Set(Some(r));
+    }
+    if let Some(ch) = p.slack_channel_id {
+        a.slack_channel_id = Set(ch);
     }
     a.updated_at = Set(now());
     let txn = db.begin().await?;
