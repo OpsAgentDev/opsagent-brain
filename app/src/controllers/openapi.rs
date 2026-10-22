@@ -8,7 +8,7 @@ use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 
-use super::{auth, connections, findings, members, orgs, resources, runs};
+use super::{auth, connections, findings, integrations, members, orgs, resources, runs};
 use crate::{
     api_error::ApiError,
     middleware::org_scope::AuthUser,
@@ -36,6 +36,7 @@ fn api() -> OpenApiRouter<AppContext> {
         .merge(orgs::api())
         .merge(members::api())
         .merge(connections::api())
+        .merge(integrations::api())
         .merge(findings::api())
         .merge(resources::api())
         .merge(runs::api())

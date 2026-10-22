@@ -16,9 +16,13 @@ use loco_rs::{
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
-use crate::{mailers, settings::Settings};
+use crate::{
+    adapters::slack::{HttpSlack, SlackClient},
+    mailers,
+    settings::Settings,
+};
 
-/// Installs settings, the mailer, the session layer and the CSRF guard.
+/// Installs settings, the mailer, the Slack client, the session layer and the CSRF guard.
 pub struct AuthInitializer;
 
 #[async_trait]
@@ -31,6 +35,8 @@ impl Initializer for AuthInitializer {
         let settings = Settings::load(ctx)?;
         let layer = session::layer(ctx.db.clone(), &settings);
         let cors = cors_layer(&settings.web_base_url)?;
+        let slack: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(&settings.slack_api_base_url));
+        ctx.shared_store.insert(slack);
         ctx.shared_store.insert(settings);
         let production = ctx.environment == Environment::Production;
         ctx.shared_store.insert(mailers::from_env(production)?);
@@ -65,4 +71,11 @@ pub fn mailer(ctx: &AppContext) -> Arc<dyn mailers::Mailer> {
     ctx.shared_store
         .get::<Arc<dyn mailers::Mailer>>()
         .expect("mailer not installed")
+}
+
+/// The Slack client installed by `AuthInitializer` (tests may replace it in the shared store).
+pub fn slack(ctx: &AppContext) -> Arc<dyn SlackClient> {
+    ctx.shared_store
+        .get::<Arc<dyn SlackClient>>()
+        .expect("slack client not installed")
 }

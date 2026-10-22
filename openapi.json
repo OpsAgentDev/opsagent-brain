@@ -226,6 +226,64 @@
         }
       }
     },
+    "/integrations/slack/callback": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "integrations_slack_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "Set by Slack when the user cancels (`access_denied`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "To `WEB_BASE_URL/settings/delivery?slack=connected`, or `?slack=error&code=<code>`"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/invites/{token}/accept": {
       "post": {
         "tags": [
@@ -1357,6 +1415,223 @@
         }
       }
     },
+    "/orgs/{org}/integrations": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "integrations_list",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Integration"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/integrations/slack/channels": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "integrations_slack_channels",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Channel"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/integrations/slack/start": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "integrations_slack_start",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlackStart"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/integrations/{id}": {
+      "delete": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "integrations_remove",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs/{org}/invites": {
       "post": {
         "tags": [
@@ -1786,6 +2061,21 @@
           }
         }
       },
+      "Channel": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "Connection": {
         "type": "object",
         "required": [
@@ -1862,6 +2152,13 @@
             ],
             "description": "`HH:MM` in the organisation's timezone."
           },
+          "slack_channel_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Slack channel id for this connection's deliveries; null inherits the organisation's."
+          },
           "status": {
             "type": "string",
             "description": "`pending`, `verifying`, `connected`, `degraded`, `revoked`, `blocked` or `disconnected`."
@@ -1910,6 +2207,13 @@
               "null"
             ],
             "description": "`HH:MM` in the organisation's timezone; the nightly scan moves there from the next day."
+          },
+          "slack_channel_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Slack channel id (`C…` or `G…`) for this connection's deliveries; `\"\"` clears it.\nEmail recipients are managed through `/orgs/{org}/recipients` with `connection_id`."
           }
         }
       },
@@ -2205,6 +2509,40 @@
           },
           "variant": {
             "type": "string"
+          }
+        }
+      },
+      "Integration": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`slack`, `github`, `terraform`, `prometheus` or `k8s`."
+          },
+          "status": {
+            "type": "string",
+            "description": "`active`, `revoked` or `failing`."
+          },
+          "team_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Slack workspace name."
           }
         }
       },
@@ -2856,6 +3194,17 @@
           "status": {
             "type": "string",
             "description": "`queued`, `running`, `done`, `partial`, `failed` or `skipped`."
+          }
+        }
+      },
+      "SlackStart": {
+        "type": "object",
+        "required": [
+          "authorize_url"
+        ],
+        "properties": {
+          "authorize_url": {
+            "type": "string"
           }
         }
       },
