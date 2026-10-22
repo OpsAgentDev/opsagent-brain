@@ -9,6 +9,7 @@ pub mod connection_credentials;
 pub mod connection_verifications;
 pub mod connections;
 pub mod deliveries;
+pub mod email_suppressions;
 pub mod evidence;
 pub mod finding_events;
 pub mod findings;

@@ -82,6 +82,9 @@ pub trait SlackClient: Send + Sync {
     /// Unarchived public channels and the private channels the bot is in, at most `CHANNEL_CAP`.
     async fn channels(&self, token: &str) -> Result<Vec<Channel>, SlackError>;
 
+    /// Revokes `token` at Slack (`auth.revoke`).
+    async fn revoke(&self, token: &str) -> Result<(), SlackError>;
+
     /// Posts `text` to `channel`; returns the message `ts`.
     async fn post_message(
         &self,
@@ -209,6 +212,11 @@ impl SlackClient for HttpSlack {
                 return Ok(out);
             }
         }
+    }
+
+    async fn revoke(&self, token: &str) -> Result<(), SlackError> {
+        let req = self.http.post(self.url("auth.revoke")).bearer_auth(token);
+        Self::call(req).await.map(|_| ())
     }
 
     async fn post_message(

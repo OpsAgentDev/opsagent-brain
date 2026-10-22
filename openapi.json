@@ -261,16 +261,7 @@
         ],
         "responses": {
           "302": {
-            "description": "To `WEB_BASE_URL/settings/delivery?slack=connected`, or `?slack=error&code=<code>`"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
+            "description": "To `WEB_BASE_URL/settings/delivery?slack=connected`, or `?slack=error&code=<code>` (`signed_out` without a session)"
           },
           "403": {
             "content": {
@@ -2254,7 +2245,7 @@
         "tags": [
           "recipients"
         ],
-        "summary": "Anonymous and single use.",
+        "summary": "Anonymous and idempotent; the token stays valid while the recipient exists.",
         "operationId": "recipients_unsubscribe",
         "parameters": [
           {

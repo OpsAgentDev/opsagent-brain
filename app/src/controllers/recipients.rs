@@ -21,6 +21,7 @@ use crate::{
         recipients as service,
     },
     settings::Settings,
+    workers::common::redis_client,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -97,6 +98,7 @@ async fn create(
     let web = Settings::get(&ctx).web_base_url;
     let row = service::create(
         &ctx.db,
+        &redis_client(&ctx)?,
         mailer(&ctx).as_ref(),
         web.trim_end_matches('/'),
         scope.organisation_id,
@@ -133,7 +135,7 @@ async fn confirm(
     State(ctx): State<AppContext>,
     ApiJson(body): ApiJson<ConfirmBody>,
 ) -> Result<StatusCode, ApiError> {
-    service::confirm(&ctx.db, &body.token).await?;
+    service::confirm(&ctx.db, &redis_client(&ctx)?, &body.token).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -144,14 +146,15 @@ pub struct UnsubscribePath {
     pub token: String,
 }
 
-/// Anonymous and single use.
+/// Anonymous and idempotent; the token stays valid while the recipient exists.
 #[utoipa::path(post, path = "/unsubscribe/{token}", tag = "recipients", params(UnsubscribePath),
     responses((status = 204), (status = 410, body = Problem)))]
 async fn unsubscribe(
     State(ctx): State<AppContext>,
     Path(token): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    service::unsubscribe(&ctx.db, &token).await?;
+    let secret = Settings::get(&ctx).session_secret;
+    service::unsubscribe(&ctx.db, &secret, &token).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

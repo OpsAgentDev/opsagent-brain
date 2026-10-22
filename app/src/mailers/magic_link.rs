@@ -18,10 +18,41 @@ pub fn invite(to: &str, org_name: &str, link: &str) -> Mail {
     }
 }
 
+/// An organisation name for mail text: control and bidi-override characters dropped (no header
+/// injection or spoofed line breaks), at most 60 characters.
+pub fn mail_safe_name(raw: &str) -> String {
+    const MAX: usize = 60;
+    let bidi = |c: char| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+    let clean: String = raw
+        .chars()
+        .map(|c| if c.is_control() || bidi(c) { ' ' } else { c })
+        .collect();
+    let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    if clean.chars().count() > MAX {
+        format!("{}…", clean.chars().take(MAX - 1).collect::<String>())
+    } else {
+        clean
+    }
+}
+
 pub fn recipient_confirm(to: &str, org_name: &str, link: &str) -> Mail {
+    let org_name = &mail_safe_name(org_name);
     Mail {
         to: to.into(),
         subject: format!("Confirm OpsAgent reports for {org_name}"),
         text: format!("{org_name} wants to send you OpsAgent reports by email. Confirm here:\n\n{link}\n\nIgnore this mail to receive nothing. The link expires in 7 days."),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mail_safe_name;
+
+    #[test]
+    fn org_name_is_capped_and_has_no_control_chars() {
+        let n = mail_safe_name(&format!("Evil\r\nBcc: x@y.z\u{202E}{}", "a".repeat(100)));
+        assert!(!n.contains(['\r', '\n', '\u{202E}']), "{n}");
+        assert_eq!(n.chars().count(), 60);
+        assert_eq!(mail_safe_name("  Acme  Ltd "), "Acme Ltd");
     }
 }

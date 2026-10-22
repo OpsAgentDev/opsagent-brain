@@ -8,7 +8,9 @@ use opsagent_brain::{
     app::kek,
     mailers::CaptureMailer,
     models::{
-        _entities::{audit_events, integrations, organisations, recipients, users},
+        _entities::{
+            audit_events, email_suppressions, integrations, organisations, recipients, users,
+        },
         integrations::open_token,
         members as member_model,
     },
@@ -172,6 +174,20 @@ async fn start_returns_authorize_url_and_needs_config_and_owner() {
 
 #[tokio::test]
 #[serial]
+async fn callback_without_session_redirects_signed_out() {
+    serve(|req, _ctx| async move {
+        let res = callback(&req, "good", "x").await;
+        assert_eq!(res.status_code(), 302);
+        assert_eq!(
+            res.header("location"),
+            "http://localhost:3000/settings/delivery?slack=error&code=signed_out"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn forged_or_superseded_state_is_403() {
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);
@@ -259,6 +275,18 @@ async fn callback_seals_token_and_redirects_and_state_is_single_use() {
             .json::<Value>();
         assert_eq!(list[0]["team_name"], "Acme");
         let id = list[0]["id"].as_str().unwrap();
+        Mock::given(method("POST"))
+            .and(path("/auth.revoke"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer xoxb-secret-token",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"ok": true, "revoked": true})),
+            )
+            .expect(1)
+            .mount(&slack)
+            .await;
         let res = req
             .delete(&format!("/v1/orgs/{org}/integrations/{id}"))
             .add_header("X-CSRF-Token", &t)
@@ -428,8 +456,8 @@ async fn email_recipient_confirms_by_link_and_member_is_active() {
 
 #[tokio::test]
 #[serial]
-async fn unsubscribe_token_is_single_use_and_owner_deletes() {
-    serve(|req, ctx| async move {
+async fn unsubscribe_link_is_stable_and_suppresses_the_address() {
+    serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
         let (t, org, conn) =
             fake_connection(&req, &mail, "owner@example.com", "Acme", "clean").await;
@@ -455,14 +483,35 @@ async fn unsubscribe_token_is_single_use_and_owner_deletes() {
             .await
             .unwrap()
             .unwrap();
-        let token =
-            recipient_service::issue_unsubscribe_token(&ctx.db, row.organisation_id, row.id)
-                .await
-                .unwrap();
-        let res = req.post(&format!("/v1/unsubscribe/{token}")).await;
-        assert_eq!(res.status_code(), 204);
+        let secret = Settings::get(&ctx).session_secret;
+        // Two mails carry the same link, and both work (idempotent).
+        let web = "http://localhost:3000";
+        let first = recipient_service::unsubscribe_url(web, &secret, row.id);
+        let second = recipient_service::unsubscribe_url(web, &secret, row.id);
+        assert_eq!(first, second);
+        let token = first.rsplit('/').next().unwrap().to_string();
         assert_eq!(
             req.post(&format!("/v1/unsubscribe/{token}"))
+                .await
+                .status_code(),
+            204
+        );
+        assert_eq!(
+            req.post(&format!("/v1/unsubscribe/{token}"))
+                .await
+                .status_code(),
+            204
+        );
+        let forged = format!("{}.AAAA", row.id.simple());
+        assert_eq!(
+            req.post(&format!("/v1/unsubscribe/{forged}"))
+                .await
+                .status_code(),
+            410
+        );
+        let other = recipient_service::unsubscribe_token("another-secret-entirely", row.id);
+        assert_eq!(
+            req.post(&format!("/v1/unsubscribe/{other}"))
                 .await
                 .status_code(),
             410
@@ -474,7 +523,31 @@ async fn unsubscribe_token_is_single_use_and_owner_deletes() {
             .unwrap();
         assert!(row.unsubscribed_at.is_some());
         assert_eq!(audits(&ctx, "recipient.unsubscribe").await, 1);
+        let s = email_suppressions::Entity::find_by_id(recipient_service::email_hash(
+            "EXT@example.com",
+        ))
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(s.reason, "unsubscribed");
 
+        // Another organisation adding the address gets a 201 but no mail is sent.
+        req.clear_cookies();
+        let t2 = sign_in(&req, &mail, "other@example.com").await;
+        let org2 = slug(&create_org(&req, &t2, "Other").await);
+        let sent = mail.sent().len();
+        assert_eq!(
+            add_recipient(&req, &t2, &org2, json!({"email": "ext@example.com"}))
+                .await
+                .status_code(),
+            201
+        );
+        assert_eq!(mail.sent().len(), sent);
+
+        // The owner deletes; the token then stops working.
+        req.clear_cookies();
+        let t = sign_in(&req, &mail, "owner@example.com").await;
         let url = format!("/v1/orgs/{org}/recipients/{}", row.id);
         assert_eq!(
             req.delete(&url)
@@ -491,6 +564,129 @@ async fn unsubscribe_token_is_single_use_and_owner_deletes() {
             404
         );
         assert_eq!(audits(&ctx, "recipient.delete").await, 1);
+        assert_eq!(
+            req.post(&format!("/v1/unsubscribe/{token}"))
+                .await
+                .status_code(),
+            410
+        );
+    })
+    .await;
+}
+
+/// Confirm mails sent to `email` so far.
+fn mails_to(mail: &CaptureMailer, email: &str) -> usize {
+    mail.sent().iter().filter(|m| m.to == email).count()
+}
+
+#[tokio::test]
+#[serial]
+async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, c1) = fake_connection(&req, &mail, "owner@example.com", "Acme", "clean").await;
+        let conn = |name: &'static str| {
+            let (req, t, org) = (&req, &t, &org);
+            async move { create_connection(req, t, org, "fake", name).await["id"].clone() }
+        };
+        let (c2, c3) = (conn("clean").await, conn("clean").await);
+        // Ignored: two unconfirmed mails, then the address is suppressed and gets no third.
+        for c in [Value::Null, json!(c1)] {
+            add_recipient(
+                &req,
+                &t,
+                &org,
+                json!({"email": "quiet@example.com", "connection_id": c}),
+            )
+            .await;
+        }
+        assert_eq!(mails_to(&mail, "quiet@example.com"), 2);
+        let res = add_recipient(
+            &req,
+            &t,
+            &org,
+            json!({"email": "quiet@example.com", "connection_id": c2}),
+        )
+        .await;
+        assert_eq!(res.status_code(), 201);
+        assert_eq!(mails_to(&mail, "quiet@example.com"), 2);
+        let s = email_suppressions::Entity::find_by_id(recipient_service::email_hash(
+            "quiet@example.com",
+        ))
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(s.reason, "ignored");
+
+        // Per address: 3 a day, even when each one is confirmed.
+        for c in [Value::Null, json!(c1), json!(c2), json!(c3)] {
+            add_recipient(
+                &req,
+                &t,
+                &org,
+                json!({"email": "busy@example.com", "connection_id": c}),
+            )
+            .await;
+            if let Some(m) = mail
+                .sent()
+                .into_iter()
+                .rev()
+                .find(|m| m.to == "busy@example.com")
+            {
+                let tok = token_of(
+                    m.text
+                        .split_whitespace()
+                        .find(|w| w.starts_with("http"))
+                        .unwrap(),
+                );
+                req.post("/v1/recipients/confirm")
+                    .json(&json!({"token": tok}))
+                    .await;
+            }
+        }
+        assert_eq!(mails_to(&mail, "busy@example.com"), 3);
+        assert!(
+            email_suppressions::Entity::find_by_id(recipient_service::email_hash(
+                "busy@example.com"
+            ))
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_none()
+        );
+
+        // Per organisation: 20 a day. Six attempts above passed the address cap (5 sent, 1 refused
+        // as ignored), so 14 remain.
+        for i in 0..20 {
+            let res = add_recipient(
+                &req,
+                &t,
+                &org,
+                json!({"email": format!("r{i}@example.com")}),
+            )
+            .await;
+            assert_eq!(res.status_code(), 201);
+        }
+        let to_r = mail.sent().iter().filter(|m| m.to.starts_with('r')).count();
+        assert_eq!(to_r, 14);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn confirm_mail_caps_and_strips_the_org_name() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "owner@example.com").await;
+        let name = format!("Evil\nBcc: victim@example.com {}", "x".repeat(60));
+        let org = slug(&create_org(&req, &t, &name).await);
+        add_recipient(&req, &t, &org, json!({"email": "ext@example.com"})).await;
+        let m = mail.sent().pop().unwrap();
+        assert!(!m.subject.contains('\n'), "{}", m.subject);
+        assert!(m.subject.chars().count() <= "Confirm OpsAgent reports for ".len() + 60);
+        assert!(!m.text.contains(&"x".repeat(60)));
     })
     .await;
 }

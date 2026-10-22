@@ -38,13 +38,21 @@ pub fn redis_of(ctx: &AppContext) -> opsagent_ledger::redis::Client {
     opsagent_ledger::redis::Client::open(cfg.uri.as_str()).unwrap()
 }
 
-/// Captures mail and resets the magic-link limiter, whose counters outlive a test by an hour.
+/// Captures mail and resets the mail limiters, whose counters outlive a test (hours to days).
 pub fn prepare(ctx: &AppContext) -> Arc<CaptureMailer> {
     let mut c = redis_of(ctx).get_connection().unwrap();
-    let keys: Vec<String> = opsagent_ledger::redis::cmd("KEYS")
-        .arg("ratelimit:magic_link:*")
-        .query(&mut c)
-        .unwrap();
+    let mut keys: Vec<String> = Vec::new();
+    for pattern in [
+        "ratelimit:magic_link:*",
+        "ratelimit:recipient_confirm:*",
+        "recipient_confirm:*",
+    ] {
+        let found: Vec<String> = opsagent_ledger::redis::cmd("KEYS")
+            .arg(pattern)
+            .query(&mut c)
+            .unwrap();
+        keys.extend(found);
+    }
     if !keys.is_empty() {
         let _: () = opsagent_ledger::redis::cmd("DEL")
             .arg(&keys)

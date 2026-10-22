@@ -1,11 +1,18 @@
 //! Email recipients of deliveries: owner adds (an email confirms by link, a member is active at
-//! once), public confirm and unsubscribe by single-use token (only SHA-256 hashes are stored).
+//! once), public confirm by single-use token (SHA-256 at rest), and unsubscribe by a stable
+//! HMAC token. Confirm mails are capped per address and per organisation, and never go to a
+//! suppressed address; a capped or suppressed mail is answered as if sent.
 use axum::http::StatusCode;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use chrono::{Duration, Utc};
+use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
+use opsagent_ledger::redis;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, Set,
-    SqlErr, TransactionTrait,
+    sea_query::OnConflict, ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection,
+    DbErr, EntityTrait, QueryFilter, Set, SqlErr, TransactionTrait,
 };
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
@@ -13,7 +20,7 @@ use crate::{
     mailers::{magic_link as mail, Mailer},
     models::{
         _entities::{
-            connections, members, organisations,
+            connections, email_suppressions, members, organisations,
             recipients::{self, Column as C},
             users,
         },
@@ -22,11 +29,133 @@ use crate::{
         now,
         users::normalize_email,
     },
+    services::rate_limit::{hit, DAY_SECS},
 };
 
 pub const PENDING: &str = "pending";
 pub const ACTIVE: &str = "active";
 const CONFIRM_DAYS: i64 = 7;
+/// Confirm mails per address per day.
+pub const MAILS_PER_ADDRESS: i64 = 3;
+/// Confirm mails per organisation per day.
+pub const MAILS_PER_ORG: i64 = 20;
+/// Unconfirmed confirm mails per address in 30 days before it is suppressed as `ignored`.
+pub const UNCONFIRMED_CAP: i64 = 2;
+const UNCONFIRMED_WINDOW_SECS: i64 = 30 * DAY_SECS;
+
+/// Hex SHA-256 of the lowercased address: the suppression key (no plaintext email stored).
+pub fn email_hash(email: &str) -> String {
+    format!("{:x}", Sha256::digest(email.to_lowercase()))
+}
+
+fn unconfirmed_key(hash: &str) -> String {
+    format!("recipient_confirm:unconfirmed:{hash}")
+}
+
+async fn suppress(db: &impl ConnectionTrait, hash: String, reason: &str) -> Result<(), DbErr> {
+    let row = email_suppressions::ActiveModel {
+        email_hash: Set(hash),
+        reason: Set(reason.into()),
+        created_at: Set(now()),
+    };
+    email_suppressions::Entity::insert(row)
+        .on_conflict(
+            OnConflict::column(email_suppressions::Column::EmailHash)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(db)
+        .await
+        .map(|_| ())
+}
+
+/// Whether a confirm mail to `email` may go out now: not suppressed, within the daily caps,
+/// and not the third unconfirmed mail in 30 days (which suppresses the address as `ignored`).
+/// Fails closed when Redis is unavailable.
+async fn may_mail(
+    db: &DatabaseConnection,
+    redis: &redis::Client,
+    organisation_id: Uuid,
+    email: &str,
+) -> Result<bool, ApiError> {
+    let hash = email_hash(email);
+    // Suppressions are global by design (any organisation).
+    if email_suppressions::Entity::find_by_id(hash.clone())
+        .one(db)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let counted = async {
+        let mut c = redis.get_multiplexed_async_connection().await?;
+        let address = format!("ratelimit:recipient_confirm:email:{hash}");
+        let org = format!("ratelimit:recipient_confirm:org:{organisation_id}");
+        if !hit(&mut c, &address, MAILS_PER_ADDRESS, DAY_SECS).await?
+            || !hit(&mut c, &org, MAILS_PER_ORG, DAY_SECS).await?
+        {
+            return Ok(Some(false));
+        }
+        let fresh = hit(
+            &mut c,
+            &unconfirmed_key(&hash),
+            UNCONFIRMED_CAP,
+            UNCONFIRMED_WINDOW_SECS,
+        )
+        .await?;
+        Ok::<_, redis::RedisError>(if fresh { Some(true) } else { None })
+    };
+    match counted.await {
+        Ok(Some(ok)) => Ok(ok),
+        Ok(None) => {
+            suppress(db, hash, "ignored").await?;
+            Ok(false)
+        }
+        Err(_) => {
+            tracing::warn!(
+                error_code = "redis_unavailable",
+                "confirm mail limit unavailable, not sending"
+            );
+            Ok(false)
+        }
+    }
+}
+
+/// The HMAC key for unsubscribe tokens, derived from `SESSION_SECRET`.
+fn unsubscribe_mac(secret: &str, id: Uuid) -> Hmac<Sha256> {
+    let mut key = [0u8; 32];
+    Hkdf::<Sha256>::new(None, secret.as_bytes())
+        .expand(b"opsagent-unsubscribe", &mut key)
+        .expect("32 bytes is a valid HKDF-SHA256 length");
+    let mut m = Hmac::<Sha256>::new_from_slice(&key).expect("hmac accepts any key");
+    m.update(id.as_bytes());
+    m
+}
+
+/// `<recipient id>.<base64url HMAC-SHA256(key, id)>`: stable for the row's lifetime, so every
+/// mail carries the same working link.
+pub fn unsubscribe_token(secret: &str, id: Uuid) -> String {
+    let mac = unsubscribe_mac(secret, id).finalize().into_bytes();
+    format!("{}.{}", id.simple(), B64.encode(mac))
+}
+
+/// The recipient id a token was issued for, if its HMAC verifies (constant-time compare).
+fn verify_unsubscribe(secret: &str, token: &str) -> Option<Uuid> {
+    let (id, mac) = token.split_once('.')?;
+    let id = Uuid::try_parse(id).ok()?;
+    let mac = B64.decode(mac).ok()?;
+    unsubscribe_mac(secret, id).verify_slice(&mac).ok()?;
+    Some(id)
+}
+
+/// The footer link for recipient `id`.
+pub fn unsubscribe_url(web_base_url: &str, secret: &str, id: Uuid) -> String {
+    format!(
+        "{}/unsubscribe/{}",
+        web_base_url.trim_end_matches('/'),
+        unsubscribe_token(secret, id)
+    )
+}
 
 /// Who to add: exactly one of `email` (confirms by mail) or `member_id`.
 pub struct NewRecipient {
@@ -63,6 +192,7 @@ fn is_duplicate(e: &DbErr) -> bool {
 /// to an email recipient. 409 `recipient_exists` for the same email and connection.
 pub async fn create(
     db: &DatabaseConnection,
+    redis: &redis::Client,
     mailer: &dyn Mailer,
     web_base_url: &str,
     organisation_id: Uuid,
@@ -99,7 +229,6 @@ pub async fn create(
         confirm_expires_at: Set(token
             .as_ref()
             .map(|_| (Utc::now() + Duration::days(CONFIRM_DAYS)).into())),
-        unsubscribe_token_hash: Set(None),
         unsubscribed_at: Set(None),
         created_at: Set(now()),
         updated_at: Set(now()),
@@ -127,24 +256,54 @@ pub async fn create(
     .await?;
     txn.commit().await?;
     if let Some(token) = token {
-        let org = organisations::Entity::find_by_id(organisation_id)
-            .one(db)
-            .await?;
-        let name = org.map(|o| o.name).unwrap_or_default();
-        let link = format!("{web_base_url}/recipients/confirm?token={token}");
-        if mailer
-            .send(mail::recipient_confirm(&email, &name, &link))
-            .await
-            .is_err()
-        {
-            tracing::error!(error_code = "mail_failed", "recipient confirm mail failed");
-        }
+        let to = Confirm {
+            organisation_id,
+            email: &email,
+            token: &token,
+        };
+        send_confirm(db, redis, mailer, web_base_url, to).await?;
     }
     Ok(row)
 }
 
+struct Confirm<'a> {
+    organisation_id: Uuid,
+    email: &'a str,
+    token: &'a str,
+}
+
+/// Mails the confirm link unless `may_mail` refuses (answered as if sent either way).
+async fn send_confirm(
+    db: &DatabaseConnection,
+    redis: &redis::Client,
+    mailer: &dyn Mailer,
+    web_base_url: &str,
+    c: Confirm<'_>,
+) -> Result<(), ApiError> {
+    if !may_mail(db, redis, c.organisation_id, c.email).await? {
+        return Ok(());
+    }
+    let org = organisations::Entity::find_by_id(c.organisation_id)
+        .one(db)
+        .await?;
+    let name = org.map(|o| o.name).unwrap_or_default();
+    let link = format!("{web_base_url}/recipients/confirm?token={}", c.token);
+    if mailer
+        .send(mail::recipient_confirm(c.email, &name, &link))
+        .await
+        .is_err()
+    {
+        tracing::error!(error_code = "mail_failed", "recipient confirm mail failed");
+    }
+    Ok(())
+}
+
 /// Activates the pending recipient holding confirm `token`; 410 if unknown, used or expired.
-pub async fn confirm(db: &DatabaseConnection, token: &str) -> Result<(), ApiError> {
+pub async fn confirm(
+    db: &DatabaseConnection,
+    redis: &redis::Client,
+    token: &str,
+) -> Result<(), ApiError> {
     // tenancy: the token is the lookup key; the row names its organisation.
     let row = recipients::Entity::find()
         .filter(C::ConfirmTokenHash.eq(hash_token(token)))
@@ -180,62 +339,51 @@ pub async fn confirm(db: &DatabaseConnection, token: &str) -> Result<(), ApiErro
     )
     .await?;
     txn.commit().await?;
+    // A confirmed address is not ignoring us; best effort.
+    if let Ok(mut c) = redis.get_multiplexed_async_connection().await {
+        let _: redis::RedisResult<()> = redis::cmd("DEL")
+            .arg(unconfirmed_key(&email_hash(&row.email)))
+            .query_async(&mut c)
+            .await;
+    }
     Ok(())
 }
 
-/// A fresh unsubscribe token for the recipient's next mail footer; earlier tokens stop working.
-pub async fn issue_unsubscribe_token(
+/// Unsubscribes the recipient a valid token names and suppresses its address everywhere.
+/// Idempotent; 410 for a forged token or a deleted recipient.
+pub async fn unsubscribe(
     db: &DatabaseConnection,
-    organisation_id: Uuid,
-    id: Uuid,
-) -> Result<String, ApiError> {
-    let token = new_token();
-    let set = recipients::Entity::update_many()
-        .col_expr(C::UnsubscribeTokenHash, Some(hash_token(&token)).into())
-        .col_expr(C::UpdatedAt, now().into())
-        .filter(C::OrganisationId.eq(organisation_id))
-        .filter(C::Id.eq(id))
-        .filter(C::UnsubscribedAt.is_null())
-        .exec(db)
-        .await?;
-    if set.rows_affected != 1 {
-        return Err(ApiError::not_found());
-    }
-    Ok(token)
-}
-
-/// Unsubscribes the recipient holding `token` (single use); 410 if unknown or used.
-pub async fn unsubscribe(db: &DatabaseConnection, token: &str) -> Result<(), ApiError> {
+    secret: &str,
+    token: &str,
+) -> Result<(), ApiError> {
     let gone = || ApiError::gone("unsubscribe_token_invalid");
-    // tenancy: the token is the lookup key; the row names its organisation.
-    let row = recipients::Entity::find()
-        .filter(C::UnsubscribeTokenHash.eq(hash_token(token)))
-        .filter(C::UnsubscribedAt.is_null())
+    let id = verify_unsubscribe(secret, token).ok_or_else(gone)?;
+    // tenancy: the verified token names the recipient; the row names its organisation.
+    let row = recipients::Entity::find_by_id(id)
         .one(db)
         .await?
         .ok_or_else(gone)?;
     let txn = db.begin().await?;
     let done = recipients::Entity::update_many()
         .col_expr(C::UnsubscribedAt, Some(now()).into())
-        .col_expr(C::UnsubscribeTokenHash, Option::<String>::None.into())
         .col_expr(C::UpdatedAt, now().into())
         .filter(C::OrganisationId.eq(row.organisation_id))
         .filter(C::Id.eq(row.id))
         .filter(C::UnsubscribedAt.is_null())
         .exec(&txn)
         .await?;
-    if done.rows_affected != 1 {
-        return Err(gone());
+    if done.rows_affected == 1 {
+        audit::record_system(
+            &txn,
+            row.organisation_id,
+            "recipient.unsubscribe",
+            ("recipient", row.id.to_string()),
+            "success",
+            serde_json::json!({}),
+        )
+        .await?;
     }
-    audit::record_system(
-        &txn,
-        row.organisation_id,
-        "recipient.unsubscribe",
-        ("recipient", row.id.to_string()),
-        "success",
-        serde_json::json!({}),
-    )
-    .await?;
+    suppress(&txn, email_hash(&row.email), "unsubscribed").await?;
     txn.commit().await?;
     Ok(())
 }

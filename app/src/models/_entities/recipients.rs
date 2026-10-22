@@ -23,8 +23,6 @@ pub struct Model {
     #[sea_orm(column_type = "Text", nullable, unique)]
     pub confirm_token_hash: Option<String>,
     pub confirm_expires_at: Option<DateTimeWithTimeZone>,
-    #[sea_orm(column_type = "Text", nullable, unique)]
-    pub unsubscribe_token_hash: Option<String>,
     pub unsubscribed_at: Option<DateTimeWithTimeZone>,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,

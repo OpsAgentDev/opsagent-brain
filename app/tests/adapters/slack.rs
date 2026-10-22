@@ -165,3 +165,16 @@ async fn oauth_access_returns_install_or_error_code() {
         .unwrap();
     assert_eq!(err, SlackError::Other("invalid_code".into()));
 }
+
+#[tokio::test]
+async fn revoke_calls_auth_revoke_with_the_token() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/auth.revoke"))
+        .and(header("authorization", "Bearer xoxb-t"))
+        .respond_with(ok(json!({"ok": true, "revoked": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    HttpSlack::new(server.uri()).revoke("xoxb-t").await.unwrap();
+}

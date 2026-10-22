@@ -8,6 +8,7 @@ use chrono::{DateTime, FixedOffset};
 use loco_rs::app::AppContext;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use tower_sessions::Session;
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -87,7 +88,8 @@ async fn claim_state(
     state: Option<&str>,
 ) -> Result<Uuid, ApiError> {
     let stored = session.remove::<(String, Uuid)>(SLACK_KEY).await?;
-    let Some((_, org_id)) = stored.filter(|(s, _)| Some(s.as_str()) == state) else {
+    let matches = |s: &str| state.is_some_and(|q| bool::from(s.as_bytes().ct_eq(q.as_bytes())));
+    let Some((_, org_id)) = stored.filter(|(s, _)| matches(s)) else {
         return Err(bad_state());
     };
     let owner = members::Entity::find()
@@ -100,15 +102,18 @@ async fn claim_state(
 }
 
 #[utoipa::path(get, path = "/integrations/slack/callback", tag = "integrations", params(SlackCallback),
-    responses((status = 302, description = "To `WEB_BASE_URL/settings/delivery?slack=connected`, or `?slack=error&code=<code>`"),
-        (status = 401, body = Problem), (status = 403, body = Problem)))]
+    responses((status = 302, description = "To `WEB_BASE_URL/settings/delivery?slack=connected`, or `?slack=error&code=<code>` (`signed_out` without a session)"),
+        (status = 403, body = Problem)))]
 async fn slack_callback(
     State(ctx): State<AppContext>,
     session: Session,
-    AuthUser(user_id): AuthUser,
+    user: Result<AuthUser, ApiError>,
     Query(q): Query<SlackCallback>,
 ) -> Result<Response, ApiError> {
     let s = Settings::get(&ctx);
+    let Ok(AuthUser(user_id)) = user else {
+        return Ok(to_web(&s, "slack=error&code=signed_out"));
+    };
     let org_id = claim_state(&ctx, &session, user_id, q.state.as_deref()).await?;
     let fail = |code: &str| Ok(to_web(&s, &format!("slack=error&code={code}")));
     if q.error.is_some() {
@@ -198,7 +203,16 @@ async fn remove(
 ) -> Result<StatusCode, ApiError> {
     scope.require_owner()?;
     let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
-    service::delete(&ctx.db, scope.organisation_id, scope.user_id, id).await?;
+    let (kek, slack) = (kek(&ctx)?, slack(&ctx));
+    service::delete(
+        &ctx.db,
+        kek.as_ref(),
+        slack.as_ref(),
+        scope.organisation_id,
+        scope.user_id,
+        id,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

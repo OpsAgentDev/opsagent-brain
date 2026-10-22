@@ -162,13 +162,22 @@ pub async fn list(
         .await?)
 }
 
-/// Removes integration `id` and its sealed token, for owner `actor`.
+/// Removes integration `id` for owner `actor`, then revokes its token at Slack (best effort).
 pub async fn delete(
     db: &DatabaseConnection,
+    kek: &dyn Kek,
+    slack: &dyn SlackClient,
     organisation_id: Uuid,
     actor: Uuid,
     id: Uuid,
 ) -> Result<(), ApiError> {
+    let row = integrations::Entity::find_by_id(id)
+        .filter(C::OrganisationId.eq(organisation_id))
+        .one(db)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    // Opened before the row (and its sealed token) is gone.
+    let token = open_token(db, kek, &row).await;
     let txn = db.begin().await?;
     let gone = integrations::Entity::delete_many()
         .filter(C::OrganisationId.eq(organisation_id))
@@ -187,5 +196,17 @@ pub async fn delete(
     )
     .await?;
     txn.commit().await?;
+    match (row.kind.as_str(), token) {
+        (SLACK, Ok(t)) => {
+            if let Err(e) = slack.revoke(&t).await {
+                tracing::warn!(error_code = e.code(), "slack token revoke failed");
+            }
+        }
+        (SLACK, Err(_)) => tracing::warn!(
+            error_code = "token_unreadable",
+            "slack token revoke skipped"
+        ),
+        _ => {}
+    }
     Ok(())
 }

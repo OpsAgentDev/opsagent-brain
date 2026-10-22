@@ -26,7 +26,8 @@ CREATE TABLE deliveries (
   created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
 CREATE INDEX deliveries_organisation_id_created_at_idx ON deliveries (organisation_id, created_at);
 -- An email recipient is `pending` until the confirm link is used; a member recipient starts
--- `active`. Only token hashes are stored. A removed member's rows go with the membership.
+-- `active`. Only the confirm token's hash is stored; unsubscribe tokens are HMACs of the id.
+-- A removed member's rows go with the membership.
 CREATE TABLE recipients (
   id uuid PRIMARY KEY,
   organisation_id uuid NOT NULL REFERENCES organisations(id),
@@ -35,12 +36,11 @@ CREATE TABLE recipients (
   member_id uuid REFERENCES members(id) ON DELETE CASCADE,
   status text NOT NULL CHECK (status IN ('pending','active')),
   confirm_token_hash text, confirm_expires_at timestamptz,
-  unsubscribe_token_hash text, unsubscribed_at timestamptz,
+  unsubscribed_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT recipients_org_email_connection_uniq
     UNIQUE NULLS NOT DISTINCT (organisation_id, email, connection_id));
-CREATE UNIQUE INDEX recipients_confirm_token_hash_uniq ON recipients (confirm_token_hash);
-CREATE UNIQUE INDEX recipients_unsubscribe_token_hash_uniq ON recipients (unsubscribe_token_hash);"#;
+CREATE UNIQUE INDEX recipients_confirm_token_hash_uniq ON recipients (confirm_token_hash);"#;
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {

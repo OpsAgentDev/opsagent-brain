@@ -2,7 +2,7 @@
 //! so a capped request looks exactly like a sent one (no enumeration).
 use std::net::{IpAddr, Ipv6Addr};
 
-use opsagent_ledger::redis::{self, Script};
+use opsagent_ledger::redis;
 use sea_orm::DatabaseConnection;
 use sha2::{Digest, Sha256};
 
@@ -10,31 +10,13 @@ use crate::{
     api_error::ApiError,
     mailers::{magic_link as mail, Mailer},
     models::{magic_links, users as user_model},
+    services::rate_limit::{hit, HOUR_SECS},
 };
 
 /// Links per address per hour.
 pub const PER_EMAIL: i64 = 5;
 /// Requests per client IP (IPv6: per /64) per hour.
 pub const PER_IP: i64 = 30;
-const WINDOW_SECS: i64 = 3600;
-
-/// `INCR`, with the window's `EXPIRE` set by the first hit, in one atomic step: a counter
-/// can never be left without a TTL.
-const COUNT: &str = r#"local n = redis.call('INCR', KEYS[1]) if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end return n"#;
-
-/// Counts one hit on `key`; `true` while the hour's count is within `cap`.
-async fn hit(
-    c: &mut redis::aio::MultiplexedConnection,
-    key: &str,
-    cap: i64,
-) -> redis::RedisResult<bool> {
-    let n: i64 = Script::new(COUNT)
-        .key(key)
-        .arg(WINDOW_SECS)
-        .invoke_async(c)
-        .await?;
-    Ok(n <= cap)
-}
 
 /// The IP cap's bucket: an IPv6 client owns at least a /64, so the /64 is one client.
 fn ip_bucket(ip: IpAddr) -> IpAddr {
@@ -54,12 +36,12 @@ pub async fn rate_limit(
     let mut c = redis.get_multiplexed_async_connection().await?;
     if let Some(ip) = ip {
         let key = format!("ratelimit:magic_link:ip:{}", ip_bucket(ip));
-        if !hit(&mut c, &key, PER_IP).await? {
+        if !hit(&mut c, &key, PER_IP, HOUR_SECS).await? {
             return Ok(false);
         }
     }
     let key = format!("ratelimit:magic_link:email:{:x}", Sha256::digest(email));
-    hit(&mut c, &key, PER_EMAIL).await
+    hit(&mut c, &key, PER_EMAIL, HOUR_SECS).await
 }
 
 /// Sends a sign-in link to `raw_email` unless the address is invalid or either cap is passed.
