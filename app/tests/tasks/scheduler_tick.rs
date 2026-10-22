@@ -39,7 +39,7 @@ async fn schedule(ctx: &AppContext, cron: &str, tz: &str, due: DateTime<Utc>) {
     ctx.db
         .execute_raw(stmt(
             "INSERT INTO schedules (id, job_type, cron_local, timezone, next_due_at) \
-             VALUES ($1, 'deliver_briefing', $2, $3, $4)",
+             VALUES ($1, 'no_worker', $2, $3, $4)",
             vec![Uuid::new_v4().into(), cron.into(), tz.into(), due.into()],
         ))
         .await
@@ -67,7 +67,7 @@ async fn due_schedule_yields_one_run_after_two_ticks() {
         reset(&ctx).await;
         let now = at("2026-10-22T08:00:30Z");
         schedule(&ctx, "0 8 * * *", "UTC", at("2026-10-22T08:00:00Z")).await;
-        run_tick(&ctx, now).await; // deliver_briefing has no worker: run row only
+        run_tick(&ctx, now).await; // no_worker has no worker: run row only
         assert_eq!(count(&ctx, "SELECT count(*) n FROM runs").await, 1);
         assert_eq!(run_tick(&ctx, now).await, Report::default());
         // next_due_at forced back into the past: the run exists, so no second enqueue.
@@ -221,13 +221,14 @@ async fn connecting_creates_default_schedules_once() {
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
         assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
+        // full_scan, verify, deliver_briefing, deliver_weekly; plus the organisation's summary.
         let q = format!("SELECT count(*) n FROM schedules WHERE connection_id = '{id}'");
-        assert_eq!(count(&ctx, &q).await, 2);
+        let org_q = "SELECT count(*) n FROM schedules WHERE connection_id IS NULL";
+        assert_eq!(count(&ctx, &q).await, 4);
+        assert_eq!(count(&ctx, org_q).await, 1);
         assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
-        assert_eq!(count(&ctx, &q).await, 2);
-        // No briefing schedule until its worker exists (Plan 2).
-        let q = "SELECT count(*) n FROM schedules WHERE job_type = 'deliver_briefing'";
-        assert_eq!(count(&ctx, q).await, 0);
+        assert_eq!(count(&ctx, &q).await, 4);
+        assert_eq!(count(&ctx, org_q).await, 1);
     })
     .await;
 }

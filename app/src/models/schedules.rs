@@ -16,6 +16,10 @@ pub const FULL_SCAN: &str = "0 2 * * *";
 /// Weekly verification; daily while the connection is revoked, so a returned role recovers.
 pub const VERIFY_WEEKLY: &str = "0 3 * * 1";
 pub const VERIFY_REVOKED: &str = "0 4 * * *";
+/// Morning briefing at 08:00 local unless the connection sets `briefing_time_local` (PRD 7.6).
+pub const BRIEFING: &str = "0 8 * * *";
+/// Weekly report, Monday 09:00 local, per connection and per organisation.
+pub const WEEKLY: &str = "0 9 * * 1";
 
 /// `HH:MM` local as a daily cron (`M H * * *`).
 pub fn daily_at(t: NaiveTime) -> String {
@@ -136,17 +140,38 @@ pub async fn set_cron(
 }
 
 /// Default schedules for a newly connected connection: the nightly scan (at `scan_time` when
-/// set) and the weekly verify. Idempotent on `(connection_id, job_type)`.
+/// set), the weekly verify, the briefing (at `briefing_time` when set) and the weekly report;
+/// plus the organisation's weekly summary. Idempotent on `(connection_id, job_type)` and, for
+/// the summary, `(organisation_id, job_type)`.
 pub async fn create_defaults(
     db: &impl ConnectionTrait,
     organisation_id: Uuid,
     connection_id: Uuid,
-    scan_time: Option<NaiveTime>,
+    times: (Option<NaiveTime>, Option<NaiveTime>),
     now: DateTime<Utc>,
 ) -> Result<(), DbErr> {
     let tz = org_timezone(db, organisation_id).await?;
-    let scan = scan_time.map_or_else(|| FULL_SCAN.to_owned(), daily_at);
-    for (job, cron) in [("full_scan", scan.as_str()), ("verify", VERIFY_WEEKLY)] {
+    let scan = times.0.map_or_else(|| FULL_SCAN.to_owned(), daily_at);
+    let briefing = times.1.map_or_else(|| BRIEFING.to_owned(), daily_at);
+    db.execute_raw(stmt(
+        "INSERT INTO schedules (id, organisation_id, job_type, cron_local, timezone, next_due_at) \
+         VALUES ($1, $2, 'deliver_weekly', $3, $4, $5) \
+         ON CONFLICT (organisation_id, job_type) WHERE connection_id IS NULL DO NOTHING",
+        vec![
+            Uuid::now_v7().into(),
+            organisation_id.into(),
+            WEEKLY.into(),
+            tz.clone().into(),
+            next_after(WEEKLY, &tz, now).into(),
+        ],
+    ))
+    .await?;
+    for (job, cron) in [
+        ("full_scan", scan.as_str()),
+        ("verify", VERIFY_WEEKLY),
+        ("deliver_briefing", briefing.as_str()),
+        ("deliver_weekly", WEEKLY),
+    ] {
         db.execute_raw(stmt(
             "INSERT INTO schedules (id, organisation_id, connection_id, job_type, cron_local, timezone, next_due_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (connection_id, job_type) DO NOTHING",

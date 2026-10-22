@@ -12,6 +12,8 @@ use crate::{
     models::ledger_storage::PgStorage,
     workers::{
         common::err,
+        deliver_briefing::{DeliverBriefingArgs, DeliverBriefingWorker},
+        deliver_weekly::{DeliverWeeklyArgs, DeliverWeeklyWorker},
         full_scan::{FullScanArgs, FullScanWorker},
         verify::{VerifyArgs, VerifyWorker},
     },
@@ -22,6 +24,12 @@ async fn send(ctx: &AppContext, job_type: &str, run_id: Uuid) -> Result<bool> {
     match job_type {
         "verify" => VerifyWorker::perform_later(ctx, VerifyArgs { run_id }).await?,
         "full_scan" => FullScanWorker::perform_later(ctx, FullScanArgs { run_id }).await?,
+        "deliver_briefing" => {
+            DeliverBriefingWorker::perform_later(ctx, DeliverBriefingArgs { run_id }).await?
+        }
+        "deliver_weekly" => {
+            DeliverWeeklyWorker::perform_later(ctx, DeliverWeeklyArgs { run_id }).await?
+        }
         other => {
             tracing::warn!(job_type = other, %run_id, "no worker registered, not enqueued");
             return Ok(false);

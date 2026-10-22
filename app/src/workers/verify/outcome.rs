@@ -219,7 +219,8 @@ impl VerifyWorker {
         let now = Utc::now();
         let (org, id) = (c.organisation_id, c.id);
         if written == S::Connected {
-            schedules::create_defaults(db, org, id, c.scan_time_local, now)
+            let times = (c.scan_time_local, c.briefing_time_local);
+            schedules::create_defaults(db, org, id, times, now)
                 .await
                 .map_err(lerr)?;
         }
