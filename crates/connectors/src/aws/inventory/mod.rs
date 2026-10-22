@@ -1,28 +1,36 @@
 //! Inventory: raw AWS responses mapped into `Resource`. Attribute keys are the contract checks
 //! read; they match `fixtures/accounts/noisy.json`. One file per service family.
 
+mod acm;
+mod backup;
 mod ec2;
+mod gpu;
 mod iam;
 mod logging;
+mod logs;
 mod rds;
 mod s3;
 
+pub use acm::certificates;
+pub use backup::{backups, mark_backup_coverage};
 pub use ec2::{ec2_addresses, ec2_instances, ec2_volumes, load_balancers, security_groups};
+pub use gpu::{gpu_utilisation, training_jobs};
 pub use iam::{credential_report, credential_report_users, iam_users};
 pub use logging::{cloudtrails, guardduty};
+pub use logs::log_groups;
 pub use rds::{rds_instances, rds_snapshots};
 pub use s3::s3_buckets;
 
 use super::client::provider_err;
 use crate::{ConnectorError, InventoryResult, Result, Scope, ServiceError};
 use aws_config::{Region, SdkConfig};
-use chrono::Utc;
+use chrono::{DateTime, SecondsFormat, Utc};
 use opsagent_core::resource::{Provider, Resource, ResourceKind};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::future::Future;
 
-pub(crate) const INVENTORY_ACTIONS: &[&str] = &[
+pub const INVENTORY_ACTIONS: &[&str] = &[
     "ec2:DescribeRegions",
     "ec2:DescribeInstances",
     "ec2:DescribeVolumes",
@@ -44,6 +52,16 @@ pub(crate) const INVENTORY_ACTIONS: &[&str] = &[
     "cloudtrail:GetTrailStatus",
     "guardduty:ListDetectors",
     "guardduty:GetDetector",
+    "backup:ListBackupPlans",
+    "backup:GetBackupPlan",
+    "backup:ListBackupJobs",
+    "backup:ListBackupVaults",
+    "acm:ListCertificates",
+    "acm:DescribeCertificate",
+    "logs:DescribeLogGroups",
+    "cloudwatch:GetMetricData",
+    "cloudwatch:ListMetrics",
+    "sagemaker:ListTrainingJobs",
 ];
 
 /// Account and region a call is made in; builds ARNs and `Resource`s.
@@ -96,6 +114,14 @@ pub fn strip_env(v: &mut Value) {
         Value::Array(xs) => xs.iter_mut().for_each(strip_env),
         _ => {}
     }
+}
+
+fn rfc3339(t: DateTime<Utc>) -> String {
+    t.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+fn rfc3339_aws(t: &aws_sdk_backup::primitives::DateTime) -> Option<String> {
+    DateTime::from_timestamp(t.secs(), t.subsec_nanos()).map(rfc3339)
 }
 
 fn name_or<'a>(tags: &'a BTreeMap<String, String>, id: &'a str) -> &'a str {
@@ -226,7 +252,7 @@ async fn regional(
     let rds = aws_sdk_rds::Client::new(&cfg);
     let ct = aws_sdk_cloudtrail::Client::new(&cfg);
     let gd = aws_sdk_guardduty::Client::new(&cfg);
-    let (a, b, c, d, e, f, g, h, i) = tokio::join!(
+    let (mut a, mut b, c, d, e, mut f, g, h, i) = tokio::join!(
         gate(want("ec2"), ec2_instances(&ec2, t)),
         gate(want("ebs"), ec2_volumes(&ec2, t)),
         gate(want("eip"), ec2_addresses(&ec2, t)),
@@ -237,6 +263,7 @@ async fn regional(
         gate(want("cloudtrail"), cloudtrails(&ct, t)),
         gate(want("guardduty"), guardduty(&gd, t)),
     );
+    protection_and_ml(&cfg, t, want, out, &mut a, &mut b, &mut f).await;
     for (svc, r) in [
         ("ec2", a),
         ("ebs", b),
@@ -250,6 +277,65 @@ async fn regional(
     ] {
         out.record(svc, t.region, r);
     }
+}
+
+/// Backups, certificates, log groups and training jobs; GPU utilisation onto `ec2`
+/// instances and backup coverage onto `ec2`, `ebs` and `rds`. Backups are read for those
+/// scopes too (coverage needs them); their resources are returned only when `backup` is wanted.
+async fn protection_and_ml(
+    cfg: &SdkConfig,
+    t: &Target<'_>,
+    want: &impl Fn(&str) -> bool,
+    out: &mut Collect,
+    ec2: &mut Option<Result<Vec<Resource>>>,
+    ebs: &mut Option<Result<Vec<Resource>>>,
+    rds: &mut Option<Result<Vec<Resource>>>,
+) {
+    let now = Utc::now();
+    let bk = aws_sdk_backup::Client::new(cfg);
+    let acm = aws_sdk_acm::Client::new(cfg);
+    let lg = aws_sdk_cloudwatchlogs::Client::new(cfg);
+    let sm = aws_sdk_sagemaker::Client::new(cfg);
+    let cw = aws_sdk_cloudwatch::Client::new(cfg);
+    let mut cert_errs = vec![];
+    let (bkp, certs, groups, jobs) = tokio::join!(
+        gate(
+            ["backup", "rds", "ec2", "ebs"].iter().any(|s| want(s)),
+            backups(&bk, t, now)
+        ),
+        gate(want("acm"), certificates(&acm, t, &mut cert_errs)),
+        gate(want("logs"), log_groups(&lg, t)),
+        gate(want("sagemaker"), training_jobs(&sm, t)),
+    );
+    if let Some(Ok(plans)) = bkp.as_ref() {
+        for v in [&mut *ec2, &mut *ebs, &mut *rds]
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            mark_backup_coverage(v, plans);
+        }
+    }
+    if let Some(Ok(v)) = ec2.as_mut() {
+        if let Some(e) = gpu_utilisation(&cw, v, now).await {
+            out.record("cloudwatch", t.region, Some(Err(e)));
+        }
+    }
+    // Read only for coverage: the resources are dropped, but a failure is still reported in
+    // this chunk (coverage keys stay absent) so the run is partial and resolves nothing.
+    let bkp = match bkp {
+        Some(Ok(_)) if !want("backup") => None,
+        r => r,
+    };
+    for (svc, r) in [
+        ("backup", bkp),
+        ("acm", certs),
+        ("logs", groups),
+        ("sagemaker", jobs),
+    ] {
+        out.record(svc, t.region, r);
+    }
+    out.result.partial_errors.extend(cert_errs);
 }
 
 /// Full inventory for a session. Per-service failures land in `partial_errors`; see

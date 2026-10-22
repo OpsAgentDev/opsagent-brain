@@ -1,6 +1,6 @@
 use crate::{
     Capability, Connector, ConnectorError, CostRow, Credentials, InventoryResult, MetricPoint,
-    MetricQuery, Result, Scope, VerifyOutcome,
+    MetricQuery, Result, Scope, SimulationResult, VerifyOutcome,
 };
 use async_trait::async_trait;
 use opsagent_core::resource::{Provider, Resource};
@@ -14,6 +14,8 @@ struct Fixture {
     #[serde(default)]
     metrics: BTreeMap<String, BTreeMap<String, Vec<MetricPoint>>>,
     verify: VerifyOutcome,
+    #[serde(default)]
+    simulate_restore: SimulationResult,
 }
 
 /// Fixture-backed connector. `Default` has no fixture and serves only as the
@@ -136,5 +138,13 @@ impl Connector for FakeConnector {
             .and_then(|m| m.get(&q.metric))
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn simulate_restore(
+        &self,
+        creds: &Credentials,
+        _role_arn: &str,
+    ) -> Result<SimulationResult> {
+        Ok(self.fixture(creds)?.simulate_restore.clone())
     }
 }

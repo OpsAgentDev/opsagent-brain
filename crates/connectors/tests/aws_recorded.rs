@@ -607,10 +607,21 @@ mod auth {
             let body = std::str::from_utf8(req.body().bytes().unwrap_or_default())
                 .unwrap_or_default()
                 .to_owned();
+            // AWS Backup speaks REST-JSON: error code in a header, `{}` as an empty success.
+            let json = host.starts_with("backup.");
             if host.contains(fail_host) {
+                let r = http::Response::builder().status(400);
+                return if json {
+                    r.header("x-amzn-ErrorType", code).body("{}".to_owned())
+                } else {
+                    r.body(ec2_error(code))
+                }
+                .unwrap();
+            }
+            if json {
                 return http::Response::builder()
-                    .status(400)
-                    .body(ec2_error(code))
+                    .status(200)
+                    .body("{}".to_owned())
                     .unwrap();
             }
             let action = body
@@ -667,7 +678,8 @@ mod auth {
         )
         .await
         .unwrap();
-        assert_eq!(r.partial_errors.len(), 4, "{:?}", r.partial_errors);
+        // ec2, ebs, eip, sg, and the backup coverage read.
+        assert_eq!(r.partial_errors.len(), 5, "{:?}", r.partial_errors);
         assert!(r
             .partial_errors
             .iter()
