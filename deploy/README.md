@@ -21,7 +21,7 @@ Required today: `DATABASE_URL`, `REDIS_URL`, `APP_BASE_URL`, `WEB_BASE_URL`, `SE
 
 ## Post-deploy smoke
 
-After a deploy (Railway deploys itself on push to `main`), run the manual step: the `ci` workflow's `smoke` job via "Run workflow" with `base_url`, or locally `scripts/smoke.sh https://brain.opsagent.dev`. Add `SMOKE_ORG_ID`, `SMOKE_CONNECTION_ID` and `SMOKE_SESSION_COOKIE` (repository secrets in CI) to also verify the founder's connection. Then confirm a scheduler tick in the scheduler logs.
+After a deploy (Railway deploys itself on push to `main`), run the manual step: the `ci` workflow's `smoke` job via "Run workflow" with `base_url`, or locally `scripts/smoke.sh https://brain.opsagent.dev`. Add `SMOKE_ORG_SLUG`, `SMOKE_CONNECTION_ID`, `SMOKE_ROLE_ARN` and `SMOKE_SESSION_COOKIE` (repository secrets in CI) to also verify the founder's connection. Then confirm a scheduler tick in the scheduler logs.
 
 ## Backups
 

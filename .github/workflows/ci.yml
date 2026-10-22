@@ -122,6 +122,7 @@ jobs:
       - run: scripts/smoke.sh "$BASE_URL"
         env:
           BASE_URL: ${{ inputs.base_url }}
-          SMOKE_ORG_ID: ${{ secrets.SMOKE_ORG_ID }}
+          SMOKE_ORG_SLUG: ${{ secrets.SMOKE_ORG_SLUG }}
           SMOKE_CONNECTION_ID: ${{ secrets.SMOKE_CONNECTION_ID }}
+          SMOKE_ROLE_ARN: ${{ secrets.SMOKE_ROLE_ARN }}
           SMOKE_SESSION_COOKIE: ${{ secrets.SMOKE_SESSION_COOKIE }}
