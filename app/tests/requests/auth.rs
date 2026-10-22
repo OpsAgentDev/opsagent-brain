@@ -20,6 +20,7 @@ async fn magic_link_creates_user_and_sends_one_mail() {
         assert_eq!(res.status_code(), 202);
         assert_eq!(mail.sent().len(), 1);
         assert_eq!(mail.sent()[0].to, "new@example.com");
+        assert!(last_link(&mail).starts_with(&format!("{WEB_ORIGIN}/auth/callback?token=")));
         let n = users::Entity::find().count(&ctx.db).await.unwrap();
         assert_eq!(n, 1);
 
@@ -200,6 +201,41 @@ async fn signed_out_session_is_not_resurrected() {
             .await
             .unwrap();
         assert!(rows.is_none());
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn cors_allows_only_the_web_origin_with_credentials() {
+    request_with_config::<App, _, _>(cookie_config(), |req, _ctx| async move {
+        let preflight = |origin: &'static str| {
+            req.method(axum::http::Method::OPTIONS, "/v1/auth/csrf")
+                .add_header("Origin", origin)
+                .add_header("Access-Control-Request-Method", "POST")
+                .add_header(
+                    "Access-Control-Request-Headers",
+                    "x-csrf-token,content-type",
+                )
+        };
+        let ok = preflight(WEB_ORIGIN).await;
+        let allow = |r: &axum_test::TestResponse, h: &str| {
+            r.maybe_header(h).map(|v| v.to_str().unwrap().to_owned())
+        };
+        assert_eq!(
+            allow(&ok, "access-control-allow-origin").as_deref(),
+            Some(WEB_ORIGIN)
+        );
+        assert_eq!(
+            allow(&ok, "access-control-allow-credentials").as_deref(),
+            Some("true")
+        );
+        let bad = preflight("https://evil.example").await;
+        // A fixed origin is always echoed; the browser rejects it for any other origin.
+        assert_eq!(
+            allow(&bad, "access-control-allow-origin").as_deref(),
+            Some(WEB_ORIGIN)
+        );
     })
     .await;
 }

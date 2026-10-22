@@ -42,9 +42,10 @@ async fn request_link(
     if let Some(email) = user_model::normalize_email(&body.email) {
         let user = user_model::find_or_create_by_email(&ctx.db, &email).await?;
         let token = magic_links::issue(&ctx.db, user.id, &email).await?;
+        // The web page POSTs the token to `/auth/magic-link/redeem` after a click (login-CSRF safe).
         let link = format!(
-            "{}/v1/auth/magic-link/{token}",
-            Settings::get(&ctx).api_base_url
+            "{}/auth/callback?token={token}",
+            Settings::get(&ctx).web_base_url.trim_end_matches('/')
         );
         if let Err(e) = mailer(&ctx).send(mail::magic_link(&email, &link)).await {
             tracing::error!(error = %e, "magic link mail failed");
