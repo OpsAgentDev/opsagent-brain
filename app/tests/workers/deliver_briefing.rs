@@ -198,7 +198,7 @@ pub async fn new_run(
         .id
 }
 
-async fn brief(ctx: &AppContext, w: &World, at: DateTime<Utc>) -> (Uuid, RunStatus) {
+pub async fn brief(ctx: &AppContext, w: &World, at: DateTime<Utc>) -> (Uuid, RunStatus) {
     let id = new_run(ctx, w.org, Some(w.conn), deliver_briefing::JOB, at).await;
     let opts = RunChunkedOptions::default();
     (id, deliver_briefing::run(ctx, id, opts).await.unwrap())
@@ -223,7 +223,7 @@ pub async fn stats(ctx: &AppContext, run: Uuid) -> Value {
 }
 
 /// The connection's first scan finished an hour ago with two criticals.
-async fn first_scan(ctx: &AppContext, w: &World) {
+pub async fn first_scan(ctx: &AppContext, w: &World) {
     let now = Utc::now();
     backdate(ctx, w, now - Duration::hours(2)).await;
     let run = scan(ctx, w, now - Duration::hours(1)).await;

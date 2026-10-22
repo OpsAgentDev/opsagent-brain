@@ -23,7 +23,8 @@ use crate::{
     mailers::{magic_link::mail_safe_name, Mail},
     models::{_entities::connections, ledger_storage::PgStorage, organisations},
     services::deliveries::{
-        briefing, deliverable, owners, route, slack_integration, BRIEFING, FALLBACK_EMAIL,
+        briefing, deliverable, owners, revoke_notice_due, route, slack_integration, BRIEFING,
+        FALLBACK_EMAIL,
     },
     settings::Settings,
 };
@@ -134,21 +135,31 @@ async fn deliver(ctx: &AppContext, storage: &PgStorage, run: &RunRow) -> LResult
         .await
         .map_err(lerr)?
         .slack_channel;
-    let mut notice = None;
+    let mut channel_gone = false;
     if let (Some(i), Some(ch)) = (&integration, &channel) {
         match out.slack(BRIEFING, i, &c, ch, &text).await? {
             Ok(()) => return Ok(outcome("delivered", "slack")),
             Err(e) => match out.retry_later(&e) {
                 Some(retry) => return Err(retry),
-                None => notice = notice_for(&e),
+                None => channel_gone = e == SlackError::ChannelGone,
             },
         }
     }
+    let notice = if channel_gone {
+        CHANNEL_GONE_NOTICE
+    } else if revoke_notice_due(db, &c, run.key.scheduled_at)
+        .await
+        .map_err(lerr)?
+    {
+        REVOKED_NOTICE
+    } else {
+        ""
+    };
     let subject = format!(
         "OpsAgent morning briefing: {}",
         mail_safe_name(c.display_name.as_deref().unwrap_or(&c.provider))
     );
-    let body = format!("{}{}", notice.unwrap_or_default(), plain(&text));
+    let body = format!("{notice}{}", plain(&text));
     for o in owners(db, c.organisation_id).await.map_err(lerr)? {
         let mail = Mail {
             to: o.email,
@@ -162,17 +173,10 @@ async fn deliver(ctx: &AppContext, storage: &PgStorage, run: &RunRow) -> LResult
     Ok(outcome("delivered", "fallback_email"))
 }
 
-/// The one-time note on the run that found Slack unusable (later runs skip Slack silently).
-fn notice_for(e: &SlackError) -> Option<&'static str> {
-    match e {
-        SlackError::Revoked => Some(
-            "Slack disconnected: OpsAgent's access was revoked. Briefings come by email until \
-             an owner reconnects Slack.\n\n",
-        ),
-        SlackError::ChannelGone => Some(
-            "Slack channel unavailable: it was archived or deleted. Briefings come by email \
-             until a new channel is chosen.\n\n",
-        ),
-        _ => None,
-    }
-}
+const REVOKED_NOTICE: &str = "Slack disconnected: OpsAgent's access was revoked. Briefings come \
+     by email until an owner reconnects Slack.\n\n";
+// shortcut: the channel notice still comes only from the run that found the channel gone (a
+// weekly finding it first clears the channel silently); derive it from stored state like the
+// revoke notice once connections record when their channel was cleared.
+const CHANNEL_GONE_NOTICE: &str = "Slack channel unavailable: it was archived or deleted. \
+     Briefings come by email until a new channel is chosen.\n\n";

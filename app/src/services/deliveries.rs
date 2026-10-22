@@ -309,6 +309,29 @@ pub async fn record(
     .map(|_| ())
 }
 
+/// Whether `c`'s briefing owes the one-time "Slack disconnected" notice: the organisation's
+/// Slack integration is revoked and no briefing fell back to email for `c` between the
+/// revocation (`integrations.updated_at`, set by `mark_revoked`) and `before` (the run's slot,
+/// so a resumed run keeps the notice for every owner). Stored state, so it holds whichever
+/// run (weekly, another connection's briefing) found the revocation.
+pub async fn revoke_notice_due(
+    db: &impl ConnectionTrait,
+    c: &connections::Model,
+    before: DateTime<Utc>,
+) -> DbResult<bool> {
+    let row = db
+        .query_one_raw(stmt(
+            "SELECT EXISTS (SELECT 1 FROM integrations i WHERE i.organisation_id = $1 \
+             AND i.kind = 'slack' AND i.status = 'revoked' AND NOT EXISTS (SELECT 1 FROM \
+             deliveries d WHERE d.organisation_id = $1 AND d.connection_id = $2 \
+             AND d.kind = 'briefing' AND d.status = 'fallback_email' \
+             AND d.sent_at >= i.updated_at AND d.sent_at < $3)) AS due",
+            vec![c.organisation_id.into(), c.id.into(), before.into()],
+        ))
+        .await?;
+    row.map_or(Ok(false), |r| r.try_get("", "due"))
+}
+
 /// Slack rejected the token: the integration is `revoked` until the owner reconnects.
 pub async fn mark_revoked(db: &impl ConnectionTrait, i: &integrations::Model) -> DbResult<()> {
     db.execute_raw(stmt(
