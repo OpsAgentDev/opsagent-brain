@@ -59,6 +59,14 @@ pub async fn sign_in(req: &TestServer, mail: &CaptureMailer, email: &str) -> Str
     csrf(req).await
 }
 
+pub async fn sign_out(req: &TestServer, csrf: &str) {
+    let res = req
+        .post("/v1/auth/sign-out")
+        .add_header("X-CSRF-Token", csrf)
+        .await;
+    assert_eq!(res.status_code(), 204);
+}
+
 pub async fn csrf(req: &TestServer) -> String {
     let res = req.get("/v1/auth/csrf").await;
     assert_eq!(res.status_code(), 200);

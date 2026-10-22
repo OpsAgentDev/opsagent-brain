@@ -3,21 +3,19 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use chrono::{Duration, Utc};
-use loco_rs::{
-    app::AppContext,
-    controller::Routes,
-    prelude::{delete, get, post},
-};
+use chrono::{DateTime, Duration, FixedOffset, Utc};
+use loco_rs::app::AppContext;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set, TransactionTrait,
 };
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
+use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
+use super::{OrgIdPath, OrgPath};
 use crate::{
-    api_error::{ApiError, ApiJson},
+    api_error::{ApiError, ApiJson, Problem},
     mailers::magic_link as mail,
     middleware::{
         mailer,
@@ -33,10 +31,21 @@ use crate::{
     settings::Settings,
 };
 
+#[derive(Serialize, ToSchema)]
+pub struct Member {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub email: String,
+    pub name: Option<String>,
+    pub role: String,
+}
+
+#[utoipa::path(get, path = "/orgs/{org}/members", tag = "members", params(OrgPath),
+    responses((status = 200, body = Vec<Member>), (status = 404, body = Problem)))]
 async fn list(
     State(ctx): State<AppContext>,
     scope: OrgScope,
-) -> Result<Json<Vec<Value>>, ApiError> {
+) -> Result<Json<Vec<Member>>, ApiError> {
     let rows = members::Entity::find()
         .filter(members::Column::OrganisationId.eq(scope.organisation_id))
         .find_also_related(users::Entity)
@@ -45,23 +54,42 @@ async fn list(
     Ok(Json(
         rows.into_iter()
             .filter_map(|(m, u)| {
-                u.map(|u| json!({ "id": m.id, "user_id": u.id, "email": u.email, "name": u.name, "role": m.role }))
+                u.map(|u| Member {
+                    id: m.id,
+                    user_id: u.id,
+                    email: u.email,
+                    name: u.name,
+                    role: m.role,
+                })
             })
             .collect(),
     ))
 }
 
-#[derive(Deserialize)]
-struct NewInvite {
-    email: String,
-    role: String,
+#[derive(Deserialize, ToSchema)]
+pub struct NewInvite {
+    pub email: String,
+    /// `owner` or `member`.
+    pub role: String,
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct Invite {
+    pub id: Uuid,
+    pub email: String,
+    pub role: String,
+    pub expires_at: DateTime<FixedOffset>,
+}
+
+#[utoipa::path(post, path = "/orgs/{org}/invites", tag = "members", params(OrgPath),
+    request_body = NewInvite,
+    responses((status = 201, body = Invite), (status = 403, body = Problem), (status = 404, body = Problem),
+        (status = 422, body = Problem)))]
 async fn invite(
     State(ctx): State<AppContext>,
     scope: OrgScope,
     ApiJson(body): ApiJson<NewInvite>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+) -> Result<(StatusCode, Json<Invite>), ApiError> {
     scope.require_owner()?;
     let email = normalize_email(&body.email).ok_or_else(|| ApiError::invalid("invalid email"))?;
     if body.role != OWNER && body.role != MEMBER {
@@ -102,17 +130,39 @@ async fn invite(
     }
     Ok((
         StatusCode::CREATED,
-        Json(
-            json!({ "id": row.id, "email": row.email, "role": row.role, "expires_at": row.expires_at }),
-        ),
+        Json(Invite {
+            id: row.id,
+            email: row.email,
+            role: row.role,
+            expires_at: row.expires_at,
+        }),
     ))
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct Membership {
+    /// Organisation id.
+    pub id: Uuid,
+    pub name: String,
+    pub slug: String,
+    pub role: String,
+}
+
+#[derive(IntoParams)]
+#[into_params(parameter_in = Path)]
+pub struct TokenPath {
+    /// Invite token from the mail.
+    pub token: String,
+}
+
+#[utoipa::path(post, path = "/invites/{token}/accept", tag = "members", params(TokenPath),
+    responses((status = 200, body = Membership), (status = 401, body = Problem), (status = 403, body = Problem),
+        (status = 410, body = Problem)))]
 async fn accept(
     State(ctx): State<AppContext>,
     AuthUser(user_id): AuthUser,
     Path(token): Path<String>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Membership>, ApiError> {
     let gone = || ApiError::gone("invite_invalid");
     let inv = invites::Entity::find()
         .filter(invites::Column::TokenHash.eq(magic_links::hash_token(&token)))
@@ -171,11 +221,17 @@ async fn accept(
     )
     .await?;
     txn.commit().await?;
-    Ok(Json(
-        json!({ "id": org.id, "name": org.name, "slug": org.slug, "role": role }),
-    ))
+    Ok(Json(Membership {
+        id: org.id,
+        name: org.name,
+        slug: org.slug,
+        role,
+    }))
 }
 
+#[utoipa::path(delete, path = "/orgs/{org}/members/{id}", tag = "members", params(OrgIdPath),
+    responses((status = 204), (status = 403, body = Problem), (status = 404, body = Problem),
+        (status = 409, body = Problem)))]
 async fn remove(
     State(ctx): State<AppContext>,
     scope: OrgScope,
@@ -224,11 +280,10 @@ async fn remove(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn routes() -> Routes {
-    Routes::new()
-        .prefix("/v1")
-        .add("/orgs/{org}/members", get(list))
-        .add("/orgs/{org}/invites", post(invite))
-        .add("/orgs/{org}/members/{id}", delete(remove))
-        .add("/invites/{token}/accept", post(accept))
+pub fn api() -> OpenApiRouter<AppContext> {
+    OpenApiRouter::new()
+        .routes(routes!(list))
+        .routes(routes!(invite))
+        .routes(routes!(remove))
+        .routes(routes!(accept))
 }

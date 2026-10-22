@@ -4,23 +4,20 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use loco_rs::{
-    app::AppContext,
-    controller::Routes,
-    prelude::{get, post},
-};
+use loco_rs::app::AppContext;
 use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 use sea_orm::EntityTrait;
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
+use utoipa::{IntoParams, ToSchema};
+use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use crate::{
-    api_error::{ApiError, ApiJson},
+    api_error::{ApiError, ApiJson, Problem},
     mailers::magic_link as mail,
     middleware::{csrf, mailer, org_scope::AuthUser, session::USER_KEY},
     models::{_entities::users, audit, magic_links, users as user_model},
@@ -30,12 +27,14 @@ use crate::{
 const GH_KEY: &str = "github_oauth";
 const UA: &str = "opsagent-brain";
 
-#[derive(Deserialize)]
-struct MagicLinkRequest {
-    email: String,
+#[derive(Deserialize, ToSchema)]
+pub struct MagicLinkRequest {
+    pub email: String,
 }
 
 /// Always 202, so the response never reveals whether an address is valid or known.
+#[utoipa::path(post, path = "/auth/magic-link", tag = "auth", request_body = MagicLinkRequest,
+    responses((status = 202, description = "Sent if the address is valid")))]
 async fn request_link(
     State(ctx): State<AppContext>,
     ApiJson(body): ApiJson<MagicLinkRequest>,
@@ -69,9 +68,14 @@ async fn start_session(ctx: &AppContext, session: &Session, user_id: Uuid) -> Re
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct RedeemRequest {
-    token: String,
+#[derive(Deserialize, ToSchema)]
+pub struct RedeemRequest {
+    pub token: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct Redirect {
+    pub redirect: String,
 }
 
 /// Anonymous, so CSRF-token-exempt; protected by an origin check instead. If `Origin` is
@@ -95,21 +99,24 @@ fn check_origin(headers: &HeaderMap, web_base_url: &str) -> Result<(), ApiError>
     }
 }
 
+#[utoipa::path(post, path = "/auth/magic-link/redeem", tag = "auth", request_body = RedeemRequest,
+    responses((status = 200, body = Redirect, description = "Session cookie set"),
+        (status = 403, body = Problem), (status = 410, body = Problem)))]
 async fn redeem_link(
     State(ctx): State<AppContext>,
     session: Session,
     headers: HeaderMap,
     ApiJson(body): ApiJson<RedeemRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Redirect>, ApiError> {
     let web = Settings::get(&ctx).web_base_url;
     check_origin(&headers, &web)?;
     let user_id = magic_links::consume(&ctx.db, &body.token)
         .await?
         .ok_or_else(|| ApiError::gone("link_invalid"))?;
     start_session(&ctx, &session, user_id).await?;
-    Ok(Json(
-        json!({ "redirect": format!("{}/dashboard", web.trim_end_matches('/')) }),
-    ))
+    Ok(Json(Redirect {
+        redirect: format!("{}/dashboard", web.trim_end_matches('/')),
+    }))
 }
 
 /// Expands to a configured GitHub OAuth client (the typestate client type is not nameable
@@ -143,10 +150,17 @@ macro_rules! github_client {
     }};
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct AuthorizeUrl {
+    pub url: String,
+}
+
+#[utoipa::path(post, path = "/auth/sign-in/github/start", tag = "auth",
+    responses((status = 200, body = AuthorizeUrl), (status = 503, body = Problem)))]
 async fn github_start(
     State(ctx): State<AppContext>,
     session: Session,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<AuthorizeUrl>, ApiError> {
     let s = Settings::get(&ctx);
     let client = github_client!(s);
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
@@ -159,13 +173,16 @@ async fn github_start(
     session
         .insert(GH_KEY, (state.secret().clone(), verifier.secret().clone()))
         .await?;
-    Ok(Json(json!({ "url": url })))
+    Ok(Json(AuthorizeUrl {
+        url: url.to_string(),
+    }))
 }
 
-#[derive(Deserialize)]
-struct CallbackQuery {
-    code: String,
-    state: String,
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct CallbackQuery {
+    pub code: String,
+    pub state: String,
 }
 
 #[derive(Deserialize)]
@@ -191,6 +208,9 @@ fn bad_gateway(e: impl std::fmt::Display) -> ApiError {
     )
 }
 
+#[utoipa::path(get, path = "/auth/sign-in/github/callback", tag = "auth", params(CallbackQuery),
+    responses((status = 302, description = "Session cookie set; redirects to the web dashboard"),
+        (status = 400, body = Problem), (status = 502, body = Problem)))]
 async fn github_callback(
     State(ctx): State<AppContext>,
     session: Session,
@@ -258,43 +278,59 @@ async fn github_callback(
     Ok((StatusCode::FOUND, [(header::LOCATION, to)]).into_response())
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct Csrf {
+    /// Send as `X-CSRF-Token` on every mutating request.
+    pub token: String,
+}
+
+#[utoipa::path(get, path = "/auth/csrf", tag = "auth",
+    responses((status = 200, body = Csrf), (status = 401, body = Problem)))]
 async fn csrf_token(
     State(ctx): State<AppContext>,
     session: Session,
     _user: AuthUser,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Csrf>, ApiError> {
     let sid = session.id().ok_or_else(ApiError::unauthenticated)?;
-    Ok(Json(
-        json!({ "token": csrf::token(&Settings::get(&ctx).session_secret, &sid.to_string()) }),
-    ))
+    Ok(Json(Csrf {
+        token: csrf::token(&Settings::get(&ctx).session_secret, &sid.to_string()),
+    }))
 }
 
+#[utoipa::path(post, path = "/auth/sign-out", tag = "auth", responses((status = 204)))]
 async fn sign_out(session: Session) -> Result<StatusCode, ApiError> {
     session.flush().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn me(
-    State(ctx): State<AppContext>,
-    AuthUser(id): AuthUser,
-) -> Result<Json<Value>, ApiError> {
+#[derive(Serialize, ToSchema)]
+pub struct Me {
+    pub id: Uuid,
+    pub email: String,
+    pub name: Option<String>,
+}
+
+#[utoipa::path(get, path = "/auth/me", tag = "auth",
+    responses((status = 200, body = Me), (status = 401, body = Problem)))]
+async fn me(State(ctx): State<AppContext>, AuthUser(id): AuthUser) -> Result<Json<Me>, ApiError> {
     let u = users::Entity::find_by_id(id)
         .one(&ctx.db)
         .await?
         .ok_or_else(ApiError::unauthenticated)?;
-    Ok(Json(
-        json!({ "id": u.id, "email": u.email, "name": u.name }),
-    ))
+    Ok(Json(Me {
+        id: u.id,
+        email: u.email,
+        name: u.name,
+    }))
 }
 
-pub fn routes() -> Routes {
-    Routes::new()
-        .prefix("/v1/auth")
-        .add("/magic-link", post(request_link))
-        .add("/magic-link/redeem", post(redeem_link))
-        .add("/sign-in/github/start", post(github_start))
-        .add("/sign-in/github/callback", get(github_callback))
-        .add("/csrf", get(csrf_token))
-        .add("/sign-out", post(sign_out))
-        .add("/me", get(me))
+pub fn api() -> OpenApiRouter<AppContext> {
+    OpenApiRouter::new()
+        .routes(routes!(request_link))
+        .routes(routes!(redeem_link))
+        .routes(routes!(github_start))
+        .routes(routes!(github_callback))
+        .routes(routes!(csrf_token))
+        .routes(routes!(sign_out))
+        .routes(routes!(me))
 }

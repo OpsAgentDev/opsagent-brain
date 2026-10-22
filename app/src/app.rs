@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use axum::Router as AxumRouter;
 use loco_rs::{
     app::{AppContext, Hooks, Initializer},
     bgworker::{BackgroundWorker, Queue},
@@ -15,7 +16,7 @@ use std::path::Path;
 use crate::{
     controllers,
     middleware::AuthInitializer,
-    tasks::{scan_now::ScanNow, scheduler_tick::SchedulerTick},
+    tasks::{openapi_dump::OpenapiDump, scan_now::ScanNow, scheduler_tick::SchedulerTick},
     workers::{full_scan::FullScanWorker, verify::VerifyWorker},
 };
 
@@ -48,13 +49,14 @@ impl Hooks for App {
         Ok(vec![Box::new(AuthInitializer)])
     }
 
+    /// `/v1` and `/openapi.json` come from the `utoipa-axum` router so every route is in the
+    /// OpenAPI document. Merged here (not in `after_routes`) so Loco's middleware stack wraps them.
+    async fn before_routes(_ctx: &AppContext) -> Result<AxumRouter<AppContext>> {
+        Ok(controllers::openapi::routes())
+    }
+
     fn routes(_ctx: &AppContext) -> AppRoutes {
-        AppRoutes::with_default_routes()
-            .add_route(controllers::health::routes())
-            .add_route(controllers::auth::routes())
-            .add_route(controllers::orgs::routes())
-            .add_route(controllers::members::routes())
-            .add_route(controllers::connections::routes())
+        AppRoutes::with_default_routes().add_route(controllers::health::routes())
     }
 
     async fn connect_workers(ctx: &AppContext, queue: &Queue) -> Result<()> {
@@ -63,6 +65,7 @@ impl Hooks for App {
     }
 
     fn register_tasks(tasks: &mut Tasks) {
+        tasks.register(OpenapiDump);
         tasks.register(ScanNow);
         tasks.register(SchedulerTick);
     }

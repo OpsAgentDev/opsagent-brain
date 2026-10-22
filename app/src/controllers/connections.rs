@@ -4,12 +4,7 @@ use axum::{
     Json,
 };
 use chrono::{DurationRound, NaiveTime, TimeDelta, Utc};
-use loco_rs::{
-    app::AppContext,
-    bgworker::BackgroundWorker,
-    controller::Routes,
-    prelude::{get, post},
-};
+use loco_rs::{app::AppContext, bgworker::BackgroundWorker};
 use opsagent_connectors::aws::client::{parse_role_arn, short_id};
 use opsagent_core::{
     connection::{transition, ConnectionEvent as E, ConnectionStatus as S},
@@ -19,12 +14,15 @@ use opsagent_ledger::Storage;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
 };
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use utoipa::ToSchema;
+use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
+use super::{OrgIdPath, OrgPath, RunAccepted};
 use crate::{
-    api_error::{ApiError, ApiJson},
+    api_error::{ApiError, ApiJson, Problem},
     middleware::org_scope::OrgScope,
     models::{
         _entities::{connection_credentials, connection_verifications, connections},
@@ -32,44 +30,14 @@ use crate::{
         connections::{
             cas, open_creds, org_dek, seal_creds, status_of, status_str, Creds, TEMPLATE_VERSION,
         },
+        find_in_org,
         ledger_storage::PgStorage,
         now,
         organisations::valid_name,
     },
+    views::connections::{view, Connection},
     workers::verify::{VerifyArgs, VerifyWorker},
 };
-
-fn hhmm(t: Option<NaiveTime>) -> Option<String> {
-    t.map(|t| t.format("%H:%M").to_string())
-}
-
-/// Grant labels are `action on resources when ...`; the API shows action names only.
-fn grant_names(v: &Value) -> Vec<String> {
-    v.as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(|g| g.split(" on ").next().unwrap_or(g).to_owned())
-        .collect()
-}
-
-fn view(c: &connections::Model, last: Option<&connection_verifications::Model>) -> Value {
-    json!({
-        "id": c.id, "provider": c.provider, "display_name": c.display_name,
-        "status": c.status, "status_reason": c.status_reason,
-        "external_account_id": c.external_account_id, "template_version": c.template_version,
-        "scan_time_local": hhmm(c.scan_time_local), "briefing_time_local": hhmm(c.briefing_time_local),
-        "api_rate_ceiling": c.api_rate_ceiling,
-        "first_connected_at": c.first_connected_at, "billable_from": c.billable_from,
-        "created_at": c.created_at,
-        "last_verification": last.map(|v| json!({
-            "outcome": v.outcome, "at": v.created_at,
-            "assume_with_ok": v.assume_with_ok, "assume_without_denied": v.assume_without_denied,
-            "policy_matches": v.policy_matches,
-            "extra_grants": grant_names(&v.extra_grants), "missing_grants": grant_names(&v.missing_grants),
-        })),
-    })
-}
 
 fn stack_name(organisation_id: Uuid) -> String {
     format!("OpsAgent-Read-{}", short_id(&organisation_id))
@@ -87,18 +55,18 @@ fn fake_enabled() -> bool {
     std::env::var("OPSAGENT_CONNECTORS").as_deref() == Ok("fake")
 }
 
-/// Org-filtered lookup: another org's id is the same 404 as an unknown one.
 async fn find(
     ctx: &AppContext,
     scope: &OrgScope,
     id: &str,
 ) -> Result<connections::Model, ApiError> {
-    let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
-    connections::Entity::find_by_id(id)
-        .filter(connections::Column::OrganisationId.eq(scope.organisation_id))
-        .one(&ctx.db)
-        .await?
-        .ok_or_else(ApiError::not_found)
+    find_in_org::<connections::Entity>(
+        &ctx.db,
+        connections::Column::OrganisationId,
+        scope.organisation_id,
+        id,
+    )
+    .await
 }
 
 fn quick_create_url(organisation_id: Uuid, external_id: &str) -> Result<String, ApiError> {
@@ -122,17 +90,30 @@ fn quick_create_url(organisation_id: Uuid, external_id: &str) -> Result<String, 
     ))
 }
 
-#[derive(Deserialize)]
-struct NewConnection {
-    provider: String,
-    display_name: String,
+#[derive(Deserialize, ToSchema)]
+pub struct NewConnection {
+    /// `aws`.
+    pub provider: String,
+    pub display_name: String,
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct CreatedConnection {
+    pub id: Uuid,
+    /// CloudFormation quick-create link for the read role; null for test providers.
+    pub quick_create_url: Option<String>,
+    pub template_version: String,
+}
+
+#[utoipa::path(post, path = "/orgs/{org}/connections", tag = "connections", params(OrgPath),
+    request_body = NewConnection,
+    responses((status = 201, body = CreatedConnection), (status = 403, body = Problem),
+        (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn create(
     State(ctx): State<AppContext>,
     scope: OrgScope,
     ApiJson(body): ApiJson<NewConnection>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+) -> Result<(StatusCode, Json<CreatedConnection>), ApiError> {
     scope.require_owner()?;
     let name = valid_name(&body.display_name)?;
     let fake = match body.provider.as_str() {
@@ -200,14 +181,20 @@ async fn create(
     txn.commit().await?;
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "id": id, "quick_create_url": url, "template_version": TEMPLATE_VERSION })),
+        Json(CreatedConnection {
+            id,
+            quick_create_url: url,
+            template_version: TEMPLATE_VERSION.into(),
+        }),
     ))
 }
 
+#[utoipa::path(get, path = "/orgs/{org}/connections", tag = "connections", params(OrgPath),
+    responses((status = 200, body = Vec<Connection>), (status = 404, body = Problem)))]
 async fn list(
     State(ctx): State<AppContext>,
     scope: OrgScope,
-) -> Result<Json<Vec<Value>>, ApiError> {
+) -> Result<Json<Vec<Connection>>, ApiError> {
     let rows = connections::Entity::find()
         .filter(connections::Column::OrganisationId.eq(scope.organisation_id))
         .order_by_asc(connections::Column::CreatedAt)
@@ -216,11 +203,13 @@ async fn list(
     Ok(Json(rows.iter().map(|c| view(c, None)).collect()))
 }
 
+#[utoipa::path(get, path = "/orgs/{org}/connections/{id}", tag = "connections", params(OrgIdPath),
+    responses((status = 200, body = Connection), (status = 404, body = Problem)))]
 async fn show(
     State(ctx): State<AppContext>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Connection>, ApiError> {
     let c = find(&ctx, &scope, &id).await?;
     let last = connection_verifications::Entity::find()
         .filter(connection_verifications::Column::ConnectionId.eq(c.id))
@@ -230,12 +219,15 @@ async fn show(
     Ok(Json(view(&c, last.as_ref())))
 }
 
-#[derive(Deserialize)]
-struct Patch {
-    display_name: Option<String>,
-    scan_time_local: Option<String>,
-    briefing_time_local: Option<String>,
-    api_rate_ceiling: Option<i32>,
+#[derive(Deserialize, ToSchema)]
+pub struct ConnectionPatch {
+    pub display_name: Option<String>,
+    /// `HH:MM`.
+    pub scan_time_local: Option<String>,
+    /// `HH:MM`.
+    pub briefing_time_local: Option<String>,
+    /// At least 1.
+    pub api_rate_ceiling: Option<i32>,
 }
 
 fn valid_hhmm(field: &str, s: &str) -> Result<NaiveTime, ApiError> {
@@ -245,12 +237,16 @@ fn valid_hhmm(field: &str, s: &str) -> Result<NaiveTime, ApiError> {
         .ok_or_else(|| ApiError::invalid(format!("{field} must be HH:MM")))
 }
 
+#[utoipa::path(patch, path = "/orgs/{org}/connections/{id}", tag = "connections", params(OrgIdPath),
+    request_body = ConnectionPatch,
+    responses((status = 200, body = Connection), (status = 403, body = Problem), (status = 404, body = Problem),
+        (status = 409, body = Problem), (status = 422, body = Problem)))]
 async fn update(
     State(ctx): State<AppContext>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
-    ApiJson(body): ApiJson<Patch>,
-) -> Result<Json<Value>, ApiError> {
+    ApiJson(body): ApiJson<ConnectionPatch>,
+) -> Result<Json<Connection>, ApiError> {
     scope.require_owner()?;
     let c = find(&ctx, &scope, &id).await?;
     if status_of(&c)? == S::Disconnected {
@@ -276,18 +272,23 @@ async fn update(
     Ok(Json(view(&a.update(&ctx.db).await?, None)))
 }
 
-#[derive(Deserialize)]
-struct VerifyBody {
+#[derive(Deserialize, ToSchema)]
+pub struct VerifyBody {
+    /// The read role's ARN from the stack outputs (required for `aws`).
     #[serde(default)]
-    role_arn: String,
+    pub role_arn: String,
 }
 
+#[utoipa::path(post, path = "/orgs/{org}/connections/{id}/verify", tag = "connections", params(OrgIdPath),
+    request_body = VerifyBody,
+    responses((status = 202, body = RunAccepted), (status = 403, body = Problem), (status = 404, body = Problem),
+        (status = 409, body = Problem), (status = 422, body = Problem)))]
 async fn verify(
     State(ctx): State<AppContext>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
     ApiJson(body): ApiJson<VerifyBody>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
     scope.require_owner()?;
     let c = find(&ctx, &scope, &id).await?;
     let from = status_of(&c)?;
@@ -363,14 +364,23 @@ async fn verify(
         .map_err(ApiError::internal)?
         .run;
     VerifyWorker::perform_later(&ctx, VerifyArgs { run_id: run.id }).await?;
-    Ok((StatusCode::ACCEPTED, Json(json!({ "run_id": run.id }))))
+    Ok((StatusCode::ACCEPTED, Json(RunAccepted { run_id: run.id })))
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct Disconnected {
+    /// Always `disconnected`.
+    pub status: String,
+    pub next_step: String,
+}
+
+#[utoipa::path(delete, path = "/orgs/{org}/connections/{id}", tag = "connections", params(OrgIdPath),
+    responses((status = 200, body = Disconnected), (status = 403, body = Problem), (status = 404, body = Problem)))]
 async fn disconnect(
     State(ctx): State<AppContext>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Disconnected>, ApiError> {
     scope.require_owner()?;
     let c = find(&ctx, &scope, &id).await?;
     let (org_id, conn_id) = (c.organisation_id, c.id);
@@ -392,19 +402,18 @@ async fn disconnect(
         .await?;
         txn.commit().await?;
     }
-    Ok(Json(json!({
-        "status": "disconnected",
-        "next_step": format!(
+    Ok(Json(Disconnected {
+        status: "disconnected".into(),
+        next_step: format!(
             "Delete the CloudFormation stack {} in your account to revoke access.",
             stack_name(org_id)
         ),
-    })))
+    }))
 }
 
-pub fn routes() -> Routes {
-    Routes::new()
-        .prefix("/v1/orgs/{org}/connections")
-        .add("/", post(create).get(list))
-        .add("/{id}", get(show).patch(update).delete(disconnect))
-        .add("/{id}/verify", post(verify))
+pub fn api() -> OpenApiRouter<AppContext> {
+    OpenApiRouter::new()
+        .routes(routes!(create, list))
+        .routes(routes!(show, update, disconnect))
+        .routes(routes!(verify))
 }

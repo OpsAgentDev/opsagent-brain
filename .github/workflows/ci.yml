@@ -36,5 +36,6 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - run: scripts/openapi-diff.sh
       - run: cargo install cargo-audit --locked
       - run: cargo audit

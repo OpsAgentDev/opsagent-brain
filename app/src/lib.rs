@@ -7,4 +7,5 @@ pub mod models;
 pub mod services;
 pub mod settings;
 pub mod tasks;
+pub mod views;
 pub mod workers;

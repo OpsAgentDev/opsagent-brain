@@ -36,6 +36,8 @@ opsagent-connectors = { path = "../crates/connectors" }
 urlencoding = "2"
 zeroize = "1"
 cron = "0.17.0"
+utoipa = { version = "6", features = ["chrono", "uuid", "decimal"] }
+utoipa-axum = "0.3"
 
 [[bin]]
 name = "opsagent-brain"
