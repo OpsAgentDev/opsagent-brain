@@ -1,0 +1,97 @@
+use async_trait::async_trait;
+use chrono::{DateTime, NaiveDate, Utc};
+use opsagent_core::resource::{Provider, Resource};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+
+pub mod fake;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConnectorError {
+    #[error("unknown connector: {0}")]
+    Unknown(String),
+    #[error("account not found")]
+    NotFound,
+    #[error("fixture error: {0}")]
+    Fixture(String),
+}
+pub type Result<T> = std::result::Result<T, ConnectorError>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    Inventory,
+    CostDaily,
+    Metrics,
+    IamReport,
+    PublicAccess,
+    Backups,
+    Certificates,
+    Logging,
+    Gpu,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifyOutcome {
+    pub assume_with_ok: bool,
+    pub assume_without_denied: bool,
+    pub account_matches: bool,
+    pub extra_grants: Vec<String>,
+    pub missing_grants: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Credentials {
+    AwsRole {
+        role_arn: String,
+        external_id: String,
+    },
+    Fake {
+        account: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CostRow {
+    pub date: NaiveDate,
+    pub service: String,
+    pub amount_usd: f64,
+}
+
+/// Empty vectors mean "all".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Scope {
+    pub regions: Vec<String>,
+    pub services: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricQuery {
+    pub resource_identity: String,
+    pub metric: String,
+    pub hours: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetricPoint {
+    pub at: DateTime<Utc>,
+    pub value: f64,
+}
+
+#[async_trait]
+pub trait Connector: Send + Sync {
+    fn provider(&self) -> Provider;
+    fn capabilities(&self) -> BTreeSet<Capability>;
+    async fn verify(&self, creds: &Credentials) -> Result<VerifyOutcome>;
+    async fn inventory(&self, creds: &Credentials, scope: &Scope) -> Result<Vec<Resource>>;
+    async fn cost_daily(&self, creds: &Credentials, days: u32) -> Result<Vec<CostRow>>;
+    async fn metrics(&self, creds: &Credentials, q: MetricQuery) -> Result<Vec<MetricPoint>>;
+}
+
+/// Caller passes the value of `OPSAGENT_CONNECTORS`. Task 8 adds "aws".
+pub fn registry(selected: &str) -> Result<Box<dyn Connector>> {
+    match selected {
+        "fake" => Ok(Box::new(fake::FakeConnector::default())),
+        other => Err(ConnectorError::Unknown(other.to_owned())),
+    }
+}
