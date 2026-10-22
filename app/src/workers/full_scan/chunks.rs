@@ -133,6 +133,8 @@ fn run_checks(
         // Task 8 fills restore simulations
         simulations: &std::collections::HashMap::new(),
         now,
+        // Task 8 fills unavailable services
+        unavailable: &std::collections::BTreeSet::new(),
     };
     let (mut drafts, mut check_errors) = (vec![], vec![]);
     for ch in checks() {

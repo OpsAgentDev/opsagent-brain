@@ -38,7 +38,9 @@ fn run_noon(rs: &[Resource]) -> Vec<FindingDraft> {
         resources: rs,
         cost: &[],
         metrics: &m,
+        simulations: &Default::default(),
         now,
+        unavailable: &Default::default(),
     };
     let out = opsagent_checks::Check::run(&Certificates, &ctx);
     assert!(out

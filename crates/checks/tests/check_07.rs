@@ -16,7 +16,9 @@ fn run_at(rs: &[Resource]) -> Vec<FindingDraft> {
         resources: rs,
         cost: &[],
         metrics: &metrics,
+        simulations: &Default::default(),
         now,
+        unavailable: &Default::default(),
     })
 }
 

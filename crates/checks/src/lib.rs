@@ -4,6 +4,7 @@ pub mod check_02_iam;
 pub mod check_03_exposure;
 pub mod check_04_backups;
 pub mod check_05_certificates;
+pub mod check_06_logging;
 pub mod check_07_gpu;
 pub mod ctx;
 
@@ -17,6 +18,7 @@ pub fn all() -> Vec<Box<dyn Check>> {
         Box::new(check_03_exposure::PublicExposure),
         Box::new(check_04_backups::Backups),
         Box::new(check_05_certificates::Certificates),
+        Box::new(check_06_logging::LoggingGaps),
         Box::new(check_07_gpu::GpuAndTraining),
     ]
 }

@@ -25,6 +25,8 @@ pub struct CheckCtx<'a> {
     /// Restore-permission simulations keyed by backup role ARN.
     pub simulations: &'a HashMap<String, SimulationResult>,
     pub now: DateTime<Utc>,
+    /// Services whose reads partly failed this run; checks skip findings that need them.
+    pub unavailable: &'a std::collections::BTreeSet<String>,
 }
 
 pub trait Check {

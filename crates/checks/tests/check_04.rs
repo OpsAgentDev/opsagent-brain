@@ -35,6 +35,7 @@ fn go(rs: &[Resource], sims: &HashMap<String, SimulationResult>) -> Vec<FindingD
         metrics: &m,
         simulations: sims,
         now: "2026-10-01T12:00:00Z".parse().unwrap(),
+        unavailable: &Default::default(),
     };
     let out = Backups.run(&ctx);
     for d in &out {
