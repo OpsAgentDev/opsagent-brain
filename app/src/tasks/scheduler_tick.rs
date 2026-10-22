@@ -8,6 +8,7 @@ use loco_rs::{
     Result,
 };
 use opsagent_core::run::RunKey;
+use opsagent_ledger::Storage;
 use sea_orm::{
     ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DatabaseTransaction,
     TransactionTrait,
@@ -15,8 +16,12 @@ use sea_orm::{
 use uuid::Uuid;
 
 use crate::{
-    models::{ledger_storage::stmt, schedules::next_after},
+    models::{
+        ledger_storage::{stmt, PgStorage},
+        schedules::next_after,
+    },
     services::runs::{create_marked, dispatch},
+    workers::common::err,
 };
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -185,6 +190,27 @@ async fn tick_locked(
     Ok(report)
 }
 
+/// Deleted organisations get no more work: their due parked runs end `Skipped` (fenced, so a
+/// worker already holding a lease cannot revive one) instead of waiting forever.
+async fn skip_deleted_orgs(db: &DatabaseConnection, now: DateTime<Utc>) -> Result<()> {
+    let txn = PgStorage::new(db.begin().await?);
+    let gone = txn
+        .db()
+        .query_all_raw(stmt(
+            "SELECT r.id FROM runs r WHERE r.status = 'queued' AND r.next_attempt_at IS NOT NULL \
+             AND r.next_attempt_at <= $1 AND EXISTS (SELECT 1 FROM organisations o \
+             WHERE o.id = r.organisation_id AND o.deleted_at IS NOT NULL)",
+            vec![now.into()],
+        ))
+        .await?;
+    for r in gone {
+        let id: Uuid = r.try_get("", "id")?;
+        txn.skip_run(id, "org_deleted").await.map_err(err)?;
+    }
+    txn.into_inner().commit().await?;
+    Ok(())
+}
+
 /// Runs parked with `schedule_retry` (status queued + next_attempt_at), and runs whose
 /// enqueue was interrupted after they were committed (the outbox marker); those of deleted
 /// organisations are skipped. Returns how many were handed to a worker.
@@ -193,15 +219,7 @@ async fn retry_pass(
     db: &DatabaseConnection,
     now: DateTime<Utc>,
 ) -> Result<usize> {
-    // Deleted organisations get no more work: their parked runs end instead of waiting forever.
-    db.execute_raw(stmt(
-        "UPDATE runs r SET status = 'skipped', partial_reason = 'org_deleted', \
-         next_attempt_at = NULL, finished_at = now(), updated_at = now() \
-         WHERE r.status = 'queued' AND r.next_attempt_at IS NOT NULL AND r.next_attempt_at <= $1 \
-         AND EXISTS (SELECT 1 FROM organisations o WHERE o.id = r.organisation_id AND o.deleted_at IS NOT NULL)",
-        vec![now.into()],
-    ))
-    .await?;
+    skip_deleted_orgs(db, now).await?;
     let mut sent_total = 0;
     let retries = db
         .query_all_raw(stmt(

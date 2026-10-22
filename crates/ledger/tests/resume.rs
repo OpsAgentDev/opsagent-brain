@@ -220,6 +220,9 @@ impl Storage for Faulty {
     ) -> opsagent_ledger::Result<()> {
         self.0.set_status(id, f, s, r).await
     }
+    async fn skip_run(&self, id: uuid::Uuid, r: &str) -> opsagent_ledger::Result<bool> {
+        self.0.skip_run(id, r).await
+    }
     async fn effect_begin(
         &self,
         id: uuid::Uuid,

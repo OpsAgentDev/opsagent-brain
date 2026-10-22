@@ -4,7 +4,7 @@ use opsagent_brain::{
     models::ledger_storage::{stmt, PgStorage},
     tasks::scheduler_tick::{tick, Report},
 };
-use opsagent_core::run::RunKey;
+use opsagent_core::run::{RunKey, RunStatus};
 use opsagent_ledger::Storage;
 use sea_orm::{ConnectionTrait, Database};
 use serial_test::serial;
@@ -420,10 +420,28 @@ async fn retry_for_a_deleted_org_is_skipped_not_enqueued() {
             ))
             .await
             .unwrap();
+        // A worker took the lease but has not written `running` yet.
+        let redis = redis_of(&ctx);
+        let lease = opsagent_ledger::lease::acquire(
+            &storage,
+            &redis,
+            run.id,
+            "slow-worker",
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(run_tick(&ctx, now).await, Report::default());
         let row = storage.load_run(run.id).await.unwrap();
-        assert_eq!(row.status, opsagent_core::run::RunStatus::Skipped);
+        assert_eq!(row.status, RunStatus::Skipped);
         assert_eq!(row.partial_reason.as_deref(), Some("org_deleted"));
+        // The skip bumped the fence: the worker cannot revive the run.
+        let res = storage
+            .set_status(run.id, lease.fence, RunStatus::Running, None)
+            .await;
+        assert!(matches!(res, Err(opsagent_ledger::LedgerError::StaleFence)));
+        opsagent_ledger::lease::release(&redis, &lease).await;
     })
     .await;
 }

@@ -88,6 +88,9 @@ pub trait Storage: Send + Sync {
         self.set_status(id, fence, RunStatus::Failed, Some(reason.into()))
             .await
     }
+    /// Ends a still-`queued` run `Skipped` with `reason` and bumps its fence, so a worker that
+    /// already holds the lease gets `StaleFence` on its next write. `false`: not queued.
+    async fn skip_run(&self, id: Uuid, reason: &str) -> Result<bool>;
     async fn effect_begin(&self, run_id: Uuid, key: &str) -> Result<EffectState>;
     async fn effect_done(
         &self,

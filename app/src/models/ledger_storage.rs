@@ -191,6 +191,19 @@ impl<C: ConnectionTrait + Send + Sync> Storage for PgStorage<C> {
         Ok(())
     }
 
+    async fn skip_run(&self, id: Uuid, reason: &str) -> Result<bool> {
+        let n = self
+            .exec(
+                // tenancy: the ledger addresses runs by id (from the queue); the row names its organisation.
+                "UPDATE runs SET status = 'skipped', partial_reason = $2, fence = fence + 1, \
+                 next_attempt_at = NULL, finished_at = now(), updated_at = now() \
+                 WHERE id = $1 AND status = 'queued'",
+                vec![id.into(), reason.into()],
+            )
+            .await?;
+        Ok(n == 1)
+    }
+
     async fn effect_begin(&self, run_id: Uuid, key: &str) -> Result<EffectState> {
         let inserted = self
             .exec(

@@ -18,9 +18,9 @@ pub const PER_EMAIL: i64 = 5;
 pub const PER_IP: i64 = 30;
 const WINDOW_SECS: i64 = 3600;
 
-/// `INCR`, with the window's `EXPIRE` set by the first hit, in one atomic step: a counter
-/// can never be left without a TTL.
-const COUNT: &str = r#"local n = redis.call('INCR', KEYS[1]) if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end return n"#;
+/// `INCR`, with the window's `EXPIRE` set by the first hit (or on a counter left without a
+/// TTL by older code), in one atomic step: a counter can never outlive its window.
+const COUNT: &str = r#"local n = redis.call('INCR', KEYS[1]) if n == 1 or redis.call('TTL', KEYS[1]) < 0 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end return n"#;
 
 /// Counts one hit on `key`; `true` while the hour's count is within `cap`.
 async fn hit(

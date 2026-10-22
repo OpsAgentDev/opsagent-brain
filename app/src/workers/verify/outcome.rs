@@ -208,7 +208,7 @@ impl VerifyWorker {
         Ok(true)
     }
 
-    /// Default schedules once the connection is (or was) connected, never for `blocked`; and
+    /// Default schedules once the connection is connected (never for `blocked`); and
     /// on any outcome here (none is `revoked`) the weekly verify back after a revoked spell.
     async fn outcome_schedules(
         &self,
@@ -218,8 +218,7 @@ impl VerifyWorker {
     ) -> LResult<()> {
         let now = Utc::now();
         let (org, id) = (c.organisation_id, c.id);
-        let was_connected = c.first_connected_at.is_some();
-        if written == S::Connected || (written == S::Degraded && was_connected) {
+        if written == S::Connected {
             schedules::create_defaults(db, org, id, c.scan_time_local, now)
                 .await
                 .map_err(lerr)?;
