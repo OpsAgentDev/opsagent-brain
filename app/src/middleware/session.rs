@@ -101,6 +101,8 @@ pub fn layer(db: DatabaseConnection, s: &Settings) -> SessionManagerLayer<DbStor
     let mut l = SessionManagerLayer::new(DbStore(db))
         .with_name(COOKIE_NAME)
         .with_http_only(true)
+        // Without this, OnInactivity only slides expiry when session data changes.
+        .with_always_save(true)
         .with_same_site(SameSite::Lax)
         .with_secure(s.cookie_secure)
         .with_expiry(Expiry::OnInactivity(time::Duration::days(14)));

@@ -201,6 +201,17 @@ async fn remove(
         ));
     }
     members::Entity::delete_by_id(member_id).exec(&txn).await?;
+    // A removed user must not be able to rejoin through a still-pending invite.
+    if let Some(u) = users::Entity::find_by_id(target.user_id).one(&txn).await? {
+        invites::Entity::update_many()
+            .col_expr(invites::Column::Status, "cancelled".into())
+            .col_expr(invites::Column::UpdatedAt, now().into())
+            .filter(invites::Column::OrganisationId.eq(scope.organisation_id))
+            .filter(invites::Column::Email.eq(u.email.to_lowercase()))
+            .filter(invites::Column::Status.eq("pending"))
+            .exec(&txn)
+            .await?;
+    }
     audit::record(
         &txn,
         Some(scope.organisation_id),

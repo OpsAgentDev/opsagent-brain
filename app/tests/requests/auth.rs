@@ -1,5 +1,8 @@
 use loco_rs::{prelude::*, testing::prelude::request_with_config};
-use opsagent_brain::{app::App, models::_entities::users};
+use opsagent_brain::{
+    app::App,
+    models::_entities::{sessions, users},
+};
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -33,27 +36,69 @@ async fn magic_link_creates_user_and_sends_one_mail() {
 
 #[tokio::test]
 #[serial]
-async fn magic_link_sets_cookie_redirects_and_is_single_use() {
+async fn magic_link_redeem_sets_cookie_and_is_single_use() {
     request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
         let mail = prepare(&ctx);
         req.post("/v1/auth/magic-link")
             .json(&json!({"email": "a@example.com"}))
             .await;
-        let path = path_of(&last_link(&mail));
+        let token = token_of(&last_link(&mail));
 
-        let res = req.get(&path).await;
-        assert_eq!(res.status_code(), 302);
-        let loc = res.header("location").to_str().unwrap().to_string();
-        assert!(loc.ends_with("/dashboard"), "{loc}");
+        // Wrong origin is refused and does not consume the link.
+        let res = req
+            .post("/v1/auth/magic-link/redeem")
+            .add_header("Origin", "https://evil.example")
+            .json(&json!({ "token": token }))
+            .await;
+        assert_eq!(res.status_code(), 403);
+        assert_eq!(res.json::<Value>()["code"], "bad_origin");
+
+        let res = redeem(&req, &token).await;
+        assert_eq!(res.status_code(), 200);
+        assert_eq!(
+            res.json::<Value>()["redirect"],
+            format!("{WEB_ORIGIN}/dashboard")
+        );
         let cookie = res.header("set-cookie").to_str().unwrap().to_string();
         assert!(cookie.starts_with("opsagent_session="), "{cookie}");
         for attr in ["HttpOnly", "Secure", "SameSite=Lax"] {
             assert!(cookie.contains(attr), "{attr} missing in {cookie}");
         }
 
-        let res = req.get(&path).await;
+        let res = redeem(&req, &token).await;
         assert_eq!(res.status_code(), 410);
         assert_eq!(res.json::<Value>()["code"], "link_invalid");
+
+        // Sec-Fetch-Site: same-site is accepted without Origin (bad token -> 410, not 403).
+        let res = req
+            .post("/v1/auth/magic-link/redeem")
+            .add_header("Sec-Fetch-Site", "same-site")
+            .json(&json!({ "token": "nope" }))
+            .await;
+        assert_eq!(res.status_code(), 410);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn authenticated_request_slides_session_expiry() {
+    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+        let mail = prepare(&ctx);
+        sign_in(&req, &mail, "slide@example.com").await;
+        let expiry = || async {
+            sessions::Entity::find()
+                .order_by_desc(sessions::Column::ExpiryDate)
+                .one(&ctx.db)
+                .await
+                .unwrap()
+                .unwrap()
+                .expiry_date
+        };
+        let before = expiry().await;
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        assert_eq!(req.get("/v1/auth/me").await.status_code(), 200);
+        assert!(expiry().await > before);
     })
     .await;
 }

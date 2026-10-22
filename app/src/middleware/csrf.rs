@@ -29,7 +29,9 @@ pub fn token(secret: &str, session_id: &str) -> String {
 /// Safe methods are exempt, which covers health and the OAuth callback (both GET).
 pub async fn guard(State(ctx): State<AppContext>, req: Request, next: Next) -> Response {
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    if !safe {
+    // Anonymous by design; protected by its own Origin check (controllers/auth.rs).
+    let exempt = req.uri().path() == "/v1/auth/magic-link/redeem";
+    if !safe && !exempt {
         if let Some(session) = req.extensions().get::<Session>() {
             let signed_in = matches!(session.get::<Uuid>(USER_KEY).await, Ok(Some(_)));
             if signed_in {

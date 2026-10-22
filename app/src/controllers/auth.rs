@@ -1,6 +1,6 @@
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, StatusCode},
+    extract::{Query, State},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -55,11 +55,7 @@ async fn request_link(
 }
 
 /// Rotates the session id and binds the session to `user_id`.
-async fn start_session(
-    ctx: &AppContext,
-    session: &Session,
-    user_id: Uuid,
-) -> Result<Response, ApiError> {
+async fn start_session(ctx: &AppContext, session: &Session, user_id: Uuid) -> Result<(), ApiError> {
     session.cycle_id().await?;
     session.insert(USER_KEY, user_id).await?;
     audit::record(
@@ -70,19 +66,48 @@ async fn start_session(
         Some(("user", user_id.to_string())),
     )
     .await?;
-    let to = format!("{}/dashboard", Settings::get(ctx).web_base_url);
-    Ok((StatusCode::FOUND, [(header::LOCATION, to)]).into_response())
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct RedeemRequest {
+    token: String,
+}
+
+/// Anonymous, so CSRF-token-exempt; protected by an origin check instead. Accepted when the
+/// `Origin` header equals the origin of `WEB_BASE_URL`, or `Sec-Fetch-Site` is
+/// `same-origin`/`same-site` (browsers set it and scripts cannot forge it).
+fn check_origin(headers: &HeaderMap, web_base_url: &str) -> Result<(), ApiError> {
+    let header = |n: &str| headers.get(n).and_then(|v| v.to_str().ok());
+    let web_origin = web_base_url.trim_end_matches('/');
+    let ok = header("origin").is_some_and(|o| o == web_origin)
+        || matches!(header("sec-fetch-site"), Some("same-origin" | "same-site"));
+    if ok {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "bad_origin",
+            "Request origin not allowed.",
+        ))
+    }
 }
 
 async fn redeem_link(
     State(ctx): State<AppContext>,
     session: Session,
-    Path(token): Path<String>,
-) -> Result<Response, ApiError> {
-    let user_id = magic_links::consume(&ctx.db, &token)
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<RedeemRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let web = Settings::get(&ctx).web_base_url;
+    check_origin(&headers, &web)?;
+    let user_id = magic_links::consume(&ctx.db, &body.token)
         .await?
         .ok_or_else(|| ApiError::gone("link_invalid"))?;
-    start_session(&ctx, &session, user_id).await
+    start_session(&ctx, &session, user_id).await?;
+    Ok(Json(
+        json!({ "redirect": format!("{}/dashboard", web.trim_end_matches('/')) }),
+    ))
 }
 
 /// Expands to a configured GitHub OAuth client (the typestate client type is not nameable
@@ -226,7 +251,9 @@ async fn github_callback(
         gh.name.or(Some(gh.login)),
     )
     .await?;
-    start_session(&ctx, &session, user.id).await
+    start_session(&ctx, &session, user.id).await?;
+    let to = format!("{}/dashboard", s.web_base_url);
+    Ok((StatusCode::FOUND, [(header::LOCATION, to)]).into_response())
 }
 
 async fn csrf_token(
@@ -262,7 +289,7 @@ pub fn routes() -> Routes {
     Routes::new()
         .prefix("/v1/auth")
         .add("/magic-link", post(request_link))
-        .add("/magic-link/{token}", get(redeem_link))
+        .add("/magic-link/redeem", post(redeem_link))
         .add("/sign-in/github/start", post(github_start))
         .add("/sign-in/github/callback", get(github_callback))
         .add("/csrf", get(csrf_token))

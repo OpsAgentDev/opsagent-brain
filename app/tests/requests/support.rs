@@ -31,9 +31,17 @@ pub fn last_link(mail: &CaptureMailer) -> String {
         .to_string()
 }
 
-pub fn path_of(link: &str) -> String {
-    let rest = link.split_once("://").unwrap().1;
-    rest[rest.find('/').unwrap()..].to_string()
+pub const WEB_ORIGIN: &str = "http://localhost:3000";
+
+pub fn token_of(link: &str) -> String {
+    link.rsplit(['=', '/']).next().unwrap().to_string()
+}
+
+pub async fn redeem(req: &TestServer, token: &str) -> axum_test::TestResponse {
+    req.post("/v1/auth/magic-link/redeem")
+        .add_header("Origin", WEB_ORIGIN)
+        .json(&json!({ "token": token }))
+        .await
 }
 
 /// Full magic-link sign-in; returns the CSRF token for the new session.
@@ -43,8 +51,8 @@ pub async fn sign_in(req: &TestServer, mail: &CaptureMailer, email: &str) -> Str
         .json(&json!({ "email": email }))
         .await;
     assert_eq!(res.status_code(), 202);
-    let res = req.get(&path_of(&last_link(mail))).await;
-    assert_eq!(res.status_code(), 302);
+    let res = redeem(req, &token_of(&last_link(mail))).await;
+    assert_eq!(res.status_code(), 200);
     csrf(req).await
 }
 

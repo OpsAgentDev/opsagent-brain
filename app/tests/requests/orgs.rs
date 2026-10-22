@@ -112,11 +112,7 @@ async fn invites_owner_only_and_bound_to_email() {
             .json(&invite("member"))
             .await;
         assert_eq!(res.status_code(), 201, "{}", res.text());
-        let invite_path = path_of(&last_link(&mail));
-        let accept = format!(
-            "/v1/invites/{}/accept",
-            invite_path.rsplit('/').next().unwrap()
-        );
+        let accept = format!("/v1/invites/{}/accept", token_of(&last_link(&mail)));
 
         // Wrong user is refused.
         req.clear_cookies();
@@ -137,6 +133,37 @@ async fn invites_owner_only_and_bound_to_email() {
             .await;
         assert_eq!(res.status_code(), 403);
         assert_eq!(res.json::<Value>()["code"], "forbidden");
+
+        // Re-invite, then remove the member: the pending invite is cancelled (accept -> 410).
+        req.clear_cookies();
+        let to = sign_in(&req, &mail, "owner@example.com").await;
+        let res = req
+            .post(&format!("/v1/orgs/{slug}/invites"))
+            .add_header("X-CSRF-Token", &to)
+            .json(&invite("member"))
+            .await;
+        assert_eq!(res.status_code(), 201);
+        let accept2 = format!("/v1/invites/{}/accept", token_of(&last_link(&mail)));
+        let members = req
+            .get(&format!("/v1/orgs/{slug}/members"))
+            .await
+            .json::<Vec<Value>>();
+        let mate = members
+            .iter()
+            .find(|m| m["email"] == "mate@example.com")
+            .unwrap();
+        let res = req
+            .delete(&format!(
+                "/v1/orgs/{slug}/members/{}",
+                mate["id"].as_str().unwrap()
+            ))
+            .add_header("X-CSRF-Token", &to)
+            .await;
+        assert_eq!(res.status_code(), 204);
+        req.clear_cookies();
+        let tm = sign_in(&req, &mail, "mate@example.com").await;
+        let res = req.post(&accept2).add_header("X-CSRF-Token", &tm).await;
+        assert_eq!(res.status_code(), 410);
 
         // Token is single use.
         let res = req.post(&accept).add_header("X-CSRF-Token", &tm).await;
