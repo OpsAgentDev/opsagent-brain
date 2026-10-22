@@ -7,8 +7,9 @@
 //!   organisation each day. Fails closed when Redis is unavailable.
 //!
 //! `ignored` (90 days, per organisation) follows that organisation's unconfirmed mails.
-//! `confirm_blocked` (90 days, global) follows unconfirmed mails from 5 distinct owning users,
-//! or more than 10 confirm mails to the address in 30 days; it never stops deliveries.
+//! `confirm_blocked` (90 days, global) follows unconfirmed mails from 5 distinct owning users;
+//! it never stops deliveries. There is no total per-address cap: it would count mails that were
+//! later confirmed and block a legitimate shared address everywhere.
 //! One owning user gets at most 2 confirm mails per address in 30 days across all of their
 //! organisations, so creating organisations buys nothing. The 30-day counters only expire;
 //! a confirm does not reset them.
@@ -46,9 +47,6 @@ pub const UNCONFIRMED_CAP: i64 = 2;
 /// Confirm mails per (owning user, address) in 30 days, across all of that user's
 /// organisations; beyond it the mail is withheld silently.
 pub const PER_OWNER_CAP: i64 = 2;
-/// Confirm mails per address in 30 days from all senders; beyond it the address is
-/// `confirm_blocked`.
-pub const PER_ADDRESS_30D_CAP: i64 = 10;
 /// Distinct owning users whose organisations sent unconfirmed confirm mails to one address in
 /// 30 days at which confirm mails to it are blocked for everyone (`confirm_blocked`).
 pub const UNCONFIRMED_OWNERS_CAP: i64 = 5;
@@ -228,10 +226,6 @@ async fn count(
     let per_owner = format!("recipient_confirm:unconfirmed_owner:{owner}:{hash}");
     if !hit(&mut c, &per_owner, PER_OWNER_CAP, WINDOW_30D).await? {
         return Ok(Verdict::Capped);
-    }
-    let total = format!("recipient_confirm:unconfirmed_total:{hash}");
-    if !hit(&mut c, &total, PER_ADDRESS_30D_CAP, WINDOW_30D).await? {
-        return Ok(Verdict::Blocked);
     }
     let owners = distinct(
         &mut c,

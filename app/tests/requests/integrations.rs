@@ -1003,38 +1003,20 @@ async fn one_owner_with_five_orgs_sends_two_confirm_mails_per_address() {
     .await;
 }
 
-/// Deletes the daily confirm-mail counters (a new day); 30-day counters stay.
-fn next_day(ctx: &AppContext) {
-    let mut c = redis_of(ctx).get_connection().unwrap();
-    let keys: Vec<String> = opsagent_ledger::redis::cmd("KEYS")
-        .arg("ratelimit:recipient_confirm:*")
-        .query(&mut c)
-        .unwrap();
-    if !keys.is_empty() {
-        let _: () = opsagent_ledger::redis::cmd("DEL")
-            .arg(&keys)
-            .query(&mut c)
-            .unwrap();
-    }
-}
-
 #[tokio::test]
 #[serial]
-async fn ten_confirm_mails_in_30_days_block_the_eleventh() {
+async fn six_owners_who_each_confirm_never_trip_confirm_blocked() {
     serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
         let mut first = None;
-        for i in 0..11 {
-            next_day(&ctx);
+        for i in 0..6 {
             let (t, org, _) = org_with_routes(&mut req, &mail, &format!("o{i}@example.com")).await;
             first.get_or_insert(org.clone());
-            // Each one confirms, so the distinct-owner trigger never fires.
+            // Each confirms, which clears that owner from the distinct-owner set.
             add_and_confirm(&req, &mail, &t, &org, "target@example.com", &Value::Null).await;
         }
-        assert_eq!(mails_to(&mail, "target@example.com"), 10);
-        let row = blocked(&ctx).await.expect("confirm_blocked row");
-        assert!(row.organisation_id.is_none() && row.expires_at.is_some());
-        // The first (confirmed) recipient still gets deliveries.
+        assert_eq!(mails_to(&mail, "target@example.com"), 6);
+        assert!(blocked(&ctx).await.is_none());
         let org = organisations::Entity::find()
             .filter(organisations::Column::Slug.eq(first.unwrap()))
             .one(&ctx.db)
