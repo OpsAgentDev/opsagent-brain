@@ -46,7 +46,7 @@ async fn killed_after_each_checkpoint_resumes_with_effects_once() {
     })
     .await
     .unwrap();
-    assert!(runs >= 3);
+    assert_eq!(runs, 4); // one kill per chunk, then a run with nothing left
     assert!(counts.iter().all(|c| c.load(SeqCst) == 1));
     let row = s.load_run(run.id).await.unwrap();
     assert_eq!(row.status, RunStatus::Done);
@@ -112,4 +112,64 @@ async fn time_cap_returns_partial() {
         s.load_run(run.id).await.unwrap().partial_reason.as_deref(),
         Some("time_cap")
     );
+}
+
+#[tokio::test]
+async fn kill_between_effect_done_and_checkpoint_runs_effect_once() {
+    use std::sync::atomic::AtomicBool;
+    let (r, s) = (common::redis(), MemoryStorage::default());
+    let run = s.create_run(common::key()).await.unwrap();
+    let (n, killed) = (AtomicU32::new(0), AtomicBool::new(false));
+    let go = || {
+        run_chunked(&s, &r, run.id, vec!["c0".into()], opts("w"), |c, _l| {
+            let (n, killed, s) = (&n, &killed, &s);
+            async move {
+                with_effect(s, run.id, &c, false, || async {
+                    n.fetch_add(1, SeqCst);
+                    Ok(None)
+                })
+                .await?;
+                if !killed.swap(true, SeqCst) {
+                    return Err(opsagent_ledger::LedgerError::Killed); // effect done, no checkpoint
+                }
+                Ok(ChunkOutcome { stats: json!({}) })
+            }
+        })
+    };
+    assert!(go().await.is_err());
+    assert!(s
+        .load_run(run.id)
+        .await
+        .unwrap()
+        .checkpoint
+        .chunks_done
+        .is_empty());
+    assert_eq!(go().await.unwrap(), RunStatus::Done);
+    assert_eq!(n.load(SeqCst), 1);
+    assert!(s
+        .load_run(run.id)
+        .await
+        .unwrap()
+        .checkpoint
+        .chunks_done
+        .contains("c0"));
+}
+
+#[tokio::test]
+async fn dropping_run_chunked_stops_heartbeat() {
+    let (r, s) = (common::redis(), MemoryStorage::default());
+    let run = s.create_run(common::key()).await.unwrap();
+    let mut o = opts("w");
+    o.lease_ttl = Duration::from_millis(200);
+    o.heartbeat_every = Duration::from_millis(40);
+    let fut = run_chunked(&s, &r, run.id, vec!["a".into()], o, |_c, _l| async {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        Ok(ChunkOutcome { stats: json!({}) })
+    });
+    let _ = tokio::time::timeout(Duration::from_millis(300), fut).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(acquire(&s, &r, run.id, "x", Duration::from_secs(1))
+        .await
+        .unwrap()
+        .is_some());
 }

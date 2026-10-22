@@ -17,6 +17,10 @@ async fn acquire_twice_some_then_none() {
         .unwrap()
         .is_none());
     let l = l.unwrap();
+    // failed acquire must not invalidate the holder's fence
+    s.write_checkpoint(run.id, l.fence, &Checkpoint::default())
+        .await
+        .unwrap();
     assert!(heartbeat(&r, &l).await.unwrap());
     release(&r, &l).await;
     assert!(!heartbeat(&r, &l).await.unwrap());
