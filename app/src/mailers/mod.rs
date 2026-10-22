@@ -27,7 +27,7 @@ pub struct LogMailer;
 #[async_trait]
 impl Mailer for LogMailer {
     async fn send(&self, mail: Mail) -> std::result::Result<(), String> {
-        tracing::info!(to = %mail.to, subject = %mail.subject, "mail (not sent, no RESEND_API_KEY):\n{}", mail.text);
+        tracing::info!(to = %mail.to, subject = %mail.subject, "mail (not sent, no MAILER_SMTP_URL or RESEND_API_KEY):\n{}", mail.text);
         Ok(())
     }
 }
@@ -118,7 +118,13 @@ pub enum MailerChoice {
     Log,
 }
 
-/// `MAILER_SMTP_URL` wins (local mailpit), then `RESEND_API_KEY`; otherwise the log mailer,
+/// True when the SMTP URL's host is `localhost`, `127.0.0.1` or `::1`; unparseable is false.
+fn is_loopback(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .is_ok_and(|u| matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")))
+}
+
+/// `MAILER_SMTP_URL` wins (local mailpit; production allows only a loopback relay), then `RESEND_API_KEY`; otherwise the log mailer,
 /// which production refuses. Empty values count as unset.
 pub fn choose(
     smtp_url: Option<String>,
@@ -127,6 +133,9 @@ pub fn choose(
 ) -> Result<MailerChoice> {
     let set = |v: Option<String>| v.filter(|s| !s.is_empty());
     match (set(smtp_url), set(resend_key)) {
+        (Some(url), _) if production && !is_loopback(&url) => Err(Error::string(
+            "MAILER_SMTP_URL must point at a loopback host in production (plain SMTP, no TLS)",
+        )),
         (Some(url), _) => Ok(MailerChoice::Smtp(url)),
         (None, Some(key)) => Ok(MailerChoice::Resend(key)),
         _ if production => Err(Error::string("RESEND_API_KEY is required in production")),
@@ -174,6 +183,26 @@ mod tests {
         );
         assert_eq!(choose(None, None, false).unwrap(), MailerChoice::Log);
         assert!(choose(None, None, true).is_err());
+    }
+
+    #[test]
+    fn production_smtp_only_on_loopback() {
+        assert!(choose(s("smtp://user:pass@mail.example.com"), s("re_x"), true).is_err());
+        for url in [
+            "smtp://127.0.0.1:1025",
+            "smtp://localhost:1025",
+            "smtp://[::1]:1025",
+        ] {
+            assert_eq!(
+                choose(s(url), None, true).unwrap(),
+                MailerChoice::Smtp(url.into())
+            );
+        }
+        let remote = "smtp://user:pass@mail.example.com";
+        assert_eq!(
+            choose(s(remote), None, false).unwrap(),
+            MailerChoice::Smtp(remote.into())
+        );
     }
 
     #[test]
