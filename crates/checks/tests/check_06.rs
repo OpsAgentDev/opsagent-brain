@@ -112,16 +112,6 @@ fn absent_stored_bytes_has_no_cost() {
 }
 
 #[test]
-fn member_account_with_org_trail_is_fine() {
-    let rs = [res(
-        "org",
-        "r",
-        json!({"service":"cloudtrail","logging":true,"is_organization":true,"bucket_writable":false}),
-    )];
-    assert!(run(&LoggingGaps, &rs, &[]).is_empty());
-}
-
-#[test]
 fn unavailable_services_are_skipped() {
     use opsagent_checks::{Check, CheckCtx, MetricStore};
     let rs = [
@@ -140,4 +130,41 @@ fn unavailable_services_are_skipped() {
         unavailable: &un,
     };
     assert!(LoggingGaps.run(&ctx).is_empty());
+}
+
+const OWN: &str = "arn:aws:cloudtrail:eu-west-1:1:trail/org";
+const OTHER: &str = "arn:aws:cloudtrail:eu-west-1:9:trail/org";
+
+fn org(arn: &str, extra: Value) -> Resource {
+    let mut a = json!({"service":"cloudtrail","is_organization":true});
+    a.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    res(arn, "r", a)
+}
+
+#[test]
+fn org_trail_owned_here_with_unwritable_bucket_is_critical() {
+    let rs = [org(OWN, json!({"logging":true,"bucket_writable":false}))];
+    assert_eq!(
+        set(&run(&LoggingGaps, &rs, &[])),
+        vec![t("cloudtrail:1", "trail_effectively_off", Critical)]
+    );
+}
+
+#[test]
+fn org_trail_of_another_account_ignores_bucket() {
+    let rs = [org(OTHER, json!({"logging":true,"bucket_writable":false}))];
+    assert!(run(&LoggingGaps, &rs, &[]).is_empty());
+}
+
+#[test]
+fn org_trail_with_unknown_status_is_present() {
+    assert!(run(&LoggingGaps, &[org(OTHER, json!({}))], &[]).is_empty());
+}
+
+#[test]
+fn non_org_trail_with_unknown_status_is_skipped() {
+    let rs = [res("t", "r", json!({"service":"cloudtrail"}))];
+    assert!(run(&LoggingGaps, &rs, &[]).is_empty());
 }

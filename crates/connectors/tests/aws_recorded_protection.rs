@@ -512,6 +512,49 @@ async fn organization_trail_is_flagged_and_deduped() {
     assert_eq!(r[0].attributes["is_organization"], true);
 }
 
+#[tokio::test]
+async fn refused_trail_status_does_not_fail_the_read() {
+    use aws_sdk_cloudtrail::operation::{
+        describe_trails::DescribeTrailsOutput,
+        get_trail_status::{GetTrailStatusError, GetTrailStatusOutput},
+    };
+    use aws_sdk_cloudtrail::types::Trail;
+    let (a, b) = (
+        "arn:aws:cloudtrail:eu-west-1:1:trail/a",
+        "arn:aws:cloudtrail:eu-west-1:9:trail/b",
+    );
+    let d = mock!(aws_sdk_cloudtrail::Client::describe_trails).then_output(move || {
+        DescribeTrailsOutput::builder()
+            .trail_list(Trail::builder().name("a").trail_arn(a).build())
+            .trail_list(
+                Trail::builder()
+                    .name("b")
+                    .trail_arn(b)
+                    .is_organization_trail(true)
+                    .build(),
+            )
+            .build()
+    });
+    let sa = mock!(aws_sdk_cloudtrail::Client::get_trail_status)
+        .match_requests(move |r| r.name() == Some(a))
+        .then_output(|| GetTrailStatusOutput::builder().is_logging(true).build());
+    let sb = mock!(aws_sdk_cloudtrail::Client::get_trail_status)
+        .match_requests(move |r| r.name() == Some(b))
+        .then_error(|| {
+            GetTrailStatusError::generic(
+                aws_sdk_cloudtrail::error::ErrorMetadata::builder()
+                    .code("AccessDeniedException")
+                    .build(),
+            )
+        });
+    let ct = mock_client!(aws_sdk_cloudtrail, RuleMode::MatchAny, [&d, &sa, &sb]);
+    let r = cloudtrails(&ct, &T).await.unwrap();
+    assert_eq!(r.len(), 2);
+    assert_eq!(r[0].attributes["logging"], true);
+    assert!(r[1].attributes.get("logging").is_none());
+    assert_eq!(r[1].attributes["is_organization"], true);
+}
+
 fn metric_output(
     values: &[(&str, f64)],
 ) -> aws_sdk_cloudwatch::operation::get_metric_data::GetMetricDataOutput {

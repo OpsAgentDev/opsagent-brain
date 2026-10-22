@@ -21,16 +21,26 @@ impl Check for LoggingGaps {
 
     fn run(&self, ctx: &CheckCtx) -> Vec<FindingDraft> {
         let mut out = vec![];
-        // account -> trails as (identity, broken)
-        let mut trails: BTreeMap<&str, Vec<(&str, bool)>> = BTreeMap::new();
+        // account -> trails as (identity, Some(broken)); None = status unknown, skipped.
+        let mut trails: BTreeMap<&str, Vec<(&str, Option<bool>)>> = BTreeMap::new();
         for r in ctx.resources {
             let a = &r.attributes;
             let acct = trails.entry(r.account.as_str()).or_default();
             match r.service() {
                 "cloudtrail" => {
-                    // An organization trail logs for members; its bucket is not ours to judge.
                     let org = a["is_organization"] == true;
-                    let broken = a["logging"] == false || (!org && a["bucket_writable"] == false);
+                    // ARN account; an organization trail of another account has a bucket
+                    // that is not ours to judge.
+                    let foreign =
+                        org && r.identity.split(':').nth(4).is_some_and(|o| o != r.account);
+                    let unwritable = !foreign && a["bucket_writable"] == false;
+                    let broken = match a["logging"].as_bool() {
+                        Some(false) => Some(true),
+                        Some(true) => Some(unwritable),
+                        // Unknown status: an organization trail counts as present.
+                        None if org => Some(false),
+                        None => None,
+                    };
                     acct.push((r.identity.as_str(), broken));
                 }
                 // A missing key means the read failed: skip, never treat as off.
@@ -82,7 +92,7 @@ impl Check for LoggingGaps {
             }
         }
         for (acct, ts) in trails {
-            if ctx.unavailable.contains("cloudtrail") || ts.iter().any(|(_, broken)| !broken) {
+            if ctx.unavailable.contains("cloudtrail") || ts.iter().any(|(_, b)| *b != Some(true)) {
                 continue;
             }
             let list: Vec<&str> = ts.iter().map(|(i, _)| *i).collect();

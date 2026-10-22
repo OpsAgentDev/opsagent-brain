@@ -22,24 +22,36 @@ pub async fn cloudtrails(ct: &aws_sdk_cloudtrail::Client, t: &Target<'_>) -> Res
         if !seen.insert(arn) {
             continue;
         }
-        let status = ct
-            .get_trail_status()
-            .name(arn)
-            .send()
-            .await
-            .map_err(provider_err)?;
+        let mut attrs = json!({
+            "service": "cloudtrail",
+            "is_organization": tr.is_organization_trail().unwrap_or(false),
+        });
+        // A refused status call (e.g. an organization trail of another account) leaves
+        // `logging` and `bucket_writable` absent rather than failing the read.
+        match ct.get_trail_status().name(arn).send().await {
+            Ok(status) => {
+                attrs["logging"] = status.is_logging().unwrap_or(false).into();
+                // A delivery error means the trail cannot write to its bucket.
+                attrs["bucket_writable"] = status
+                    .latest_delivery_error()
+                    .is_none_or(str::is_empty)
+                    .into();
+            }
+            Err(e) => {
+                let e = provider_err(e);
+                let code = match &e {
+                    crate::ConnectorError::Api { code, .. } => code.as_deref(),
+                    _ => None,
+                };
+                tracing::debug!(error_code = ?code, "trail status unavailable");
+            }
+        }
         out.push(t.resource(
             ResourceKind::Log,
             arn.to_owned(),
             tr.name().unwrap_or_default(),
             BTreeMap::new(),
-            json!({
-                "service": "cloudtrail",
-                "logging": status.is_logging().unwrap_or(false),
-                "is_organization": tr.is_organization_trail().unwrap_or(false),
-                // A delivery error means the trail cannot write to its bucket.
-                "bucket_writable": status.latest_delivery_error().is_none_or(str::is_empty),
-            }),
+            attrs,
         ));
     }
     Ok(out)
