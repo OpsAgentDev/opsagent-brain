@@ -21,7 +21,7 @@ impl Check for LoggingGaps {
 
     fn run(&self, ctx: &CheckCtx) -> Vec<FindingDraft> {
         let mut out = vec![];
-        // account -> trails as (identity, Some(broken)); None = status unknown, skipped.
+        // account -> trails as (identity, Some(broken)); None = own-account status unknown.
         let mut trails: BTreeMap<&str, Vec<(&str, Option<bool>)>> = BTreeMap::new();
         for r in ctx.resources {
             let a = &r.attributes;
@@ -37,8 +37,8 @@ impl Check for LoggingGaps {
                     let broken = match a["logging"].as_bool() {
                         Some(false) => Some(true),
                         Some(true) => Some(unwritable),
-                        // Unknown status: an organization trail counts as present.
-                        None if org => Some(false),
+                        // Unknown status: only a foreign organization trail counts as present.
+                        None if foreign => Some(false),
                         None => None,
                     };
                     acct.push((r.identity.as_str(), broken));
@@ -92,7 +92,27 @@ impl Check for LoggingGaps {
             }
         }
         for (acct, ts) in trails {
-            if ctx.unavailable.contains("cloudtrail") || ts.iter().any(|(_, b)| *b != Some(true)) {
+            if ctx.unavailable.contains("cloudtrail") || ts.iter().any(|(_, b)| *b == Some(false)) {
+                continue;
+            }
+            // Own-account trails of unknown status are not judged: say so, not "off".
+            let unknown: Vec<&str> = ts
+                .iter()
+                .filter(|(_, b)| b.is_none())
+                .map(|(i, _)| *i)
+                .collect();
+            if !unknown.is_empty() {
+                out.push(trail_finding(
+                    ctx,
+                    acct,
+                    ("trail_status_unknown", Severity::Medium),
+                    (
+                        "Audit trail status could not be read",
+                        "Could not confirm any trail is logging and able to write to its bucket.",
+                        "Grant cloudtrail:GetTrailStatus and re-run the scan.",
+                    ),
+                    format!("trails with unreadable status: {}", unknown.join(", ")),
+                ));
                 continue;
             }
             let list: Vec<&str> = ts.iter().map(|(i, _)| *i).collect();
@@ -104,24 +124,44 @@ impl Check for LoggingGaps {
                     list.join(", ")
                 )
             };
-            out.push(FindingDraft {
-                key: FindingKey {
-                    connection_id: ctx.connection_id,
-                    check_id: "06".into(),
-                    resource_identity: format!("cloudtrail:{acct}"),
-                    variant: "trail_effectively_off".into(),
-                },
-                severity: Severity::Critical,
-                title: "Audit trail is effectively off".into(),
-                summary: "No trail is both logging and able to write to its bucket.".into(),
-                next_step: "Start logging on a trail and fix its bucket policy.".into(),
-                cost_monthly_usd: None,
-                evidence: vec![Evidence {
-                    source: format!("cloudtrail:{acct}"),
-                    excerpt: ex,
-                }],
-            });
+            out.push(trail_finding(
+                ctx,
+                acct,
+                ("trail_effectively_off", Severity::Critical),
+                (
+                    "Audit trail is effectively off",
+                    "No trail is both logging and able to write to its bucket.",
+                    "Start logging on a trail and fix its bucket policy.",
+                ),
+                ex,
+            ));
         }
         out
+    }
+}
+
+fn trail_finding(
+    ctx: &CheckCtx,
+    acct: &str,
+    (variant, severity): (&str, Severity),
+    (title, summary, step): (&str, &str, &str),
+    excerpt: String,
+) -> FindingDraft {
+    FindingDraft {
+        key: FindingKey {
+            connection_id: ctx.connection_id,
+            check_id: "06".into(),
+            resource_identity: format!("cloudtrail:{acct}"),
+            variant: variant.into(),
+        },
+        severity,
+        title: title.into(),
+        summary: summary.into(),
+        next_step: step.into(),
+        cost_monthly_usd: None,
+        evidence: vec![Evidence {
+            source: format!("cloudtrail:{acct}"),
+            excerpt,
+        }],
     }
 }
