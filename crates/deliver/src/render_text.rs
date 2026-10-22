@@ -2,7 +2,9 @@
 //! Titles only, never evidence.
 use opsagent_core::connection::ConnectionStatus;
 
-use crate::model::{severity_label, Briefing, DailyCounts, Health, Item, SeverityCounts, Weekly};
+use crate::model::{
+    severity_label, Briefing, DailyCounts, Health, Item, SeverityCounts, SpendSection, Weekly,
+};
 
 /// Slack's limit is ~4,000; keep headroom. Measured in bytes, which is stricter than chars.
 pub const SLACK_MAX: usize = 3_900;
@@ -200,21 +202,7 @@ fn weekly_lines(w: &Weekly, esc: Fmt, label: Fmt) -> Vec<String> {
         ));
         return out;
     }
-    let s = &w.spend;
-    out.push(format!(
-        "{} {} this week vs {} last week ({})\n",
-        label("Spend:"),
-        usd(&s.this_week_usd),
-        usd(&s.last_week_usd),
-        signed_usd(&s.delta_usd)
-    ));
-    for (day, amount, baseline) in &s.anomalies {
-        out.push(format!(
-            "  Anomaly {day}: {} vs baseline {}\n",
-            usd(amount),
-            usd(baseline)
-        ));
-    }
+    spend_lines(&mut out, w.spend.as_ref(), label);
     out.push(match &w.recommended_cost_action {
         Some(a) => format!(
             "{} {} (saves {}/month)\n",
@@ -269,6 +257,27 @@ fn weekly_lines(w: &Weekly, esc: Fmt, label: Fmt) -> Vec<String> {
             .map(|l| format!("  - {}\n", esc(l))),
     );
     out
+}
+
+fn spend_lines(out: &mut Vec<String>, spend: Option<&SpendSection>, label: Fmt) {
+    let Some(s) = spend else {
+        out.push(format!("{} not tracked yet\n", label("Spend:")));
+        return;
+    };
+    out.push(format!(
+        "{} {} this week vs {} last week ({})\n",
+        label("Spend:"),
+        usd(&s.this_week_usd),
+        usd(&s.last_week_usd),
+        signed_usd(&s.delta_usd)
+    ));
+    for (day, amount, baseline) in &s.anomalies {
+        out.push(format!(
+            "  Anomaly {day}: {} vs baseline {}\n",
+            usd(amount),
+            usd(baseline)
+        ));
+    }
 }
 
 fn list(out: &mut Vec<String>, name: String, items: &[Item], esc: Fmt) {

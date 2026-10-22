@@ -9,7 +9,7 @@ use chrono::Utc;
 use loco_rs::{app::AppContext, bgworker::BackgroundWorker, Result};
 use opsagent_core::run::RunStatus;
 use opsagent_deliver::{
-    model::{SpendSnapshot, Weekly, WeeklyExtras},
+    model::{Weekly, WeeklyExtras},
     render_html, render_slack, render_text,
     route::Recipient,
     weekly::build_weekly,
@@ -149,17 +149,12 @@ async fn weekly(ctx: &AppContext, c: &connections::Model) -> LResult<Weekly> {
         .await
         .map_err(lerr)?;
     // shortcut: spend, restore-test dates, untagged spend and write candidates are not stored
-    // yet, so those sections read as zero/unknown; fill them when the scan persists them.
-    let spend = SpendSnapshot {
-        this_week_usd: 0.0,
-        last_week_usd: 0.0,
-        anomalies: vec![],
-    };
+    // yet, so those sections read "not tracked yet"/unknown; fill them when the scan persists them.
     let link_base = Settings::get(ctx).web_base_url;
     Ok(build_weekly(
         &conn,
         &findings,
-        &spend,
+        None,
         &WeeklyExtras::default(),
         now,
         &link_base,

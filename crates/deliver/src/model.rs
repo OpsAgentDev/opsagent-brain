@@ -167,7 +167,8 @@ pub struct BackupStatus {
 pub struct Weekly {
     pub connection_name: String,
     pub first_week: bool,
-    pub spend: SpendSection,
+    /// `None`: spend is not collected yet (rendered "not tracked yet", never $0.00).
+    pub spend: Option<SpendSection>,
     pub recommended_cost_action: Option<CostAction>,
     pub posture: PostureDelta,
     pub iam: IamDelta,
