@@ -24,6 +24,7 @@ pub fn run(check: &dyn Check, resources: &[Resource], cost: &[CostRow]) -> Vec<F
         cost,
         metrics: &metrics,
         now,
+        unavailable: &Default::default(),
     };
     let out = check.run(&ctx);
     for d in &out {

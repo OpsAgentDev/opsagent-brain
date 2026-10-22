@@ -7,16 +7,21 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 pub async fn cloudtrails(ct: &aws_sdk_cloudtrail::Client, t: &Target<'_>) -> Result<Vec<Resource>> {
-    // Shadow trails excluded so a multi-region trail is reported once, in its home region.
+    // Shadow trails included so organization trails (owned by another account) show up;
+    // a multi-region trail repeats per region, so dedupe by ARN.
     let trails = ct
         .describe_trails()
-        .include_shadow_trails(false)
+        .include_shadow_trails(true)
         .send()
         .await
         .map_err(provider_err)?;
     let mut out = vec![];
+    let mut seen = std::collections::HashSet::new();
     for tr in trails.trail_list() {
         let arn = tr.trail_arn().unwrap_or_default();
+        if !seen.insert(arn) {
+            continue;
+        }
         let status = ct
             .get_trail_status()
             .name(arn)
@@ -31,6 +36,7 @@ pub async fn cloudtrails(ct: &aws_sdk_cloudtrail::Client, t: &Target<'_>) -> Res
             json!({
                 "service": "cloudtrail",
                 "logging": status.is_logging().unwrap_or(false),
+                "is_organization": tr.is_organization_trail().unwrap_or(false),
                 // A delivery error means the trail cannot write to its bucket.
                 "bucket_writable": status.latest_delivery_error().is_none_or(str::is_empty),
             }),

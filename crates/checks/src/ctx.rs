@@ -23,6 +23,8 @@ pub struct CheckCtx<'a> {
     pub cost: &'a [CostRow],
     pub metrics: &'a MetricStore,
     pub now: DateTime<Utc>,
+    /// Services whose reads partly failed this run; checks skip findings that need them.
+    pub unavailable: &'a std::collections::BTreeSet<String>,
 }
 
 pub trait Check {

@@ -480,8 +480,36 @@ async fn trail_with_delivery_error_is_not_writable() {
     let r = cloudtrails(&ct, &T).await.unwrap();
     assert_eq!(
         r[0].attributes,
-        json!({"service": "cloudtrail", "logging": true, "bucket_writable": false})
+        json!({"service": "cloudtrail", "logging": true, "is_organization": false, "bucket_writable": false})
     );
+}
+
+#[tokio::test]
+async fn organization_trail_is_flagged_and_deduped() {
+    use aws_sdk_cloudtrail::operation::{
+        describe_trails::DescribeTrailsOutput, get_trail_status::GetTrailStatusOutput,
+    };
+    use aws_sdk_cloudtrail::types::Trail;
+    let arn = "arn:aws:cloudtrail:eu-west-1:999999999999:trail/org";
+    let tr = move || {
+        Trail::builder()
+            .name("org")
+            .trail_arn(arn)
+            .is_organization_trail(true)
+            .build()
+    };
+    let d = mock!(aws_sdk_cloudtrail::Client::describe_trails).then_output(move || {
+        DescribeTrailsOutput::builder()
+            .trail_list(tr())
+            .trail_list(tr())
+            .build()
+    });
+    let s = mock!(aws_sdk_cloudtrail::Client::get_trail_status)
+        .then_output(|| GetTrailStatusOutput::builder().is_logging(true).build());
+    let ct = mock_client!(aws_sdk_cloudtrail, RuleMode::Sequential, [&d, &s]);
+    let r = cloudtrails(&ct, &T).await.unwrap();
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].attributes["is_organization"], true);
 }
 
 fn metric_output(

@@ -98,3 +98,46 @@ fn missing_keys_are_skipped() {
     ];
     assert!(run(&LoggingGaps, &rs, &[]).is_empty());
 }
+
+#[test]
+fn absent_stored_bytes_has_no_cost() {
+    let rs = [
+        trail("ok", true, true),
+        res("l", "r", json!({"service":"logs","retention_days":null})),
+    ];
+    let d = run(&LoggingGaps, &rs, &[]);
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].cost_monthly_usd, None);
+    assert_eq!(d[0].evidence[0].excerpt, "retention_days=null");
+}
+
+#[test]
+fn member_account_with_org_trail_is_fine() {
+    let rs = [res(
+        "org",
+        "r",
+        json!({"service":"cloudtrail","logging":true,"is_organization":true,"bucket_writable":false}),
+    )];
+    assert!(run(&LoggingGaps, &rs, &[]).is_empty());
+}
+
+#[test]
+fn unavailable_services_are_skipped() {
+    use opsagent_checks::{Check, CheckCtx, MetricStore};
+    let rs = [
+        res("g", "r", json!({"service":"guardduty","enabled":false})),
+        res("l", "r", json!({"service":"logs","retention_days":null})),
+    ];
+    let un: std::collections::BTreeSet<String> =
+        ["cloudtrail", "guardduty", "logs"].map(String::from).into();
+    let m = MetricStore::default();
+    let ctx = CheckCtx {
+        connection_id: uuid::Uuid::nil(),
+        resources: &rs,
+        cost: &[],
+        metrics: &m,
+        now: "2026-10-01T00:00:00Z".parse().unwrap(),
+        unavailable: &un,
+    };
+    assert!(LoggingGaps.run(&ctx).is_empty());
+}

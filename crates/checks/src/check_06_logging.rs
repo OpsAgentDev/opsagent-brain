@@ -28,11 +28,13 @@ impl Check for LoggingGaps {
             let acct = trails.entry(r.account.as_str()).or_default();
             match r.service() {
                 "cloudtrail" => {
-                    let broken = a["logging"] == false || a["bucket_writable"] == false;
+                    // An organization trail logs for members; its bucket is not ours to judge.
+                    let org = a["is_organization"] == true;
+                    let broken = a["logging"] == false || (!org && a["bucket_writable"] == false);
                     acct.push((r.identity.as_str(), broken));
                 }
                 // A missing key means the read failed: skip, never treat as off.
-                "guardduty" if a["enabled"] == false => {
+                "guardduty" if a["enabled"] == false && !ctx.unavailable.contains("guardduty") => {
                     let title = format!("Threat detection is off in {}", r.region);
                     let s = format!("{title}.");
                     let step = "Enable GuardDuty in this region.";
@@ -48,13 +50,21 @@ impl Check for LoggingGaps {
                         ex,
                     ));
                 }
-                "logs" if a["retention_days"].is_null() && a.get("retention_days").is_some() => {
-                    let gb = a["stored_bytes"].as_f64().unwrap_or(0.0) / 1e9;
-                    let cost = gb * USD_PER_GB_MONTH;
+                "logs"
+                    if a["retention_days"].is_null()
+                        && a.get("retention_days").is_some()
+                        && !ctx.unavailable.contains("logs") =>
+                {
+                    let gb = a["stored_bytes"].as_f64().map(|b| b / 1e9);
+                    let cost = gb.map(|g| g * USD_PER_GB_MONTH);
                     let title = format!("Log group {} never expires", r.identity);
                     let s = format!("{title}.");
-                    let ex =
-                        format!("retention_days=null stored_gb={gb:.1} est_monthly_usd={cost:.2}");
+                    let ex = match (gb, cost) {
+                        (Some(g), Some(c)) => {
+                            format!("retention_days=null stored_gb={g:.1} est_monthly_usd={c:.2}")
+                        }
+                        _ => "retention_days=null".into(),
+                    };
                     let step = "Set a retention period.";
                     let mut d = draft(
                         ctx,
@@ -65,14 +75,14 @@ impl Check for LoggingGaps {
                         (title, s, step),
                         ex,
                     );
-                    d.cost_monthly_usd = Some(cost);
+                    d.cost_monthly_usd = cost;
                     out.push(d);
                 }
                 _ => {}
             }
         }
         for (acct, ts) in trails {
-            if ts.iter().any(|(_, broken)| !broken) {
+            if ctx.unavailable.contains("cloudtrail") || ts.iter().any(|(_, broken)| !broken) {
                 continue;
             }
             let list: Vec<&str> = ts.iter().map(|(i, _)| *i).collect();
