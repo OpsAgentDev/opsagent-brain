@@ -291,3 +291,96 @@ async fn revoked_connection_is_rechecked_daily_and_recovers() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn killed_verify_resumes_to_the_uninterrupted_outcome() {
+    use opsagent_brain::models::_entities::audit_events;
+    use opsagent_core::run::RunStatus;
+    use opsagent_ledger::{lease, redis, LedgerError};
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (_, _, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
+        let id: Uuid = id.parse().unwrap();
+        set(&ctx, id, |a| a.status = Set("verifying".into())).await;
+        let c = conn(&ctx, id).await;
+        let storage = PgStorage::new(ctx.db.clone());
+        let run = storage
+            .create_run(RunKey {
+                organisation_id: Some(c.organisation_id),
+                connection_id: Some(id),
+                job_type: "verify".into(),
+                scheduled_at: chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+            })
+            .await
+            .unwrap()
+            .run;
+
+        // A worker takes the lease, starts the run, and dies before writing any outcome.
+        let Some(loco_rs::config::QueueConfig::Redis(q)) = &ctx.config.queue else {
+            panic!("tests run with the redis queue")
+        };
+        let r = redis::Client::open(q.uri.as_str()).unwrap();
+        let dead = lease::acquire(
+            &storage,
+            &r,
+            run.id,
+            "dead",
+            std::time::Duration::from_secs(60),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        storage
+            .set_status(run.id, dead.fence, RunStatus::Running, None)
+            .await
+            .unwrap();
+        // Its lease expires.
+        lease::release(&r, &dead).await;
+
+        // Redelivery: a fresh worker resumes and reaches the normal outcome.
+        VerifyWorker::build(&ctx)
+            .perform(VerifyArgs { run_id: run.id })
+            .await
+            .unwrap();
+        let row = runs::Entity::find_by_id(run.id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status, "done");
+        assert_eq!(conn(&ctx, id).await.status, "connected");
+
+        // The dead worker wakes up: its fence is stale, so it can change nothing.
+        assert!(matches!(
+            storage
+                .set_status(run.id, dead.fence, RunStatus::Failed, None)
+                .await,
+            Err(LedgerError::StaleFence)
+        ));
+        // A second redelivery of the finished run is a no-op.
+        VerifyWorker::build(&ctx)
+            .perform(VerifyArgs { run_id: run.id })
+            .await
+            .unwrap();
+        let verifications = connection_verifications::Entity::find()
+            .filter(connection_verifications::Column::ConnectionId.eq(id))
+            .count(&ctx.db)
+            .await
+            .unwrap();
+        let outcomes = audit_events::Entity::find()
+            .filter(audit_events::Column::Action.eq("connection.verify_outcome"))
+            .count(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!((verifications, outcomes), (1, 1));
+        assert_eq!(scans(&ctx, id).await.len(), 1, "one first scan");
+        let row = runs::Entity::find_by_id(run.id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status, "done");
+    })
+    .await;
+}

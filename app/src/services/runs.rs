@@ -38,6 +38,16 @@ pub async fn create_marked<C: ConnectionTrait + Send + Sync>(
     now: DateTime<Utc>,
 ) -> Result<(C, CreateRunOutcome)> {
     let storage = PgStorage::new(db);
+    let out = mark_new(&storage, key, now).await?;
+    Ok((storage.into_inner(), out))
+}
+
+/// `create_marked` through a storage the caller already holds (e.g. on its transaction).
+pub async fn mark_new<S: Storage + ?Sized>(
+    storage: &S,
+    key: RunKey,
+    now: DateTime<Utc>,
+) -> Result<CreateRunOutcome> {
     let out = storage.create_run(key).await.map_err(err)?;
     if out.created {
         storage
@@ -45,7 +55,7 @@ pub async fn create_marked<C: ConnectionTrait + Send + Sync>(
             .await
             .map_err(err)?;
     }
-    Ok((storage.into_inner(), out))
+    Ok(out)
 }
 
 /// Once the run is committed (a worker must be able to load it): enqueue, then clear the

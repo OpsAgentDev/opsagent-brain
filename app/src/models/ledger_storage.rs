@@ -22,6 +22,11 @@ impl<C: ConnectionTrait> PgStorage<C> {
         self.db
     }
 
+    /// The connection or transaction run writes go to, for other writes that must commit with them.
+    pub fn db(&self) -> &C {
+        &self.db
+    }
+
     async fn one(&self, sql: &str, values: Vec<Value>) -> Result<Option<QueryResult>> {
         self.db
             .query_one_raw(stmt(sql, values))
