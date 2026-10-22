@@ -2,6 +2,7 @@ pub mod api_error;
 pub mod app;
 pub mod controllers;
 pub mod mailers;
+pub mod services;
 pub mod middleware;
 pub mod models;
 pub mod settings;

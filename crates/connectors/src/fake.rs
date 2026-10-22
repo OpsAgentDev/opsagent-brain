@@ -55,6 +55,16 @@ impl FakeConnector {
         })
     }
 
+    /// A connector over an in-memory fixture (tests that edit a fixture copy).
+    pub fn from_fixture_json(json: &str) -> Result<Self> {
+        Ok(Self {
+            fixture: Some(
+                serde_json::from_str(json).map_err(|e| ConnectorError::Fixture(e.to_string()))?,
+            ),
+            blocked: false,
+        })
+    }
+
     fn fixture(&self, creds: &Credentials) -> Result<std::borrow::Cow<'_, Fixture>> {
         match (&self.fixture, creds) {
             (Some(f), _) => Ok(std::borrow::Cow::Borrowed(f)),

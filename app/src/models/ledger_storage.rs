@@ -15,13 +15,9 @@ impl PgStorage {
         Self { db }
     }
 
-    fn stmt(sql: &str, values: Vec<Value>) -> Statement {
-        Statement::from_sql_and_values(DbBackend::Postgres, sql, values)
-    }
-
     async fn one(&self, sql: &str, values: Vec<Value>) -> Result<Option<QueryResult>> {
         self.db
-            .query_one_raw(Self::stmt(sql, values))
+            .query_one_raw(stmt(sql, values))
             .await
             .map_err(db_err)
     }
@@ -29,15 +25,32 @@ impl PgStorage {
     /// Rows affected; 0 means the fence (or the id) did not match.
     async fn exec(&self, sql: &str, values: Vec<Value>) -> Result<u64> {
         self.db
-            .execute_raw(Self::stmt(sql, values))
+            .execute_raw(stmt(sql, values))
             .await
             .map(|r| r.rows_affected())
             .map_err(db_err)
     }
 }
 
-fn db_err(e: impl std::fmt::Display) -> LedgerError {
+pub fn stmt(sql: &str, values: Vec<Value>) -> Statement {
+    Statement::from_sql_and_values(DbBackend::Postgres, sql, values)
+}
+
+pub fn db_err(e: impl std::fmt::Display) -> LedgerError {
     LedgerError::Storage(e.to_string())
+}
+
+/// Locks the run row inside `txn` if `fence` is still current, so a stale worker's
+/// transaction cannot commit domain writes. `Err(StaleFence)` otherwise.
+pub async fn hold_fence(txn: &impl ConnectionTrait, run_id: Uuid, fence: u64) -> Result<()> {
+    txn.query_one_raw(stmt(
+        "SELECT 1 FROM runs WHERE id = $1 AND fence = $2 FOR UPDATE",
+        vec![run_id.into(), (fence as i64).into()],
+    ))
+    .await
+    .map_err(db_err)?
+    .map(|_| ())
+    .ok_or(LedgerError::StaleFence)
 }
 
 pub fn status_str(s: RunStatus) -> String {
