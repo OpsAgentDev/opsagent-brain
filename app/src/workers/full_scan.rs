@@ -12,15 +12,18 @@ use loco_rs::{app::AppContext, bgworker::BackgroundWorker, Result};
 use opsagent_checks::{Check, CheckCtx, MetricStore};
 use opsagent_connectors::{registry as providers, CallContext, Connector, Credentials, Scope};
 use opsagent_core::{connection::ConnectionStatus as S, resource::Resource, run::RunStatus};
-use opsagent_ledger::{lease, run_chunked, ChunkOutcome, LedgerError, RunChunkedOptions, Storage};
-use sea_orm::{ConnectionTrait, EntityTrait, TransactionTrait};
+use opsagent_ledger::{
+    lease, retry::settle, run_chunked, ChunkOutcome, LedgerError, RunChunkedOptions, RunRow,
+    Storage,
+};
+use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::common::{connector_for, err, lerr, redis_client, LResult};
+use super::common::{err, job_err, lerr, redis_client, revoked, LResult};
 use crate::{
-    app::kek,
+    app::{kek, registry},
     models::{
         _entities::connections,
         connections::{load_creds, status_of},
@@ -52,13 +55,12 @@ impl BackgroundWorker<FullScanArgs> for FullScanWorker {
     }
 
     async fn perform(&self, args: FullScanArgs) -> Result<()> {
-        let k = connector_for(&self.ctx, args.run_id).await?;
         let opts = RunChunkedOptions {
             worker_id: format!("{JOB}-{}", Uuid::new_v4()),
             time_cap: TIME_CAP,
             ..Default::default()
         };
-        match scan(&self.ctx, args.run_id, k.as_ref(), opts).await {
+        match run(&self.ctx, args.run_id, opts).await {
             // Another worker holds or took over the run; it decides the outcome.
             Ok(_) | Err(LedgerError::LeaseHeld | LedgerError::StaleFence) => Ok(()),
             Err(e) => Err(err(e)),
@@ -70,14 +72,19 @@ fn service(r: &Resource) -> &str {
     r.attributes["service"].as_str().unwrap_or("")
 }
 
-/// Runs (or resumes) the scan for `run_id` with connector `k`. The run row must exist.
+/// Runs (or resumes) the scan for `run_id` with the registry's connector. The run row must exist.
+pub async fn run(ctx: &AppContext, run_id: Uuid, opts: RunChunkedOptions) -> LResult<RunStatus> {
+    scan_run(ctx, run_id, None, opts, opsagent_checks::all).await
+}
+
+/// `run` with connector `k`.
 pub async fn scan(
     ctx: &AppContext,
     run_id: Uuid,
     k: &dyn Connector,
     opts: RunChunkedOptions,
 ) -> LResult<RunStatus> {
-    scan_with(ctx, run_id, k, opts, opsagent_checks::all).await
+    scan_run(ctx, run_id, Some(k), opts, opsagent_checks::all).await
 }
 
 /// `scan` with an explicit check set (tests inject faulty checks).
@@ -88,43 +95,114 @@ pub async fn scan_with(
     opts: RunChunkedOptions,
     checks: fn() -> Vec<Box<dyn Check>>,
 ) -> LResult<RunStatus> {
+    scan_run(ctx, run_id, Some(k), opts, checks).await
+}
+
+/// How a run ends without (more) chunks.
+enum End {
+    Set(RunStatus, String),
+    /// Retried or failed by `ledger::retry::settle`.
+    Failed(LedgerError),
+}
+
+async fn scan_run(
+    ctx: &AppContext,
+    run_id: Uuid,
+    k: Option<&dyn Connector>,
+    opts: RunChunkedOptions,
+    checks: fn() -> Vec<Box<dyn Check>>,
+) -> LResult<RunStatus> {
     let storage = PgStorage::new(ctx.db.clone());
     let run = storage.load_run(run_id).await?;
     if !matches!(run.status, RunStatus::Queued | RunStatus::Running) {
         return Ok(run.status); // duplicate delivery of a finished run
     }
-    let db = &ctx.db;
+    let c = connection(&ctx.db, &run).await?;
+    if !matches!(status_of(&c).map_err(lerr)?, S::Connected | S::Degraded) {
+        let skip = End::Set(RunStatus::Skipped, format!("status:{}", c.status));
+        return end(ctx, &storage, &run, &opts, skip).await;
+    }
+    let owned;
+    let k = match (k, connector(ctx, &c)) {
+        (Some(k), _) => k,
+        (None, Ok(b)) => {
+            owned = b;
+            owned.as_ref()
+        }
+        (None, Err(e)) => return end(ctx, &storage, &run, &opts, End::Failed(e)).await,
+    };
+    let cr = match call_credentials(ctx, &c, run_id).await {
+        Ok(cr) => cr,
+        Err(e) => return end(ctx, &storage, &run, &opts, End::Failed(e)).await,
+    };
+    let chunks = match discover(k, &cr).await {
+        Ok(chunks) => chunks,
+        Err(e) => return end(ctx, &storage, &run, &opts, e).await,
+    };
+    let redis = redis_client(ctx).map_err(lerr)?;
+    let scan = Scan {
+        db: &ctx.db,
+        storage: &storage,
+        run_id,
+        c: &c,
+        k,
+        cr: &cr,
+        checks,
+    };
+    run_chunked(&storage, &redis, run_id, chunks, opts, |chunk, lease| {
+        scan.chunk(chunk, lease.fence)
+    })
+    .await
+}
+
+async fn connection(db: &DatabaseConnection, run: &RunRow) -> LResult<connections::Model> {
     let conn_id = run.key.connection_id.ok_or(LedgerError::NotFound)?;
-    let c = connections::Entity::find_by_id(conn_id)
+    connections::Entity::find_by_id(conn_id)
         .one(db)
         .await
         .map_err(lerr)?
-        .ok_or(LedgerError::NotFound)?;
-    if !matches!(status_of(&c).map_err(lerr)?, S::Connected | S::Degraded) {
-        let redis = redis_client(ctx).map_err(lerr)?;
-        let l = lease::acquire(&storage, &redis, run_id, &opts.worker_id, opts.lease_ttl)
-            .await?
-            .ok_or(LedgerError::LeaseHeld)?;
-        let reason = Some(format!("status:{}", c.status));
-        let res = storage
-            .set_status(run_id, l.fence, RunStatus::Skipped, reason)
-            .await;
-        lease::release(&redis, &l).await;
-        return res.map(|()| RunStatus::Skipped);
-    }
+        .ok_or(LedgerError::NotFound)
+}
+
+fn connector(ctx: &AppContext, c: &connections::Model) -> LResult<Box<dyn Connector>> {
+    registry(ctx)
+        .map_err(lerr)?
+        .connector(&c.provider)
+        .map_err(|e| job_err(&e))
+}
+
+/// Decrypted call credentials; failures are not retryable.
+async fn call_credentials(
+    ctx: &AppContext,
+    c: &connections::Model,
+    run_id: Uuid,
+) -> LResult<Credentials> {
     let kek = kek(ctx).map_err(lerr)?;
-    let creds = load_creds(db, kek.as_ref(), &c).await.map_err(lerr)?;
+    let creds = load_creds(&ctx.db, kek.as_ref(), c)
+        .await
+        .map_err(|_| LedgerError::Job {
+            code: "credentials_unavailable".into(),
+            retry: false,
+        })?;
     let context = CallContext {
         organisation_id: c.organisation_id,
         run_id,
         trigger: JOB.into(),
     };
-    let cr = providers::credentials(&c.provider, &creds, context).map_err(lerr)?;
-    let redis = redis_client(ctx).map_err(lerr)?;
+    providers::credentials(&c.provider, &creds, context).map_err(|e| job_err(&e))
+}
 
-    // shortcut: chunks come from an unscoped inventory call on every (re)start, which doubles
-    // the AWS calls; upgrade to a declared connector scope when the AWS connector exposes one.
-    let inv = k.inventory(&cr, &Scope::default()).await.map_err(lerr)?;
+/// The chunk list (`service@region`, then `finalize`) from an unscoped inventory call.
+/// shortcut: re-run on every (re)start, which doubles the AWS calls; upgrade to a declared
+/// connector scope when the AWS connector exposes one.
+async fn discover(k: &dyn Connector, cr: &Credentials) -> std::result::Result<Vec<String>, End> {
+    let inv = k.inventory(cr, &Scope::default()).await.map_err(|e| {
+        if revoked(&e) {
+            End::Set(RunStatus::Partial, "revoked".into())
+        } else {
+            End::Failed(job_err(&e))
+        }
+    })?;
     let mut chunks: Vec<String> = inv
         .resources
         .iter()
@@ -139,86 +217,135 @@ pub async fn scan_with(
         .into_iter()
         .collect();
     chunks.push(FINALIZE.into());
-
-    let (storage, cr, c) = (&storage, &cr, &c);
-    run_chunked(
-        storage,
-        &redis,
-        run_id,
-        chunks,
-        opts,
-        |chunk, lease| async move {
-            if chunk == FINALIZE {
-                return finalize(db, storage, run_id, lease.fence, c, k, cr, checks).await;
-            }
-            let (svc, region) = chunk.rsplit_once('@').ok_or(LedgerError::NotFound)?;
-            let scope = Scope {
-                regions: vec![region.into()],
-                services: vec![svc.into()],
-            };
-            let inv = k.inventory(cr, &scope).await;
-            let chunk = Chunk {
-                run_id,
-                fence: lease.fence,
-                organisation_id: c.organisation_id,
-                connection_id: c.id,
-                provider: &c.provider,
-                service: svc,
-                region,
-            };
-            let partial = inventory_upsert::upsert_chunk(db, chunk, &inv).await?;
-            // Only ever set `partial`, never clear it: chunk stats merge by key. `partial_reason`
-            // makes `run_chunked` end the run `Partial`.
-            let stats = if partial {
-                json!({ "partial": true, "partial_reason": "partial_inventory" })
-            } else {
-                json!({})
-            };
-            Ok(ChunkOutcome { stats })
-        },
-    )
-    .await
+    Ok(chunks)
 }
 
-/// Gone-marking, checks, lifecycle and posture, in one fenced transaction.
-#[allow(clippy::too_many_arguments)]
-async fn finalize(
-    db: &sea_orm::DatabaseConnection,
+/// Sets the final status (or retries) under a lease of its own.
+async fn end(
+    ctx: &AppContext,
     storage: &PgStorage,
+    run: &RunRow,
+    opts: &RunChunkedOptions,
+    how: End,
+) -> LResult<RunStatus> {
+    let redis = redis_client(ctx).map_err(lerr)?;
+    let l = lease::acquire(storage, &redis, run.id, &opts.worker_id, opts.lease_ttl)
+        .await?
+        .ok_or(LedgerError::LeaseHeld)?;
+    let res = match how {
+        End::Set(status, reason) => storage
+            .set_status(run.id, l.fence, status, Some(reason))
+            .await
+            .map(|()| status),
+        End::Failed(e) => settle(storage, run.id, run.attempts, l.fence, &e).await,
+    };
+    lease::release(&redis, &l).await;
+    res
+}
+
+/// One scan run's fixed inputs, shared by its chunks.
+struct Scan<'a> {
+    db: &'a DatabaseConnection,
+    storage: &'a PgStorage,
     run_id: Uuid,
-    fence: u64,
-    c: &connections::Model,
-    k: &dyn Connector,
-    cr: &Credentials,
+    c: &'a connections::Model,
+    k: &'a dyn Connector,
+    cr: &'a Credentials,
     checks: fn() -> Vec<Box<dyn Check>>,
-) -> LResult<ChunkOutcome> {
-    let partial = storage.load_run(run_id).await?.checkpoint.stats["partial"] == json!(true);
-    let now = Utc::now();
-    let cost = k.cost_daily(cr, 30).await.unwrap_or_else(|e| {
-        // Cost visibility is optional (PRD 7.3): cost checks see no rows.
-        tracing::warn!(error = %e, run = %run_id, "full_scan: cost unavailable");
-        vec![]
-    });
-    let txn = db.begin().await.map_err(db_err)?;
-    hold_fence(&txn, run_id, fence).await?;
-    if !partial {
-        exec(
-            &txn,
-            "UPDATE resources r SET gone_at = $3, updated_at = now() \
-             WHERE r.connection_id = $1 AND r.gone_at IS NULL AND NOT EXISTS \
-             (SELECT 1 FROM resource_history h WHERE h.resource_id = r.id AND h.run_id = $2)",
-            vec![c.id.into(), run_id.into(), now.into()],
-        )
-        .await?;
+}
+
+impl Scan<'_> {
+    async fn chunk(&self, chunk: String, fence: u64) -> LResult<ChunkOutcome> {
+        if chunk == FINALIZE {
+            return self.finalize(fence).await;
+        }
+        let (svc, region) = chunk.rsplit_once('@').ok_or(LedgerError::NotFound)?;
+        self.inventory(svc, region, fence).await
     }
-    let resources = seen(&txn, c, k, run_id).await?;
+
+    /// One `service@region` chunk: scoped inventory, upserted under the fence.
+    async fn inventory(&self, svc: &str, region: &str, fence: u64) -> LResult<ChunkOutcome> {
+        let scope = Scope {
+            regions: vec![region.into()],
+            services: vec![svc.into()],
+        };
+        let inv = self.k.inventory(self.cr, &scope).await;
+        let chunk = Chunk {
+            run_id: self.run_id,
+            fence,
+            organisation_id: self.c.organisation_id,
+            connection_id: self.c.id,
+            provider: &self.c.provider,
+            service: svc,
+            region,
+        };
+        let partial = inventory_upsert::upsert_chunk(self.db, chunk, &inv).await?;
+        // Only ever set `partial`, never clear it: chunk stats merge by key. `partial_reason`
+        // makes `run_chunked` end the run `Partial`; `revoked` is turned into the reason by
+        // `finalize`, so a later chunk cannot overwrite it.
+        let stats = match &inv {
+            Err(e) if revoked(e) => json!({ "partial": true, "revoked": true }),
+            _ if partial => json!({ "partial": true, "partial_reason": "partial_inventory" }),
+            _ => json!({}),
+        };
+        Ok(ChunkOutcome { stats })
+    }
+
+    /// Gone-marking, checks, lifecycle and posture, in one fenced transaction.
+    async fn finalize(&self, fence: u64) -> LResult<ChunkOutcome> {
+        let (db, run_id, c, k) = (self.db, self.run_id, self.c, self.k);
+        let so_far = self.storage.load_run(run_id).await?.checkpoint.stats;
+        let partial = so_far["partial"] == json!(true);
+        let now = Utc::now();
+        let cost = k.cost_daily(self.cr, 30).await.unwrap_or_else(|e| {
+            // Cost visibility is optional (PRD 7.3): cost checks see no rows.
+            tracing::warn!(error = %e, run = %run_id, "full_scan: cost unavailable");
+            vec![]
+        });
+        let txn = db.begin().await.map_err(db_err)?;
+        hold_fence(&txn, run_id, fence).await?;
+        if !partial {
+            exec(
+                &txn,
+                "UPDATE resources r SET gone_at = $3, updated_at = now() \
+                 WHERE r.connection_id = $1 AND r.gone_at IS NULL AND NOT EXISTS \
+                 (SELECT 1 FROM resource_history h WHERE h.resource_id = r.id AND h.run_id = $2)",
+                vec![c.id.into(), run_id.into(), now.into()],
+            )
+            .await?;
+        }
+        let resources = seen(&txn, c, k, run_id).await?;
+        let (drafts, check_errors) = run_checks(self.checks, k, c, &resources, &cost, now, run_id);
+        finding_lifecycle::apply(&txn, c.id, run_id, &drafts, now, partial).await?;
+        let mut stats = finding_lifecycle::posture(&txn, c.id).await?;
+        stats["partial"] = json!(partial);
+        stats["check_errors"] = json!(check_errors);
+        if so_far["revoked"] == json!(true) {
+            stats["partial_reason"] = json!("revoked");
+        }
+        txn.commit().await.map_err(db_err)?;
+        Ok(ChunkOutcome { stats })
+    }
+}
+
+/// Runs every check that supports the provider and has its capabilities. A buggy check fails
+/// alone (PRD 7.3); its id is returned in the second list.
+fn run_checks(
+    checks: fn() -> Vec<Box<dyn Check>>,
+    k: &dyn Connector,
+    c: &connections::Model,
+    resources: &[Resource],
+    cost: &[opsagent_connectors::CostRow],
+    now: chrono::DateTime<Utc>,
+    run_id: Uuid,
+) -> (Vec<opsagent_core::finding::FindingDraft>, Vec<&'static str>) {
     let (provider, caps) = (k.provider(), k.capabilities());
     // Checks read utilisation from inventory attributes today; no metric pulls yet.
     let metrics = MetricStore::default();
     let cx = CheckCtx {
         connection_id: c.id,
-        resources: &resources,
-        cost: &cost,
+        resources,
+        cost,
         metrics: &metrics,
         now,
     };
@@ -227,7 +354,6 @@ async fn finalize(
         if !ch.supported().contains(&provider) || !ch.required().iter().all(|r| caps.contains(r)) {
             continue;
         }
-        // A buggy check fails alone (PRD 7.3); the scan continues with the others.
         match catch_unwind(AssertUnwindSafe(|| ch.run(&cx))) {
             Ok(d) => drafts.extend(d),
             Err(_) => {
@@ -236,12 +362,7 @@ async fn finalize(
             }
         }
     }
-    finding_lifecycle::apply(&txn, c.id, run_id, &drafts, now, partial).await?;
-    let mut stats = finding_lifecycle::posture(&txn, c.id).await?;
-    stats["partial"] = json!(partial);
-    stats["check_errors"] = json!(check_errors);
-    txn.commit().await.map_err(db_err)?;
-    Ok(ChunkOutcome { stats })
+    (drafts, check_errors)
 }
 
 /// Resources observed in this run, as the checks see them.

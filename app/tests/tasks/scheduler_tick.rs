@@ -351,3 +351,37 @@ async fn worker_retry_written_during_inline_enqueue_survives_the_marker_clear() 
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn api_run_whose_enqueue_failed_is_sent_by_the_next_tick() {
+    serve(|req, ctx| async move {
+        let (_, _, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
+        reset(&ctx).await;
+        // A queue that refuses work: the run must still be recorded with its outbox marker.
+        let mut broken = ctx.clone();
+        broken.config.workers.mode = loco_rs::config::WorkerMode::BackgroundQueue;
+        broken.queue_provider = None;
+        let c = opsagent_brain::models::_entities::connections::Entity::find_by_id(conn)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        let now = Utc::now();
+        let out = opsagent_brain::services::manual_scan::request(&broken, &c, Uuid::new_v4(), now)
+            .await
+            .unwrap();
+        let q = format!(
+            "SELECT count(*) n FROM runs WHERE id = '{}' AND status = 'queued' AND next_attempt_at IS NOT NULL",
+            out.run.id
+        );
+        assert_eq!(count(&ctx, &q).await, 1);
+        assert_eq!(run_tick(&ctx, now).await.retries_run, 1);
+        let q = format!(
+            "SELECT count(*) n FROM runs WHERE id = '{}' AND status = 'done' AND next_attempt_at IS NULL",
+            out.run.id
+        );
+        assert_eq!(count(&ctx, &q).await, 1);
+    })
+    .await;
+}

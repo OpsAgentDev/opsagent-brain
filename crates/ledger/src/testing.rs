@@ -116,6 +116,7 @@ impl Storage for MemoryStorage {
     async fn schedule_retry(&self, id: Uuid, attempts: u32, next_at: DateTime<Utc>) -> Result<()> {
         self.with(id, |r| {
             r.attempts = attempts;
+            r.status = RunStatus::Queued;
             Ok(())
         })?;
         self.0.lock().unwrap().next_attempt.insert(id, next_at);

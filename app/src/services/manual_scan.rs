@@ -1,12 +1,10 @@
 //! On-demand `full_scan` for a connection, at most once per hour (any `full_scan` run counts).
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
+use loco_rs::app::AppContext;
 use opsagent_core::{connection::ConnectionStatus as S, run::RunKey};
-use opsagent_ledger::{CreateRunOutcome, Storage};
-use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
-    TransactionTrait,
-};
+use opsagent_ledger::CreateRunOutcome;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait};
 use uuid::Uuid;
 
 use crate::{
@@ -15,8 +13,8 @@ use crate::{
         _entities::{connections, runs},
         audit,
         connections::status_of,
-        ledger_storage::PgStorage,
     },
+    services::runs as run_service,
     workers::full_scan::JOB,
 };
 
@@ -38,15 +36,15 @@ fn not_scannable(status: &str) -> ApiError {
 
 /// For `actor`: creates the run (`scheduled_at = now`) and a `connection.scan_requested` audit
 /// row, or `rate_limited` within the window, or `connection_not_scannable` unless the connection
-/// is connected or degraded. Runs under the connection row lock, so two concurrent requests
-/// create one run.
+/// is connected or degraded, then hands the run to the worker. Runs under the connection row
+/// lock, so two concurrent requests create one run.
 pub async fn request(
-    db: &DatabaseConnection,
+    ctx: &AppContext,
     c: &connections::Model,
     actor: Uuid,
     now: DateTime<Utc>,
 ) -> Result<CreateRunOutcome, ApiError> {
-    let txn = db.begin().await?;
+    let txn = ctx.db.begin().await?;
     let locked = connections::Entity::find_by_id(c.id)
         .filter(connections::Column::OrganisationId.eq(c.organisation_id))
         .lock_exclusive()
@@ -70,16 +68,13 @@ pub async fn request(
             secs,
         ));
     }
-    let storage = PgStorage::new(txn);
-    let out = storage
-        .create_run(RunKey {
-            organisation_id: Some(c.organisation_id),
-            connection_id: Some(c.id),
-            job_type: JOB.into(),
-            scheduled_at: now,
-        })
-        .await?;
-    let txn = storage.into_inner();
+    let key = RunKey {
+        organisation_id: Some(c.organisation_id),
+        connection_id: Some(c.id),
+        job_type: JOB.into(),
+        scheduled_at: now,
+    };
+    let (txn, out) = run_service::create_marked(txn, key, now).await?;
     audit::record(
         &txn,
         Some(c.organisation_id),
@@ -89,6 +84,9 @@ pub async fn request(
     )
     .await?;
     txn.commit().await?;
+    if out.created {
+        run_service::hand_off(ctx, &out, JOB, now).await;
+    }
     Ok(out)
 }
 

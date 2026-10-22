@@ -1,0 +1,63 @@
+//! Account-level logging and detection: CloudTrail trails, GuardDuty detectors.
+use super::Target;
+use crate::aws::client::provider_err;
+use crate::Result;
+use opsagent_core::resource::{resource_identity, Resource, ResourceKind};
+use serde_json::json;
+use std::collections::BTreeMap;
+
+pub async fn cloudtrails(ct: &aws_sdk_cloudtrail::Client, t: &Target<'_>) -> Result<Vec<Resource>> {
+    // Shadow trails excluded so a multi-region trail is reported once, in its home region.
+    let trails = ct
+        .describe_trails()
+        .include_shadow_trails(false)
+        .send()
+        .await
+        .map_err(provider_err)?;
+    let mut out = vec![];
+    for tr in trails.trail_list() {
+        let arn = tr.trail_arn().unwrap_or_default();
+        let status = ct
+            .get_trail_status()
+            .name(arn)
+            .send()
+            .await
+            .map_err(provider_err)?;
+        out.push(t.resource(
+            ResourceKind::Log,
+            arn.to_owned(),
+            tr.name().unwrap_or_default(),
+            BTreeMap::new(),
+            json!({"service": "cloudtrail", "logging": status.is_logging().unwrap_or(false)}),
+        ));
+    }
+    Ok(out)
+}
+
+/// One resource per region, present even when no detector exists (`enabled: false`).
+pub async fn guardduty(gd: &aws_sdk_guardduty::Client, t: &Target<'_>) -> Result<Vec<Resource>> {
+    let ids = gd.list_detectors().send().await.map_err(provider_err)?;
+    let (identity, enabled) = match ids.detector_ids().first() {
+        Some(id) => {
+            let d = gd
+                .get_detector()
+                .detector_id(id)
+                .send()
+                .await
+                .map_err(provider_err)?;
+            let on = d.status() == Some(&aws_sdk_guardduty::types::DetectorStatus::Enabled);
+            (t.arn("guardduty", &format!("detector/{id}")), on)
+        }
+        None => (
+            resource_identity(None, ResourceKind::Log, "guardduty", t.region),
+            false,
+        ),
+    };
+    Ok(vec![t.resource(
+        ResourceKind::Log,
+        identity,
+        "guardduty",
+        BTreeMap::new(),
+        json!({"service": "guardduty", "enabled": enabled}),
+    )])
+}

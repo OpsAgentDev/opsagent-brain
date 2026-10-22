@@ -1,5 +1,6 @@
 #[cfg(feature = "test-support")]
 use crate::harness::KillSwitch;
+use crate::retry::settle;
 use crate::storage::{LedgerError, Result, Storage};
 use opsagent_core::run::RunStatus;
 use redis::{aio::MultiplexedConnection, Client, Script};
@@ -201,7 +202,8 @@ where
     Fut: Future<Output = Result<ChunkOutcome>>,
 {
     let started = Instant::now();
-    let mut cp = storage.load_run(run_id).await?.checkpoint;
+    let run = storage.load_run(run_id).await?;
+    let mut cp = run.checkpoint;
     let partial = |reason: &'static str| async move {
         match storage
             .set_status(run_id, lease.fence, RunStatus::Partial, Some(reason.into()))
@@ -230,7 +232,14 @@ where
         if started.elapsed() >= opts.time_cap {
             return partial("time_cap").await;
         }
-        let out = f(chunk.clone(), lease.clone()).await?;
+        let out = match f(chunk.clone(), lease.clone()).await {
+            Ok(out) => out,
+            Err(LedgerError::StaleFence) => return partial("lease_lost").await,
+            #[cfg(feature = "test-support")]
+            Err(e @ LedgerError::Killed) => return Err(e),
+            // The run must still end: retry later, or fail with the error's code.
+            Err(e) => return settle(storage, run_id, run.attempts, lease.fence, &e).await,
+        };
         if lost.load(SeqCst) {
             return partial("lease_lost").await;
         }

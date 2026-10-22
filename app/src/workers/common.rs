@@ -1,17 +1,8 @@
-//! Shared by every worker: error mapping, the Redis client, ledger-owned retries and the
-//! connector error classification.
-use chrono::Utc;
+//! Shared by every worker: error mapping, the Redis client and the connector error
+//! classification. Retries are the ledger's (`opsagent_ledger::retry`).
 use loco_rs::{app::AppContext, config::QueueConfig, Error, Result};
-use opsagent_connectors::{Connector, ConnectorError};
-use opsagent_core::run::RunStatus;
-use opsagent_ledger::{redis, retry::backoff, LedgerError, RunRow, Storage};
-use sea_orm::EntityTrait;
-use uuid::Uuid;
-
-use crate::{
-    app::registry,
-    models::{_entities::connections, ledger_storage::PgStorage},
-};
+use opsagent_connectors::{aws::client::is_access_denied, ConnectorError};
+use opsagent_ledger::{redis, LedgerError};
 
 pub(crate) type LResult<T> = std::result::Result<T, LedgerError>;
 
@@ -30,43 +21,15 @@ pub(crate) fn redis_client(ctx: &AppContext) -> Result<redis::Client> {
     redis::Client::open(cfg.uri.as_str()).map_err(err)
 }
 
-/// The registry's connector for the provider of run `run_id`'s connection.
-pub(crate) async fn connector_for(ctx: &AppContext, run_id: Uuid) -> Result<Box<dyn Connector>> {
-    let run = PgStorage::new(ctx.db.clone())
-        .load_run(run_id)
-        .await
-        .map_err(err)?;
-    let id = run
-        .key
-        .connection_id
-        .ok_or_else(|| err("run has no connection"))?;
-    let c = connections::Entity::find_by_id(id)
-        .one(&ctx.db)
-        .await?
-        .ok_or_else(|| err("connection not found"))?;
-    registry(ctx)?.connector(&c.provider).map_err(err)
+/// A connector error as a job step failure: its stable code, retryable if transient.
+pub(crate) fn job_err(e: &ConnectorError) -> LedgerError {
+    let (code, retry) = classify(e);
+    LedgerError::Job { code, retry }
 }
 
-/// Ledger-owned retry: 1, 5, 15, 60 minutes. `false` (run marked failed) once exhausted.
-pub(crate) async fn retry<S: Storage + ?Sized>(
-    storage: &S,
-    run: &RunRow,
-    fence: u64,
-) -> LResult<bool> {
-    match backoff(run.attempts) {
-        Some(d) => {
-            let at = Utc::now() + chrono::Duration::from_std(d).map_err(lerr)?;
-            storage.schedule_retry(run.id, run.attempts + 1, at).await?;
-            Ok(true)
-        }
-        None => {
-            let reason = Some("retries_exhausted".into());
-            storage
-                .set_status(run.id, fence, RunStatus::Failed, reason)
-                .await?;
-            Ok(false)
-        }
-    }
+/// The customer's role no longer lets us in (stack deleted, trust changed).
+pub(crate) fn revoked(e: &ConnectorError) -> bool {
+    matches!(e, ConnectorError::Auth(_)) || is_access_denied(e)
 }
 
 /// AWS error codes worth retrying: throttling and server-side faults. Any other code is a

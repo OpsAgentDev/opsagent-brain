@@ -20,6 +20,9 @@ pub enum LedgerError {
     Redis(#[from] redis::RedisError),
     #[error("storage: {0}")]
     Storage(String),
+    /// A job step failed with a stable `code`; `retry`: transient, back off and run again.
+    #[error("job step failed: {code}")]
+    Job { code: String, retry: bool },
 }
 pub type Result<T> = std::result::Result<T, LedgerError>;
 

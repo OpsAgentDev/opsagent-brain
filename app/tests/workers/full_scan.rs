@@ -90,7 +90,21 @@ enum Fault {
     PartialErrors,
     /// The scoped `rds` call fails outright.
     Error,
+    /// The scoped `rds` call is denied (the role was revoked mid-scan).
+    Denied,
+    /// The unscoped discovery call fails with this AWS error code.
+    Discovery(&'static str),
 }
+
+/// An AWS-style error whose message names the customer role, as real ones do.
+fn api(code: &str) -> ConnectorError {
+    ConnectorError::Api {
+        code: Some(code.into()),
+        message: format!("User: {SECRET_ARN} is not authorized"),
+    }
+}
+
+pub const SECRET_ARN: &str = "arn:aws:iam::123456789012:role/CustomerSecretRole";
 
 /// Fixture connector with a faulty `rds`, counting inventory calls.
 struct Rigged {
@@ -127,10 +141,9 @@ impl Connector for Rigged {
         let mut inv = self.inner.inventory(c, s).await?;
         let rds = s.services.iter().any(|x| x == "rds");
         match self.fault {
-            Some(Fault::Error) if rds => Err(ConnectorError::Api {
-                code: Some("ServiceUnavailable".into()),
-                message: "down".into(),
-            }),
+            Some(Fault::Error) if rds => Err(api("ServiceUnavailable")),
+            Some(Fault::Denied) if rds => Err(api("AccessDenied")),
+            Some(Fault::Discovery(code)) if s.services.is_empty() => Err(api(code)),
             Some(Fault::PartialErrors) if rds || s.services.is_empty() => {
                 inv.resources.retain(|r| r.attributes["service"] != "rds");
                 inv.partial_errors.push(ServiceError {
@@ -818,6 +831,72 @@ async fn blocked_connection_is_skipped_without_inventory() {
         );
         assert_eq!(k.calls.load(SeqCst), 0);
         assert!(all_findings(&ctx, conn).await.is_empty());
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn discovery_errors_retry_fail_or_end_revoked() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        let cases = [
+            ("ServiceUnavailable", "queued", None, 1),
+            ("ValidationError", "failed", Some("ValidationError"), 0),
+            ("AccessDenied", "partial", Some("revoked"), 0),
+        ];
+        for (n, (code, status, reason, attempts)) in cases.into_iter().enumerate() {
+            let k = rigged(Some(Fault::Discovery(code)));
+            let run = scan(&ctx, conn, n as i64, &k).await;
+            let r = run_row(&ctx, run).await;
+            assert_eq!(
+                (r.status.as_str(), r.partial_reason.as_deref(), r.attempts),
+                (status, reason, attempts),
+                "{code}"
+            );
+            assert_eq!(r.next_attempt_at.is_some(), status == "queued", "{code}");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn revoked_mid_scan_ends_partial_revoked_and_resolves_nothing() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        scan(&ctx, conn, 0, &noisy()).await;
+        let open_before = all_findings(&ctx, conn).await.len();
+        let run = scan(&ctx, conn, 1, &rigged(Some(Fault::Denied))).await;
+        let r = run_row(&ctx, run).await;
+        assert_eq!(
+            (r.status.as_str(), r.partial_reason.as_deref()),
+            ("partial", Some("revoked"))
+        );
+        let findings = all_findings(&ctx, conn).await;
+        assert_eq!(findings.len(), open_before);
+        assert!(findings.iter().all(|f| f.status == "open"));
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn undecryptable_credentials_fail_the_run() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        ctx.db
+            .execute_unprepared(&format!(
+                "UPDATE connection_credentials SET ciphertext = 'junk' WHERE connection_id = '{conn}'"
+            ))
+            .await
+            .unwrap();
+        let run = scan(&ctx, conn, 0, &noisy()).await;
+        let r = run_row(&ctx, run).await;
+        assert_eq!(
+            (r.status.as_str(), r.partial_reason.as_deref()),
+            ("failed", Some("credentials_unavailable"))
+        );
     })
     .await;
 }

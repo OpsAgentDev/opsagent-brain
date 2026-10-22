@@ -4,20 +4,26 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use loco_rs::{app::AppContext, bgworker::BackgroundWorker, Result};
-use opsagent_connectors::{registry as providers, CallContext, Connector, VerifyOutcome};
+use opsagent_connectors::{
+    registry as providers, CallContext, Connector, ConnectorError, Credentials, VerifyOutcome,
+};
 use opsagent_core::{
     connection::{transition, ConnectionEvent as E, ConnectionStatus as S},
     run::RunStatus,
 };
-use opsagent_ledger::{lease, LedgerError, RunRow, Storage};
+use opsagent_ledger::{
+    lease,
+    retry::{retry_or_fail, settle},
+    LedgerError, RunRow, Storage,
+};
 use sea_orm::{ActiveModelTrait, ConnectionTrait, EntityTrait, Set, SqlErr, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::common::{classify, connector_for, err, lerr, redis_client, retry, LResult};
+use super::common::{classify, err, lerr, redis_client, LResult};
 use crate::{
-    app::kek,
+    app::{kek, registry},
     models::{
         _entities::{connection_verifications, connections},
         audit,
@@ -90,13 +96,14 @@ impl BackgroundWorker<VerifyArgs> for VerifyWorker {
     }
 
     async fn perform(&self, args: VerifyArgs) -> Result<()> {
-        let k = connector_for(&self.ctx, args.run_id).await?;
-        verify(&self.ctx, args.run_id, k.as_ref()).await
+        verify(&self.ctx, args.run_id, None).await
     }
 }
 
-/// Runs (or re-runs) verify run `run_id` with connector `k` under a fenced lease.
-pub async fn verify(ctx: &AppContext, run_id: Uuid, k: &dyn Connector) -> Result<()> {
+/// Runs (or re-runs) verify run `run_id` under a fenced lease, with connector `k` or the
+/// registry's connector for the provider. Every run ends: an unexpected error is retried on
+/// the ledger schedule, then fails.
+pub async fn verify(ctx: &AppContext, run_id: Uuid, k: Option<&dyn Connector>) -> Result<()> {
     let storage = PgStorage::new(ctx.db.clone());
     let run = storage.load_run(run_id).await.map_err(err)?;
     if matches!(
@@ -113,7 +120,13 @@ pub async fn verify(ctx: &AppContext, run_id: Uuid, k: &dyn Connector) -> Result
         Err(e) => return Err(err(e)),
     };
     let w = VerifyWorker { ctx: ctx.clone() };
-    let res = w.run(&storage, &run, lease.fence, k).await;
+    let res = match w.run(&storage, &run, lease.fence, k).await {
+        Err(LedgerError::StaleFence) => Ok(()),
+        Err(e) => settle(&storage, run.id, run.attempts, lease.fence, &e)
+            .await
+            .map(|_| ()),
+        ok => ok,
+    };
     lease::release(&redis, &lease).await;
     match res {
         Ok(()) | Err(LedgerError::StaleFence) => Ok(()),
@@ -121,21 +134,22 @@ pub async fn verify(ctx: &AppContext, run_id: Uuid, k: &dyn Connector) -> Result
     }
 }
 
+type Called = std::result::Result<(VerifyOutcome, Credentials), ConnectorError>;
+
 impl VerifyWorker {
     async fn run(
         &self,
         storage: &PgStorage,
         run: &RunRow,
         fence: u64,
-        k: &dyn Connector,
+        k: Option<&dyn Connector>,
     ) -> LResult<()> {
         storage
             .set_status(run.id, fence, RunStatus::Running, None)
             .await?;
-        let db = &self.ctx.db;
         let conn_id = run.key.connection_id.ok_or(LedgerError::NotFound)?;
         let c = connections::Entity::find_by_id(conn_id)
-            .one(db)
+            .one(&self.ctx.db)
             .await
             .map_err(lerr)?
             .ok_or(LedgerError::NotFound)?;
@@ -146,32 +160,84 @@ impl VerifyWorker {
                 .set_status(run.id, fence, RunStatus::Skipped, reason)
                 .await;
         }
+        match self.call(&c, run.id, k).await? {
+            Ok((o, cr)) => {
+                self.conclude(storage, run, fence, &c, status, cr.account(), &o)
+                    .await
+            }
+            Err(e) => self.connector_error(storage, run, fence, &c, &e).await,
+        }
+    }
+
+    /// Decrypts the credentials and calls `verify`. Undecryptable credentials fail the run.
+    async fn call(
+        &self,
+        c: &connections::Model,
+        run_id: Uuid,
+        k: Option<&dyn Connector>,
+    ) -> LResult<Called> {
         let kek = kek(&self.ctx).map_err(lerr)?;
-        let creds = load_creds(db, kek.as_ref(), &c).await.map_err(lerr)?;
+        let creds = load_creds(&self.ctx.db, kek.as_ref(), c)
+            .await
+            .map_err(|_| LedgerError::Job {
+                code: "credentials_unavailable".into(),
+                retry: false,
+            })?;
         let context = CallContext {
             organisation_id: c.organisation_id,
-            run_id: run.id,
+            run_id,
             trigger: "verify".into(),
         };
-        let outcome = match providers::credentials(&c.provider, &creds, context) {
-            Ok(cr) => k.verify(&cr).await.map(|o| (o, cr)),
-            Err(e) => Err(e),
+        let cr = match providers::credentials(&c.provider, &creds, context) {
+            Ok(cr) => cr,
+            Err(e) => return Ok(Err(e)),
         };
-        let (o, cr) = match outcome {
-            Ok(v) => v,
-            // Throttling and 5xx: retry, never change state.
-            Err(e) => {
-                let (code, transient) = classify(&e);
-                tracing::warn!(error = %e, run = %run.id, code, transient, "verify: connector error");
-                // Throttling, 5xx and network: retry without changing state, until exhausted.
-                if transient && retry(storage, run, fence).await? {
-                    return Ok(());
+        let owned;
+        let k = match k {
+            Some(k) => k,
+            None => match registry(&self.ctx).map_err(lerr)?.connector(&c.provider) {
+                Ok(b) => {
+                    owned = b;
+                    owned.as_ref()
                 }
-                return self.fail(storage, run, fence, &c, &code).await;
-            }
+                Err(e) => return Ok(Err(e)),
+            },
         };
-        match decide(&o) {
-            Verdict::Denied => self.denied(storage, run, fence, &c, status, &o).await,
+        Ok(k.verify(&cr).await.map(|o| (o, cr)))
+    }
+
+    /// Throttling, 5xx and network: retry without changing state, until exhausted. Anything
+    /// else (or exhausted retries) is recorded as a verify error.
+    async fn connector_error(
+        &self,
+        storage: &PgStorage,
+        run: &RunRow,
+        fence: u64,
+        c: &connections::Model,
+        e: &ConnectorError,
+    ) -> LResult<()> {
+        let (code, transient) = classify(e);
+        tracing::warn!(error = %e, run = %run.id, code, transient, "verify: connector error");
+        if transient && retry_or_fail(storage, run.id, run.attempts, fence).await? {
+            return Ok(());
+        }
+        self.fail(storage, run, fence, c, &code).await
+    }
+
+    /// Applies the verdict for a successful verify call.
+    #[allow(clippy::too_many_arguments)]
+    async fn conclude(
+        &self,
+        storage: &PgStorage,
+        run: &RunRow,
+        fence: u64,
+        c: &connections::Model,
+        status: S,
+        account: Option<String>,
+        o: &VerifyOutcome,
+    ) -> LResult<()> {
+        match decide(o) {
+            Verdict::Denied => self.denied(storage, run, fence, c, status, o).await,
             Verdict::Event(ev, reason) => {
                 let to = match transition(status, ev) {
                     Ok(to) => to,
@@ -181,7 +247,7 @@ impl VerifyWorker {
                             .await
                     }
                 };
-                let (st, why) = if self.apply(&c, cr.account(), run.id, to, reason, &o).await? {
+                let (st, why) = if self.apply(c, account, run.id, to, reason, o).await? {
                     (RunStatus::Done, None)
                 } else {
                     (RunStatus::Skipped, Some("connection_changed".into()))
@@ -239,7 +305,9 @@ impl VerifyWorker {
                 .set_status(run.id, fence, RunStatus::Done, None)
                 .await
         } else {
-            retry(storage, run, fence).await.map(|_| ())
+            retry_or_fail(storage, run.id, run.attempts, fence)
+                .await
+                .map(|_| ())
         }
     }
 

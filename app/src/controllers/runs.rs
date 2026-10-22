@@ -4,7 +4,7 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, FixedOffset, Utc};
-use loco_rs::{app::AppContext, bgworker::BackgroundWorker};
+use loco_rs::app::AppContext;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryTrait};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,7 +24,6 @@ use crate::{
         manual_scan,
         pagination::{self, Page, PageParams},
     },
-    workers::full_scan::{FullScanArgs, FullScanWorker},
 };
 
 #[derive(Serialize, ToSchema)]
@@ -127,10 +126,7 @@ async fn scan(
 ) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
     let org = connections::Column::OrganisationId;
     let c = find_in_org::<connections::Entity>(&ctx.db, org, scope.organisation_id, &id).await?;
-    let out = manual_scan::request(&ctx.db, &c, scope.user_id, Utc::now()).await?;
-    if out.created {
-        FullScanWorker::perform_later(&ctx, FullScanArgs { run_id: out.run.id }).await?;
-    }
+    let out = manual_scan::request(&ctx, &c, scope.user_id, Utc::now()).await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(RunAccepted { run_id: out.run.id }),

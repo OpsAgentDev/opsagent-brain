@@ -13,8 +13,8 @@ use uuid::Uuid;
 use crate::{
     models::{_entities::connections, ledger_storage::PgStorage},
     workers::{
-        common::{connector_for, err},
-        full_scan::{scan, JOB},
+        common::err,
+        full_scan::{self, JOB},
     },
 };
 
@@ -45,14 +45,9 @@ impl Task for ScanNow {
             .await
             .map_err(err)?
             .run;
-        let status = scan(
-            ctx,
-            run.id,
-            connector_for(ctx, run.id).await?.as_ref(),
-            RunChunkedOptions::default(),
-        )
-        .await
-        .map_err(err)?;
+        let status = full_scan::run(ctx, run.id, RunChunkedOptions::default())
+            .await
+            .map_err(err)?;
         println!("run {} {status:?}", run.id);
         Ok(())
     }

@@ -300,3 +300,33 @@ async fn partial_reason_in_stats_ends_partial_even_after_resume() {
     assert_eq!(row.status, RunStatus::Partial);
     assert_eq!(row.partial_reason.as_deref(), Some("partial_inventory"));
 }
+
+#[tokio::test]
+async fn failing_chunk_ends_the_run_failed_or_queued_for_retry() {
+    use opsagent_ledger::LedgerError;
+    let r = common::redis();
+    for (retry, want, attempts) in [(false, RunStatus::Failed, 0), (true, RunStatus::Queued, 1)] {
+        let s = MemoryStorage::default();
+        let run = s.create_run(common::key()).await.unwrap().run;
+        let chunks: Vec<String> = vec!["a".into(), "b".into()];
+        let st = run_chunked(&s, &r, run.id, chunks, opts("w"), |c, _l| async move {
+            if c == "b" {
+                return Err(LedgerError::Job {
+                    code: "boom".into(),
+                    retry,
+                });
+            }
+            Ok(ChunkOutcome { stats: json!({}) })
+        })
+        .await
+        .unwrap();
+        assert_eq!(st, want);
+        let row = s.load_run(run.id).await.unwrap();
+        assert_eq!((row.status, row.attempts), (want, attempts));
+        if !retry {
+            assert_eq!(row.partial_reason.as_deref(), Some("boom"));
+        }
+        // The finished chunk stays checkpointed for the retry.
+        assert!(row.checkpoint.chunks_done.contains("a"));
+    }
+}
