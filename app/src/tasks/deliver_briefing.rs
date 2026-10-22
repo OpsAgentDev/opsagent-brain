@@ -47,7 +47,7 @@ impl Task for DeliverBriefingNow {
             .await
             .map_err(err)?
             .run;
-        let opts = deliver_briefing::options(JOB);
+        let opts = crate::services::deliveries::options(JOB);
         let status = deliver_briefing::run(ctx, run.id, opts)
             .await
             .map_err(err)?;

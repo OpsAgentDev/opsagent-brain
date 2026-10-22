@@ -1,17 +1,13 @@
 //! `deliver_briefing` job (delivery.md, PRD 7.6): the morning briefing to the connection's Slack
 //! channel; to the owners by email when Slack is not routed, revoked, gone, or still failing
 //! once retries are spent. Nothing changed since the last briefing: no message, no row.
-use std::time::Duration;
-
 use async_trait::async_trait;
 use chrono::Utc;
 use loco_rs::{app::AppContext, bgworker::BackgroundWorker, Result};
 use opsagent_core::run::RunStatus;
 use opsagent_deliver::render_text;
 use opsagent_ledger::{run_chunked, ChunkOutcome, LedgerError, RunChunkedOptions, RunRow, Storage};
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use uuid::Uuid;
 
 use super::{
@@ -21,16 +17,15 @@ use super::{
 use crate::{
     adapters::slack::SlackError,
     mailers::{magic_link::mail_safe_name, Mail},
-    models::{_entities::connections, ledger_storage::PgStorage, organisations},
+    models::ledger_storage::PgStorage,
     services::deliveries::{
-        briefing, deliverable, owners, revoke_notice_due, route, slack_integration, BRIEFING,
-        FALLBACK_EMAIL,
+        briefing, live_connection, options, outcome, owners, revoke_notice_due, route,
+        slack_integration, BRIEFING, FALLBACK_EMAIL,
     },
     settings::Settings,
 };
 
 pub const JOB: &str = "deliver_briefing";
-const LEASE_TTL: Duration = Duration::from_secs(60);
 const CHUNK: &str = "deliver";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,16 +52,6 @@ impl BackgroundWorker<DeliverBriefingArgs> for DeliverBriefingWorker {
     }
 }
 
-/// Lease options for a delivery job.
-pub fn options(job: &str) -> RunChunkedOptions {
-    RunChunkedOptions {
-        worker_id: format!("{job}-{}", Uuid::new_v4()),
-        lease_ttl: LEASE_TTL,
-        heartbeat_every: Duration::from_secs(20),
-        ..Default::default()
-    }
-}
-
 /// Runs (or resumes) briefing run `run_id`. The run row must exist.
 pub async fn run(ctx: &AppContext, run_id: Uuid, opts: RunChunkedOptions) -> LResult<RunStatus> {
     let storage = PgStorage::new(ctx.db.clone());
@@ -80,31 +65,6 @@ pub async fn run(ctx: &AppContext, run_id: Uuid, opts: RunChunkedOptions) -> LRe
         deliver(ctx, &storage, &run)
     })
     .await
-}
-
-pub(crate) fn outcome(key: &str, value: &str) -> ChunkOutcome {
-    ChunkOutcome {
-        stats: json!({ key: value }),
-        ..Default::default()
-    }
-}
-
-/// The run's connection, or `None` when its organisation is deleted or it takes no deliveries.
-pub(crate) async fn live_connection(
-    db: &DatabaseConnection,
-    run: &RunRow,
-) -> LResult<Option<connections::Model>> {
-    let id = run.key.connection_id.ok_or(LedgerError::NotFound)?;
-    let c = connections::Entity::find_by_id(id)
-        .filter(connections::Column::OrganisationId.eq(run.key.organisation_id))
-        .one(db)
-        .await
-        .map_err(lerr)?
-        .ok_or(LedgerError::NotFound)?;
-    let gone = organisations::deleted(db, c.organisation_id)
-        .await
-        .map_err(lerr)?;
-    Ok((!gone && deliverable(&c)).then_some(c))
 }
 
 async fn deliver(ctx: &AppContext, storage: &PgStorage, run: &RunRow) -> LResult<ChunkOutcome> {

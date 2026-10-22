@@ -21,7 +21,6 @@ use uuid::Uuid;
 
 use super::{
     common::{err, lerr, redis_client, LResult},
-    deliver_briefing::{live_connection, options, outcome},
     delivery::Out,
 };
 use crate::{
@@ -33,8 +32,8 @@ use crate::{
     },
     services::{
         deliveries::{
-            connection_snapshot, deliverable, finding_snapshots, owners, route, slack_integration,
-            SENT, WEEKLY,
+            connection_snapshot, deliverable, finding_snapshots, live_connection, options, outcome,
+            owners, route, slack_integration, SENT, WEEKLY,
         },
         recipients::unsubscribe_url,
     },

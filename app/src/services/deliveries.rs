@@ -1,6 +1,8 @@
 //! Delivery reads and writes: the snapshots the `deliver` crate builds documents from, routes,
 //! owners, and `deliveries` rows. Rows are keyed by (run, effect key), so a resumed run
 //! rewrites its own rows instead of adding more.
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     connection::ConnectionStatus,
@@ -13,10 +15,16 @@ use opsagent_deliver::{
     },
     route::{resolve, Recipient, Route},
 };
-use sea_orm::{ConnectionTrait, DbErr, QueryResult, Value};
+use opsagent_ledger::{ChunkOutcome, LedgerError, RunChunkedOptions, RunRow};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryResult,
+    Value,
+};
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
+    models::organisations,
     models::{
         _entities::{connections, integrations},
         connections::status_of,
@@ -25,6 +33,7 @@ use crate::{
         ledger_storage::stmt,
     },
     services::posture::posture,
+    workers::common::{lerr, LResult},
 };
 
 pub const BRIEFING: &str = "briefing";
@@ -33,6 +42,8 @@ pub const SENT: &str = "sent";
 pub const FAILED: &str = "failed";
 pub const FALLBACK_EMAIL: &str = "fallback_email";
 pub const SUPPRESSED: &str = "suppressed";
+
+const LEASE_TTL: Duration = Duration::from_secs(60);
 
 type DbResult<T> = Result<T, DbErr>;
 
@@ -193,7 +204,6 @@ pub async fn slack_integration(
     db: &impl ConnectionTrait,
     organisation_id: Uuid,
 ) -> DbResult<Option<integrations::Model>> {
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
     integrations::Entity::find()
         .filter(integrations::Column::OrganisationId.eq(organisation_id))
         .filter(integrations::Column::Kind.eq(SLACK))
@@ -356,6 +366,42 @@ pub async fn clear_channel(
     ))
     .await
     .map(|_| ())
+}
+
+/// Lease options for a delivery job.
+pub fn options(job: &str) -> RunChunkedOptions {
+    RunChunkedOptions {
+        worker_id: format!("{job}-{}", Uuid::new_v4()),
+        lease_ttl: LEASE_TTL,
+        heartbeat_every: Duration::from_secs(20),
+        ..Default::default()
+    }
+}
+
+/// A chunk's outcome with the single stat `key: value`.
+pub(crate) fn outcome(key: &str, value: &str) -> ChunkOutcome {
+    ChunkOutcome {
+        stats: json!({ key: value }),
+        ..Default::default()
+    }
+}
+
+/// The run's connection, or `None` when its organisation is deleted or it takes no deliveries.
+pub(crate) async fn live_connection(
+    db: &DatabaseConnection,
+    run: &RunRow,
+) -> LResult<Option<connections::Model>> {
+    let id = run.key.connection_id.ok_or(LedgerError::NotFound)?;
+    let c = connections::Entity::find_by_id(id)
+        .filter(connections::Column::OrganisationId.eq(run.key.organisation_id))
+        .one(db)
+        .await
+        .map_err(lerr)?
+        .ok_or(LedgerError::NotFound)?;
+    let gone = organisations::deleted(db, c.organisation_id)
+        .await
+        .map_err(lerr)?;
+    Ok((!gone && deliverable(&c)).then_some(c))
 }
 
 /// Whether a delivery for `c` makes sense: never-connected and disconnected connections get
