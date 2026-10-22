@@ -17,6 +17,13 @@ jobs:
   check:
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # Smaller artifacts: the AWS SDK crates otherwise fill the runner disk (ld bus error).
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: -C link-arg=-fuse-ld=lld
     services:
       postgres:
         image: postgres:17
@@ -34,10 +41,19 @@ jobs:
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune -af
+          df -h /
+      - run: sudo apt-get update && sudo apt-get install -y lld
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: scripts/check-crate-isolation.sh
       - run: scripts/check-tenancy.sh
       - run: scripts/check-logging.sh
