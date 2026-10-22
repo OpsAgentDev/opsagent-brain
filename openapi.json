@@ -1799,6 +1799,197 @@
         }
       }
     },
+    "/orgs/{org}/recipients": {
+      "get": {
+        "tags": [
+          "recipients"
+        ],
+        "operationId": "recipients_list",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` from the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, default 50; values above 200 are clamped to 200.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_Recipient"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "recipients"
+        ],
+        "operationId": "recipients_create",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewRecipient"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Recipient"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/recipients/{id}": {
+      "delete": {
+        "tags": [
+          "recipients"
+        ],
+        "operationId": "recipients_remove",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs/{org}/resources": {
       "get": {
         "tags": [
@@ -2026,6 +2217,69 @@
           }
         }
       }
+    },
+    "/recipients/confirm": {
+      "post": {
+        "tags": [
+          "recipients"
+        ],
+        "summary": "Anonymous: the single-use token is the authorisation.",
+        "operationId": "recipients_confirm",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/unsubscribe/{token}": {
+      "post": {
+        "tags": [
+          "recipients"
+        ],
+        "summary": "Anonymous and single use.",
+        "operationId": "recipients_unsubscribe",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "The token from the mail footer.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2073,6 +2327,18 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "ConfirmBody": {
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The token from the confirm link."
           }
         }
       },
@@ -2710,6 +2976,34 @@
           }
         }
       },
+      "NewRecipient": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Route only this connection's deliveries; null for organisation-wide."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An address to invite; it receives a confirm link and stays `pending` until used."
+          },
+          "member_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "A member of the organisation; active at once. Give exactly one of `email` or `member_id`."
+          }
+        }
+      },
       "Org": {
         "type": "object",
         "required": [
@@ -2825,6 +3119,73 @@
                 },
                 "variant": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` to get the next page; null on the last page."
+          }
+        }
+      },
+      "Page_Recipient": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "email",
+                "status",
+                "created_at"
+              ],
+              "properties": {
+                "connection_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid",
+                  "description": "Null: organisation-wide."
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "member_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid",
+                  "description": "Set when the recipient is a member (no confirmation, no unsubscribe footer)."
+                },
+                "status": {
+                  "type": "string",
+                  "description": "`pending` (awaiting the confirm link) or `active`."
+                },
+                "unsubscribed_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
                 }
               }
             }
@@ -3020,6 +3381,55 @@
           },
           "type": {
             "type": "string"
+          }
+        }
+      },
+      "Recipient": {
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "status",
+          "created_at"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Null: organisation-wide."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "member_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Set when the recipient is a member (no confirmation, no unsubscribe footer)."
+          },
+          "status": {
+            "type": "string",
+            "description": "`pending` (awaiting the confirm link) or `active`."
+          },
+          "unsubscribed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
           }
         }
       },

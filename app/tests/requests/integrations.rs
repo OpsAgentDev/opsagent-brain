@@ -1,4 +1,4 @@
-//! Slack install and channels (Plan 2 Task 9).
+//! Slack install, channels, recipients, unsubscribe (Plan 2 Task 9).
 use std::sync::Arc;
 
 use axum_test::TestServer;
@@ -8,10 +8,11 @@ use opsagent_brain::{
     app::kek,
     mailers::CaptureMailer,
     models::{
-        _entities::{audit_events, integrations, organisations, users},
+        _entities::{audit_events, integrations, organisations, recipients, users},
         integrations::open_token,
         members as member_model,
     },
+    services::recipients as recipient_service,
     settings::Settings,
 };
 use serde_json::{json, Value};
@@ -320,6 +321,176 @@ async fn channels_map_conversations_list_and_revoked_is_503() {
         let calls = slack.received_requests().await.unwrap().len();
         assert_eq!(req.get(&url).await.status_code(), 503);
         assert_eq!(slack.received_requests().await.unwrap().len(), calls);
+    })
+    .await;
+}
+
+async fn add_recipient(
+    req: &TestServer,
+    t: &str,
+    org: &str,
+    body: Value,
+) -> axum_test::TestResponse {
+    req.post(&format!("/v1/orgs/{org}/recipients"))
+        .add_header("X-CSRF-Token", t)
+        .json(&body)
+        .await
+}
+
+#[tokio::test]
+#[serial]
+async fn email_recipient_confirms_by_link_and_member_is_active() {
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "owner@example.com").await;
+        let org = slug(&create_org(&req, &t, "Acme").await);
+        let res = add_recipient(&req, &t, &org, json!({"email": "Ext@Example.com"})).await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        let r = res.json::<Value>();
+        assert_eq!(
+            (r["status"].as_str(), r["email"].as_str()),
+            (Some("pending"), Some("ext@example.com"))
+        );
+        let dup = add_recipient(&req, &t, &org, json!({"email": "ext@example.com"})).await;
+        assert_eq!(dup.status_code(), 409);
+        let both = add_recipient(
+            &req,
+            &t,
+            &org,
+            json!({"email": "a@example.com", "member_id": r["id"]}),
+        )
+        .await;
+        assert_eq!(both.status_code(), 422);
+
+        let link = last_link(&mail);
+        assert!(
+            link.starts_with("http://localhost:3000/recipients/confirm?token="),
+            "{link}"
+        );
+        let token = token_of(&link);
+        let row = recipients::Entity::find()
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(row.confirm_token_hash.as_deref(), Some(token.as_str()));
+        let confirm = |tok: String| {
+            let req = &req;
+            async move {
+                req.post("/v1/recipients/confirm")
+                    .json(&json!({"token": tok}))
+                    .await
+            }
+        };
+        assert_eq!(confirm("nope".into()).await.status_code(), 410);
+        assert_eq!(confirm(token.clone()).await.status_code(), 204);
+        assert_eq!(confirm(token).await.status_code(), 410);
+        let row = recipients::Entity::find()
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status, "active");
+
+        // A member recipient skips confirmation; members may list but not add or delete.
+        let owner_member = req
+            .get(&format!("/v1/orgs/{org}/members"))
+            .await
+            .json::<Value>()[0]["id"]
+            .clone();
+        let sent = mail.sent().len();
+        let res = add_recipient(&req, &t, &org, json!({"member_id": owner_member})).await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        assert_eq!(res.json::<Value>()["status"], "active");
+        assert_eq!(mail.sent().len(), sent);
+        assert_eq!(audits(&ctx, "recipient.create").await, 2);
+
+        let tm = as_member(&mut req, &ctx, &mail, &org, "member@example.com").await;
+        let page = req
+            .get(&format!("/v1/orgs/{org}/recipients"))
+            .await
+            .json::<Value>();
+        assert_eq!(page["items"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            add_recipient(&req, &tm, &org, json!({"email": "x@example.com"}))
+                .await
+                .status_code(),
+            403
+        );
+        let res = req
+            .delete(&format!("/v1/orgs/{org}/recipients/{}", row.id))
+            .add_header("X-CSRF-Token", &tm)
+            .await;
+        assert_eq!(res.status_code(), 403);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn unsubscribe_token_is_single_use_and_owner_deletes() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, conn) =
+            fake_connection(&req, &mail, "owner@example.com", "Acme", "clean").await;
+        let res = add_recipient(
+            &req,
+            &t,
+            &org,
+            json!({"email": "ext@example.com", "connection_id": conn}),
+        )
+        .await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        assert_eq!(res.json::<Value>()["connection_id"], conn);
+        // Same email org-wide is a separate route.
+        assert_eq!(
+            add_recipient(&req, &t, &org, json!({"email": "ext@example.com"}))
+                .await
+                .status_code(),
+            201
+        );
+        let row = recipients::Entity::find()
+            .filter(recipients::Column::ConnectionId.is_not_null())
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        let token =
+            recipient_service::issue_unsubscribe_token(&ctx.db, row.organisation_id, row.id)
+                .await
+                .unwrap();
+        let res = req.post(&format!("/v1/unsubscribe/{token}")).await;
+        assert_eq!(res.status_code(), 204);
+        assert_eq!(
+            req.post(&format!("/v1/unsubscribe/{token}"))
+                .await
+                .status_code(),
+            410
+        );
+        let row = recipients::Entity::find_by_id(row.id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(row.unsubscribed_at.is_some());
+        assert_eq!(audits(&ctx, "recipient.unsubscribe").await, 1);
+
+        let url = format!("/v1/orgs/{org}/recipients/{}", row.id);
+        assert_eq!(
+            req.delete(&url)
+                .add_header("X-CSRF-Token", &t)
+                .await
+                .status_code(),
+            204
+        );
+        assert_eq!(
+            req.delete(&url)
+                .add_header("X-CSRF-Token", &t)
+                .await
+                .status_code(),
+            404
+        );
+        assert_eq!(audits(&ctx, "recipient.delete").await, 1);
     })
     .await;
 }
