@@ -620,8 +620,8 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
             .unwrap();
         assert_eq!(s.reason, "ignored");
 
-        // One owner: 2 per address in 30 days across their orgs, even when each is confirmed
-        // (the per-(org, address) 3/day cap sits above it).
+        // One owner, each mail confirmed: the per-owner count resets, so only the
+        // per-(org, address) 3/day cap withholds the 4th.
         for c in [Value::Null, json!(c1), json!(c2), json!(c3)] {
             add_recipient(
                 &req,
@@ -647,7 +647,7 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
                     .await;
             }
         }
-        assert_eq!(mails_to(&mail, "busy@example.com"), 2);
+        assert_eq!(mails_to(&mail, "busy@example.com"), 3);
         assert!(suppression(mail_guard::email_hash("busy@example.com"))
             .one(&ctx.db)
             .await
@@ -668,6 +668,27 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
         }
         let to_r = mail.sent().iter().filter(|m| m.to.starts_with('r')).count();
         assert_eq!(to_r, 14);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn unconfirmed_confirm_mails_per_owner_cap_at_two_across_orgs() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, c1) = fake_connection(&req, &mail, "owner@example.com", "Acme", "clean").await;
+        let org2 = slug(&create_org(&req, &t, "Second").await);
+        for (o, c) in [(&org, Value::Null), (&org, json!(c1)), (&org2, Value::Null)] {
+            add_recipient(
+                &req,
+                &t,
+                o,
+                json!({"email": "far@example.com", "connection_id": c}),
+            )
+            .await;
+        }
+        assert_eq!(mails_to(&mail, "far@example.com"), 2);
     })
     .await;
 }

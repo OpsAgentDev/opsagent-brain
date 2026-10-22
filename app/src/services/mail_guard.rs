@@ -44,8 +44,8 @@ pub const MAILS_PER_ORG: i64 = 20;
 /// Unconfirmed confirm mails per (organisation, address) in 30 days before the address is
 /// suppressed as `ignored` for that organisation.
 pub const UNCONFIRMED_CAP: i64 = 2;
-/// Confirm mails per (owning user, address) in 30 days, across all of that user's
-/// organisations; beyond it the mail is withheld silently.
+/// Unconfirmed confirm mails per (owning user, address) in 30 days, across all of that user's
+/// organisations; beyond it the mail is withheld silently. A confirm resets it.
 pub const PER_OWNER_CAP: i64 = 2;
 /// Distinct owning users whose organisations sent unconfirmed confirm mails to one address in
 /// 30 days at which confirm mails to it are blocked for everyone (`confirm_blocked`).
@@ -61,6 +61,10 @@ pub fn email_hash(email: &str) -> String {
 
 fn unconfirmed_key(organisation_id: Uuid, hash: &str) -> String {
     format!("recipient_confirm:unconfirmed:{organisation_id}:{hash}")
+}
+
+fn per_owner_key(owner: Uuid, hash: &str) -> String {
+    format!("recipient_confirm:unconfirmed_owner:{owner}:{hash}")
 }
 
 fn unconfirmed_owners_key(hash: &str) -> String {
@@ -222,9 +226,15 @@ async fn count(
     {
         return Ok(Verdict::IgnoredByOrg);
     }
-    // Counted across every organisation of this owner, and never reset by a confirm.
-    let per_owner = format!("recipient_confirm:unconfirmed_owner:{owner}:{hash}");
-    if !hit(&mut c, &per_owner, PER_OWNER_CAP, WINDOW_30D).await? {
+    // Counted across every organisation of this owner; only the address holder's confirm resets it.
+    if !hit(
+        &mut c,
+        &per_owner_key(owner, hash),
+        PER_OWNER_CAP,
+        WINDOW_30D,
+    )
+    .await?
+    {
         return Ok(Verdict::Capped);
     }
     let owners = distinct(
@@ -288,6 +298,7 @@ pub async fn confirmed(
     if let Ok(mut c) = redis.get_multiplexed_async_connection().await {
         let _: redis::RedisResult<()> = redis::pipe()
             .del(unconfirmed_key(organisation_id, &hash))
+            .del(per_owner_key(owner, &hash))
             .srem(unconfirmed_owners_key(&hash), owner.to_string())
             .query_async(&mut c)
             .await;
