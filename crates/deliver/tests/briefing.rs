@@ -146,3 +146,15 @@ fn unhealthy_connection_is_reported_even_without_findings() {
     };
     assert_eq!(h.status, ConnectionStatus::Degraded);
 }
+
+#[test]
+fn never_scanned_connection_uses_daily_rules() {
+    let mut c = conn();
+    c.first_scan_at = None;
+    assert_eq!(build_briefing(&c, &[], since(), now(), LINK_BASE), None);
+    let fs = vec![opened(Severity::Critical, "public db")];
+    assert!(matches!(
+        build_briefing(&c, &fs, since(), now(), LINK_BASE),
+        Some(Briefing::Daily { .. })
+    ));
+}

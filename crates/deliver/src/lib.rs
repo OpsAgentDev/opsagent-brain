@@ -7,4 +7,4 @@ pub mod route;
 pub mod weekly;
 
 pub use render_html::render_html;
-pub use render_text::{render_text, RenderText};
+pub use render_text::{render_slack, render_text, RenderText, SLACK_MAX};

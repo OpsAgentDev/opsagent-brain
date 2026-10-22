@@ -117,3 +117,45 @@ fn new_connection_says_baselines_forming() {
     assert!(w.first_week);
     assert!(render_text(&w).contains("first week; baselines forming"));
 }
+
+#[test]
+fn flapping_findings_count_as_live() {
+    let mut iam = finding(
+        "02",
+        Severity::Critical,
+        FindingStatus::Flapping,
+        &[],
+        "root used",
+    );
+    iam.cost_monthly_usd = Some(5.0);
+    let backup = finding(
+        "04",
+        Severity::High,
+        FindingStatus::Flapping,
+        &[],
+        "job failed",
+    );
+    let cert = finding(
+        "05",
+        Severity::Critical,
+        FindingStatus::Flapping,
+        &[],
+        "cert 3 days",
+    );
+    let w = build_weekly(
+        &conn(),
+        &[iam, backup, cert],
+        &spend(),
+        &extras(),
+        now(),
+        LINK_BASE,
+    );
+    assert_eq!(w.iam.open, 1);
+    assert_eq!(w.backups.open_issues, 1);
+    assert_eq!(w.certificates.len(), 1);
+    assert_eq!(w.awaiting_decision.len(), 3);
+    assert_eq!(
+        w.recommended_cost_action.expect("action").title,
+        "root used"
+    );
+}

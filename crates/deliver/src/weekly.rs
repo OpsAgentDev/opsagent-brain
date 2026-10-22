@@ -20,7 +20,9 @@ pub fn build_weekly(
     now: DateTime<Utc>,
     link_base: &str,
 ) -> Weekly {
-    let open = |f: &&FindingSnapshot| f.status == FindingStatus::Open;
+    // Flapping is live, as in the daily briefing.
+    let open =
+        |f: &&FindingSnapshot| matches!(f.status, FindingStatus::Open | FindingStatus::Flapping);
     let check = |id: &'static str| move |f: &&FindingSnapshot| f.key.check_id == id;
     let items = |it: &mut dyn Iterator<Item = &FindingSnapshot>| {
         let mut v: Vec<Item> = it.map(Item::of).collect();

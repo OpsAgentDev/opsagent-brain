@@ -1,12 +1,13 @@
 mod common;
 
 use common::*;
+use opsagent_core::connection::ConnectionStatus;
 use opsagent_core::finding::Severity;
 use opsagent_deliver::briefing::build_briefing;
 use opsagent_deliver::model::{EventKind, FindingStatus, SpendSnapshot, WeeklyExtras};
 use opsagent_deliver::route::{resolve, Recipient, Route};
 use opsagent_deliver::weekly::build_weekly;
-use opsagent_deliver::{render_html, render_text};
+use opsagent_deliver::{render_html, render_slack, render_text};
 
 const EVIDENCE: &str = "EVIDENCE-EXCERPT-arn:aws:iam::123:role/x";
 
@@ -134,4 +135,69 @@ fn route_falls_back_field_by_field() {
     let r = resolve(Some(only_people.clone()), org);
     assert_eq!(r.slack_channel.as_deref(), Some("C-ORG"));
     assert_eq!(r.recipients, only_people.recipients);
+}
+
+fn degraded_with_long_reason() -> opsagent_deliver::model::ConnectionSnapshot {
+    let mut c = conn();
+    c.status = ConnectionStatus::Degraded;
+    c.status_reason = Some("r".repeat(2_000));
+    c
+}
+
+#[test]
+fn escaped_titles_and_long_reason_still_fit() {
+    let amp = "&".repeat(200);
+    let fs: Vec<_> = (0..10).map(|_| opened(Severity::Critical, &amp)).collect();
+    let b = build_briefing(&degraded_with_long_reason(), &fs, since(), now(), LINK_BASE)
+        .expect("briefing");
+    let t = render_text(&b);
+    assert!(t.len() <= 3_900, "len {}", t.len());
+    assert!(!t.contains(&"r".repeat(201)), "reason capped");
+    assert!(t.contains('\u{2026}'), "ellipsis on capped text");
+}
+
+#[test]
+fn oversized_briefing_drops_items_but_keeps_counts_and_link() {
+    let base = format!("https://{}.test", "l".repeat(2_000));
+    let fs: Vec<_> = (0..10)
+        .map(|i| opened(Severity::Critical, &format!("{i}{}", "t".repeat(300))))
+        .collect();
+    let b =
+        build_briefing(&degraded_with_long_reason(), &fs, since(), now(), &base).expect("briefing");
+    let t = render_text(&b);
+    assert!(t.len() <= 3_900, "len {}", t.len());
+    assert!(t.contains(&base), "link kept");
+    assert!(t.contains("Open now:"));
+    assert!(t.contains("0ttt"), "first item kept");
+    assert!(!t.contains("9ttt"), "last item dropped");
+    assert!(t.contains("more on the dashboard"));
+}
+
+#[test]
+fn weekly_slack_is_escaped_and_fits() {
+    let spend = SpendSnapshot {
+        this_week_usd: 10.0,
+        last_week_usd: 5.0,
+        anomalies: vec![],
+    };
+    let f = finding(
+        "02",
+        Severity::High,
+        FindingStatus::Open,
+        &[],
+        "<!channel> admin & co",
+    );
+    let extras = WeeklyExtras {
+        would_have_done: vec!["w".repeat(300); 50],
+        ..Default::default()
+    };
+    let w = build_weekly(&conn(), &[f], &spend, &extras, now(), LINK_BASE);
+    let t = render_slack(&w);
+    assert!(t.len() <= 3_900, "len {}", t.len());
+    assert!(!t.contains("<!channel>"));
+    assert!(t.contains("&lt;!channel&gt; admin &amp; co"));
+    assert!(t.contains("+$5.00"));
+    assert!(t.contains("Need a human?"));
+    assert!(t.contains("https://harun.dev"));
+    assert!(t.contains(LINK_BASE));
 }
