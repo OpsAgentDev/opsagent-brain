@@ -22,9 +22,7 @@ async fn noisy_exact_set() {
 #[tokio::test]
 async fn clean_is_empty() {
     let (r, c) = load("clean").await;
-    // sg-ok is a 443-on-LB group, identical to noisy's sg-web: an info finding by spec.
-    let d = run(&PublicExposure, &r, &c);
-    assert_eq!(set(&d), vec![t("sg-ok", "sg_open_web_on_lb", Info)]);
+    assert!(run(&PublicExposure, &r, &c).is_empty());
 }
 
 fn res(id: &str, attrs: serde_json::Value) -> Resource {

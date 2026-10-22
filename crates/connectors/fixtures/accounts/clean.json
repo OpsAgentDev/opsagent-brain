@@ -78,9 +78,7 @@
       "tags": {},
       "attributes": {
         "service": "sg",
-        "open_world_ports": [
-          443
-        ],
+        "open_world_ports": [],
         "attached_to": "lb"
       },
       "observed_at": "2026-10-01T00:00:00Z"
