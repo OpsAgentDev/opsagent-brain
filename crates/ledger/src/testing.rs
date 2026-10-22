@@ -11,6 +11,7 @@ use uuid::Uuid;
 struct Inner {
     runs: HashMap<Uuid, RunRow>,
     keys: HashMap<RunKey, Uuid>,
+    next_attempt: HashMap<Uuid, DateTime<Utc>>,
     effects: HashMap<(Uuid, String), Option<Option<String>>>, // None = started
 }
 
@@ -103,10 +104,21 @@ impl Storage for MemoryStorage {
             .insert((run_id, key.to_string()), Some(r));
         Ok(())
     }
-    async fn schedule_retry(&self, id: Uuid, attempts: u32, _next_at: DateTime<Utc>) -> Result<()> {
+    async fn mark_enqueue_pending(&self, id: Uuid, at: DateTime<Utc>) -> Result<()> {
+        self.with(id, |_| Ok(()))?;
+        self.0.lock().unwrap().next_attempt.insert(id, at);
+        Ok(())
+    }
+    async fn clear_enqueue_marker(&self, id: Uuid, marker_at: DateTime<Utc>) -> Result<bool> {
+        let mut g = self.0.lock().unwrap();
+        Ok(g.next_attempt.get(&id) == Some(&marker_at) && g.next_attempt.remove(&id).is_some())
+    }
+    async fn schedule_retry(&self, id: Uuid, attempts: u32, next_at: DateTime<Utc>) -> Result<()> {
         self.with(id, |r| {
             r.attempts = attempts;
             Ok(())
-        })
+        })?;
+        self.0.lock().unwrap().next_attempt.insert(id, next_at);
+        Ok(())
     }
 }

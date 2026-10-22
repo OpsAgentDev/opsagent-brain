@@ -229,6 +229,29 @@ impl<C: ConnectionTrait + Send + Sync> Storage for PgStorage<C> {
     }
 
     /// Back to `queued` with `next_attempt_at`; the due-run dispatcher re-enqueues it.
+    async fn mark_enqueue_pending(&self, id: Uuid, at: DateTime<Utc>) -> Result<()> {
+        let n = self
+            .exec(
+                "UPDATE runs SET next_attempt_at = $2, updated_at = now() WHERE id = $1",
+                vec![id.into(), at.into()],
+            )
+            .await?;
+        if n == 0 {
+            return Err(LedgerError::NotFound);
+        }
+        Ok(())
+    }
+
+    async fn clear_enqueue_marker(&self, id: Uuid, marker_at: DateTime<Utc>) -> Result<bool> {
+        let n = self
+            .exec(
+                "UPDATE runs SET next_attempt_at = NULL, updated_at = now() WHERE id = $1 AND next_attempt_at = $2",
+                vec![id.into(), marker_at.into()],
+            )
+            .await?;
+        Ok(n == 1)
+    }
+
     async fn schedule_retry(&self, id: Uuid, attempts: u32, next_at: DateTime<Utc>) -> Result<()> {
         let n = self
             .exec(

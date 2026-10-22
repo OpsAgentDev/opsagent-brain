@@ -158,15 +158,31 @@ async fn second_lock_holder_does_not_tick() {
 #[tokio::test]
 #[serial]
 async fn queued_run_with_due_next_attempt_is_reenqueued_once() {
-    request_with_config::<App, _, _>(cookie_config(), |_req, ctx| async move {
+    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+        reset(&ctx).await;
+        let mail = prepare(&ctx);
+        let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
+        assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
         reset(&ctx).await;
         let now = at("2026-10-22T10:00:00Z");
         let storage = PgStorage::new(ctx.db.clone());
+        let conn_id: Uuid = id.parse().unwrap();
+        let org_id: Uuid = ctx
+            .db
+            .query_one_raw(stmt(
+                &format!("SELECT organisation_id FROM connections WHERE id = '{id}'"),
+                vec![],
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get("", "organisation_id")
+            .unwrap();
         let run = storage
             .create_run(RunKey {
-                organisation_id: None,
-                connection_id: None,
-                job_type: "deliver_briefing".into(),
+                organisation_id: Some(org_id),
+                connection_id: Some(conn_id),
+                job_type: "full_scan".into(),
                 scheduled_at: now - Duration::hours(2),
             })
             .await
@@ -175,8 +191,10 @@ async fn queued_run_with_due_next_attempt_is_reenqueued_once() {
             .schedule_retry(run.run.id, 1, now - Duration::minutes(1))
             .await
             .unwrap();
-        run_tick(&ctx, now).await;
-        let q = "SELECT count(*) n FROM runs WHERE next_attempt_at IS NULL AND status = 'queued'";
+        // Exactly one real enqueue (the inline worker finishes the run), then nothing is due.
+        assert_eq!(run_tick(&ctx, now).await.retries_run, 1);
+        assert_eq!(run_tick(&ctx, now).await, Report::default());
+        let q = "SELECT count(*) n FROM runs WHERE next_attempt_at IS NULL AND status = 'done'";
         assert_eq!(count(&ctx, q).await, 1);
     })
     .await;
@@ -292,6 +310,45 @@ async fn run_written_but_not_enqueued_is_picked_up_by_the_next_tick() {
         assert_eq!(run_tick(&ctx, now).await.retries_run, 1);
         let q = "SELECT count(*) n FROM runs WHERE status = 'done'";
         assert_eq!(count(&ctx, q).await, 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn worker_retry_written_during_inline_enqueue_survives_the_marker_clear() {
+    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+        reset(&ctx).await;
+        let mail = prepare(&ctx);
+        let (_, _, id) = fake_connection(&req, &mail, "o@example.com", "Org", "denied").await;
+        // Previously connected, role now denied: the verify worker parks a retry.
+        ctx.db
+            .execute_raw(stmt(
+                &format!(
+                    "UPDATE connections SET status = 'connected', external_account_id = 'denied' WHERE id = '{id}'"
+                ),
+                vec![],
+            ))
+            .await
+            .unwrap();
+        let now = Utc::now();
+        conn_schedule(&ctx, &id, "verify", now - Duration::minutes(1)).await;
+
+        // Foreground mode: the worker runs inside the enqueue, before the marker is cleared.
+        assert_eq!(run_tick(&ctx, now).await.schedules_run, 1);
+        let r = ctx
+            .db
+            .query_one_raw(stmt(
+                "SELECT attempts, status, next_attempt_at FROM runs WHERE job_type = 'verify'",
+                vec![],
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        let next: DateTime<Utc> = r.try_get("", "next_attempt_at").unwrap();
+        assert_eq!(r.try_get::<i32>("", "attempts").unwrap(), 1);
+        assert_eq!(r.try_get::<String>("", "status").unwrap(), "queued");
+        assert!(next > now, "retry time {next} was erased");
     })
     .await;
 }

@@ -224,6 +224,20 @@ impl Storage for Usurped {
     ) -> opsagent_ledger::Result<()> {
         self.0.effect_done(id, k, r).await
     }
+    async fn mark_enqueue_pending(
+        &self,
+        id: uuid::Uuid,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> opsagent_ledger::Result<()> {
+        self.0.mark_enqueue_pending(id, at).await
+    }
+    async fn clear_enqueue_marker(
+        &self,
+        id: uuid::Uuid,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> opsagent_ledger::Result<bool> {
+        self.0.clear_enqueue_marker(id, at).await
+    }
     async fn schedule_retry(
         &self,
         id: uuid::Uuid,

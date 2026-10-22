@@ -9,8 +9,11 @@ use loco_rs::{
     Result,
 };
 use opsagent_core::run::RunKey;
-use opsagent_ledger::Storage;
-use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection, TransactionTrait};
+use opsagent_ledger::{CreateRunOutcome, Storage};
+use sea_orm::{
+    ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DatabaseTransaction,
+    TransactionTrait,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -65,15 +68,14 @@ async fn enqueue(ctx: &AppContext, job_type: &str, run_id: Uuid) -> Result<bool>
 }
 
 /// Enqueue after the run row is committed (a worker must be able to load it), then clear the
-/// `next_attempt_at` marker that `due_schedule` set as an outbox: if we crash in between, the
-/// retry pass of the next tick enqueues it.
-async fn dispatch(ctx: &AppContext, db: &DatabaseConnection, id: Uuid, job: &str) -> Result<bool> {
+/// outbox marker `due_schedule` set. Only the exact marker is cleared, so a retry time the
+/// worker has since written survives. A crash in between leaves the marker for the next tick.
+async fn dispatch(ctx: &AppContext, id: Uuid, job: &str, marker: DateTime<Utc>) -> Result<bool> {
     let sent = enqueue(ctx, job, id).await?;
-    db.execute_raw(stmt(
-        "UPDATE runs SET next_attempt_at = NULL, updated_at = now() WHERE id = $1",
-        vec![id.into()],
-    ))
-    .await?;
+    PgStorage::new(ctx.db.clone())
+        .clear_enqueue_marker(id, marker)
+        .await
+        .map_err(err)?;
     Ok(sent)
 }
 
@@ -103,14 +105,18 @@ pub async fn tick(ctx: &AppContext, now: DateTime<Utc>) -> Result<Option<Report>
     report.map(Some)
 }
 
-/// Locks one due schedule, creates its run and advances `next_due_at`, atomically. The run is
-/// returned only when this call created it.
-async fn due_schedule(
-    db: &DatabaseConnection,
+struct Due {
+    key: RunKey,
+    cron: String,
+    tz: String,
+}
+
+/// Locks the schedule row if it is still due and unclaimed.
+async fn lock_and_load(
+    txn: &DatabaseTransaction,
     id: Uuid,
     now: DateTime<Utc>,
-) -> Result<Option<(Uuid, String)>> {
-    let txn = db.begin().await?;
+) -> Result<Option<Due>> {
     let Some(s) = txn
         .query_one_raw(stmt(
             "SELECT organisation_id, connection_id, job_type, cron_local, timezone, next_due_at \
@@ -121,45 +127,76 @@ async fn due_schedule(
     else {
         return Ok(None);
     };
-    let job_type: String = s.try_get("", "job_type")?;
-    let cron: String = s.try_get("", "cron_local")?;
-    let tz: String = s.try_get("", "timezone")?;
-    // Missed ticks collapse into this one run; the next slot is after `now` (PRD 7.3).
-    let Some(next) = next_after(&cron, &tz, now) else {
-        tracing::error!(schedule = %id, cron, tz, "invalid schedule, disabling");
-        txn.execute_raw(stmt(
-            "UPDATE schedules SET enabled = false, updated_at = now() WHERE id = $1",
-            vec![id.into()],
-        ))
-        .await?;
-        txn.commit().await?;
-        return Ok(None);
-    };
-    let storage = PgStorage::new(txn);
-    let out = storage
-        .create_run(RunKey {
+    Ok(Some(Due {
+        key: RunKey {
             organisation_id: s.try_get("", "organisation_id")?,
             connection_id: s.try_get("", "connection_id")?,
-            job_type: job_type.clone(),
+            job_type: s.try_get("", "job_type")?,
             scheduled_at: s.try_get("", "next_due_at")?,
-        })
-        .await
-        .map_err(err)?;
-    let txn = storage.into_inner();
+        },
+        cron: s.try_get("", "cron_local")?,
+        tz: s.try_get("", "timezone")?,
+    }))
+}
+
+/// Creates the run on the same transaction; a new run gets the outbox marker. Returns the
+/// transaction back (the storage owns it while it works).
+async fn create_and_mark(
+    txn: DatabaseTransaction,
+    key: RunKey,
+    now: DateTime<Utc>,
+) -> Result<(DatabaseTransaction, CreateRunOutcome)> {
+    let storage = PgStorage::new(txn);
+    let out = storage.create_run(key).await.map_err(err)?;
     if out.created {
-        txn.execute_raw(stmt(
-            "UPDATE runs SET next_attempt_at = $2 WHERE id = $1",
-            vec![out.run.id.into(), now.into()],
-        ))
-        .await?;
+        storage
+            .mark_enqueue_pending(out.run.id, now)
+            .await
+            .map_err(err)?;
     }
-    txn.execute_raw(stmt(
-        "UPDATE schedules SET next_due_at = $2, updated_at = now() WHERE id = $1",
-        vec![id.into(), next.into()],
-    ))
-    .await?;
+    Ok((storage.into_inner(), out))
+}
+
+/// Moves `next_due_at` forward; `None` (unparseable cron or zone) disables the schedule.
+async fn advance(txn: &DatabaseTransaction, id: Uuid, next: Option<DateTime<Utc>>) -> Result<()> {
+    let st = match next {
+        Some(t) => stmt(
+            "UPDATE schedules SET next_due_at = $2, updated_at = now() WHERE id = $1",
+            vec![id.into(), t.into()],
+        ),
+        None => stmt(
+            "UPDATE schedules SET enabled = false, updated_at = now() WHERE id = $1",
+            vec![id.into()],
+        ),
+    };
+    txn.execute_raw(st).await?;
+    Ok(())
+}
+
+/// One schedule, one transaction: lock, create the run, advance `next_due_at`, commit. Returns
+/// the run only when this call created it.
+async fn due_schedule(
+    db: &DatabaseConnection,
+    id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<Option<(Uuid, String)>> {
+    let txn = db.begin().await?;
+    let Some(due) = lock_and_load(&txn, id, now).await? else {
+        return Ok(None);
+    };
+    // Missed ticks collapse into this one run; the next slot is after `now` (PRD 7.3).
+    let next = next_after(&due.cron, &due.tz, now);
+    if next.is_none() {
+        tracing::error!(schedule = %id, cron = due.cron, tz = due.tz, "invalid schedule, disabling");
+        advance(&txn, id, None).await?;
+        txn.commit().await?;
+        return Ok(None);
+    }
+    let job = due.key.job_type.clone();
+    let (txn, out) = create_and_mark(txn, due.key, now).await?;
+    advance(&txn, id, next).await?;
     txn.commit().await?;
-    Ok(out.created.then_some((out.run.id, job_type)))
+    Ok(out.created.then_some((out.run.id, job)))
 }
 
 async fn tick_locked(
@@ -176,12 +213,12 @@ async fn tick_locked(
         .await?;
     for id in due {
         let id: Uuid = id.try_get("", "id")?;
-        // One bad schedule must not block the others; its row is untouched and retried next tick.
+        // One bad schedule must not block the others; its transaction rolled back, so it is due again next tick.
         match due_schedule(db, id, now).await {
-            Ok(Some((run, job))) => match dispatch(ctx, db, run, &job).await {
+            Ok(Some((run, job))) => match dispatch(ctx, run, &job, now).await {
                 Ok(sent) => report.schedules_run += usize::from(sent),
                 Err(e) => {
-                    tracing::error!(schedule = %id, %run, error = %e, "enqueue failed, retrying next tick")
+                    tracing::error!(schedule = %id, %run, error = %e, "enqueue failed, the retry pass picks it up next tick")
                 }
             },
             Ok(None) => {}
@@ -193,14 +230,18 @@ async fn tick_locked(
     // enqueue was interrupted after `due_schedule` committed them.
     let retries = db
         .query_all_raw(stmt(
-            "SELECT id, job_type FROM runs WHERE status = 'queued' AND next_attempt_at IS NOT NULL \
+            "SELECT id, job_type, next_attempt_at FROM runs WHERE status = 'queued' AND next_attempt_at IS NOT NULL \
              AND next_attempt_at <= $1 ORDER BY next_attempt_at",
             vec![now.into()],
         ))
         .await?;
     for r in retries {
         let id: Uuid = r.try_get("", "id")?;
-        match dispatch(ctx, db, id, &r.try_get::<String>("", "job_type")?).await {
+        let (job, marker) = (
+            r.try_get::<String>("", "job_type")?,
+            r.try_get("", "next_attempt_at")?,
+        );
+        match dispatch(ctx, id, &job, marker).await {
             Ok(sent) => report.retries_run += usize::from(sent),
             Err(e) => tracing::error!(run = %id, error = %e, "retry enqueue failed"),
         }
