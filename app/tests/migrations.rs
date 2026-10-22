@@ -12,7 +12,7 @@ fn is_unique_violation(e: &DbErr) -> bool {
 
 #[tokio::test]
 #[serial]
-async fn slice_schema_constraints_and_roundtrip() {
+async fn migrations_slice_schema_constraints_and_roundtrip() {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://loco:loco@localhost:5432/opsagent_brain_test".into());
     let db = migration::sea_orm::Database::connect(&url).await.unwrap();
@@ -30,16 +30,32 @@ async fn slice_schema_constraints_and_roundtrip() {
     exec(&db, "INSERT INTO organisations (id, name, slug) VALUES ('00000000-0000-0000-0000-000000000001', 'o', 'o')")
         .await
         .unwrap();
+    let org = "'00000000-0000-0000-0000-000000000001'";
     let conn = |status: &str, acct: &str| {
+        let acct = if acct.is_empty() {
+            "NULL".into()
+        } else {
+            format!("'{acct}'")
+        };
         format!(
             "INSERT INTO connections (id, organisation_id, provider, external_account_id, status) \
-             VALUES (gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'aws', '{acct}', '{status}')"
+             VALUES (gen_random_uuid(), {org}, 'aws', {acct}, '{status}')"
         )
     };
-    exec(&db, &conn("disconnected", "1")).await.unwrap();
     assert!(exec(&db, &conn("bogus", "2")).await.is_err());
-    let err = exec(&db, &conn("pending", "1")).await.unwrap_err();
+    // Claimed accounts are globally unique.
+    exec(&db, &conn("connected", "1")).await.unwrap();
+    let err = exec(&db, &conn("connected", "1")).await.unwrap_err();
     assert!(is_unique_violation(&err), "{err}");
+    // Pending rows with NULL account coexist; pending cannot squat a claimed account.
+    exec(&db, &conn("pending", "")).await.unwrap();
+    exec(&db, &conn("pending", "")).await.unwrap();
+    exec(&db, &conn("pending", "1")).await.unwrap();
+    // Non-pending states require an account.
+    assert!(exec(&db, &conn("connected", "")).await.is_err());
+    // A disconnected row releases the account for a new connected row.
+    exec(&db, &conn("disconnected", "3")).await.unwrap();
+    exec(&db, &conn("connected", "3")).await.unwrap();
 
     // audit_events is insert-only.
     exec(&db, "INSERT INTO audit_events (id, actor_type, action) VALUES ('00000000-0000-0000-0000-0000000000aa', 'system', 'x')")

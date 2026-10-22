@@ -27,6 +27,7 @@ CREATE TABLE schedules (
   connection_id uuid REFERENCES connections(id),
   job_type text NOT NULL, cron_local text NOT NULL, timezone text NOT NULL DEFAULT 'UTC',
   enabled boolean NOT NULL DEFAULT true, next_due_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX schedules_organisation_id_idx ON schedules (organisation_id);
 CREATE INDEX schedules_next_due_at_idx ON schedules (next_due_at) WHERE enabled;
 CREATE TABLE api_call_stats (
   id uuid PRIMARY KEY, run_id uuid NOT NULL REFERENCES runs(id),

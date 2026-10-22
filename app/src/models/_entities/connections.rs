@@ -9,16 +9,10 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
     pub organisation_id: Uuid,
-    #[sea_orm(
-        column_type = "Text",
-        unique_key = "connections_provider_external_account_id_key"
-    )]
+    #[sea_orm(column_type = "Text")]
     pub provider: String,
-    #[sea_orm(
-        column_type = "Text",
-        unique_key = "connections_provider_external_account_id_key"
-    )]
-    pub external_account_id: String,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub external_account_id: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
     pub display_name: Option<String>,
     #[sea_orm(column_type = "Text")]

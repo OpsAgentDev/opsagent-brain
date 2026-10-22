@@ -6,13 +6,16 @@ pub struct Migration;
 const UP: &str = r#"CREATE TABLE connections (
   id uuid PRIMARY KEY,
   organisation_id uuid NOT NULL REFERENCES organisations(id),
-  provider text NOT NULL, external_account_id text NOT NULL, display_name text,
+  provider text NOT NULL, external_account_id text, display_name text,
   status text NOT NULL DEFAULT 'pending' CHECK (status IN
     ('pending','verifying','connected','degraded','revoked','blocked','disconnected')),
   status_reason text, template_version text, scan_time_local time, briefing_time_local time,
   slack_channel_id text, recipients jsonb NOT NULL DEFAULT '[]', api_rate_ceiling integer,
   first_connected_at timestamptz, billable_from timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (provider, external_account_id));
+  CHECK (status IN ('pending','disconnected') OR external_account_id IS NOT NULL));
+-- Only claimed accounts are unique, so a pending row cannot squat an account id.
+CREATE UNIQUE INDEX connections_provider_account_uniq ON connections (provider, external_account_id)
+  WHERE status NOT IN ('pending','disconnected');
 CREATE INDEX connections_organisation_id_idx ON connections (organisation_id);
 CREATE TABLE connection_credentials (
   connection_id uuid PRIMARY KEY REFERENCES connections(id),
