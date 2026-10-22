@@ -39,7 +39,15 @@ async fn served_to_owners_only() {
         let doc: Value = res.json();
         assert_eq!(doc["info"]["title"], "OpsAgent brain");
         assert_eq!(doc["servers"][0]["url"], "https://brain.opsagent.dev/v1");
-        for p in ["/orgs/{org}/connections", "/orgs/{org}/members", "/auth/me"] {
+        for p in [
+            "/orgs/{org}/findings",
+            "/orgs/{org}/findings/{id}",
+            "/orgs/{org}/resources",
+            "/orgs/{org}/runs/{id}",
+            "/orgs/{org}/connections",
+            "/orgs/{org}/members",
+            "/auth/me",
+        ] {
             assert!(doc["paths"][p].is_object(), "missing {p}");
         }
     })

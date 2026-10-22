@@ -72,7 +72,7 @@ fn fixture(edit: impl FnOnce(&mut Value)) -> FakeConnector {
     FakeConnector::from_fixture_json(&v.to_string()).unwrap()
 }
 
-fn noisy() -> FakeConnector {
+pub fn noisy() -> FakeConnector {
     fixture(|_| {})
 }
 
@@ -228,19 +228,7 @@ fn with_twice() -> Vec<Box<dyn Check>> {
 
 /// A connected fake connection; returns its id.
 async fn connection(req: &axum_test::TestServer, ctx: &AppContext, email: &str) -> Uuid {
-    let mail = prepare(ctx);
-    let (_, _, id) = fake_connection(req, &mail, email, email, "noisy").await;
-    let id: Uuid = id.parse().unwrap();
-    let mut a: connections::ActiveModel = connections::Entity::find_by_id(id)
-        .one(&ctx.db)
-        .await
-        .unwrap()
-        .unwrap()
-        .into();
-    a.status = Set("connected".into());
-    a.external_account_id = Set(Some(format!("noisy-{email}")));
-    a.update(&ctx.db).await.unwrap();
-    id
+    connected(req, ctx, email, "noisy").await.2
 }
 
 async fn new_run(ctx: &AppContext, conn: Uuid, n: i64) -> Uuid {
@@ -262,7 +250,7 @@ async fn new_run(ctx: &AppContext, conn: Uuid, n: i64) -> Uuid {
         .id
 }
 
-async fn scan(ctx: &AppContext, conn: Uuid, n: i64, k: &dyn Connector) -> Uuid {
+pub async fn scan(ctx: &AppContext, conn: Uuid, n: i64, k: &dyn Connector) -> Uuid {
     let run = new_run(ctx, conn, n).await;
     full_scan::scan(ctx, run, k, RunChunkedOptions::default())
         .await

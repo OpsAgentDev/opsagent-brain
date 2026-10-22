@@ -1,2 +1,2 @@
-mod full_scan;
+pub mod full_scan;
 mod verify;

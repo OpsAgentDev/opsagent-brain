@@ -133,3 +133,35 @@ pub async fn fake_connection(
     let c = create_connection(req, &t, &org, "fake", account).await;
     (t, org, c["id"].as_str().unwrap().to_string())
 }
+
+/// Owner signs in (email doubles as org name), creates a fake connection for fixture `account`
+/// and marks it connected. Returns `(csrf, org slug, connection id)`.
+pub async fn connected(
+    req: &TestServer,
+    ctx: &AppContext,
+    email: &str,
+    account: &str,
+) -> (String, String, uuid::Uuid) {
+    use opsagent_brain::models::_entities::connections;
+    use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+    let mail = prepare(ctx);
+    let (t, org, id) = fake_connection(req, &mail, email, email, account).await;
+    let id: uuid::Uuid = id.parse().unwrap();
+    let mut a: connections::ActiveModel = connections::Entity::find_by_id(id)
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into();
+    a.status = Set("connected".into());
+    a.external_account_id = Set(Some(format!("{account}-{email}")));
+    a.update(&ctx.db).await.unwrap();
+    (t, org, id)
+}
+
+/// Problem body with the per-response `instance` blanked, for byte comparison.
+pub fn without_instance(res: &axum_test::TestResponse) -> String {
+    let mut v: Value = serde_json::from_str(&res.text()).unwrap();
+    v["instance"] = Value::Null;
+    v.to_string()
+}

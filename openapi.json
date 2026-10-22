@@ -879,6 +879,156 @@
         }
       }
     },
+    "/orgs/{org}/findings": {
+      "get": {
+        "tags": [
+          "findings"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "connection",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "check",
+            "in": "query",
+            "description": "Check id, e.g. `no_mfa`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` from the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, default 50; values above 200 are clamped to 200.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_FindingSummary"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/findings/{id}": {
+      "get": {
+        "tags": [
+          "findings"
+        ],
+        "operationId": "show",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs/{org}/invites": {
       "post": {
         "tags": [
@@ -1035,6 +1185,234 @@
             }
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/resources": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "connection",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Case-insensitive substring of name or identity.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` from the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, default 50; values above 200 are clamped to 200.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ResourceSummary"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/runs": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "connection",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Job type.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` from the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, default 50; values above 200 are clamped to 200.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_RunSummary"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/runs/{id}": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "operationId": "show",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "404": {
             "content": {
               "application/json": {
                 "schema": {
@@ -1235,6 +1613,238 @@
           "status": {
             "type": "string",
             "description": "Always `disconnected`."
+          }
+        }
+      },
+      "EvidenceItem": {
+        "type": "object",
+        "required": [
+          "source",
+          "excerpt",
+          "redacted",
+          "run_id",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "excerpt": {
+            "type": "string",
+            "description": "Redacted before storage."
+          },
+          "redacted": {
+            "type": "boolean"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      },
+      "Finding": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/FindingSummary"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "accepted_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "accepted_until": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "first_seen_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "uuid"
+              },
+              "last_seen_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "uuid"
+              },
+              "next_step": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resolved_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "resolved_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "snoozed_until": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "FindingDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Finding"
+          },
+          {
+            "type": "object",
+            "required": [
+              "evidence",
+              "events"
+            ],
+            "properties": {
+              "events": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/FindingEvent"
+                },
+                "description": "Newest first, at most 20."
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/EvidenceItem"
+                }
+              },
+              "explanation": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "Model explanation; null until explanations exist."
+              }
+            }
+          }
+        ]
+      },
+      "FindingEvent": {
+        "type": "object",
+        "required": [
+          "event_type",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "from_severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Null for customer actions."
+          },
+          "to_severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "FindingSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "connection_id",
+          "check_id",
+          "resource_identity",
+          "variant",
+          "severity",
+          "status",
+          "title",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "check_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "cost_monthly_usd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "resource_identity": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "description": "`critical`, `high`, `medium`, `low` or `info`."
+          },
+          "status": {
+            "type": "string",
+            "description": "`open`, `resolved`, `accepted`, `snoozed` or `flapping`."
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "variant": {
+            "type": "string"
           }
         }
       },
@@ -1453,6 +2063,232 @@
           }
         }
       },
+      "Page_FindingSummary": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "connection_id",
+                "check_id",
+                "resource_identity",
+                "variant",
+                "severity",
+                "status",
+                "title",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "check_id": {
+                  "type": "string"
+                },
+                "connection_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "cost_monthly_usd": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "resource_identity": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string",
+                  "description": "`critical`, `high`, `medium`, `low` or `info`."
+                },
+                "status": {
+                  "type": "string",
+                  "description": "`open`, `resolved`, `accepted`, `snoozed` or `flapping`."
+                },
+                "title": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "variant": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` to get the next page; null on the last page."
+          }
+        }
+      },
+      "Page_ResourceSummary": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "connection_id",
+                "kind",
+                "identity",
+                "tags",
+                "first_seen_at",
+                "last_seen_at"
+              ],
+              "properties": {
+                "connection_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "first_seen_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "gone_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "Set when the resource was missing from a complete inventory."
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "identity": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "last_seen_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "region": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "tags": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` to get the next page; null on the last page."
+          }
+        }
+      },
+      "Page_RunSummary": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "job_type",
+                "status",
+                "scheduled_at"
+              ],
+              "properties": {
+                "connection_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "finished_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "job_type": {
+                  "type": "string",
+                  "description": "`full_scan`, `verify`, ..."
+                },
+                "partial_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "scheduled_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "started_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "`queued`, `running`, `done`, `partial`, `failed` or `skipped`."
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` to get the next page; null on the last page."
+          }
+        }
+      },
       "Problem": {
         "type": "object",
         "description": "The wire shape of every error (`application/problem+json`).",
@@ -1511,6 +2347,91 @@
           }
         }
       },
+      "ResourceSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "connection_id",
+          "kind",
+          "identity",
+          "tags",
+          "first_seen_at",
+          "last_seen_at"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "first_seen_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "gone_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Set when the resource was missing from a complete inventory."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "identity": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last_seen_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": "object"
+          }
+        }
+      },
+      "Run": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RunSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "attempts"
+            ],
+            "properties": {
+              "attempts": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "stats": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "Job statistics from the checkpoint (for `full_scan`: score, counts, partial); null if none."
+              }
+            }
+          }
+        ]
+      },
       "RunAccepted": {
         "type": "object",
         "description": "202 body for endpoints that enqueue a run.",
@@ -1521,6 +2442,60 @@
           "run_id": {
             "type": "string",
             "format": "uuid"
+          }
+        }
+      },
+      "RunSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "job_type",
+          "status",
+          "scheduled_at"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "job_type": {
+            "type": "string",
+            "description": "`full_scan`, `verify`, ..."
+          },
+          "partial_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scheduled_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "description": "`queued`, `running`, `done`, `partial`, `failed` or `skipped`."
           }
         }
       },

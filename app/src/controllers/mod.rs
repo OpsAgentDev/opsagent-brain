@@ -1,9 +1,12 @@
 pub mod auth;
 pub mod connections;
+pub mod findings;
 pub mod health;
 pub mod members;
 pub mod openapi;
 pub mod orgs;
+pub mod resources;
+pub mod runs;
 
 use serde::Serialize;
 use utoipa::{IntoParams, ToSchema};
