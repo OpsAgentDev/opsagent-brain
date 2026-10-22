@@ -51,3 +51,15 @@ async fn clean_is_empty() {
     let (r, c) = load("clean").await;
     assert!(run(&CostAndIdle, &r, &c).is_empty());
 }
+
+#[tokio::test]
+async fn flat_series_no_anomaly_single_spike_yes() {
+    let (r, mut c) = load("clean").await;
+    for x in c.iter_mut() {
+        x.amount_usd = 33.33;
+    }
+    assert!(run(&CostAndIdle, &r, &c).is_empty());
+    c[25].amount_usd = 33.33 * 5.0;
+    let d = run(&CostAndIdle, &r, &c);
+    assert_eq!(set(&d), vec![t("cost:2026-09-26", "cost_anomaly", High)]);
+}

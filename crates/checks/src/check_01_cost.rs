@@ -108,7 +108,9 @@ fn anomaly(ctx: &CheckCtx) -> Vec<FindingDraft> {
         let (Some((m7, sd7)), Some((m30, sd30))) = (base(7), base(30)) else {
             continue;
         };
-        if !(amt > m7 + 3.0 * sd7 && amt > m30 + 3.0 * sd30) {
+        // Floor (5% of mean or one cent) keeps float noise on flat series from flagging.
+        let floor = |m: f64| (0.05 * m).max(0.01);
+        if !(amt > m7 + 3.0 * sd7 + floor(m7) && amt > m30 + 3.0 * sd30 + floor(m30)) {
             continue;
         }
         let pct = (amt - m30) / m30.max(f64::EPSILON) * 100.0;
