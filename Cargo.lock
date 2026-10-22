@@ -3197,6 +3197,8 @@ dependencies = [
  "loco-rs",
  "migration",
  "redis",
+ "sea-orm",
+ "serde",
  "serde_json",
  "serial_test",
  "tokio",
