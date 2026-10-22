@@ -84,6 +84,7 @@ pub async fn run(ctx: &AppContext, run_id: Uuid, opts: RunChunkedOptions) -> LRe
 pub(crate) fn outcome(key: &str, value: &str) -> ChunkOutcome {
     ChunkOutcome {
         stats: json!({ key: value }),
+        ..Default::default()
     }
 }
 
