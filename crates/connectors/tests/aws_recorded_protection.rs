@@ -823,3 +823,65 @@ async fn simulate_restore_role_outcomes() {
     let (iam, _) = failing("Throttling");
     assert!(simulate_restore(&iam, ROLE, "123456789012").await.is_err());
 }
+
+#[tokio::test]
+async fn failed_coverage_read_in_ebs_chunk_is_a_backup_partial_error() {
+    use aws_smithy_http_client::test_util::infallible_client_fn;
+    use opsagent_connectors::aws::inventory::inventory;
+    use opsagent_connectors::Scope;
+    let http = infallible_client_fn(|req| {
+        let host = req.uri().host().unwrap_or_default().to_owned();
+        let path = req.uri().path().to_owned();
+        let r = http::Response::builder();
+        if host.starts_with("backup.") && path.starts_with("/backup-jobs") {
+            return r
+                .status(400)
+                .header("x-amzn-ErrorType", "ThrottlingException")
+                .body(r#"{"message":"slow down"}"#.to_owned())
+                .unwrap();
+        }
+        if host.starts_with("backup.") {
+            return r.status(200).body("{}".to_owned()).unwrap();
+        }
+        r.status(200)
+            .body(
+                "<DescribeVolumesResponse xmlns=\"http://ec2.amazonaws.com/doc/2016-11-15/\">\
+                 <requestId>r-1</requestId><volumeSet><item><volumeId>vol-1</volumeId>\
+                 <size>8</size></item></volumeSet></DescribeVolumesResponse>"
+                    .to_owned(),
+            )
+            .unwrap()
+    });
+    let session = aws_config::SdkConfig::builder()
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .region(aws_config::Region::from_static("eu-west-1"))
+        .credentials_provider(aws_sdk_sts::config::SharedCredentialsProvider::new(
+            aws_sdk_sts::config::Credentials::new("AKID", "secret", None, None, "test"),
+        ))
+        .retry_config(aws_config::retry::RetryConfig::disabled())
+        .http_client(http)
+        .build();
+    let scope = Scope {
+        regions: vec!["eu-west-1".into()],
+        services: vec!["ebs".into()],
+    };
+    let r = inventory(&session, "aws", "123456789012", &scope)
+        .await
+        .unwrap();
+    assert_eq!(r.partial_errors.len(), 1, "{:?}", r.partial_errors);
+    assert_eq!(r.partial_errors[0].service, "backup");
+    assert_eq!(
+        r.partial_errors[0].code.as_deref(),
+        Some("ThrottlingException")
+    );
+    assert_eq!(r.resources.len(), 1);
+    let a = r.resources[0].attributes.as_object().unwrap();
+    assert_eq!(a["service"], "ebs");
+    for k in [
+        "in_backup_plan",
+        "backup_last_job_status",
+        "backup_last_job_at",
+    ] {
+        assert!(!a.contains_key(k), "{k} present");
+    }
+}

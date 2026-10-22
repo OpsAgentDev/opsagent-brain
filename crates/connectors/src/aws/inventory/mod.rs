@@ -281,7 +281,7 @@ async fn regional(
 
 /// Backups, certificates, log groups and training jobs; GPU utilisation onto `ec2`
 /// instances and backup coverage onto `ec2`, `ebs` and `rds`. Backups are read for those
-/// scopes too (coverage needs them) but only returned or reported when `backup` is wanted.
+/// scopes too (coverage needs them); their resources are returned only when `backup` is wanted.
 async fn protection_and_ml(
     cfg: &SdkConfig,
     t: &Target<'_>,
@@ -321,9 +321,12 @@ async fn protection_and_ml(
             out.record("cloudwatch", t.region, Some(Err(e)));
         }
     }
-    // Read only for coverage: its failure leaves the coverage keys `null` and is reported by
-    // the `backup` chunk itself, so other chunks are not marked partial for it.
-    let bkp = bkp.filter(|_| want("backup"));
+    // Read only for coverage: the resources are dropped, but a failure is still reported in
+    // this chunk (coverage keys stay absent) so the run is partial and resolves nothing.
+    let bkp = match bkp {
+        Some(Ok(_)) if !want("backup") => None,
+        r => r,
+    };
     for (svc, r) in [
         ("backup", bkp),
         ("acm", certs),
