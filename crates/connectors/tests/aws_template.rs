@@ -1,4 +1,7 @@
-use opsagent_connectors::aws::policy_diff::{render_template_v1, TemplateParams, TEMPLATE_V1_YAML};
+use opsagent_connectors::aws::policy_diff::{
+    render_template_v1, substitute, TemplateParams, TEMPLATE_V1_YAML,
+};
+use opsagent_connectors::ConnectorError;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -41,7 +44,7 @@ fn trust_requires_external_id_and_allows_tag_session() {
         y["Resources"]["OpsAgentReadRole"]["Properties"]["MaxSessionDuration"],
         serde_yaml::Value::from(3600)
     );
-    let t = render_template_v1(&params(None)).trust;
+    let t = render_template_v1(&params(None)).unwrap().trust;
     assert_eq!(
         t["Statement"][0],
         json!({
@@ -55,7 +58,7 @@ fn trust_requires_external_id_and_allows_tag_session() {
 
 #[test]
 fn deny_list_covers_data_plane() {
-    let s = stmts(&render_template_v1(&params(None)).policies);
+    let s = stmts(&render_template_v1(&params(None)).unwrap().policies);
     let deny: BTreeSet<String> = s
         .iter()
         .filter(|x| x["Effect"] == "Deny")
@@ -104,7 +107,7 @@ fn deny_list_covers_data_plane() {
 
 #[test]
 fn without_terraform_params_object_reads_are_denied_everywhere() {
-    let r = render_template_v1(&params(None));
+    let r = render_template_v1(&params(None)).unwrap();
     assert_eq!(r.policies.len(), 2, "no OpsAgentTerraformState policy");
     let s = stmts(&r.policies);
     let d = by_sid(&s, "DenyObjectReads").unwrap();
@@ -115,7 +118,7 @@ fn without_terraform_params_object_reads_are_denied_everywhere() {
 
 #[test]
 fn with_terraform_params_prefix_is_carved_out_and_allowed() {
-    let r = render_template_v1(&params(Some(("tf-state", "envs/prod/"))));
+    let r = render_template_v1(&params(Some(("tf-state", "envs/prod/")))).unwrap();
     assert_eq!(r.policies.len(), 3);
     let s = stmts(&r.policies);
     let arn = "arn:aws:s3:::tf-state/envs/prod/*";
@@ -140,7 +143,7 @@ fn terraform_parameters_are_constrained() {
     );
     assert_eq!(
         p["TerraformStatePrefix"]["AllowedPattern"].as_str(),
-        Some("^$|^[^*]*/$")
+        Some("^$|^[^*$]*/$")
     );
 }
 
@@ -149,7 +152,7 @@ fn outputs_and_iam_scope() {
     let y: serde_yaml::Value = serde_yaml::from_str(&raw()).unwrap();
     assert!(y["Outputs"]["RoleArn"].is_mapping());
     assert!(y["Outputs"]["TemplateVersion"].is_mapping());
-    let s = stmts(&render_template_v1(&params(None)).policies);
+    let s = stmts(&render_template_v1(&params(None)).unwrap().policies);
     assert_eq!(
         by_sid(&s, "ReadOwnRolePolicy").unwrap()["Resource"],
         "arn:aws:iam::123456789012:role/OpsAgentReadRole-*"
@@ -164,4 +167,59 @@ fn sha256_file_matches_template() {
         .map(|b| format!("{b:02x}"))
         .collect();
     assert_eq!(want.split_whitespace().next().unwrap(), got);
+}
+
+#[test]
+fn unclosed_placeholder_is_an_error_not_a_panic() {
+    let p = params(Some(("tf-state", "a${/")));
+    assert!(matches!(
+        substitute("x/${Unclosed", &p),
+        Err(ConnectorError::Template(_))
+    ));
+    // Substituted values are never re-scanned, so a `${` inside one is harmless here...
+    assert_eq!(
+        substitute("arn:${TerraformStatePrefix}*", &p).unwrap(),
+        "arn:a${/*"
+    );
+    // ...and rendering rejects the prefix before substitution.
+    assert!(matches!(
+        render_template_v1(&p),
+        Err(ConnectorError::Template(_))
+    ));
+}
+
+#[test]
+fn substituted_values_are_inserted_literally_once() {
+    let p = params(Some(("tf-state", "x${ExternalId}/")));
+    assert_eq!(
+        substitute(
+            "arn:aws:s3:::${TerraformStateBucket}/${TerraformStatePrefix}*",
+            &p
+        )
+        .unwrap(),
+        "arn:aws:s3:::tf-state/x${ExternalId}/*"
+    );
+}
+
+#[test]
+fn invalid_terraform_bucket_or_prefix_is_rejected() {
+    for (bucket, prefix) in [
+        ("Tf-State", "envs/"),
+        ("tf_state", "envs/"),
+        ("-tf", "envs/"),
+        ("tf-state-", "envs/"),
+        ("ab", "envs/"),
+        ("tf-state", "envs"),
+        ("tf-state", "envs/*/"),
+        ("tf-state", "x${ExternalId}/"),
+        ("tf-state", ""),
+        ("", "envs/"),
+    ] {
+        let r = render_template_v1(&params(Some((bucket, prefix))));
+        assert!(
+            matches!(r, Err(ConnectorError::Template(_))),
+            "{bucket:?} {prefix:?} accepted"
+        );
+    }
+    assert!(render_template_v1(&params(Some(("tf.state-01", "envs/prod/")))).is_ok());
 }

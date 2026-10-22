@@ -3,6 +3,7 @@
 //! The expected policy is rendered from the embedded template itself (`TEMPLATE_V1_YAML`), so
 //! the Rust side cannot drift from the YAML; `tests/aws_template.rs` checks the rendering.
 
+use crate::{ConnectorError, Result};
 use serde_json::Value;
 use serde_yaml::Value as Yaml;
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,12 +37,36 @@ impl TemplateParams<'_> {
         })
     }
 
-    fn condition(&self, name: &str) -> bool {
+    fn condition(&self, name: &str) -> Result<bool> {
         match name {
-            "HasTerraformState" => self.terraform.is_some(),
-            other => panic!("unknown template condition {other}"),
+            "HasTerraformState" => Ok(self.terraform.is_some()),
+            other => Err(tpl_err(format!("unknown template condition {other}"))),
         }
     }
+
+    /// Same rules as the template's `AllowedPattern`s, plus no `$` in the prefix.
+    fn validate(&self) -> Result<()> {
+        let Some((bucket, prefix)) = self.terraform else {
+            return Ok(());
+        };
+        let b = bucket.as_bytes();
+        let edge = |c: &u8| c.is_ascii_lowercase() || c.is_ascii_digit();
+        let bucket_ok = (3..=63).contains(&b.len())
+            && edge(&b[0])
+            && edge(&b[b.len() - 1])
+            && b.iter().all(|c| edge(c) || *c == b'.' || *c == b'-');
+        if !bucket_ok {
+            return Err(tpl_err(format!("invalid TerraformStateBucket {bucket:?}")));
+        }
+        if !prefix.ends_with('/') || prefix.contains(['*', '$']) {
+            return Err(tpl_err(format!("invalid TerraformStatePrefix {prefix:?}")));
+        }
+        Ok(())
+    }
+}
+
+fn tpl_err(msg: String) -> ConnectorError {
+    ConnectorError::Template(msg)
 }
 
 /// The role as CloudFormation would create it: trust document and inline policy documents.
@@ -51,50 +76,78 @@ pub struct RenderedRole {
     pub policies: Vec<Value>,
 }
 
-/// Resolves `!Ref`, `!Sub`, `!If` and `AWS::NoValue` (returned as `None`).
-fn resolve(v: &Yaml, p: &TemplateParams) -> Option<Value> {
-    Some(match v {
-        Yaml::Null => Value::Null,
-        Yaml::Bool(b) => Value::Bool(*b),
-        Yaml::Number(n) => serde_json::to_value(n).ok()?,
-        Yaml::String(s) => Value::String(s.clone()),
-        Yaml::Sequence(xs) => Value::Array(xs.iter().filter_map(|x| resolve(x, p)).collect()),
-        Yaml::Mapping(m) => Value::Object(
-            m.iter()
-                .filter_map(|(k, v)| Some((k.as_str()?.to_owned(), resolve(v, p)?)))
-                .collect(),
-        ),
-        Yaml::Tagged(t) => match (t.tag.to_string().as_str(), &t.value) {
-            ("!Ref", Yaml::String(name)) => Value::String(p.reference(name)?),
-            ("!Sub", Yaml::String(s)) => {
-                let mut out = s.clone();
-                while let Some(i) = out.find("${") {
-                    let j = i + out[i..].find('}').expect("closed ${");
-                    let val = p.reference(&out[i + 2..j]).unwrap_or_default();
-                    out.replace_range(i..=j, &val);
-                }
-                Value::String(out)
-            }
-            ("!If", Yaml::Sequence(xs)) => {
-                let cond = xs[0].as_str().expect("!If condition name");
-                return resolve(&xs[if p.condition(cond) { 1 } else { 2 }], p);
-            }
-            _ => resolve(&t.value, p)?,
-        },
-    })
+/// `!Sub`: one left-to-right pass over `template` into a fresh buffer, so substituted values
+/// are never re-scanned. An unclosed `${` is an error.
+pub fn substitute(template: &str, p: &TemplateParams) -> Result<String> {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(i) = rest.find("${") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 2..];
+        let j = after
+            .find('}')
+            .ok_or_else(|| tpl_err(format!("unclosed ${{ in {template:?}")))?;
+        out.push_str(&p.reference(&after[..j]).unwrap_or_default());
+        rest = &after[j + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
 }
 
-pub fn render_template_v1(p: &TemplateParams) -> RenderedRole {
-    let y: Yaml = serde_yaml::from_str(TEMPLATE_V1_YAML).expect("embedded template parses");
+/// Resolves `!Ref`, `!Sub`, `!If` and `AWS::NoValue` (returned as `Ok(None)`).
+fn resolve(v: &Yaml, p: &TemplateParams) -> Result<Option<Value>> {
+    Ok(Some(match v {
+        Yaml::Null => Value::Null,
+        Yaml::Bool(b) => Value::Bool(*b),
+        Yaml::Number(n) => serde_json::to_value(n).map_err(|e| tpl_err(e.to_string()))?,
+        Yaml::String(s) => Value::String(s.clone()),
+        Yaml::Sequence(xs) => {
+            let mut out = vec![];
+            for x in xs {
+                out.extend(resolve(x, p)?);
+            }
+            Value::Array(out)
+        }
+        Yaml::Mapping(m) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in m {
+                let k = k.as_str().ok_or_else(|| tpl_err("non-string key".into()))?;
+                if let Some(v) = resolve(v, p)? {
+                    out.insert(k.to_owned(), v);
+                }
+            }
+            Value::Object(out)
+        }
+        Yaml::Tagged(t) => match (t.tag.to_string().as_str(), &t.value) {
+            ("!Ref", Yaml::String(name)) => match p.reference(name) {
+                Some(v) => Value::String(v),
+                None => return Ok(None),
+            },
+            ("!Sub", Yaml::String(s)) => Value::String(substitute(s, p)?),
+            ("!If", Yaml::Sequence(xs)) if xs.len() == 3 => {
+                let cond = xs[0]
+                    .as_str()
+                    .ok_or_else(|| tpl_err("!If needs a condition name".into()))?;
+                return resolve(&xs[if p.condition(cond)? { 1 } else { 2 }], p);
+            }
+            _ => return resolve(&t.value, p),
+        },
+    }))
+}
+
+pub fn render_template_v1(p: &TemplateParams) -> Result<RenderedRole> {
+    p.validate()?;
+    let y: Yaml = serde_yaml::from_str(TEMPLATE_V1_YAML).map_err(|e| tpl_err(e.to_string()))?;
     let props = &y["Resources"]["OpsAgentReadRole"]["Properties"];
-    let trust = resolve(&props["AssumeRolePolicyDocument"], p).expect("trust policy");
-    let policies = resolve(&props["Policies"], p)
+    let trust = resolve(&props["AssumeRolePolicyDocument"], p)?
+        .ok_or_else(|| tpl_err("template has no trust policy".into()))?;
+    let policies = resolve(&props["Policies"], p)?
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default()
         .into_iter()
         .map(|pol| pol["PolicyDocument"].clone())
         .collect();
-    RenderedRole { trust, policies }
+    Ok(RenderedRole { trust, policies })
 }
 
 /// Order- and shape-insensitive rendering: object keys sorted, arrays sorted, one-element
@@ -295,8 +348,11 @@ pub struct DeployedRole {
 
 /// Full role diff: inline statements, trust policy, attached managed policies (never part of
 /// the template, so each is extra) and `MaxSessionDuration`.
-pub fn diff_role(deployed: &DeployedRole, params: &TemplateParams) -> (Vec<String>, Vec<String>) {
-    let t = render_template_v1(params);
+pub fn diff_role(
+    deployed: &DeployedRole,
+    params: &TemplateParams,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let t = render_template_v1(params)?;
     let (mut extra, missing) = policy_diff(
         &PolicyStatements::from_documents(&deployed.policies),
         &PolicyStatements::from_documents(&t.policies),
@@ -312,5 +368,5 @@ pub fn diff_role(deployed: &DeployedRole, params: &TemplateParams) -> (Vec<Strin
         extra.push("role:MaxSessionDuration>3600".into());
     }
     extra.sort();
-    (extra, missing)
+    Ok((extra, missing))
 }

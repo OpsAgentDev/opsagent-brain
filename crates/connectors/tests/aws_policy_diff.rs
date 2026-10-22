@@ -15,7 +15,7 @@ fn params(tf: Option<(&'static str, &'static str)>) -> TemplateParams<'static> {
 }
 
 fn template(tf: Option<(&'static str, &'static str)>) -> Vec<Value> {
-    render_template_v1(&params(tf)).policies
+    render_template_v1(&params(tf)).unwrap().policies
 }
 
 fn diff(
@@ -127,7 +127,7 @@ fn not_action_allow_is_extra() {
 }
 
 fn trust() -> Value {
-    render_template_v1(&params(None)).trust
+    render_template_v1(&params(None)).unwrap().trust
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn diff_role_combines_policies_trust_attached_and_duration() {
         attached_policy_arns: vec!["arn:aws:iam::aws:policy/ReadOnlyAccess".into()],
     };
     assert_eq!(
-        diff_role(&deployed, &params(None)),
+        diff_role(&deployed, &params(None)).unwrap(),
         (
             vec![
                 "attached-policy:arn:aws:iam::aws:policy/ReadOnlyAccess".to_owned(),

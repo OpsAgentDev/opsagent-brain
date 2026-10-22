@@ -29,6 +29,8 @@ pub enum ConnectorError {
     /// The customer session itself is unusable (expired, invalid, or denied everywhere).
     #[error("auth error: {0}")]
     Auth(String),
+    #[error("template error: {0}")]
+    Template(String),
 }
 pub type Result<T> = std::result::Result<T, ConnectorError>;
 

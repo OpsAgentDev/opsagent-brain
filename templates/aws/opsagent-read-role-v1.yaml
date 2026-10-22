@@ -26,8 +26,8 @@ Parameters:
   TerraformStatePrefix:
     Type: String
     Default: ""
-    AllowedPattern: "^$|^[^*]*/$"
-    Description: Optional. Key prefix of the Terraform state objects; no "*", ends with "/".
+    AllowedPattern: "^$|^[^*$]*/$"
+    Description: Optional. Key prefix of the Terraform state objects; no "*" or "$", ends with "/".
 
 Conditions:
   HasTerraformState: !And

@@ -675,10 +675,17 @@ fn service_error(service: &str, region: &str, e: &ConnectorError) -> ServiceErro
     }
 }
 
+/// Codes meaning the credentials themselves are bad (expired, unknown, or badly signed).
 const TOKEN_CODES: &[&str] = &[
     "ExpiredToken",
+    "ExpiredTokenException",
     "InvalidClientTokenId",
     "UnrecognizedClientException",
+    "AuthFailure",
+    "RequestExpired",
+    "InvalidAccessKeyId",
+    "InvalidToken",
+    "InvalidSignatureException",
 ];
 const DENIED_CODES: &[&str] = &["AccessDenied", "AccessDeniedException"];
 

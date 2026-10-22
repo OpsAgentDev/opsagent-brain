@@ -142,7 +142,7 @@ pub(crate) async fn verify(
         principal: &principal,
         terraform: terraform_state.map(|t| (t.bucket.as_str(), t.prefix.as_str())),
     };
-    let (extra_grants, missing_grants) = diff_role(&deployed, &params);
+    let (extra_grants, missing_grants) = diff_role(&deployed, &params)?;
     Ok(VerifyOutcome {
         assume_with_ok: true,
         assume_without_denied,

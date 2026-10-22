@@ -651,6 +651,19 @@ mod auth {
             .all(|e| e.region == "eu-west-1" && e.code.as_deref() == Some("AccessDenied")));
     }
 
+    #[tokio::test]
+    async fn auth_failure_in_scoped_region_is_an_auth_error() {
+        let err = inventory(
+            &session("eu-west-1", "AuthFailure"),
+            "aws",
+            "123456789012",
+            &scope(&["eu-west-1"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ConnectorError::Auth(_)), "{err:?}");
+    }
+
     #[test]
     fn auth_failure_rules() {
         let c = |r: &str, code: Option<&str>| {
@@ -670,6 +683,16 @@ mod auth {
             c("global", Some("AccessDenied"))
         ])
         .is_some());
+        for code in [
+            "AuthFailure",
+            "RequestExpired",
+            "InvalidAccessKeyId",
+            "InvalidToken",
+            "ExpiredTokenException",
+            "InvalidSignatureException",
+        ] {
+            assert!(auth_failure(&[c("a", Some(code))]).is_some(), "{code}");
+        }
         // A non-auth failure is never an auth error.
         assert!(auth_failure(&[c("a", Some("Throttling"))]).is_none());
     }
