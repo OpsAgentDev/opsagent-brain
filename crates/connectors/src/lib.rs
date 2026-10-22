@@ -4,6 +4,7 @@ use opsagent_core::resource::{Provider, Resource};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+pub mod aws;
 pub mod fake;
 
 #[derive(Debug, thiserror::Error)]

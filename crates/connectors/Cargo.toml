@@ -13,4 +13,21 @@ serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 thiserror = "1"
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+aws-config = { version = "1.13.0", features = ["behavior-version-latest"] }
+aws-sdk-sts = "1.121.0"
+aws-sdk-iam = "1.130.0"
+aws-sdk-ec2 = "1.270.0"
+aws-sdk-s3 = "1.154.0"
+aws-sdk-rds = "1.156.0"
+aws-sdk-elasticloadbalancingv2 = "1.131.0"
+aws-sdk-cloudtrail = "1.127.0"
+aws-sdk-guardduty = "1.151.0"
+aws-sdk-costexplorer = "1.135.0"
+urlencoding = "2"
+
+[dev-dependencies]
+aws-sdk-ec2 = { version = "1.270.0", features = ["test-util"] }
+aws-smithy-mocks = "0.3.0"
+serde_yaml = "0.9.34"
+sha2 = "0.10"
