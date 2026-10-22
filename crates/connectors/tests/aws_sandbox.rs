@@ -27,6 +27,7 @@ fn creds() -> Option<Credentials> {
 
 #[tokio::test]
 #[ignore]
+#[allow(clippy::print_stderr)] // test-only skip notice
 async fn sandbox_verify_inventory_cost() {
     let Some(creds) = creds() else {
         eprintln!("OPSAGENT_SANDBOX_ROLE_ARN / OPSAGENT_SANDBOX_EXTERNAL_ID not set; skipping");

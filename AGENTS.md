@@ -13,7 +13,7 @@ export REDIS_URL=redis://localhost:56379
 export OPSAGENT_KEK=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=   # local only
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --check
-scripts/check-crate-isolation.sh && scripts/check-tenancy.sh && scripts/openapi-diff.sh
+scripts/check-crate-isolation.sh && scripts/check-tenancy.sh && scripts/check-logging.sh && scripts/openapi-diff.sh
 cargo run -- start --server-and-worker                 # API on :3000 (dev)
 docker compose --profile brain up -d && scripts/smoke.sh http://localhost:3000
 ```
@@ -26,3 +26,6 @@ docker compose --profile brain up -d && scripts/smoke.sh http://localhost:3000
 
 ## Rules (summary; the binding text is in ArchBoss `docs/tech-spec/engineering-principles.md`)
 Ports and adapters, SOLID, DRY, YAGNI, explicit errors, functions ~50 lines, files ~400 lines, contract tests per trait, idempotent workers, tenant-scoped queries, no HTML served, no secrets in logs or audit metadata. The founder's commit-msg hook strips `Co-Authored-By`; do not bypass hooks.
+
+## Logging
+Binding spec: ArchBoss `docs/tech-spec/logging.md`. `tracing` only (structured fields); no `println!`/`eprintln!`/`dbg!`/`log::`. Clippy denies them workspace-wide and `scripts/check-logging.sh` bans `log::`/`env_logger` outside tests. Never log secrets, tokens, or provider error text.

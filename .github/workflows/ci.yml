@@ -40,6 +40,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: scripts/check-crate-isolation.sh
       - run: scripts/check-tenancy.sh
+      - run: scripts/check-logging.sh
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace

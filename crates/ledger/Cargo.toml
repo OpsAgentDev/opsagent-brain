@@ -25,3 +25,6 @@ test-support = []
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 opsagent-ledger = { path = ".", features = ["test-support"] }
+
+[lints]
+workspace = true

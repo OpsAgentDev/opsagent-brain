@@ -49,7 +49,7 @@ impl Task for ScanNow {
         let status = full_scan::run(ctx, run.id, RunChunkedOptions::default())
             .await
             .map_err(err)?;
-        println!("run {} {status:?}", run.id);
+        tracing::info!(run_id = %run.id, status = ?status, "scan_now finished");
         Ok(())
     }
 }
