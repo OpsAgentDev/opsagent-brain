@@ -257,3 +257,32 @@ async fn stale_fence_on_initial_running_returns_partial() {
     assert_eq!(row.status, RunStatus::Queued);
     assert!(row.checkpoint.chunks_done.is_empty());
 }
+
+#[tokio::test]
+async fn partial_reason_in_stats_ends_partial_even_after_resume() {
+    let (r, s) = (common::redis(), MemoryStorage::default());
+    let run = s.create_run(common::key()).await.unwrap();
+    let chunks: Vec<String> = vec!["a".into(), "b".into()];
+    let runs = kill_after_each_checkpoint(|kill| {
+        let (r, s, chunks) = (&r, &s, chunks.clone());
+        async move {
+            let mut o = opts("w");
+            o.after_checkpoint = Some(kill);
+            run_chunked(s, r, run.id, chunks, o, |c, _l| async move {
+                let stats = if c == "a" {
+                    json!({ "partial_reason": "partial_inventory" })
+                } else {
+                    json!({})
+                };
+                Ok(ChunkOutcome { stats })
+            })
+            .await
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(runs, 3);
+    let row = s.load_run(run.id).await.unwrap();
+    assert_eq!(row.status, RunStatus::Partial);
+    assert_eq!(row.partial_reason.as_deref(), Some("partial_inventory"));
+}

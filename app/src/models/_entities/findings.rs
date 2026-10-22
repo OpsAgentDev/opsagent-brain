@@ -48,6 +48,7 @@ pub struct Model {
     pub accepted_until: Option<DateTimeWithTimeZone>,
     pub snoozed_until: Option<DateTimeWithTimeZone>,
     pub flap_count: i32,
+    pub stable_runs: i32,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }

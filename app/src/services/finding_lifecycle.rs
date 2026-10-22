@@ -20,6 +20,8 @@ const FLAP_WINDOW: Duration = Duration::hours(24);
 const FLAP_SPAN: Duration = Duration::days(7);
 const FLAP_TIMES: i32 = 3;
 const EVIDENCE_TTL: Duration = Duration::days(90);
+/// Consecutive seen runs after which a flapping finding counts as stable again.
+const STABLE_RUNS: i32 = 7;
 
 fn sev_str(s: Severity) -> String {
     serde_json::to_value(s)
@@ -60,7 +62,7 @@ pub async fn apply(
         .map(|f| (key_of(&f), f))
         .collect();
     let mut seen = HashSet::new();
-    for d in drafts {
+    for d in &dedupe(drafts) {
         let k = (
             d.key.check_id.clone(),
             d.key.resource_identity.clone(),
@@ -91,6 +93,25 @@ pub async fn apply(
         resolve(db, f, run_id, now).await?;
     }
     Ok(())
+}
+
+/// One draft per key (checks may emit a key twice): highest severity wins, evidence merges.
+fn dedupe(drafts: &[FindingDraft]) -> Vec<FindingDraft> {
+    let mut out: Vec<FindingDraft> = Vec::with_capacity(drafts.len());
+    for d in drafts {
+        match out.iter_mut().find(|o| o.key == d.key) {
+            Some(o) => {
+                let mut evidence = std::mem::take(&mut o.evidence);
+                evidence.extend(d.evidence.iter().cloned());
+                if d.severity.weight() > o.severity.weight() {
+                    *o = d.clone();
+                }
+                o.evidence = evidence;
+            }
+            None => out.push(d.clone()),
+        }
+    }
+    out
 }
 
 async fn insert(
@@ -135,10 +156,16 @@ async fn seen_again(
         until.is_some_and(|u| u.with_timezone(&Utc) <= now)
     };
     let mut flap_count = f.flap_count;
+    let mut stable = f.stable_runs + 1;
     let mut events: Vec<&str> = vec![];
     let status = match f.status.as_str() {
         "open" => {
             events.push("seen");
+            "open"
+        }
+        "flapping" if stable >= STABLE_RUNS => {
+            flap_count = 0;
+            events.push("reopened");
             "open"
         }
         // Reported once when it started flapping; afterwards only counters move.
@@ -153,11 +180,12 @@ async fn seen_again(
         }
         "accepted" | "snoozed" => f.status.as_str(),
         _ => {
+            stable = 1;
             let quick = f
                 .resolved_at
                 .is_some_and(|r| now - r.with_timezone(&Utc) <= FLAP_WINDOW);
             flap_count += i32::from(quick);
-            if count_events(db, f.id, "flapping", now).await? > 0 {
+            if flap_count >= FLAP_TIMES && count_events(db, f.id, "flapping", now).await? > 0 {
                 "flapping"
             } else if quick
                 && flap_count >= FLAP_TIMES
@@ -174,7 +202,7 @@ async fn seen_again(
     exec(
         db,
         "UPDATE findings SET status = $2, severity = $3, title = $4, summary = $5, next_step = $6, \
-         cost_monthly_usd = $7, last_seen_run_id = $8, flap_count = $9, resolved_at = NULL, \
+         cost_monthly_usd = $7, last_seen_run_id = $8, flap_count = $9, stable_runs = $10, resolved_at = NULL, \
          resolved_reason = NULL, updated_at = now() WHERE id = $1",
         vec![
             f.id.into(),
@@ -186,6 +214,7 @@ async fn seen_again(
             d.cost_monthly_usd.into(),
             run_id.into(),
             flap_count.into(),
+            stable.into(),
         ],
     )
     .await?;
@@ -227,7 +256,7 @@ async fn resolve(
     };
     exec(
         db,
-        "UPDATE findings SET status = 'resolved', resolved_at = $2, resolved_reason = $3, \
+        "UPDATE findings SET status = 'resolved', resolved_at = $2, resolved_reason = $3, stable_runs = 0, \
          updated_at = now() WHERE id = $1",
         vec![f.id.into(), now.into(), reason.into()],
     )

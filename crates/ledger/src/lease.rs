@@ -110,6 +110,7 @@ pub async fn release(redis: &Client, lease: &Lease) {
     }
 }
 
+/// `stats` merge into the checkpoint by key; a `partial_reason` string there ends the run `Partial`.
 pub struct ChunkOutcome {
     pub stats: serde_json::Value,
 }
@@ -243,11 +244,19 @@ where
             k.after_checkpoint()?;
         }
     }
+    // A chunk may decide the final status by writing `stats.partial_reason`; it is in the
+    // checkpoint, so a resumed run reaches the same verdict.
+    let reason = cp.stats["partial_reason"].as_str().map(str::to_owned);
+    let status = if reason.is_some() {
+        RunStatus::Partial
+    } else {
+        RunStatus::Done
+    };
     match storage
-        .set_status(run_id, lease.fence, RunStatus::Done, None)
+        .set_status(run_id, lease.fence, status, reason)
         .await
     {
-        Ok(()) => Ok(RunStatus::Done),
+        Ok(()) => Ok(status),
         Err(LedgerError::StaleFence) => Ok(RunStatus::Partial),
         Err(e) => Err(e),
     }

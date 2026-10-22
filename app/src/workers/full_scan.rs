@@ -1,14 +1,18 @@
 //! `full_scan` job (PRD 7.3, jobs.md): one chunk per service × region, then a `finalize` chunk
 //! that marks unseen resources gone, runs the checks and applies the finding lifecycle.
-use std::{collections::BTreeSet, time::Duration};
+use std::{
+    collections::BTreeSet,
+    panic::{catch_unwind, AssertUnwindSafe},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use chrono::Utc;
 use loco_rs::{app::AppContext, bgworker::BackgroundWorker, Result};
-use opsagent_checks::{CheckCtx, MetricStore};
+use opsagent_checks::{Check, CheckCtx, MetricStore};
 use opsagent_connectors::{Connector, Credentials, Scope};
-use opsagent_core::{resource::Resource, run::RunStatus};
-use opsagent_ledger::{run_chunked, ChunkOutcome, LedgerError, RunChunkedOptions, Storage};
+use opsagent_core::{connection::ConnectionStatus as S, resource::Resource, run::RunStatus};
+use opsagent_ledger::{lease, run_chunked, ChunkOutcome, LedgerError, RunChunkedOptions, Storage};
 use sea_orm::{ConnectionTrait, EntityTrait, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -18,7 +22,7 @@ use super::verify::{connector, credentials, err, lerr, redis_client};
 use crate::{
     models::{
         _entities::connections,
-        connections::load_creds,
+        connections::{load_creds, status_of},
         ledger_storage::{db_err, hold_fence, stmt, PgStorage},
     },
     services::{
@@ -74,12 +78,20 @@ pub async fn scan(
     k: &dyn Connector,
     opts: RunChunkedOptions,
 ) -> LResult<RunStatus> {
+    scan_with(ctx, run_id, k, opts, opsagent_checks::all).await
+}
+
+/// `scan` with an explicit check set (tests inject faulty checks).
+pub async fn scan_with(
+    ctx: &AppContext,
+    run_id: Uuid,
+    k: &dyn Connector,
+    opts: RunChunkedOptions,
+    checks: fn() -> Vec<Box<dyn Check>>,
+) -> LResult<RunStatus> {
     let storage = PgStorage::new(ctx.db.clone());
     let run = storage.load_run(run_id).await?;
-    if matches!(
-        run.status,
-        RunStatus::Done | RunStatus::Failed | RunStatus::Skipped
-    ) {
+    if !matches!(run.status, RunStatus::Queued | RunStatus::Running) {
         return Ok(run.status); // duplicate delivery of a finished run
     }
     let db = &ctx.db;
@@ -89,6 +101,18 @@ pub async fn scan(
         .await
         .map_err(lerr)?
         .ok_or(LedgerError::NotFound)?;
+    if !matches!(status_of(&c).map_err(lerr)?, S::Connected | S::Degraded) {
+        let redis = redis_client(ctx).map_err(lerr)?;
+        let l = lease::acquire(&storage, &redis, run_id, &opts.worker_id, opts.lease_ttl)
+            .await?
+            .ok_or(LedgerError::LeaseHeld)?;
+        let reason = Some(format!("status:{}", c.status));
+        let res = storage
+            .set_status(run_id, l.fence, RunStatus::Skipped, reason)
+            .await;
+        lease::release(&redis, &l).await;
+        return res.map(|()| RunStatus::Skipped);
+    }
     let creds = load_creds(db, &c).await.map_err(lerr)?;
     let cr = credentials(&c, &creds, run_id, JOB).map_err(lerr)?;
     let redis = redis_client(ctx).map_err(lerr)?;
@@ -112,7 +136,7 @@ pub async fn scan(
     chunks.push(FINALIZE.into());
 
     let (storage, cr, c) = (&storage, &cr, &c);
-    let status = run_chunked(
+    run_chunked(
         storage,
         &redis,
         run_id,
@@ -120,7 +144,7 @@ pub async fn scan(
         opts,
         |chunk, lease| async move {
             if chunk == FINALIZE {
-                return finalize(db, storage, run_id, lease.fence, c, k, cr).await;
+                return finalize(db, storage, run_id, lease.fence, c, k, cr, checks).await;
             }
             let (svc, region) = chunk.rsplit_once('@').ok_or(LedgerError::NotFound)?;
             let scope = Scope {
@@ -138,30 +162,21 @@ pub async fn scan(
                 region,
             };
             let partial = inventory_upsert::upsert_chunk(db, chunk, &inv).await?;
-            // Only ever set `partial`, never clear it: chunk stats merge by key.
+            // Only ever set `partial`, never clear it: chunk stats merge by key. `partial_reason`
+            // makes `run_chunked` end the run `Partial`.
             let stats = if partial {
-                json!({ "partial": true })
+                json!({ "partial": true, "partial_reason": "partial_inventory" })
             } else {
                 json!({})
             };
             Ok(ChunkOutcome { stats })
         },
     )
-    .await?;
-    if status == RunStatus::Done {
-        let run = storage.load_run(run_id).await?;
-        if run.checkpoint.stats["partial"] == json!(true) {
-            let reason = Some("partial_inventory".into());
-            storage
-                .set_status(run_id, run.fence, RunStatus::Partial, reason)
-                .await?;
-            return Ok(RunStatus::Partial);
-        }
-    }
-    Ok(status)
+    .await
 }
 
 /// Gone-marking, checks, lifecycle and posture, in one fenced transaction.
+#[allow(clippy::too_many_arguments)]
 async fn finalize(
     db: &sea_orm::DatabaseConnection,
     storage: &PgStorage,
@@ -170,6 +185,7 @@ async fn finalize(
     c: &connections::Model,
     k: &dyn Connector,
     cr: &Credentials,
+    checks: fn() -> Vec<Box<dyn Check>>,
 ) -> LResult<ChunkOutcome> {
     let partial = storage.load_run(run_id).await?.checkpoint.stats["partial"] == json!(true);
     let now = Utc::now();
@@ -201,16 +217,24 @@ async fn finalize(
         metrics: &metrics,
         now,
     };
-    let drafts: Vec<_> = opsagent_checks::all()
-        .iter()
-        .filter(|ch| {
-            ch.supported().contains(&provider) && ch.required().iter().all(|r| caps.contains(r))
-        })
-        .flat_map(|ch| ch.run(&cx))
-        .collect();
+    let (mut drafts, mut check_errors) = (vec![], vec![]);
+    for ch in checks() {
+        if !ch.supported().contains(&provider) || !ch.required().iter().all(|r| caps.contains(r)) {
+            continue;
+        }
+        // A buggy check fails alone (PRD 7.3); the scan continues with the others.
+        match catch_unwind(AssertUnwindSafe(|| ch.run(&cx))) {
+            Ok(d) => drafts.extend(d),
+            Err(_) => {
+                tracing::error!(check_id = ch.id(), run = %run_id, "full_scan: check panicked");
+                check_errors.push(ch.id());
+            }
+        }
+    }
     finding_lifecycle::apply(&txn, c.id, run_id, &drafts, now, partial).await?;
     let mut stats = finding_lifecycle::posture(&txn, c.id).await?;
     stats["partial"] = json!(partial);
+    stats["check_errors"] = json!(check_errors);
     txn.commit().await.map_err(db_err)?;
     Ok(ChunkOutcome { stats })
 }

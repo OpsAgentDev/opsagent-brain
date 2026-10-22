@@ -7,6 +7,7 @@ mod m20261022_000002_connections;
 mod m20261022_000003_ledger;
 mod m20261022_000004_inventory;
 mod m20261022_000005_audit;
+mod m20261022_000006_finding_stability;
 
 pub struct Migrator;
 
@@ -19,6 +20,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261022_000003_ledger::Migration),
             Box::new(m20261022_000004_inventory::Migration),
             Box::new(m20261022_000005_audit::Migration),
+            Box::new(m20261022_000006_finding_stability::Migration),
             // inject-above (do not remove this comment)
         ]
     }

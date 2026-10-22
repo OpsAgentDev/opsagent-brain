@@ -1,24 +1,33 @@
-use std::collections::BTreeSet;
+use std::{
+    collections::BTreeSet,
+    sync::atomic::{AtomicUsize, Ordering::SeqCst},
+};
 
 use async_trait::async_trait;
 use loco_rs::{prelude::*, testing::prelude::request_with_config};
 use opsagent_brain::{
     app::App,
     models::{
-        _entities::{connections, finding_events, findings, resource_history, resources, runs},
+        _entities::{
+            connections, evidence, finding_events, findings, resource_history, resources, runs,
+        },
         ledger_storage::PgStorage,
     },
     services::inventory_upsert,
     workers::full_scan,
 };
+use opsagent_checks::{Check, CheckCtx};
 use opsagent_connectors::{
-    fake::FakeConnector, Capability, Connector, CostRow, Credentials, InventoryResult, MetricPoint,
-    MetricQuery, Scope, ServiceError, VerifyOutcome,
+    fake::FakeConnector, Capability, Connector, ConnectorError, CostRow, Credentials,
+    InventoryResult, MetricPoint, MetricQuery, Scope, ServiceError, VerifyOutcome,
 };
 use opsagent_core::{
-    finding::Severity::{self, *},
+    finding::{
+        Evidence, FindingDraft, FindingKey,
+        Severity::{self, *},
+    },
     resource::Provider,
-    run::RunKey,
+    run::{RunKey, RunStatus},
 };
 use opsagent_ledger::{harness, Checkpoint, LedgerError, RunChunkedOptions, Storage};
 use serde_json::{json, Value};
@@ -76,51 +85,145 @@ fn without_snapshot() -> FakeConnector {
     })
 }
 
-/// Fixture connector whose `rds` calls fail, so inventory is partial.
-struct RdsDown(FakeConnector);
+#[derive(Clone, Copy, PartialEq)]
+enum Fault {
+    /// `rds` comes back as a partial error.
+    PartialErrors,
+    /// The scoped `rds` call fails outright.
+    Error,
+}
+
+/// Fixture connector with a faulty `rds`, counting inventory calls.
+struct Rigged {
+    inner: FakeConnector,
+    fault: Option<Fault>,
+    calls: AtomicUsize,
+}
+
+fn rigged(fault: Option<Fault>) -> Rigged {
+    Rigged {
+        inner: noisy(),
+        fault,
+        calls: AtomicUsize::new(0),
+    }
+}
 
 #[async_trait]
-impl Connector for RdsDown {
+impl Connector for Rigged {
     fn provider(&self) -> Provider {
-        self.0.provider()
+        self.inner.provider()
     }
     fn capabilities(&self) -> BTreeSet<Capability> {
-        self.0.capabilities()
+        self.inner.capabilities()
     }
     async fn verify(&self, c: &Credentials) -> opsagent_connectors::Result<VerifyOutcome> {
-        self.0.verify(c).await
+        self.inner.verify(c).await
     }
     async fn inventory(
         &self,
         c: &Credentials,
         s: &Scope,
     ) -> opsagent_connectors::Result<InventoryResult> {
-        let mut inv = self.0.inventory(c, s).await?;
-        if s.services.is_empty() || s.services.iter().any(|x| x == "rds") {
-            inv.resources.retain(|r| r.attributes["service"] != "rds");
-            inv.partial_errors.push(ServiceError {
-                service: "rds".into(),
-                region: "local".into(),
+        self.calls.fetch_add(1, SeqCst);
+        let mut inv = self.inner.inventory(c, s).await?;
+        let rds = s.services.iter().any(|x| x == "rds");
+        match self.fault {
+            Some(Fault::Error) if rds => Err(ConnectorError::Api {
                 code: Some("ServiceUnavailable".into()),
                 message: "down".into(),
-            });
+            }),
+            Some(Fault::PartialErrors) if rds || s.services.is_empty() => {
+                inv.resources.retain(|r| r.attributes["service"] != "rds");
+                inv.partial_errors.push(ServiceError {
+                    service: "rds".into(),
+                    region: "local".into(),
+                    code: Some("ServiceUnavailable".into()),
+                    message: "down".into(),
+                });
+                Ok(inv)
+            }
+            _ => Ok(inv),
         }
-        Ok(inv)
     }
     async fn cost_daily(
         &self,
         c: &Credentials,
         d: u32,
     ) -> opsagent_connectors::Result<Vec<CostRow>> {
-        self.0.cost_daily(c, d).await
+        self.inner.cost_daily(c, d).await
     }
     async fn metrics(
         &self,
         c: &Credentials,
         q: MetricQuery,
     ) -> opsagent_connectors::Result<Vec<MetricPoint>> {
-        self.0.metrics(c, q).await
+        self.inner.metrics(c, q).await
     }
+}
+
+/// Test-only check that always panics.
+struct Panics;
+impl Check for Panics {
+    fn id(&self) -> &'static str {
+        "test_panics"
+    }
+    fn supported(&self) -> &[Provider] {
+        &[Provider::Fake]
+    }
+    fn required(&self) -> &[Capability] {
+        &[]
+    }
+    fn run(&self, _: &CheckCtx) -> Vec<FindingDraft> {
+        panic!("check bug")
+    }
+}
+
+/// Test-only check that emits the same key twice, at two severities.
+struct Twice;
+impl Check for Twice {
+    fn id(&self) -> &'static str {
+        "test_twice"
+    }
+    fn supported(&self) -> &[Provider] {
+        &[Provider::Fake]
+    }
+    fn required(&self) -> &[Capability] {
+        &[]
+    }
+    fn run(&self, cx: &CheckCtx) -> Vec<FindingDraft> {
+        [(Low, "first"), (High, "second")]
+            .into_iter()
+            .map(|(severity, excerpt)| FindingDraft {
+                key: FindingKey {
+                    connection_id: cx.connection_id,
+                    check_id: "test_twice".into(),
+                    resource_identity: "i-idle".into(),
+                    variant: "dup".into(),
+                },
+                severity,
+                title: "dup".into(),
+                summary: "dup".into(),
+                next_step: "none".into(),
+                cost_monthly_usd: None,
+                evidence: vec![Evidence {
+                    source: "test".into(),
+                    excerpt: excerpt.into(),
+                }],
+            })
+            .collect()
+    }
+}
+
+fn with_panics() -> Vec<Box<dyn Check>> {
+    let mut v = opsagent_checks::all();
+    v.insert(0, Box::new(Panics));
+    v
+}
+
+fn with_twice() -> Vec<Box<dyn Check>> {
+    let mut v = opsagent_checks::all();
+    v.push(Box::new(Twice));
+    v
 }
 
 /// A connected fake connection; returns its id.
@@ -321,7 +424,17 @@ async fn resolve_reopen_and_flap() {
         assert_eq!((snap.status.as_str(), snap.flap_count), ("flapping", 4));
         assert!(events(&ctx, r8, snap.id).await.is_empty());
         assert!(events(&ctx, r9, snap.id).await.is_empty());
-        // Flapping is excluded from the score.
+        // Stable again: seen on 7 consecutive runs (r9 plus six more) returns it to `open`.
+        for n in 9..14 {
+            scan(&ctx, conn, n, &noisy()).await;
+        }
+        let snap = finding(&ctx, conn, "snap-public").await;
+        assert_eq!(snap.status, "flapping");
+        let r15 = scan(&ctx, conn, 14, &noisy()).await;
+        let snap = finding(&ctx, conn, "snap-public").await;
+        assert_eq!((snap.status.as_str(), snap.flap_count), ("open", 0));
+        assert_eq!(events(&ctx, r15, snap.id).await, ["reopened"]);
+        // Flapping was excluded from the score.
         let sum: f32 = expected().iter().map(|e| e.2.weight()).sum();
         let stats = run_row(&ctx, r9).await.checkpoint["stats"].clone();
         assert_eq!(
@@ -401,7 +514,7 @@ async fn partial_inventory_resolves_nothing() {
     request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         scan(&ctx, conn, 0, &noisy()).await;
-        let r2 = scan(&ctx, conn, 1, &RdsDown(noisy())).await;
+        let r2 = scan(&ctx, conn, 1, &rigged(Some(Fault::PartialErrors))).await;
         let r = run_row(&ctx, r2).await;
         assert_eq!(
             (r.status.as_str(), r.partial_reason.as_deref()),
@@ -600,6 +713,123 @@ async fn sql_and_instruction_text_is_stored_verbatim() {
         );
         // The table still exists and holds the scan's findings.
         assert!(all_findings(&ctx, conn).await.len() >= expected().len());
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn panicking_check_is_isolated() {
+    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        let run = new_run(&ctx, conn, 0).await;
+        let st = full_scan::scan_with(
+            &ctx,
+            run,
+            &noisy(),
+            RunChunkedOptions::default(),
+            with_panics,
+        )
+        .await
+        .unwrap();
+        assert_eq!(st, RunStatus::Done);
+        assert_eq!(all_findings(&ctx, conn).await.len(), expected().len());
+        let r = run_row(&ctx, run).await;
+        assert_eq!(r.status, "done");
+        assert_eq!(
+            r.checkpoint["stats"]["check_errors"],
+            json!(["test_panics"])
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn duplicate_draft_keys_merge_into_one_finding() {
+    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        for n in 0..2 {
+            let run = new_run(&ctx, conn, n).await;
+            let st = full_scan::scan_with(
+                &ctx,
+                run,
+                &noisy(),
+                RunChunkedOptions::default(),
+                with_twice,
+            )
+            .await
+            .unwrap();
+            assert_eq!(st, RunStatus::Done);
+            let dups: Vec<_> = all_findings(&ctx, conn)
+                .await
+                .into_iter()
+                .filter(|f| f.check_id == "test_twice")
+                .collect();
+            assert_eq!(dups.len(), 1);
+            assert_eq!(dups[0].severity, "high");
+            assert_eq!(dups[0].last_seen_run_id, Some(run));
+            let ev = evidence::Entity::find()
+                .filter(evidence::Column::FindingId.eq(dups[0].id))
+                .filter(evidence::Column::RunId.eq(run))
+                .count(&ctx.db)
+                .await
+                .unwrap();
+            assert_eq!(ev, 2);
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn connector_error_ends_partial_and_redelivery_is_noop() {
+    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        let k = rigged(Some(Fault::Error));
+        let run = scan(&ctx, conn, 0, &k).await;
+        let r = run_row(&ctx, run).await;
+        assert_eq!(
+            (r.status.as_str(), r.partial_reason.as_deref()),
+            ("partial", Some("partial_inventory"))
+        );
+        let calls = k.calls.load(SeqCst);
+        let st = full_scan::scan(&ctx, run, &k, RunChunkedOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(st, RunStatus::Partial);
+        assert_eq!(k.calls.load(SeqCst), calls);
+        assert_eq!(run_row(&ctx, run).await, r);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn blocked_connection_is_skipped_without_inventory() {
+    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        let mut a: connections::ActiveModel = connections::Entity::find_by_id(conn)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap()
+            .into();
+        a.status = Set("blocked".into());
+        a.update(&ctx.db).await.unwrap();
+        let k = rigged(None);
+        let run = new_run(&ctx, conn, 0).await;
+        let st = full_scan::scan(&ctx, run, &k, RunChunkedOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(st, RunStatus::Skipped);
+        let r = run_row(&ctx, run).await;
+        assert_eq!(
+            (r.status.as_str(), r.partial_reason.as_deref()),
+            ("skipped", Some("status:blocked"))
+        );
+        assert_eq!(k.calls.load(SeqCst), 0);
+        assert!(all_findings(&ctx, conn).await.is_empty());
     })
     .await;
 }
