@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use opsagent_connectors::{Capability, CostRow, MetricPoint};
+use opsagent_connectors::{Capability, CostRow, MetricPoint, SimulationResult};
 use opsagent_core::finding::FindingDraft;
 use opsagent_core::resource::{Provider, Resource};
 use std::collections::HashMap;
@@ -22,6 +22,8 @@ pub struct CheckCtx<'a> {
     pub resources: &'a [Resource],
     pub cost: &'a [CostRow],
     pub metrics: &'a MetricStore,
+    /// Restore-permission simulations keyed by backup role ARN.
+    pub simulations: &'a HashMap<String, SimulationResult>,
     pub now: DateTime<Utc>,
 }
 
