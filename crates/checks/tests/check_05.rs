@@ -1,12 +1,9 @@
 mod common;
-use chrono::{DateTime, Utc};
 use common::*;
 use opsagent_checks::check_05_certificates::Certificates;
-use opsagent_checks::{CheckCtx, MetricStore};
 use opsagent_core::finding::{FindingDraft, Severity::*};
 use opsagent_core::resource::{Provider, Resource, ResourceKind};
 use serde_json::json;
-use uuid::Uuid;
 
 fn res(id: &str, attrs: serde_json::Value) -> Resource {
     Resource {
@@ -31,22 +28,7 @@ fn cert(id: &str, not_after: &str, renewal: &str, in_use: &[&str], managed: bool
 }
 
 fn run_noon(rs: &[Resource]) -> Vec<FindingDraft> {
-    let m = MetricStore::default();
-    let now: DateTime<Utc> = "2026-10-01T12:00:00Z".parse().unwrap();
-    let ctx = CheckCtx {
-        connection_id: Uuid::nil(),
-        resources: rs,
-        cost: &[],
-        metrics: &m,
-        simulations: &Default::default(),
-        now,
-        unavailable: &Default::default(),
-    };
-    let out = opsagent_checks::Check::run(&Certificates, &ctx);
-    assert!(out
-        .iter()
-        .all(|d| !d.evidence.is_empty() && !d.next_step.is_empty()));
-    out
+    run(&Certificates, rs, &[])
 }
 
 #[tokio::test]

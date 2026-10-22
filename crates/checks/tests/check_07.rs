@@ -1,25 +1,12 @@
 mod common;
-use chrono::{DateTime, Utc};
 use common::*;
 use opsagent_checks::check_07_gpu::GpuAndTraining;
-use opsagent_checks::{Check, CheckCtx, MetricStore};
 use opsagent_core::finding::{FindingDraft, Severity::*};
 use opsagent_core::resource::{Provider, Resource, ResourceKind};
 use serde_json::json;
-use uuid::Uuid;
 
 fn run_at(rs: &[Resource]) -> Vec<FindingDraft> {
-    let metrics = MetricStore::default();
-    let now: DateTime<Utc> = "2026-10-01T12:00:00Z".parse().unwrap();
-    GpuAndTraining.run(&CheckCtx {
-        connection_id: Uuid::nil(),
-        resources: rs,
-        cost: &[],
-        metrics: &metrics,
-        simulations: &Default::default(),
-        now,
-        unavailable: &Default::default(),
-    })
+    run(&GpuAndTraining, rs, &[])
 }
 
 fn res(id: &str, attrs: serde_json::Value) -> Resource {

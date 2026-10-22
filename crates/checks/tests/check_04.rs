@@ -1,12 +1,10 @@
 mod common;
 use common::*;
 use opsagent_checks::check_04_backups::Backups;
-use opsagent_checks::{Check, CheckCtx, MetricStore};
 use opsagent_connectors::SimulationResult;
 use opsagent_core::finding::{FindingDraft, Severity::*};
 use opsagent_core::resource::{Provider, Resource, ResourceKind};
 use std::collections::HashMap;
-use uuid::Uuid;
 
 const ROLE: &str = "arn:aws:iam::000000000000:role/backup";
 
@@ -27,25 +25,11 @@ fn sim(denied: &[&str], unknown: &[&str]) -> HashMap<String, SimulationResult> {
 }
 
 fn go(rs: &[Resource], sims: &HashMap<String, SimulationResult>) -> Vec<FindingDraft> {
-    let m = MetricStore::default();
-    let ctx = CheckCtx {
-        connection_id: Uuid::nil(),
-        resources: rs,
-        cost: &[],
-        metrics: &m,
-        simulations: sims,
-        now: "2026-10-01T12:00:00Z".parse().unwrap(),
-        unavailable: &Default::default(),
+    let parts = CtxParts {
+        simulations: sims.clone(),
+        ..Default::default()
     };
-    let out = Backups.run(&ctx);
-    for d in &out {
-        assert!(
-            !d.evidence.is_empty() && !d.next_step.is_empty(),
-            "{:?}",
-            d.key
-        );
-    }
-    out
+    run_with(&parts, &Backups, rs, &[])
 }
 
 fn res(id: &str, attrs: serde_json::Value) -> Resource {

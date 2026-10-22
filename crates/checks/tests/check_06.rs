@@ -113,24 +113,17 @@ fn absent_stored_bytes_has_no_cost() {
 
 #[test]
 fn unavailable_services_are_skipped() {
-    use opsagent_checks::{Check, CheckCtx, MetricStore};
     let rs = [
         res("g", "r", json!({"service":"guardduty","enabled":false})),
         res("l", "r", json!({"service":"logs","retention_days":null})),
     ];
     let un: std::collections::BTreeSet<String> =
         ["cloudtrail", "guardduty", "logs"].map(String::from).into();
-    let m = MetricStore::default();
-    let ctx = CheckCtx {
-        connection_id: uuid::Uuid::nil(),
-        resources: &rs,
-        cost: &[],
-        metrics: &m,
-        simulations: &Default::default(),
-        now: "2026-10-01T00:00:00Z".parse().unwrap(),
-        unavailable: &un,
+    let parts = CtxParts {
+        unavailable: un,
+        ..Default::default()
     };
-    assert!(LoggingGaps.run(&ctx).is_empty());
+    assert!(run_with(&parts, &LoggingGaps, &rs, &[]).is_empty());
 }
 
 const OWN: &str = "arn:aws:cloudtrail:eu-west-1:1:trail/org";
