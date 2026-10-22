@@ -1029,6 +1029,256 @@
         }
       }
     },
+    "/orgs/{org}/findings/{id}/accept": {
+      "post": {
+        "tags": [
+          "findings"
+        ],
+        "operationId": "accept",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Finding"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/findings/{id}/reopen": {
+      "post": {
+        "tags": [
+          "findings"
+        ],
+        "operationId": "reopen",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Finding"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/findings/{id}/report-explanation": {
+      "post": {
+        "tags": [
+          "findings"
+        ],
+        "operationId": "report_explanation",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExplanationReport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/findings/{id}/snooze": {
+      "post": {
+        "tags": [
+          "findings"
+        ],
+        "operationId": "snooze",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnoozeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Finding"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs/{org}/invites": {
       "post": {
         "tags": [
@@ -1427,6 +1677,26 @@
   },
   "components": {
     "schemas": {
+      "AcceptBody": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required."
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Default now + 90 days; at most 365 days ahead."
+          }
+        }
+      },
       "AuthorizeUrl": {
         "type": "object",
         "required": [
@@ -1643,6 +1913,18 @@
           },
           "source": {
             "type": "string"
+          }
+        }
+      },
+      "ExplanationReport": {
+        "type": "object",
+        "required": [
+          "note"
+        ],
+        "properties": {
+          "note": {
+            "type": "string",
+            "description": "What is wrong with the explanation; at most 2000 characters."
           }
         }
       },
@@ -2496,6 +2778,19 @@
           "status": {
             "type": "string",
             "description": "`queued`, `running`, `done`, `partial`, `failed` or `skipped`."
+          }
+        }
+      },
+      "SnoozeBody": {
+        "type": "object",
+        "required": [
+          "until"
+        ],
+        "properties": {
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "At most 30 days ahead."
           }
         }
       },

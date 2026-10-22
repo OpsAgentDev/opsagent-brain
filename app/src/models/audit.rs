@@ -11,6 +11,26 @@ pub async fn record(
     action: &str,
     target: Option<(&str, String)>,
 ) -> Result<(), DbErr> {
+    record_meta(
+        db,
+        organisation_id,
+        actor_id,
+        action,
+        target,
+        serde_json::json!({}),
+    )
+    .await
+}
+
+/// `record` with metadata.
+pub async fn record_meta(
+    db: &impl ConnectionTrait,
+    organisation_id: Option<Uuid>,
+    actor_id: Uuid,
+    action: &str,
+    target: Option<(&str, String)>,
+    metadata: serde_json::Value,
+) -> Result<(), DbErr> {
     let actor = ("member", Some(actor_id.to_string()));
     insert(
         db,
@@ -19,7 +39,7 @@ pub async fn record(
         action,
         target,
         "success",
-        serde_json::json!({}),
+        metadata,
     )
     .await
 }

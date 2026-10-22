@@ -1,7 +1,11 @@
 use std::collections::HashSet;
 
+use chrono::{Duration, Utc};
 use loco_rs::{prelude::*, testing::prelude::request_with_config};
-use opsagent_brain::{app::App, models::_entities::findings};
+use opsagent_brain::{
+    app::App,
+    models::_entities::{audit_events, finding_events, findings},
+};
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -91,6 +95,78 @@ async fn detail_has_evidence_and_events() {
 
 #[tokio::test]
 #[serial]
+async fn accept_snooze_reopen_and_report() {
+    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+        let (t, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
+        scan(&ctx, conn, 0, &noisy()).await;
+        let id = finding_id(&ctx, "sg-ssh").await;
+        let url = |a: &str| format!("/v1/orgs/{org}/findings/{id}/{a}");
+        let post =
+            |a: &str, body: Value| req.post(&url(a)).add_header("X-CSRF-Token", &t).json(&body);
+
+        let res = req.post(&url("accept")).json(&json!({"reason": "x"})).await;
+        assert_eq!(res.status_code(), 403, "csrf required");
+        let res = post("accept", json!({})).await;
+        assert_eq!(res.status_code(), 422);
+        assert_eq!(res.json::<Value>()["code"], "validation");
+        let res = post("accept", json!({"reason": "  "})).await;
+        assert_eq!(res.status_code(), 422);
+        let far = (Utc::now() + Duration::days(366)).to_rfc3339();
+        let res = post("accept", json!({"reason": "ok", "until": far})).await;
+        assert_eq!(res.status_code(), 422);
+
+        let res = post("accept", json!({"reason": "lab box"})).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        let f: Value = res.json();
+        assert_eq!(f["status"], "accepted");
+        assert_eq!(f["accepted_reason"], "lab box");
+        let until: chrono::DateTime<Utc> = f["accepted_until"].as_str().unwrap().parse().unwrap();
+        assert!(
+            (until - (Utc::now() + Duration::days(90)))
+                .num_minutes()
+                .abs()
+                < 5
+        );
+
+        let d31 = (Utc::now() + Duration::days(31)).to_rfc3339();
+        let res = post("snooze", json!({"until": d31})).await;
+        assert_eq!(res.status_code(), 422);
+        let d7 = (Utc::now() + Duration::days(7)).to_rfc3339();
+        let res = post("snooze", json!({"until": d7})).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        assert_eq!(res.json::<Value>()["status"], "snoozed");
+
+        let res = post("reopen", json!({})).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        let f: Value = res.json();
+        assert_eq!(f["status"], "open");
+        assert_eq!(f["snoozed_until"], Value::Null);
+
+        let mut kinds: Vec<String> = finding_events::Entity::find()
+            .filter(finding_events::Column::FindingId.eq(id.parse::<uuid::Uuid>().unwrap()))
+            .all(&ctx.db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.event_type)
+            .collect();
+        kinds.sort();
+        assert_eq!(kinds, ["accepted", "opened", "reopened", "snoozed"]);
+
+        let res = post("report-explanation", json!({"note": "wrong"})).await;
+        assert_eq!(res.status_code(), 204);
+        let n = audit_events::Entity::find()
+            .filter(audit_events::Column::Action.eq("finding.report_explanation"))
+            .count(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn other_orgs_finding_is_the_same_404_as_unknown() {
     request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
         let (tb, _, conn_b) = connected(&req, &ctx, "b@example.com", "noisy").await;
@@ -110,6 +186,12 @@ async fn other_orgs_finding_is_the_same_404_as_unknown() {
             .await;
         assert_eq!(theirs.status_code(), 404);
         assert_eq!(without_instance(&theirs), without_instance(&unknown));
+        let res = req
+            .post(&format!("/v1/orgs/{org_a}/findings/{id_b}/accept"))
+            .add_header("X-CSRF-Token", &t)
+            .json(&json!({"reason": "mine now"}))
+            .await;
+        assert_eq!(res.status_code(), 404);
         let list: Value = req.get(&format!("/v1/orgs/{org_a}/findings")).await.json();
         assert_eq!(list["items"], json!([]));
     })

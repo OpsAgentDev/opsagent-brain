@@ -11,7 +11,7 @@ pub struct Model {
     #[sea_orm(unique_key = "finding_events_run_id_finding_id_event_type_key")]
     pub finding_id: Uuid,
     #[sea_orm(unique_key = "finding_events_run_id_finding_id_event_type_key")]
-    pub run_id: Uuid,
+    pub run_id: Option<Uuid>,
     #[sea_orm(
         column_type = "Text",
         unique_key = "finding_events_run_id_finding_id_event_type_key"

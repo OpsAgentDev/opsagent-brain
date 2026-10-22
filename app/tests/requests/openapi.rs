@@ -42,6 +42,7 @@ async fn served_to_owners_only() {
         for p in [
             "/orgs/{org}/findings",
             "/orgs/{org}/findings/{id}",
+            "/orgs/{org}/findings/{id}/accept",
             "/orgs/{org}/resources",
             "/orgs/{org}/runs/{id}",
             "/orgs/{org}/connections",
