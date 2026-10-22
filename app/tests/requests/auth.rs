@@ -69,13 +69,21 @@ async fn magic_link_redeem_sets_cookie_and_is_single_use() {
         assert_eq!(res.status_code(), 410);
         assert_eq!(res.json::<Value>()["code"], "link_invalid");
 
-        // Sec-Fetch-Site: same-site is accepted without Origin (bad token -> 410, not 403).
-        let res = req
-            .post("/v1/auth/magic-link/redeem")
-            .add_header("Sec-Fetch-Site", "same-site")
-            .json(&json!({ "token": "nope" }))
-            .await;
-        assert_eq!(res.status_code(), 410);
+        let post = |origin: Option<&str>, site: &str| {
+            let mut r = req
+                .post("/v1/auth/magic-link/redeem")
+                .add_header("Sec-Fetch-Site", site);
+            if let Some(o) = origin {
+                r = r.add_header("Origin", o);
+            }
+            r.json(&json!({ "token": "nope" }))
+        };
+        // Present-but-different Origin loses even with Sec-Fetch-Site: same-site.
+        let res = post(Some("https://evil.example"), "same-site").await;
+        assert_eq!(res.status_code(), 403);
+        // No Origin: same-origin passes (bad token -> 410, not 403); same-site does not.
+        assert_eq!(post(None, "same-origin").await.status_code(), 410);
+        assert_eq!(post(None, "same-site").await.status_code(), 403);
     })
     .await;
 }
@@ -161,4 +169,37 @@ async fn github_start_returns_authorize_url_with_state_and_pkce() {
     .await;
     std::env::remove_var("GITHUB_CLIENT_ID");
     std::env::remove_var("GITHUB_CLIENT_SECRET");
+}
+
+#[tokio::test]
+#[serial]
+async fn signed_out_session_is_not_resurrected() {
+    request_with_config::<App, _, _>(cookie_config(), |mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        let token = sign_in(&req, &mail, "gone@example.com").await;
+        let sid = sessions::Entity::find()
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let res = req
+            .post("/v1/auth/sign-out")
+            .add_header("X-CSRF-Token", &token)
+            .await;
+        assert_eq!(res.status_code(), 204);
+
+        req.clear_cookies();
+        let res = req
+            .get("/v1/auth/me")
+            .add_header("Cookie", format!("opsagent_session={sid}"))
+            .await;
+        assert_eq!(res.status_code(), 401);
+        let rows = sessions::Entity::find_by_id(sid)
+            .one(&ctx.db)
+            .await
+            .unwrap();
+        assert!(rows.is_none());
+    })
+    .await;
 }

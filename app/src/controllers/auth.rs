@@ -74,14 +74,16 @@ struct RedeemRequest {
     token: String,
 }
 
-/// Anonymous, so CSRF-token-exempt; protected by an origin check instead. Accepted when the
-/// `Origin` header equals the origin of `WEB_BASE_URL`, or `Sec-Fetch-Site` is
-/// `same-origin`/`same-site` (browsers set it and scripts cannot forge it).
+/// Anonymous, so CSRF-token-exempt; protected by an origin check instead. If `Origin` is
+/// present it must equal the origin of `WEB_BASE_URL` exactly (nothing else can override a
+/// mismatch). If it is absent, only `Sec-Fetch-Site: same-origin` is accepted (browsers set
+/// that header and scripts cannot forge it); `same-site` is not enough.
 fn check_origin(headers: &HeaderMap, web_base_url: &str) -> Result<(), ApiError> {
     let header = |n: &str| headers.get(n).and_then(|v| v.to_str().ok());
-    let web_origin = web_base_url.trim_end_matches('/');
-    let ok = header("origin").is_some_and(|o| o == web_origin)
-        || matches!(header("sec-fetch-site"), Some("same-origin" | "same-site"));
+    let ok = match header("origin") {
+        Some(o) => o == web_base_url.trim_end_matches('/'),
+        None => header("sec-fetch-site") == Some("same-origin"),
+    };
     if ok {
         Ok(())
     } else {

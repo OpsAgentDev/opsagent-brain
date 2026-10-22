@@ -1,7 +1,5 @@
 use async_trait::async_trait;
-use sea_orm::{
-    sea_query::OnConflict, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set,
-};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use tower_sessions::{
     cookie::SameSite,
     session::{Id, Record},
@@ -29,6 +27,14 @@ fn to_chrono(t: time::OffsetDateTime) -> chrono::DateTime<chrono::FixedOffset> {
         .into()
 }
 
+fn encode(
+    record: &Record,
+) -> session_store::Result<(Vec<u8>, chrono::DateTime<chrono::FixedOffset>)> {
+    let data = serde_json::to_vec(&record.data)
+        .map_err(|e| session_store::Error::Encode(e.to_string()))?;
+    Ok((data, to_chrono(record.expiry_date)))
+}
+
 #[async_trait]
 impl SessionStore for DbStore {
     async fn create(&self, record: &mut Record) -> session_store::Result<()> {
@@ -41,29 +47,30 @@ impl SessionStore for DbStore {
         {
             record.id = Id::default();
         }
-        self.save(record).await
-    }
-
-    async fn save(&self, record: &Record) -> session_store::Result<()> {
-        let data = serde_json::to_vec(&record.data)
-            .map_err(|e| session_store::Error::Encode(e.to_string()))?;
-        let row = sessions::ActiveModel {
+        let (data, expiry) = encode(record)?;
+        sessions::Entity::insert(sessions::ActiveModel {
             id: Set(record.id.to_string()),
             data: Set(data),
-            expiry_date: Set(to_chrono(record.expiry_date)),
+            expiry_date: Set(expiry),
             created_at: Set(now()),
             updated_at: Set(now()),
-        };
-        sessions::Entity::insert(row)
-            .on_conflict(
-                OnConflict::column(sessions::Column::Id)
-                    .update_columns([
-                        sessions::Column::Data,
-                        sessions::Column::ExpiryDate,
-                        sessions::Column::UpdatedAt,
-                    ])
-                    .to_owned(),
-            )
+        })
+        .exec(&self.0)
+        .await
+        .map(|_| ())
+        .map_err(backend)
+    }
+
+    /// UPDATE only: with always_save, the end-of-request save must not resurrect a row that
+    /// sign-out deleted or that has expired. Inserts happen in `create` only.
+    async fn save(&self, record: &Record) -> session_store::Result<()> {
+        let (data, expiry) = encode(record)?;
+        sessions::Entity::update_many()
+            .col_expr(sessions::Column::Data, data.into())
+            .col_expr(sessions::Column::ExpiryDate, expiry.into())
+            .col_expr(sessions::Column::UpdatedAt, now().into())
+            .filter(sessions::Column::Id.eq(record.id.to_string()))
+            .filter(sessions::Column::ExpiryDate.gt(now()))
             .exec(&self.0)
             .await
             .map(|_| ())
