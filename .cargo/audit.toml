@@ -1,5 +1,10 @@
 [advisories]
 ignore = [
+  # rsa (Marvin attack, no fix): reachable only via loco-rs -> jsonwebtoken, which this
+  # app does not call (Loco JWT auth scaffolding removed; sessions use tower-sessions;
+  # no RS*/PS* algorithm configured in app/src or crates). Revisit in Plan 3: if the MCP
+  # OAuth server adds jsonwebtoken directly it must use HS256 or EdDSA, never RSA.
+  "RUSTSEC-2023-0071",
   # unsafe-libyaml unmaintained: still pulled by loco-rs 1.2.0 (serde_yaml_ng, and
   # loco-gen -> rrgen -> serde_yaml). Not ours; drop when loco moves off it.
   "RUSTSEC-2024-0449",

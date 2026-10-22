@@ -7,6 +7,7 @@ No `CLAUDE.md` in this repo; this file is the only instruction file.
 ## Run
 ```
 source "$HOME/.cargo/env"
+# Note: on this machine prefix compose with PG_PORT=55432 REDIS_PORT=56379 (compose defaults to 5432/6379).
 docker compose up -d postgres redis mailpit        # ports 55432 / 56379 / 1025, 8025
 export DATABASE_URL=postgres://loco:loco@localhost:55432/opsagent_brain_test
 export REDIS_URL=redis://localhost:56379
