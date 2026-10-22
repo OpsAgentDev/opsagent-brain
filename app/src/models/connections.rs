@@ -92,6 +92,16 @@ pub fn open_creds(
     Ok(serde_json::from_slice(&plain)?)
 }
 
+/// Decrypts the connection's stored credentials.
+pub async fn load_creds(db: &impl ConnectionTrait, c: &connections::Model) -> Result<Creds> {
+    let dek = org_dek(db, c.organisation_id).await?;
+    let row = connection_credentials::Entity::find_by_id(c.id)
+        .one(db)
+        .await?
+        .ok_or_else(|| Error::string("connection has no credentials"))?;
+    open_creds(&dek, c.organisation_id, &row)
+}
+
 /// The account a role ARN belongs to (`arn:aws:iam::<account>:role/...`).
 pub fn account_of(c: &connections::Model, creds: &Creds) -> Option<String> {
     match c.provider.as_str() {

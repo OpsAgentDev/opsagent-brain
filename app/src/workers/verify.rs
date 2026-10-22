@@ -19,9 +19,9 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::models::{
-    _entities::{connection_credentials, connection_verifications, connections},
+    _entities::{connection_verifications, connections},
     audit,
-    connections::{account_of, cas, open_creds, org_dek, status_of, status_str, Creds},
+    connections::{account_of, cas, load_creds, status_of, status_str, Creds},
     ledger_storage::PgStorage,
     now,
 };
@@ -78,12 +78,12 @@ fn decide(o: &VerifyOutcome) -> Verdict {
     }
 }
 
-fn err(e: impl std::fmt::Display) -> Error {
+pub(crate) fn err(e: impl std::fmt::Display) -> Error {
     Error::string(&e.to_string())
 }
 
 /// `OPSAGENT_CONNECTORS` picks the implementation; `aws` gets the outbound principal explicitly.
-fn connector() -> Result<Box<dyn Connector>> {
+pub(crate) fn connector() -> Result<Box<dyn Connector>> {
     match std::env::var("OPSAGENT_CONNECTORS")
         .as_deref()
         .unwrap_or("aws")
@@ -99,14 +99,19 @@ fn connector() -> Result<Box<dyn Connector>> {
     }
 }
 
-fn redis_client(ctx: &AppContext) -> Result<redis::Client> {
+pub(crate) fn redis_client(ctx: &AppContext) -> Result<redis::Client> {
     let Some(QueueConfig::Redis(cfg)) = &ctx.config.queue else {
-        return Err(err("verify worker needs the redis queue config"));
+        return Err(err("workers need the redis queue config"));
     };
     redis::Client::open(cfg.uri.as_str()).map_err(err)
 }
 
-fn credentials(c: &connections::Model, creds: &Creds, run_id: Uuid) -> Result<Credentials> {
+pub(crate) fn credentials(
+    c: &connections::Model,
+    creds: &Creds,
+    run_id: Uuid,
+    trigger: &str,
+) -> Result<Credentials> {
     Ok(match c.provider.as_str() {
         "fake" => Credentials::Fake {
             account: creds.fake_account.clone().unwrap_or_default(),
@@ -118,7 +123,7 @@ fn credentials(c: &connections::Model, creds: &Creds, run_id: Uuid) -> Result<Cr
             context: CallContext {
                 organisation_id: c.organisation_id,
                 run_id,
-                trigger: "verify".into(),
+                trigger: trigger.into(),
             },
         },
     })
@@ -161,7 +166,7 @@ impl BackgroundWorker<VerifyArgs> for VerifyWorker {
 
 type LResult<T> = std::result::Result<T, LedgerError>;
 
-fn lerr(e: impl std::fmt::Display) -> LedgerError {
+pub(crate) fn lerr(e: impl std::fmt::Display) -> LedgerError {
     LedgerError::Storage(e.to_string())
 }
 
@@ -184,15 +189,9 @@ impl VerifyWorker {
                 .set_status(run.id, fence, RunStatus::Skipped, reason)
                 .await;
         }
-        let dek = org_dek(db, c.organisation_id).await.map_err(lerr)?;
-        let row = connection_credentials::Entity::find_by_id(c.id)
-            .one(db)
-            .await
-            .map_err(lerr)?
-            .ok_or(LedgerError::NotFound)?;
-        let creds = open_creds(&dek, c.organisation_id, &row).map_err(lerr)?;
+        let creds = load_creds(db, &c).await.map_err(lerr)?;
         let outcome = match connector() {
-            Ok(k) => match credentials(&c, &creds, run.id) {
+            Ok(k) => match credentials(&c, &creds, run.id, "verify") {
                 Ok(cr) => k.verify(&cr).await,
                 Err(e) => Err(ConnectorError::InvalidCredentials(e.to_string())),
             },

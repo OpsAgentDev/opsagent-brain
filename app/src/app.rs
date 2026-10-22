@@ -12,7 +12,12 @@ use loco_rs::{
 use migration::Migrator;
 use std::path::Path;
 
-use crate::{controllers, middleware::AuthInitializer, workers::verify::VerifyWorker};
+use crate::{
+    controllers,
+    middleware::AuthInitializer,
+    tasks::scan_now::ScanNow,
+    workers::{full_scan::FullScanWorker, verify::VerifyWorker},
+};
 
 pub struct App;
 #[async_trait]
@@ -53,10 +58,13 @@ impl Hooks for App {
     }
 
     async fn connect_workers(ctx: &AppContext, queue: &Queue) -> Result<()> {
-        queue.register(VerifyWorker::build(ctx)).await
+        queue.register(VerifyWorker::build(ctx)).await?;
+        queue.register(FullScanWorker::build(ctx)).await
     }
 
-    fn register_tasks(_tasks: &mut Tasks) {}
+    fn register_tasks(tasks: &mut Tasks) {
+        tasks.register(ScanNow);
+    }
 
     async fn truncate(_ctx: &AppContext) -> Result<()> {
         Ok(())
