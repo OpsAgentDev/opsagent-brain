@@ -39,6 +39,17 @@ pub(super) struct Scan<'a> {
     pub(super) checks: fn() -> Vec<Box<dyn Check>>,
 }
 
+/// Reads checkpoint JSON this process wrote: missing or `Null` is empty, anything else must parse.
+fn parse<T: serde::de::DeserializeOwned + Default>(v: &Value) -> LResult<T> {
+    if v.is_null() {
+        return Ok(T::default());
+    }
+    serde_json::from_value(v.clone()).map_err(|_| LedgerError::Job {
+        code: "checkpoint_corrupt".into(),
+        retry: false,
+    })
+}
+
 /// Restore simulations per scan; roles past the cap stay unsimulated (check 04: coverage unknown).
 const MAX_SIMULATED_ROLES: usize = 20;
 
@@ -101,17 +112,15 @@ impl Scan<'_> {
             return Ok(());
         }
         let so_far = self.storage.load_run(self.run_id).await?.checkpoint.stats;
-        down.extend(
-            serde_json::from_value::<BTreeSet<String>>(so_far["unavailable"].clone())
-                .unwrap_or_default(),
-        );
+        down.extend(parse::<BTreeSet<String>>(&so_far["unavailable"])?);
         stats["unavailable"] = json!(down);
         Ok(())
     }
 
     /// Restore simulation for each distinct backup-plan role seen this run, stored in the
     /// checkpoint cursor so a resumed run does not repeat the calls. A failed call leaves its
-    /// role out and marks `iam` unavailable; the run is not made partial (inventory is whole).
+    /// role out and marks `iam` unavailable. The run is `partial` (but with no `partial_reason`,
+    /// so it still ends `done`): lifecycle must not resolve findings from checks it could not feed.
     async fn simulate(&self) -> LResult<ChunkOutcome> {
         let resources = seen(self.db, self.c, self.k, self.run_id).await?;
         let roles: BTreeSet<&str> = resources
@@ -125,7 +134,8 @@ impl Scan<'_> {
             })
             .filter_map(Value::as_str)
             .collect();
-        let (mut sims, mut failed) = (serde_json::Map::new(), false);
+        let over_cap = roles.len() > MAX_SIMULATED_ROLES;
+        let (mut sims, mut failed_calls) = (serde_json::Map::new(), false);
         for role in roles.into_iter().take(MAX_SIMULATED_ROLES) {
             match self.k.simulate_restore(self.cr, role).await {
                 Ok(s) => {
@@ -134,16 +144,19 @@ impl Scan<'_> {
                 Err(e) => {
                     let (code, _) = classify(&e);
                     tracing::warn!(code, run = %self.run_id, "full_scan: restore simulation failed");
-                    failed = true;
+                    failed_calls = true;
                 }
             }
         }
         let mut stats = json!({});
-        let down = if failed {
-            BTreeSet::from(["iam".to_owned()])
-        } else {
-            BTreeSet::new()
-        };
+        let mut down = BTreeSet::new();
+        if failed_calls || over_cap {
+            // Unsimulated roles (failed or past the cap) must not let lifecycle resolve their findings.
+            stats["partial"] = json!(true);
+        }
+        if failed_calls {
+            down.insert("iam".to_owned());
+        }
         self.unavailable(&mut stats, down).await?;
         Ok(ChunkOutcome {
             stats,
@@ -156,10 +169,8 @@ impl Scan<'_> {
         let (db, run_id, c, k) = (self.db, self.run_id, self.c, self.k);
         let cp = self.storage.load_run(run_id).await?.checkpoint;
         let so_far = cp.stats;
-        let simulations: HashMap<String, SimulationResult> =
-            serde_json::from_value(cp.cursor["simulations"].clone()).unwrap_or_default();
-        let unavailable: BTreeSet<String> =
-            serde_json::from_value(so_far["unavailable"].clone()).unwrap_or_default();
+        let simulations: HashMap<String, SimulationResult> = parse(&cp.cursor["simulations"])?;
+        let unavailable: BTreeSet<String> = parse(&so_far["unavailable"])?;
         let partial = so_far["partial"] == json!(true);
         let now = Utc::now();
         let cost = k.cost_daily(self.cr, 30).await.unwrap_or_else(|e| {
@@ -272,4 +283,17 @@ async fn seen(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_treats_null_as_empty_and_rejects_corrupt_json() {
+        assert!(parse::<BTreeSet<String>>(&Value::Null).unwrap().is_empty());
+        assert_eq!(parse::<BTreeSet<String>>(&json!(["a"])).unwrap().len(), 1);
+        let e = parse::<BTreeSet<String>>(&json!("oops")).unwrap_err();
+        assert!(format!("{e:?}").contains("checkpoint_corrupt"));
+    }
 }

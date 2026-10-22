@@ -1176,6 +1176,26 @@ async fn simulate_error_is_coverage_unknown_and_run_is_done() {
 
 #[tokio::test]
 #[serial]
+async fn failed_simulation_resolves_nothing() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        scan(&ctx, conn, 0, &noisy()).await;
+        assert_eq!(
+            finding(&ctx, conn, "plan-nightly").await.variant,
+            "restore_perms_missing"
+        );
+        let run = scan(&ctx, conn, 1, &rigged(Some(Fault::Simulate))).await;
+        let r = run_row(&ctx, run).await;
+        assert_eq!((r.status.as_str(), r.partial_reason), ("done", None));
+        assert_eq!(r.checkpoint["stats"]["partial"], json!(true));
+        let f = finding(&ctx, conn, "plan-nightly").await;
+        assert_eq!(f.status, "open");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn cloudtrail_partial_error_suppresses_trail_findings() {
     serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
