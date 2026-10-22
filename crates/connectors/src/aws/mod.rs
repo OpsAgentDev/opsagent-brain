@@ -1,6 +1,7 @@
 //! AWS connector. Spec: docs/tech-spec/aws-connection.md.
 
 pub mod client;
+pub mod cost;
 pub mod inventory;
 pub mod policy_diff;
 pub mod verify;
@@ -110,11 +111,16 @@ impl Connector for AwsConnector {
         inventory::inventory(&session, &role.partition, &role.account, scope).await
     }
 
-    async fn cost_daily(&self, creds: &Credentials, _days: u32) -> Result<Vec<CostRow>> {
-        aws_role(creds)?;
-        Err(ConnectorError::Provider(
-            "aws cost_daily: not implemented".into(),
-        ))
+    async fn cost_daily(&self, creds: &Credentials, days: u32) -> Result<Vec<CostRow>> {
+        let (arn, ext, _, ctx) = aws_role(creds)?;
+        let session = self.session(arn, ext, ctx, cost::COST_ACTIONS).await?;
+        // Cost Explorer is served from us-east-1 only.
+        let session = session
+            .to_builder()
+            .region(aws_config::Region::from_static("us-east-1"))
+            .build();
+        let ce = aws_sdk_costexplorer::Client::new(&session);
+        cost::cost_daily(&ce, days, chrono::Utc::now().date_naive()).await
     }
 
     async fn metrics(&self, _creds: &Credentials, _q: MetricQuery) -> Result<Vec<MetricPoint>> {

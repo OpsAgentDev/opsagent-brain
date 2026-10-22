@@ -27,6 +27,7 @@ aws-sdk-costexplorer = "1.135.0"
 urlencoding = "2"
 
 [dev-dependencies]
+aws-sdk-costexplorer = { version = "1.135.0", features = ["test-util"] }
 aws-sdk-ec2 = { version = "1.270.0", features = ["test-util"] }
 aws-sdk-iam = { version = "1.130.0", features = ["test-util"] }
 aws-sdk-sts = { version = "1.121.0", features = ["test-util"] }

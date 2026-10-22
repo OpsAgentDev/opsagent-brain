@@ -424,3 +424,57 @@ bot,arn:aws:iam::123456789012:user/bot,2020-01-01T00:00:00+00:00,false,N/A,N/A,N
         assert_eq!(r[2].attributes["key_age_days"], serde_json::Value::Null);
     }
 }
+
+mod cost {
+    use aws_sdk_costexplorer::operation::get_cost_and_usage::GetCostAndUsageOutput;
+    use aws_sdk_costexplorer::types::{
+        DateInterval, Granularity, Group, GroupDefinitionType, MetricValue, ResultByTime,
+    };
+    use aws_smithy_mocks::{mock, mock_client, RuleMode};
+    use chrono::NaiveDate;
+    use opsagent_connectors::aws::cost::cost_daily;
+
+    #[tokio::test]
+    async fn one_daily_call_grouped_by_service() {
+        let rule = mock!(aws_sdk_costexplorer::Client::get_cost_and_usage)
+            .match_requests(|r| {
+                let p = r.time_period().unwrap();
+                let g = &r.group_by()[0];
+                r.granularity() == Some(&Granularity::Daily)
+                    && r.metrics() == ["UnblendedCost"]
+                    && g.r#type() == Some(&GroupDefinitionType::Dimension)
+                    && g.key() == Some("SERVICE")
+                    && p.start() == "2026-10-20"
+                    && p.end() == "2026-10-22"
+            })
+            .then_output(|| {
+                let day = |d: &str, e: &str, amt: &str| {
+                    ResultByTime::builder()
+                        .time_period(DateInterval::builder().start(d).end(e).build().unwrap())
+                        .groups(
+                            Group::builder()
+                                .keys("Amazon Elastic Compute Cloud - Compute")
+                                .metrics(
+                                    "UnblendedCost",
+                                    MetricValue::builder().amount(amt).unit("USD").build(),
+                                )
+                                .build(),
+                        )
+                        .build()
+                };
+                GetCostAndUsageOutput::builder()
+                    .results_by_time(day("2026-10-20", "2026-10-21", "12.5"))
+                    .results_by_time(day("2026-10-21", "2026-10-22", "13.25"))
+                    .build()
+            });
+        let ce = mock_client!(aws_sdk_costexplorer, RuleMode::Sequential, [&rule]);
+        let today = NaiveDate::from_ymd_opt(2026, 10, 22).unwrap();
+        let rows = cost_daily(&ce, 2, today).await.unwrap();
+        assert_eq!(rule.num_calls(), 1);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].date, NaiveDate::from_ymd_opt(2026, 10, 20).unwrap());
+        assert_eq!(rows[0].service, "Amazon Elastic Compute Cloud - Compute");
+        assert_eq!(rows[0].amount_usd, 12.5);
+        assert_eq!(rows[1].amount_usd, 13.25);
+    }
+}

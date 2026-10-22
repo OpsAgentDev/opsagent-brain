@@ -113,6 +113,7 @@ async fn unknown_account_and_registry() {
         Err(ConnectorError::NotFound)
     ));
     assert!(matches!(registry("bogus"), Err(ConnectorError::Unknown(n)) if n == "bogus"));
+    assert_eq!(registry("aws").unwrap().provider(), Provider::Aws);
     let c = registry("fake").unwrap();
     assert_eq!(c.provider(), Provider::Fake);
     let q = MetricQuery {
