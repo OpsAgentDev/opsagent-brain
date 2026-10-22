@@ -52,7 +52,6 @@ impl AwsConnector {
             &policy,
         )
         .await
-        .map_err(client::provider_err)
     }
 
     /// Outbound config, loaded on first use so `registry` can stay synchronous.

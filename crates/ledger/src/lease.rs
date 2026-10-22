@@ -1,3 +1,4 @@
+#[cfg(feature = "test-support")]
 use crate::harness::KillSwitch;
 use crate::storage::{LedgerError, Result, Storage};
 use opsagent_core::run::RunStatus;
@@ -121,6 +122,7 @@ pub struct RunChunkedOptions {
     pub heartbeat_every: Duration,
     pub time_cap: Duration,
     /// Test hook invoked right after each checkpoint write.
+    #[cfg(feature = "test-support")]
     pub after_checkpoint: Option<KillSwitch>,
 }
 
@@ -131,6 +133,7 @@ impl Default for RunChunkedOptions {
             lease_ttl: Duration::from_secs(120),
             heartbeat_every: Duration::from_secs(30),
             time_cap: Duration::from_secs(600),
+            #[cfg(feature = "test-support")]
             after_checkpoint: None,
         }
     }
@@ -240,6 +243,7 @@ where
             Err(LedgerError::StaleFence) => return partial("lease_lost").await,
             Err(e) => return Err(e),
         }
+        #[cfg(feature = "test-support")]
         if let Some(k) = &opts.after_checkpoint {
             k.after_checkpoint()?;
         }

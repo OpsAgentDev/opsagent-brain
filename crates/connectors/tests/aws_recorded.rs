@@ -76,6 +76,29 @@ async fn assume_sends_session_name_tags_and_external_id() {
 }
 
 #[tokio::test]
+async fn assume_answer_without_credentials_is_an_error_not_a_panic() {
+    use aws_sdk_sts::operation::assume_role::AssumeRoleOutput;
+    let empty =
+        mock!(aws_sdk_sts::Client::assume_role).then_output(|| AssumeRoleOutput::builder().build());
+    let sts = mock_client!(aws_sdk_sts, RuleMode::Sequential, [&empty]);
+    let err = assume(
+        &sts,
+        &aws_config::SdkConfig::builder().build(),
+        &AwsOutbound::default(),
+        "arn:aws:iam::123456789012:role/OpsAgentReadRole-aabbccdd",
+        Some("ext-1"),
+        &ctx(),
+        "{}",
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, opsagent_connectors::ConnectorError::Provider(_)),
+        "{err}"
+    );
+}
+
+#[tokio::test]
 async fn assume_without_external_id_access_denied_is_detected() {
     use aws_sdk_sts::error::ErrorMetadata;
     use aws_sdk_sts::operation::assume_role::AssumeRoleError;

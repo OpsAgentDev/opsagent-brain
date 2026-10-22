@@ -220,7 +220,7 @@ async fn github_callback(
     let s = Settings::get(&ctx);
     let client = github_client!(s);
     let stored = session.remove::<(String, String)>(GH_KEY).await?;
-    let Some((state, verifier)) = stored.filter(|(st, _)| *st == q.state) else {
+    let Some((_, verifier)) = stored.filter(|(st, _)| *st == q.state) else {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "oauth_state",
@@ -231,7 +231,6 @@ async fn github_callback(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(ApiError::internal)?;
-    let _ = state;
     let token = client
         .exchange_code(AuthorizationCode::new(q.code))
         .set_pkce_verifier(PkceCodeVerifier::new(verifier))

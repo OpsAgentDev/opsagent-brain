@@ -1,7 +1,9 @@
 //! Envelope encryption: per-org DEKs wrapped by a versioned KEK.
+mod cache;
 mod envelope;
 mod kek;
 
+pub use cache::CachingKek;
 pub use envelope::{generate_dek, open, seal, Aad, Sealed};
 pub use kek::{EnvKek, Kek, WrappedDek};
 

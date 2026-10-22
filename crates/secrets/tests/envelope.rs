@@ -1,5 +1,13 @@
-use opsagent_secrets::{generate_dek, open, seal, Aad, EnvKek, Kek, SecretsError, WrappedDek};
+use opsagent_secrets::{
+    generate_dek, open, seal, Aad, CachingKek, EnvKek, Kek, SecretsError, WrappedDek,
+};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering::SeqCst},
+    Arc,
+};
+use std::time::Duration;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 const ORG: Uuid = Uuid::from_u128(1);
 
@@ -115,4 +123,44 @@ fn dek_wrapped_for_org_a_fails_for_org_b() {
         kek.unwrap(Uuid::new_v4(), &w),
         Err(SecretsError::Decrypt)
     ));
+}
+
+/// Counts unwraps that reach the real KEK.
+struct Counting(EnvKek, Arc<AtomicUsize>);
+
+impl Kek for Counting {
+    fn wrap(&self, org: Uuid, dek: &[u8; 32]) -> opsagent_secrets::Result<WrappedDek> {
+        self.0.wrap(org, dek)
+    }
+    fn unwrap(&self, org: Uuid, w: &WrappedDek) -> opsagent_secrets::Result<Zeroizing<[u8; 32]>> {
+        self.1.fetch_add(1, SeqCst);
+        self.0.unwrap(org, w)
+    }
+    fn current_version(&self) -> u32 {
+        self.0.current_version()
+    }
+}
+
+fn counting(ttl: Duration) -> (CachingKek<Counting>, Arc<AtomicUsize>) {
+    let n = Arc::new(AtomicUsize::new(0));
+    let k = Counting(EnvKek::new([1; 32], 1, None), n.clone());
+    (CachingKek::new(k, ttl), n)
+}
+
+#[test]
+fn caching_kek_unwraps_once_within_ttl_and_again_after() {
+    let dek = generate_dek();
+    let (cached, n) = counting(Duration::from_secs(600));
+    let w = cached.wrap(ORG, &dek).unwrap();
+    assert_eq!(*cached.unwrap(ORG, &w).unwrap(), *dek);
+    assert_eq!(*cached.unwrap(ORG, &w).unwrap(), *dek);
+    assert_eq!(n.load(SeqCst), 1);
+    // Another org's lookup never hits this org's entry.
+    assert!(cached.unwrap(Uuid::new_v4(), &w).is_err());
+    assert_eq!(n.load(SeqCst), 2);
+
+    let (expiring, n) = counting(Duration::ZERO);
+    expiring.unwrap(ORG, &w).unwrap();
+    expiring.unwrap(ORG, &w).unwrap();
+    assert_eq!(n.load(SeqCst), 2);
 }

@@ -27,7 +27,7 @@ pub struct RoleArn {
 }
 
 pub fn parse_role_arn(arn: &str) -> Result<RoleArn> {
-    let bad = || ConnectorError::InvalidCredentials(format!("not an IAM role ARN: {arn}"));
+    let bad = || ConnectorError::InvalidCredentials("not an IAM role ARN".into());
     let parts: Vec<&str> = arn.splitn(6, ':').collect();
     let [_, partition, "iam", "", account, res] = parts[..] else {
         return Err(bad());
@@ -71,8 +71,13 @@ pub(crate) fn provider_err(e: impl std::error::Error + ProvideErrorMetadata) -> 
     }
 }
 
-pub fn is_access_denied(e: &impl ProvideErrorMetadata) -> bool {
-    matches!(e.code(), Some("AccessDenied" | "AccessDeniedException"))
+/// The provider answered AccessDenied.
+fn provider_build_err(e: aws_sdk_sts::error::BuildError) -> ConnectorError {
+    ConnectorError::Provider(e.to_string())
+}
+
+pub fn is_access_denied(e: &ConnectorError) -> bool {
+    matches!(e, ConnectorError::Api { code: Some(c), .. } if matches!(c.as_str(), "AccessDenied" | "AccessDeniedException"))
 }
 
 pub(crate) async fn load_base(outbound: &AwsOutbound) -> SdkConfig {
@@ -92,9 +97,7 @@ pub(crate) async fn load_base(outbound: &AwsOutbound) -> SdkConfig {
 }
 
 /// AssumeRole into the customer role with session name, tags and a session policy narrowing
-/// the job. Returns an `SdkConfig` carrying the temporary credentials.
-/// The raw SDK error is returned so callers can tell AccessDenied apart.
-#[allow(clippy::result_large_err)]
+/// the job. Returns an `SdkConfig` carrying the temporary credentials; see `is_access_denied`.
 pub async fn assume(
     sts: &aws_sdk_sts::Client,
     base: &SdkConfig,
@@ -103,10 +106,7 @@ pub async fn assume(
     external_id: Option<&str>,
     ctx: &CallContext,
     session_policy: &str,
-) -> std::result::Result<
-    SdkConfig,
-    aws_sdk_sts::error::SdkError<aws_sdk_sts::operation::assume_role::AssumeRoleError>,
-> {
+) -> Result<SdkConfig> {
     let mut tags: BTreeMap<String, String> = outbound.session_tags.clone();
     tags.insert("tenant".into(), ctx.organisation_id.to_string());
     tags.insert("trigger".into(), ctx.trigger.clone());
@@ -118,9 +118,9 @@ pub async fn assume(
                 .key(k)
                 .value(v)
                 .build()
-                .expect("key and value set")
+                .map_err(provider_build_err)
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let out = sts
         .assume_role()
         .role_arn(role_arn)
@@ -130,8 +130,11 @@ pub async fn assume(
         .policy(session_policy)
         .duration_seconds(3600)
         .send()
-        .await?;
-    let c = out.credentials.expect("AssumeRole returns credentials");
+        .await
+        .map_err(provider_err)?;
+    let c = out
+        .credentials
+        .ok_or_else(|| ConnectorError::Provider("AssumeRole returned no credentials".into()))?;
     let creds = Credentials::new(
         c.access_key_id,
         c.secret_access_key,

@@ -45,8 +45,14 @@ tower-http = { version = "0.6", features = ["cors"] }
 name = "opsagent-brain"
 path = "src/bin/main.rs"
 
+[features]
+# Test doubles (capture mailer) for the integration tests.
+test-support = []
+
 [dev-dependencies]
 loco-rs = { workspace = true, features = ["testing"] }
+opsagent-brain = { path = ".", features = ["test-support"] }
+opsagent-ledger = { path = "../crates/ledger", features = ["test-support"] }
 serial_test = "3.1.1"
 axum-test = "17"
 

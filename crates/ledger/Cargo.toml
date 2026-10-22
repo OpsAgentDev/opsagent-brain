@@ -18,5 +18,10 @@ thiserror = "1"
 tracing = "0.1"
 rand = "0.8"
 
+[features]
+# Test doubles (in-memory storage, kill switch) for this and other crates' tests.
+test-support = []
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+opsagent-ledger = { path = ".", features = ["test-support"] }

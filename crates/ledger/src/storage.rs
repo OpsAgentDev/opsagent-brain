@@ -13,6 +13,7 @@ pub enum LedgerError {
     NotFound,
     #[error("lease held by another worker")]
     LeaseHeld,
+    #[cfg(feature = "test-support")]
     #[error("killed by test harness")]
     Killed,
     #[error("redis: {0}")]

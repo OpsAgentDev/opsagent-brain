@@ -114,7 +114,7 @@ pub(crate) async fn verify(
     let assume_without_denied = match without {
         Ok(_) => false,
         Err(e) if is_access_denied(&e) => true,
-        Err(e) => return Err(provider_err(e)),
+        Err(e) => return Err(e),
     };
     let session = match with {
         Ok(s) => s,
@@ -127,7 +127,7 @@ pub(crate) async fn verify(
                 missing_grants: vec![],
             })
         }
-        Err(e) => return Err(provider_err(e)),
+        Err(e) => return Err(e),
     };
     let ident = aws_sdk_sts::Client::new(&session)
         .get_caller_identity()

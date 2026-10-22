@@ -1,6 +1,6 @@
 pub mod magic_link;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use lettre::{
@@ -33,15 +33,18 @@ impl Mailer for LogMailer {
 }
 
 /// Test double that records every mail.
+#[cfg(feature = "test-support")]
 #[derive(Default)]
-pub struct CaptureMailer(Mutex<Vec<Mail>>);
+pub struct CaptureMailer(std::sync::Mutex<Vec<Mail>>);
 
+#[cfg(feature = "test-support")]
 impl CaptureMailer {
     pub fn sent(&self) -> Vec<Mail> {
         self.0.lock().unwrap().clone()
     }
 }
 
+#[cfg(feature = "test-support")]
 #[async_trait]
 impl Mailer for CaptureMailer {
     async fn send(&self, mail: Mail) -> std::result::Result<(), String> {
