@@ -3,6 +3,10 @@ pub mod magic_link;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use lettre::{
+    address::AddressError, message::Mailbox, AsyncSmtpTransport, AsyncTransport, Message,
+    Tokio1Executor,
+};
 use loco_rs::{Error, Result};
 
 #[derive(Clone, Debug)]
@@ -17,7 +21,7 @@ pub trait Mailer: Send + Sync {
     async fn send(&self, mail: Mail) -> std::result::Result<(), String>;
 }
 
-/// Local default when `RESEND_API_KEY` is unset: logs the mail (including its link).
+/// Local default when neither `MAILER_SMTP_URL` nor `RESEND_API_KEY` is set: logs the mail (including its link).
 pub struct LogMailer;
 
 #[async_trait]
@@ -71,16 +75,110 @@ impl Mailer for ResendMailer {
     }
 }
 
-/// Resend when `RESEND_API_KEY` is set; otherwise the log mailer, which production refuses.
-pub fn from_env(production: bool) -> Result<Arc<dyn Mailer>> {
-    match std::env::var("RESEND_API_KEY") {
-        Ok(key) if !key.is_empty() => Ok(Arc::new(ResendMailer {
-            key,
-            from: std::env::var("MAIL_FROM")
-                .unwrap_or_else(|_| "OpsAgent <login@opsagent.dev>".into()),
-            http: reqwest::Client::new(),
-        })),
+/// SMTP (plain, no TLS) for local delivery to mailpit (`MAILER_SMTP_URL=smtp://localhost:1025`).
+/// shortcut: no STARTTLS/TLS features compiled in; enable lettre's rustls features if a real relay is needed.
+pub struct SmtpMailer {
+    transport: AsyncSmtpTransport<Tokio1Executor>,
+    from: Mailbox,
+}
+
+impl SmtpMailer {
+    pub fn new(url: &str, from: &str) -> std::result::Result<Self, String> {
+        Ok(Self {
+            transport: AsyncSmtpTransport::<Tokio1Executor>::from_url(url)
+                .map_err(|e| e.to_string())?
+                .build(),
+            from: from.parse().map_err(|e: AddressError| e.to_string())?,
+        })
+    }
+}
+
+#[async_trait]
+impl Mailer for SmtpMailer {
+    async fn send(&self, mail: Mail) -> std::result::Result<(), String> {
+        let msg = Message::builder()
+            .from(self.from.clone())
+            .to(mail.to.parse().map_err(|e: AddressError| e.to_string())?)
+            .subject(mail.subject)
+            .body(mail.text)
+            .map_err(|e| e.to_string())?;
+        self.transport
+            .send(msg)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Which mailer the environment asks for.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MailerChoice {
+    Smtp(String),
+    Resend(String),
+    Log,
+}
+
+/// `MAILER_SMTP_URL` wins (local mailpit), then `RESEND_API_KEY`; otherwise the log mailer,
+/// which production refuses. Empty values count as unset.
+pub fn choose(
+    smtp_url: Option<String>,
+    resend_key: Option<String>,
+    production: bool,
+) -> Result<MailerChoice> {
+    let set = |v: Option<String>| v.filter(|s| !s.is_empty());
+    match (set(smtp_url), set(resend_key)) {
+        (Some(url), _) => Ok(MailerChoice::Smtp(url)),
+        (None, Some(key)) => Ok(MailerChoice::Resend(key)),
         _ if production => Err(Error::string("RESEND_API_KEY is required in production")),
-        _ => Ok(Arc::new(LogMailer)),
+        _ => Ok(MailerChoice::Log),
+    }
+}
+
+pub fn from_env(production: bool) -> Result<Arc<dyn Mailer>> {
+    let env = |k: &str| std::env::var(k).ok();
+    let from = env("MAIL_FROM").unwrap_or_else(|| "OpsAgent <login@opsagent.dev>".into());
+    Ok(
+        match choose(env("MAILER_SMTP_URL"), env("RESEND_API_KEY"), production)? {
+            MailerChoice::Smtp(url) => {
+                Arc::new(SmtpMailer::new(&url, &from).map_err(|e| Error::string(&e))?)
+            }
+            MailerChoice::Resend(key) => Arc::new(ResendMailer {
+                key,
+                from,
+                http: reqwest::Client::new(),
+            }),
+            MailerChoice::Log => Arc::new(LogMailer),
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &str) -> Option<String> {
+        Some(v.into())
+    }
+
+    #[test]
+    fn smtp_url_selects_smtp_even_with_resend_key() {
+        let c = choose(s("smtp://localhost:1025"), s("re_x"), false).unwrap();
+        assert_eq!(c, MailerChoice::Smtp("smtp://localhost:1025".into()));
+    }
+
+    #[test]
+    fn resend_then_log_then_production_refusal() {
+        assert_eq!(
+            choose(s(""), s("re_x"), false).unwrap(),
+            MailerChoice::Resend("re_x".into())
+        );
+        assert_eq!(choose(None, None, false).unwrap(), MailerChoice::Log);
+        assert!(choose(None, None, true).is_err());
+    }
+
+    #[test]
+    fn smtp_mailer_parses_url_and_from() {
+        assert!(SmtpMailer::new("smtp://localhost:1025", "OpsAgent <login@opsagent.dev>").is_ok());
+        assert!(SmtpMailer::new("smtp://localhost:1025", "not an address").is_err());
     }
 }
