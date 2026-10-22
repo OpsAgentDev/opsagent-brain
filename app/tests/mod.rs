@@ -1,3 +1,4 @@
+mod adapters;
 mod models;
 pub mod requests;
 mod tasks;
