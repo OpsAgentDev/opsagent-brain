@@ -117,6 +117,7 @@ async fn show(
 
 #[utoipa::path(post, path = "/orgs/{org}/connections/{id}/scan", tag = "runs", params(OrgIdPath),
     responses((status = 202, body = RunAccepted), (status = 404, body = Problem),
+        (status = 409, body = Problem, description = "Not connected or degraded (`connection_not_scannable`)."),
         (status = 429, body = Problem, description = "A scan ran within the last hour; see `Retry-After`.",
             headers(("Retry-After" = u64, description = "Seconds until a scan is allowed")))))]
 async fn scan(
@@ -126,7 +127,7 @@ async fn scan(
 ) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
     let org = connections::Column::OrganisationId;
     let c = find_in_org::<connections::Entity>(&ctx.db, org, scope.organisation_id, &id).await?;
-    let out = manual_scan::request(&ctx.db, &c, Utc::now()).await?;
+    let out = manual_scan::request(&ctx.db, &c, scope.user_id, Utc::now()).await?;
     if out.created {
         FullScanWorker::perform_later(&ctx, FullScanArgs { run_id: out.run.id }).await?;
     }

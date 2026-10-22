@@ -839,6 +839,16 @@
               }
             }
           },
+          "409": {
+            "description": "Not connected or degraded (`connection_not_scannable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "429": {
             "description": "A scan ran within the last hour; see `Retry-After`.",
             "headers": {

@@ -1,16 +1,20 @@
 //! On-demand `full_scan` for a connection, at most once per hour (any `full_scan` run counts).
+use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
-use opsagent_core::run::RunKey;
+use opsagent_core::{connection::ConnectionStatus as S, run::RunKey};
 use opsagent_ledger::{CreateRunOutcome, Storage};
 use sea_orm::{
     ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
     TransactionTrait,
 };
+use uuid::Uuid;
 
 use crate::{
     api_error::ApiError,
     models::{
         _entities::{connections, runs},
+        audit,
+        connections::status_of,
         ledger_storage::PgStorage,
     },
     workers::full_scan::JOB,
@@ -24,19 +28,36 @@ pub fn retry_after(last: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Option<u6
     (left > Duration::zero()).then(|| u64::try_from(left.num_seconds().max(1)).unwrap_or(1))
 }
 
-/// Creates the run (`scheduled_at = now`), or `rate_limited` within the window. The check and
-/// the insert hold the connection row lock, so two concurrent requests create one run.
+fn not_scannable(status: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "connection_not_scannable",
+        format!("A {status} connection cannot be scanned."),
+    )
+}
+
+/// For `actor`: creates the run (`scheduled_at = now`) and a `connection.scan_requested` audit
+/// row, or `rate_limited` within the window, or `connection_not_scannable` unless the connection
+/// is connected or degraded. Runs under the connection row lock, so two concurrent requests
+/// create one run.
 pub async fn request(
     db: &DatabaseConnection,
     c: &connections::Model,
+    actor: Uuid,
     now: DateTime<Utc>,
 ) -> Result<CreateRunOutcome, ApiError> {
     let txn = db.begin().await?;
-    connections::Entity::find_by_id(c.id)
+    let locked = connections::Entity::find_by_id(c.id)
+        .filter(connections::Column::OrganisationId.eq(c.organisation_id))
         .lock_exclusive()
         .one(&txn)
-        .await?;
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    if !matches!(status_of(&locked)?, S::Connected | S::Degraded) {
+        return Err(not_scannable(&locked.status));
+    }
     let last = runs::Entity::find()
+        .filter(runs::Column::OrganisationId.eq(c.organisation_id))
         .filter(runs::Column::ConnectionId.eq(c.id))
         .filter(runs::Column::JobType.eq(JOB))
         .order_by_desc(runs::Column::ScheduledAt)
@@ -58,7 +79,16 @@ pub async fn request(
             scheduled_at: now,
         })
         .await?;
-    storage.into_inner().commit().await?;
+    let txn = storage.into_inner();
+    audit::record(
+        &txn,
+        Some(c.organisation_id),
+        actor,
+        "connection.scan_requested",
+        Some(("connection", c.id.to_string())),
+    )
+    .await?;
+    txn.commit().await?;
     Ok(out)
 }
 

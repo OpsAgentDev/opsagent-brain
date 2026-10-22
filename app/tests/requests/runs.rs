@@ -1,5 +1,8 @@
-use loco_rs::testing::prelude::request_with_config;
-use opsagent_brain::app::App;
+use loco_rs::{prelude::*, testing::prelude::request_with_config};
+use opsagent_brain::{
+    app::App,
+    models::_entities::{audit_events, connections},
+};
 use serde_json::Value;
 use serial_test::serial;
 
@@ -65,6 +68,17 @@ async fn scan_is_once_per_hour() {
             .await
             .json();
         assert_eq!(r["job_type"], "full_scan");
+        let me: Value = req.get("/v1/auth/me").await.json();
+        let audit = audit_events::Entity::find()
+            .filter(audit_events::Column::Action.eq("connection.scan_requested"))
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .expect("audit row");
+        assert_eq!(audit.actor_type, "member");
+        assert_eq!(audit.actor_id.as_deref(), me["id"].as_str());
+        assert_eq!(audit.target_type.as_deref(), Some("connection"));
+        assert_eq!(audit.target_id, Some(conn.to_string()));
 
         let res = req.post(&url).add_header("X-CSRF-Token", &t).await;
         assert_eq!(res.status_code(), 429);
@@ -80,6 +94,33 @@ async fn scan_is_once_per_hour() {
             .add_header("X-CSRF-Token", &t)
             .await;
         assert_eq!(res.status_code(), 404);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn scan_needs_a_connected_or_degraded_connection() {
+    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+        let (t, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
+        for status in ["blocked", "disconnected", "pending"] {
+            let mut a: connections::ActiveModel = connections::Entity::find_by_id(conn)
+                .one(&ctx.db)
+                .await
+                .unwrap()
+                .unwrap()
+                .into();
+            a.status = Set(status.into());
+            a.update(&ctx.db).await.unwrap();
+            let res = req
+                .post(&format!("/v1/orgs/{org}/connections/{conn}/scan"))
+                .add_header("X-CSRF-Token", &t)
+                .await;
+            assert_eq!(res.status_code(), 409, "{status}");
+            assert_eq!(res.json::<Value>()["code"], "connection_not_scannable");
+        }
+        let runs: Value = req.get(&format!("/v1/orgs/{org}/runs")).await.json();
+        assert_eq!(runs["items"], serde_json::json!([]));
     })
     .await;
 }
