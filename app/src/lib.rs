@@ -5,3 +5,4 @@ pub mod mailers;
 pub mod middleware;
 pub mod models;
 pub mod settings;
+pub mod workers;

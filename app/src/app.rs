@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use loco_rs::{
     app::{AppContext, Hooks, Initializer},
-    bgworker::Queue,
+    bgworker::{BackgroundWorker, Queue},
     boot::{create_app, BootResult, StartMode},
     config::Config,
     controller::AppRoutes,
@@ -12,7 +12,7 @@ use loco_rs::{
 use migration::Migrator;
 use std::path::Path;
 
-use crate::{controllers, middleware::AuthInitializer};
+use crate::{controllers, middleware::AuthInitializer, workers::verify::VerifyWorker};
 
 pub struct App;
 #[async_trait]
@@ -49,10 +49,11 @@ impl Hooks for App {
             .add_route(controllers::auth::routes())
             .add_route(controllers::orgs::routes())
             .add_route(controllers::members::routes())
+            .add_route(controllers::connections::routes())
     }
 
-    async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {
-        Ok(())
+    async fn connect_workers(ctx: &AppContext, queue: &Queue) -> Result<()> {
+        queue.register(VerifyWorker::build(ctx)).await
     }
 
     fn register_tasks(_tasks: &mut Tasks) {}

@@ -11,6 +11,9 @@ pub fn prepare(ctx: &AppContext) -> Arc<CaptureMailer> {
         "OPSAGENT_KEK",
         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     );
+    std::env::set_var("OPSAGENT_CONNECTORS", "fake");
+    std::env::set_var("OPSAGENT_TEMPLATE_BASE_URL", TEMPLATE_BASE);
+    std::env::set_var("OPSAGENT_AWS_OUTBOUND_ROLE_ARN", OUTBOUND_ARN);
     let mail = Arc::new(CaptureMailer::default());
     let dynamic: Arc<dyn Mailer> = mail.clone();
     ctx.shared_store.insert(dynamic);
@@ -70,4 +73,55 @@ pub async fn create_org(req: &TestServer, csrf: &str, name: &str) -> Value {
         .await;
     assert_eq!(res.status_code(), 201, "{}", res.text());
     res.json::<Value>()
+}
+
+pub const TEMPLATE_BASE: &str = "https://templates.example.test";
+pub const OUTBOUND_ARN: &str = "arn:aws:iam::111111111111:role/opsagent-outbound";
+
+pub fn slug(org: &Value) -> String {
+    org["slug"].as_str().unwrap().to_string()
+}
+
+/// Creates a connection and returns the 201 body.
+pub async fn create_connection(
+    req: &TestServer,
+    csrf: &str,
+    org: &str,
+    provider: &str,
+    name: &str,
+) -> Value {
+    let res = req
+        .post(&format!("/v1/orgs/{org}/connections"))
+        .add_header("X-CSRF-Token", csrf)
+        .json(&json!({ "provider": provider, "display_name": name }))
+        .await;
+    assert_eq!(res.status_code(), 201, "{}", res.text());
+    res.json::<Value>()
+}
+
+pub async fn verify(
+    req: &TestServer,
+    csrf: &str,
+    org: &str,
+    id: &str,
+    role_arn: &str,
+) -> axum_test::TestResponse {
+    req.post(&format!("/v1/orgs/{org}/connections/{id}/verify"))
+        .add_header("X-CSRF-Token", csrf)
+        .json(&json!({ "role_arn": role_arn }))
+        .await
+}
+
+/// Owner signs in, creates an org and a fake connection for fixture `account`.
+pub async fn fake_connection(
+    req: &TestServer,
+    mail: &CaptureMailer,
+    email: &str,
+    org_name: &str,
+    account: &str,
+) -> (String, String, String) {
+    let t = sign_in(req, mail, email).await;
+    let org = slug(&create_org(req, &t, org_name).await);
+    let c = create_connection(req, &t, &org, "fake", account).await;
+    (t, org, c["id"].as_str().unwrap().to_string())
 }
