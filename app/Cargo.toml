@@ -28,6 +28,10 @@ chrono = "0.4"
 chrono-tz = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
 opsagent-secrets = { path = "../crates/secrets" }
+opsagent-core = { path = "../crates/core" }
+opsagent-ledger = { path = "../crates/ledger" }
+opsagent-connectors = { path = "../crates/connectors" }
+urlencoding = "2"
 
 [[bin]]
 name = "opsagent-brain"

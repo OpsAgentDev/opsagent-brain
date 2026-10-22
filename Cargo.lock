@@ -4410,6 +4410,9 @@ dependencies = [
  "loco-rs",
  "migration",
  "oauth2",
+ "opsagent-connectors",
+ "opsagent-core",
+ "opsagent-ledger",
  "opsagent-secrets",
  "rand 0.8.8",
  "redis 1.7.1",
@@ -4423,6 +4426,7 @@ dependencies = [
  "tokio",
  "tower-sessions",
  "tracing",
+ "urlencoding",
  "uuid",
 ]
 
