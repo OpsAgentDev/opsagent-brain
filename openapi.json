@@ -15,7 +15,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "csrf_token",
+        "operationId": "auth_csrf_token",
         "responses": {
           "200": {
             "content": {
@@ -44,7 +44,7 @@
           "auth"
         ],
         "summary": "Always 202, so the response never reveals whether an address is valid or known.",
-        "operationId": "request_link",
+        "operationId": "auth_request_link",
         "requestBody": {
           "content": {
             "application/json": {
@@ -67,7 +67,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "redeem_link",
+        "operationId": "auth_redeem_link",
         "requestBody": {
           "content": {
             "application/json": {
@@ -115,7 +115,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "me",
+        "operationId": "auth_me",
         "responses": {
           "200": {
             "content": {
@@ -143,7 +143,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "github_callback",
+        "operationId": "auth_github_callback",
         "parameters": [
           {
             "name": "code",
@@ -192,7 +192,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "github_start",
+        "operationId": "auth_github_start",
         "responses": {
           "200": {
             "content": {
@@ -220,7 +220,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "sign_out",
+        "operationId": "auth_sign_out",
         "responses": {
           "204": {}
         }
@@ -231,7 +231,7 @@
         "tags": [
           "members"
         ],
-        "operationId": "accept",
+        "operationId": "members_accept",
         "parameters": [
           {
             "name": "token",
@@ -288,7 +288,7 @@
         "tags": [
           "orgs"
         ],
-        "operationId": "list",
+        "operationId": "orgs_list",
         "responses": {
           "200": {
             "content": {
@@ -317,7 +317,7 @@
         "tags": [
           "orgs"
         ],
-        "operationId": "create_org",
+        "operationId": "orgs_create_org",
         "requestBody": {
           "content": {
             "application/json": {
@@ -364,7 +364,7 @@
         "tags": [
           "orgs"
         ],
-        "operationId": "show",
+        "operationId": "orgs_show",
         "parameters": [
           {
             "name": "org",
@@ -401,7 +401,7 @@
         "tags": [
           "orgs"
         ],
-        "operationId": "delete",
+        "operationId": "orgs_delete",
         "parameters": [
           {
             "name": "org",
@@ -439,7 +439,7 @@
         "tags": [
           "orgs"
         ],
-        "operationId": "update",
+        "operationId": "orgs_update",
         "parameters": [
           {
             "name": "org",
@@ -506,7 +506,7 @@
         "tags": [
           "connections"
         ],
-        "operationId": "list",
+        "operationId": "connections_list",
         "parameters": [
           {
             "name": "org",
@@ -546,7 +546,7 @@
         "tags": [
           "connections"
         ],
-        "operationId": "create",
+        "operationId": "connections_create",
         "parameters": [
           {
             "name": "org",
@@ -613,7 +613,7 @@
         "tags": [
           "connections"
         ],
-        "operationId": "show",
+        "operationId": "connections_show",
         "parameters": [
           {
             "name": "org",
@@ -659,7 +659,7 @@
         "tags": [
           "connections"
         ],
-        "operationId": "disconnect",
+        "operationId": "connections_disconnect",
         "parameters": [
           {
             "name": "org",
@@ -714,7 +714,7 @@
         "tags": [
           "connections"
         ],
-        "operationId": "update",
+        "operationId": "connections_update",
         "parameters": [
           {
             "name": "org",
@@ -799,7 +799,7 @@
         "tags": [
           "runs"
         ],
-        "operationId": "scan",
+        "operationId": "runs_scan",
         "parameters": [
           {
             "name": "org",
@@ -877,7 +877,7 @@
         "tags": [
           "connections"
         ],
-        "operationId": "verify",
+        "operationId": "connections_verify",
         "parameters": [
           {
             "name": "org",
@@ -962,7 +962,7 @@
         "tags": [
           "findings"
         ],
-        "operationId": "list",
+        "operationId": "findings_list",
         "parameters": [
           {
             "name": "org",
@@ -1064,7 +1064,7 @@
         "tags": [
           "findings"
         ],
-        "operationId": "show",
+        "operationId": "findings_show",
         "parameters": [
           {
             "name": "org",
@@ -1112,7 +1112,7 @@
         "tags": [
           "findings"
         ],
-        "operationId": "accept",
+        "operationId": "findings_accept",
         "parameters": [
           {
             "name": "org",
@@ -1179,7 +1179,7 @@
         "tags": [
           "findings"
         ],
-        "operationId": "reopen",
+        "operationId": "findings_reopen",
         "parameters": [
           {
             "name": "org",
@@ -1236,7 +1236,7 @@
         "tags": [
           "findings"
         ],
-        "operationId": "report_explanation",
+        "operationId": "findings_report_explanation",
         "parameters": [
           {
             "name": "org",
@@ -1295,7 +1295,7 @@
         "tags": [
           "findings"
         ],
-        "operationId": "snooze",
+        "operationId": "findings_snooze",
         "parameters": [
           {
             "name": "org",
@@ -1362,7 +1362,7 @@
         "tags": [
           "members"
         ],
-        "operationId": "invite",
+        "operationId": "members_invite",
         "parameters": [
           {
             "name": "org",
@@ -1429,7 +1429,7 @@
         "tags": [
           "members"
         ],
-        "operationId": "list",
+        "operationId": "members_list",
         "parameters": [
           {
             "name": "org",
@@ -1471,7 +1471,7 @@
         "tags": [
           "members"
         ],
-        "operationId": "remove",
+        "operationId": "members_remove",
         "parameters": [
           {
             "name": "org",
@@ -1529,7 +1529,7 @@
         "tags": [
           "resources"
         ],
-        "operationId": "list",
+        "operationId": "resources_list",
         "parameters": [
           {
             "name": "org",
@@ -1623,7 +1623,7 @@
         "tags": [
           "runs"
         ],
-        "operationId": "list",
+        "operationId": "runs_list",
         "parameters": [
           {
             "name": "org",
@@ -1709,7 +1709,7 @@
         "tags": [
           "runs"
         ],
-        "operationId": "show",
+        "operationId": "runs_show",
         "parameters": [
           {
             "name": "org",
