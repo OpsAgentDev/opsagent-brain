@@ -1,0 +1,18 @@
+[package]
+name = "opsagent-checks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Domain crate: keep framework-free (see scripts/check-crate-isolation.sh).
+[dependencies]
+opsagent-core = { path = "../core" }
+opsagent-connectors = { path = "../connectors" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+thiserror = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

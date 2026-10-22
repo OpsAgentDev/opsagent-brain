@@ -4432,6 +4432,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "opsagent-checks"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "opsagent-connectors",
+ "opsagent-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "opsagent-connectors"
 version = "0.1.0"
 dependencies = [
