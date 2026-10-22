@@ -22,3 +22,21 @@ pub async fn hit(
         .await?;
     Ok(n <= cap)
 }
+
+/// `SADD` plus `SCARD`, with the window's `EXPIRE` set when the set is new, atomically.
+const DISTINCT: &str = r#"redis.call('SADD', KEYS[1], ARGV[1]) if redis.call('TTL', KEYS[1]) < 0 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end return redis.call('SCARD', KEYS[1])"#;
+
+/// Adds `member` to the window's set at `key`; returns how many distinct members it holds.
+pub async fn distinct(
+    c: &mut redis::aio::MultiplexedConnection,
+    key: &str,
+    member: &str,
+    window_secs: i64,
+) -> redis::RedisResult<i64> {
+    Script::new(DISTINCT)
+        .key(key)
+        .arg(member)
+        .arg(window_secs)
+        .invoke_async(c)
+        .await
+}

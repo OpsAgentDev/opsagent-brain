@@ -14,7 +14,7 @@ use opsagent_brain::{
         integrations::open_token,
         members as member_model,
     },
-    services::recipients as recipient_service,
+    services::{mail_guard, recipients as recipient_service},
     settings::Settings,
 };
 use serde_json::{json, Value};
@@ -523,7 +523,7 @@ async fn unsubscribe_link_is_stable_and_suppresses_the_address() {
             .unwrap();
         assert!(row.unsubscribed_at.is_some());
         assert_eq!(audits(&ctx, "recipient.unsubscribe").await, 1);
-        let s = suppression(recipient_service::email_hash("EXT@example.com"))
+        let s = suppression(mail_guard::email_hash("EXT@example.com"))
             .one(&ctx.db)
             .await
             .unwrap()
@@ -613,7 +613,7 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
         .await;
         assert_eq!(res.status_code(), 201);
         assert_eq!(mails_to(&mail, "quiet@example.com"), 2);
-        let s = suppression(recipient_service::email_hash("quiet@example.com"))
+        let s = suppression(mail_guard::email_hash("quiet@example.com"))
             .one(&ctx.db)
             .await
             .unwrap()
@@ -647,13 +647,11 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
             }
         }
         assert_eq!(mails_to(&mail, "busy@example.com"), 3);
-        assert!(
-            suppression(recipient_service::email_hash("busy@example.com"))
-                .one(&ctx.db)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(suppression(mail_guard::email_hash("busy@example.com"))
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_none());
 
         // Per organisation: 20 a day. Six attempts above passed the address cap (5 sent, 1 refused
         // as ignored), so 14 remain.
@@ -726,15 +724,7 @@ async fn ignored_suppression_is_per_org_and_expires() {
         }
         assert_eq!(mails_to(&mail, "quiet@example.com"), 2);
 
-        // Org B still reaches the address (on a later day: the per-address daily cap is global).
-        let mut c = redis_of(&ctx).get_connection().unwrap();
-        let _: () = opsagent_ledger::redis::cmd("DEL")
-            .arg(format!(
-                "ratelimit:recipient_confirm:email:{}",
-                recipient_service::email_hash("quiet@example.com")
-            ))
-            .query(&mut c)
-            .unwrap();
+        // Org B still reaches the address.
         req.clear_cookies();
         let tb = sign_in(&req, &mail, "b@example.com").await;
         let org_b = slug(&create_org(&req, &tb, "Other").await);
@@ -755,6 +745,7 @@ async fn ignored_suppression_is_per_org_and_expires() {
             (chrono::Utc::now() - chrono::Duration::seconds(1)).into(),
         ));
         a.update(&ctx.db).await.unwrap();
+        let mut c = redis_of(&ctx).get_connection().unwrap();
         let keys: Vec<String> = opsagent_ledger::redis::cmd("KEYS")
             .arg("*recipient_confirm:*")
             .query(&mut c)
@@ -842,6 +833,162 @@ async fn connection_patch_sets_and_clears_slack_channel() {
         assert_eq!(
             patch("").await.json::<Value>()["slack_channel_id"],
             Value::Null
+        );
+    })
+    .await;
+}
+
+/// Owner `email` signs in (fresh session), creates an org with an extra connection; returns
+/// `(csrf, slug, [org-wide, connection 1, connection 2])` recipient routes.
+async fn org_with_routes(
+    req: &mut TestServer,
+    mail: &CaptureMailer,
+    email: &str,
+) -> (String, String, [Value; 3]) {
+    req.clear_cookies();
+    let (t, org, c1) = fake_connection(req, mail, email, email, "clean").await;
+    let c2 = create_connection(req, &t, &org, "fake", "clean").await["id"].clone();
+    (t, org, [Value::Null, json!(c1), c2])
+}
+
+/// Adds `email` on `route`, then confirms it if a confirm mail went out.
+async fn add_and_confirm(
+    req: &TestServer,
+    mail: &CaptureMailer,
+    t: &str,
+    org: &str,
+    email: &str,
+    route: &Value,
+) {
+    let before = mails_to(mail, email);
+    add_recipient(req, t, org, json!({"email": email, "connection_id": route})).await;
+    if mails_to(mail, email) > before {
+        let m = mail
+            .sent()
+            .into_iter()
+            .rev()
+            .find(|m| m.to == email)
+            .unwrap();
+        let tok = token_of(
+            m.text
+                .split_whitespace()
+                .find(|w| w.starts_with("http"))
+                .unwrap(),
+        );
+        let res = req
+            .post("/v1/recipients/confirm")
+            .json(&json!({"token": tok}))
+            .await;
+        assert_eq!(res.status_code(), 204);
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn three_orgs_unconfirmed_suppress_the_address_globally() {
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        for (i, owner) in [
+            "a@example.com",
+            "b@example.com",
+            "c@example.com",
+            "d@example.com",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let (t, org, _) = org_with_routes(&mut req, &mail, owner).await;
+            add_recipient(&req, &t, &org, json!({"email": "target@example.com"})).await;
+            // Two organisations' mails go out unconfirmed; the third trips the global row.
+            assert_eq!(
+                mails_to(&mail, "target@example.com"),
+                [1, 2, 2, 2][i],
+                "{owner}"
+            );
+        }
+        assert_eq!(mails_to(&mail, "target@example.com"), 2);
+        let row = email_suppressions::Entity::find()
+            .filter(email_suppressions::Column::OrganisationId.is_null())
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.reason, "ignored");
+        let left = row.expires_at.unwrap() - chrono::Utc::now().fixed_offset();
+        assert!(left.num_days() >= 89, "{left}");
+        // An unsubscribe then makes the global row permanent.
+        let r = recipients::Entity::find()
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        let tok = recipient_service::unsubscribe_token(&Settings::get(&ctx).session_secret, r.id);
+        assert_eq!(
+            req.post(&format!("/v1/unsubscribe/{tok}"))
+                .await
+                .status_code(),
+            204
+        );
+        let row = email_suppressions::Entity::find_by_id(row.id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (row.reason.as_str(), row.expires_at),
+            ("unsubscribed", None)
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn confirm_mails_per_address_cap_at_six_a_day_across_orgs() {
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        for owner in ["a@example.com", "b@example.com"] {
+            let (t, org, routes) = org_with_routes(&mut req, &mail, owner).await;
+            for r in &routes {
+                add_and_confirm(&req, &mail, &t, &org, "busy@example.com", r).await;
+            }
+        }
+        assert_eq!(mails_to(&mail, "busy@example.com"), 6);
+        let (t, org, routes) = org_with_routes(&mut req, &mail, "c@example.com").await;
+        add_and_confirm(&req, &mail, &t, &org, "busy@example.com", &routes[0]).await;
+        assert_eq!(mails_to(&mail, "busy@example.com"), 6);
+        // Confirmed everywhere, so nothing was suppressed.
+        assert_eq!(
+            email_suppressions::Entity::find()
+                .count(&ctx.db)
+                .await
+                .unwrap(),
+            0
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_user_creates_at_most_five_orgs_a_day() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "maker@example.com").await;
+        for i in 0..5 {
+            create_org(&req, &t, &format!("Org {i}")).await;
+        }
+        let res = req
+            .post("/v1/orgs")
+            .add_header("X-CSRF-Token", &t)
+            .json(&json!({ "name": "One too many" }))
+            .await;
+        assert_eq!(res.status_code(), 429);
+        assert_eq!(res.json::<Value>()["code"], "rate_limited");
+        assert!(res.headers().get("retry-after").is_some());
+        assert_eq!(
+            organisations::Entity::find().count(&ctx.db).await.unwrap(),
+            5
         );
     })
     .await;

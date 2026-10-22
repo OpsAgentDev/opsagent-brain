@@ -3,6 +3,7 @@ pub mod finding_actions;
 pub mod finding_lifecycle;
 pub mod integrations;
 pub mod inventory_upsert;
+pub mod mail_guard;
 pub mod manual_scan;
 pub mod members;
 pub mod orgs;

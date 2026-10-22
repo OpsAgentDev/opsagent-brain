@@ -1,7 +1,7 @@
 //! Email recipients of deliveries: owner adds (an email confirms by link, a member is active at
 //! once), public confirm by single-use token (SHA-256 at rest), and unsubscribe by a stable
-//! HMAC token. Confirm mails are capped per address and per organisation, and never go to a
-//! suppressed address; a capped or suppressed mail is answered as if sent.
+//! HMAC token. `mail_guard` decides whether a confirm mail may go out; a refused mail is
+//! answered as if sent.
 use axum::http::StatusCode;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use chrono::{Duration, Utc};
@@ -9,10 +9,10 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use opsagent_ledger::redis;
 use sea_orm::{
-    sea_query::OnConflict, ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait,
-    DatabaseConnection, DbErr, EntityTrait, QueryFilter, Set, SqlErr, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, Set,
+    SqlErr, TransactionTrait,
 };
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use uuid::Uuid;
 
 use crate::{
@@ -20,9 +20,7 @@ use crate::{
     mailers::{magic_link as mail, Mailer},
     models::{
         _entities::{
-            connections,
-            email_suppressions::{self, Column as S},
-            members, organisations,
+            connections, members, organisations,
             recipients::{self, Column as C},
             users,
         },
@@ -31,155 +29,12 @@ use crate::{
         now,
         users::normalize_email,
     },
-    services::rate_limit::{hit, DAY_SECS},
+    services::mail_guard,
 };
 
 pub const PENDING: &str = "pending";
 pub const ACTIVE: &str = "active";
 const CONFIRM_DAYS: i64 = 7;
-/// Confirm mails per address per day.
-pub const MAILS_PER_ADDRESS: i64 = 3;
-/// Confirm mails per organisation per day.
-pub const MAILS_PER_ORG: i64 = 20;
-/// Unconfirmed confirm mails per (org, address) in 30 days before the address is suppressed as
-/// `ignored` for that organisation.
-pub const UNCONFIRMED_CAP: i64 = 2;
-const UNCONFIRMED_WINDOW_SECS: i64 = 30 * DAY_SECS;
-
-/// Hex SHA-256 of the lowercased address: the suppression key (no plaintext email stored).
-pub fn email_hash(email: &str) -> String {
-    format!("{:x}", Sha256::digest(email.to_lowercase()))
-}
-
-/// Unconfirmed confirm mails are counted per (organisation, address).
-fn unconfirmed_key(organisation_id: Uuid, hash: &str) -> String {
-    format!("recipient_confirm:unconfirmed:{organisation_id}:{hash}")
-}
-
-/// Days an `ignored` suppression lasts.
-pub const IGNORED_DAYS: i64 = 90;
-
-/// Records a global `unsubscribed` suppression (kept if present).
-async fn suppress_unsubscribed(db: &impl ConnectionTrait, hash: String) -> Result<(), DbErr> {
-    let row = email_suppressions::ActiveModel {
-        id: Set(Uuid::new_v4()),
-        organisation_id: Set(None),
-        email_hash: Set(hash),
-        reason: Set("unsubscribed".into()),
-        expires_at: Set(None),
-        created_at: Set(now()),
-    };
-    upsert(
-        db,
-        row,
-        OnConflict::columns([S::OrganisationId, S::EmailHash])
-            .do_nothing()
-            .to_owned(),
-    )
-    .await
-}
-
-/// Records (or renews) a 90-day `ignored` suppression for `organisation_id` only.
-async fn suppress_ignored(
-    db: &impl ConnectionTrait,
-    organisation_id: Uuid,
-    hash: String,
-) -> Result<(), DbErr> {
-    let row = email_suppressions::ActiveModel {
-        id: Set(Uuid::new_v4()),
-        organisation_id: Set(Some(organisation_id)),
-        email_hash: Set(hash),
-        reason: Set("ignored".into()),
-        expires_at: Set(Some((Utc::now() + Duration::days(IGNORED_DAYS)).into())),
-        created_at: Set(now()),
-    };
-    let renew = OnConflict::columns([S::OrganisationId, S::EmailHash])
-        .update_column(S::ExpiresAt)
-        .to_owned();
-    upsert(db, row, renew).await
-}
-
-async fn upsert(
-    db: &impl ConnectionTrait,
-    row: email_suppressions::ActiveModel,
-    on: OnConflict,
-) -> Result<(), DbErr> {
-    email_suppressions::Entity::insert(row)
-        .on_conflict(on)
-        .exec_without_returning(db)
-        .await
-        .map(|_| ())
-}
-
-/// Whether mail from `organisation_id` to `email` is suppressed: a global unsubscribe, or an
-/// unexpired `ignored` row for that organisation. Every delivery mail checks this.
-pub async fn is_suppressed(
-    db: &impl ConnectionTrait,
-    organisation_id: Uuid,
-    email: &str,
-) -> Result<bool, DbErr> {
-    let found = email_suppressions::Entity::find()
-        .filter(S::EmailHash.eq(email_hash(email)))
-        .filter(
-            Condition::any().add(S::OrganisationId.is_null()).add(
-                Condition::all()
-                    .add(S::OrganisationId.eq(organisation_id))
-                    .add(S::ExpiresAt.gt(now())),
-            ),
-        )
-        .one(db)
-        .await?;
-    Ok(found.is_some())
-}
-
-/// Whether a confirm mail to `email` may go out now: not suppressed, within the daily caps,
-/// and not the third unconfirmed mail in 30 days (which suppresses the address as `ignored`
-/// for this organisation).
-/// Fails closed when Redis is unavailable.
-async fn may_mail(
-    db: &DatabaseConnection,
-    redis: &redis::Client,
-    organisation_id: Uuid,
-    email: &str,
-) -> Result<bool, ApiError> {
-    if is_suppressed(db, organisation_id, email).await? {
-        return Ok(false);
-    }
-    let hash = email_hash(email);
-    let counted = async {
-        let mut c = redis.get_multiplexed_async_connection().await?;
-        let address = format!("ratelimit:recipient_confirm:email:{hash}");
-        let org = format!("ratelimit:recipient_confirm:org:{organisation_id}");
-        if !hit(&mut c, &address, MAILS_PER_ADDRESS, DAY_SECS).await?
-            || !hit(&mut c, &org, MAILS_PER_ORG, DAY_SECS).await?
-        {
-            return Ok(Some(false));
-        }
-        let fresh = hit(
-            &mut c,
-            &unconfirmed_key(organisation_id, &hash),
-            UNCONFIRMED_CAP,
-            UNCONFIRMED_WINDOW_SECS,
-        )
-        .await?;
-        Ok::<_, redis::RedisError>(if fresh { Some(true) } else { None })
-    };
-    match counted.await {
-        Ok(Some(ok)) => Ok(ok),
-        Ok(None) => {
-            suppress_ignored(db, organisation_id, hash).await?;
-            Ok(false)
-        }
-        Err(_) => {
-            tracing::warn!(
-                error_code = "redis_unavailable",
-                "confirm mail limit unavailable, not sending"
-            );
-            Ok(false)
-        }
-    }
-}
-
 /// The HMAC key for unsubscribe tokens, derived from `SESSION_SECRET`.
 fn unsubscribe_mac(secret: &str, id: Uuid) -> Hmac<Sha256> {
     let mut key = [0u8; 32];
@@ -331,7 +186,7 @@ struct Confirm<'a> {
     token: &'a str,
 }
 
-/// Mails the confirm link unless `may_mail` refuses (answered as if sent either way).
+/// Mails the confirm link unless `mail_guard` refuses (answered as if sent either way).
 async fn send_confirm(
     db: &DatabaseConnection,
     redis: &redis::Client,
@@ -339,7 +194,7 @@ async fn send_confirm(
     web_base_url: &str,
     c: Confirm<'_>,
 ) -> Result<(), ApiError> {
-    if !may_mail(db, redis, c.organisation_id, c.email).await? {
+    if !mail_guard::may_send_confirm(db, redis, c.organisation_id, c.email).await? {
         return Ok(());
     }
     let org = organisations::Entity::find_by_id(c.organisation_id)
@@ -398,16 +253,7 @@ pub async fn confirm(
     )
     .await?;
     txn.commit().await?;
-    // A confirmed address is not ignoring us; best effort.
-    if let Ok(mut c) = redis.get_multiplexed_async_connection().await {
-        let _: redis::RedisResult<()> = redis::cmd("DEL")
-            .arg(unconfirmed_key(
-                row.organisation_id,
-                &email_hash(&row.email),
-            ))
-            .query_async(&mut c)
-            .await;
-    }
+    mail_guard::confirmed(redis, row.organisation_id, &row.email).await;
     Ok(())
 }
 
@@ -445,7 +291,7 @@ pub async fn unsubscribe(
         )
         .await?;
     }
-    suppress_unsubscribed(&txn, email_hash(&row.email)).await?;
+    mail_guard::suppress_unsubscribed(&txn, mail_guard::email_hash(&row.email)).await?;
     txn.commit().await?;
     Ok(())
 }
