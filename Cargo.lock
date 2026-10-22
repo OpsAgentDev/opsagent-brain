@@ -4428,6 +4428,7 @@ dependencies = [
  "tracing",
  "urlencoding",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

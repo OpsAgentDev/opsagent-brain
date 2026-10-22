@@ -11,17 +11,61 @@ pub async fn record(
     action: &str,
     target: Option<(&str, String)>,
 ) -> Result<(), DbErr> {
+    let actor = ("member", Some(actor_id.to_string()));
+    insert(
+        db,
+        organisation_id,
+        actor,
+        action,
+        target,
+        "success",
+        serde_json::json!({}),
+    )
+    .await
+}
+
+/// Audit row for work done by the system (workers), with an explicit outcome.
+pub async fn record_system(
+    db: &impl ConnectionTrait,
+    organisation_id: Uuid,
+    action: &str,
+    target: (&str, String),
+    outcome: &str,
+    metadata: serde_json::Value,
+) -> Result<(), DbErr> {
+    let actor = ("system", None);
+    insert(
+        db,
+        Some(organisation_id),
+        actor,
+        action,
+        Some(target),
+        outcome,
+        metadata,
+    )
+    .await
+}
+
+async fn insert(
+    db: &impl ConnectionTrait,
+    organisation_id: Option<Uuid>,
+    (actor_type, actor_id): (&str, Option<String>),
+    action: &str,
+    target: Option<(&str, String)>,
+    outcome: &str,
+    metadata: serde_json::Value,
+) -> Result<(), DbErr> {
     let (target_type, target_id) = target.unzip();
     audit_events::ActiveModel {
         id: Set(Uuid::new_v4()),
         organisation_id: Set(organisation_id),
-        actor_type: Set("member".into()),
-        actor_id: Set(Some(actor_id.to_string())),
+        actor_type: Set(actor_type.into()),
+        actor_id: Set(actor_id),
         action: Set(action.into()),
         target_type: Set(target_type.map(Into::into)),
         target_id: Set(target_id),
-        outcome: Set(Some("success".into())),
-        metadata: Set(serde_json::json!({})),
+        outcome: Set(Some(outcome.into())),
+        metadata: Set(metadata),
         created_at: Set(now()),
         updated_at: Set(now()),
     }

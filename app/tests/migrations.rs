@@ -51,6 +51,10 @@ async fn migrations_slice_schema_constraints_and_roundtrip() {
     exec(&db, &conn("pending", "")).await.unwrap();
     exec(&db, &conn("pending", "")).await.unwrap();
     exec(&db, &conn("pending", "1")).await.unwrap();
+    // A refused duplicate is recorded as blocked without squatting the account.
+    exec(&db, &conn("blocked", "1")).await.unwrap();
+    exec(&db, &conn("verifying", "")).await.unwrap();
+    assert!(exec(&db, &conn("revoked", "")).await.is_err());
     // Non-pending states require an account.
     assert!(exec(&db, &conn("connected", "")).await.is_err());
     // A disconnected row releases the account for a new connected row.

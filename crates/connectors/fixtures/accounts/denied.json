@@ -1,0 +1,12 @@
+{
+  "account": "denied",
+  "resources": [],
+  "cost_daily": [],
+  "verify": {
+    "assume_with_ok": false,
+    "assume_without_denied": true,
+    "account_matches": false,
+    "extra_grants": [],
+    "missing_grants": []
+  }
+}

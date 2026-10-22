@@ -30,6 +30,8 @@ pub struct Model {
     pub api_rate_ceiling: Option<i32>,
     pub first_connected_at: Option<DateTimeWithTimeZone>,
     pub billable_from: Option<DateTimeWithTimeZone>,
+    pub verify_denied_streak: i32,
+    pub verify_denied_first_at: Option<DateTimeWithTimeZone>,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }

@@ -32,6 +32,7 @@ opsagent-core = { path = "../crates/core" }
 opsagent-ledger = { path = "../crates/ledger" }
 opsagent-connectors = { path = "../crates/connectors" }
 urlencoding = "2"
+zeroize = "1"
 
 [[bin]]
 name = "opsagent-brain"
