@@ -6,7 +6,7 @@ use opsagent_core::run::RunStatus;
 use opsagent_ledger::RunChunkedOptions;
 use serde_json::json;
 use serial_test::serial;
-use wiremock::MockServer;
+use wiremock::{matchers::path, Mock, MockServer, ResponseTemplate};
 
 use super::deliver_briefing::{
     brief, finding, first_scan, mock_post, new_run, scan, slack_on, world,
@@ -100,6 +100,48 @@ async fn rate_limited_post_parks_the_run_then_falls_back_once_retries_are_spent(
         let sent = mail.sent();
         assert_eq!(sent.len(), 1);
         assert!(!sent[0].text.contains(NOTICE));
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn transient_5xx_parks_the_run_then_the_retry_delivers_to_slack_without_fallback() {
+    serve(|req, ctx| async move {
+        let w = world(&req, &ctx, "blip@example.com").await;
+        let mail = prepare(&ctx);
+        let slack = MockServer::start().await;
+        slack_on(&ctx, &w, &slack).await;
+        Mock::given(path("/chat.postMessage"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&slack)
+            .await;
+        mock_post(&slack, json!({"ok": true, "ts": "1.2"}), 1).await;
+        first_scan(&ctx, &w).await;
+
+        let id = new_run(&ctx, w.org, Some(w.conn), deliver_briefing::JOB, Utc::now()).await;
+        let status = deliver_briefing::run(&ctx, id, RunChunkedOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(status, RunStatus::Queued, "parked for retry, not fallback");
+        assert!(mail.sent().is_empty());
+
+        // The backoff has elapsed: the retry reaches Slack.
+        super::deliver_briefing::sql(
+            &ctx,
+            "UPDATE runs SET next_attempt_at = NULL, status = 'queued' WHERE id = $1",
+            vec![id.into()],
+        )
+        .await;
+        let status = deliver_briefing::run(&ctx, id, RunChunkedOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(status, RunStatus::Done);
+        assert!(mail.sent().is_empty(), "no fallback email");
+        // The failed 503 attempt plus the one delivered message (the ok mock is expect(1)).
+        assert_eq!(slack.received_requests().await.unwrap().len(), 2);
     })
     .await;
 }

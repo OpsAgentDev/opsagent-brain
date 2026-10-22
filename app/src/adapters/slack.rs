@@ -39,12 +39,12 @@ impl SlackError {
         }
     }
 
-    /// Worth retrying on the backoff: rate limits and Slack 5xx only; every other code is
-    /// permanent, so the caller falls back at once.
+    /// Worth retrying on the backoff: rate limits, Slack 5xx and transport failures (connect,
+    /// timeout, unparseable body); every other code is permanent, so the caller falls back at once.
     pub fn retryable(&self) -> bool {
         match self {
             Self::RateLimited(_) => true,
-            Self::Other(c) => c.starts_with("http_5"),
+            Self::Other(c) => c.starts_with("http_5") || c == "transport" || c == "bad_response",
             Self::Revoked | Self::ChannelGone => false,
         }
     }
@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn permanent_codes_map_to_revoked_or_channel_gone_and_only_limits_and_5xx_retry() {
+    fn permanent_codes_map_to_revoked_or_channel_gone_and_limits_5xx_and_transport_retry() {
         for c in ["account_inactive", "token_revoked", "invalid_auth"] {
             assert_eq!(SlackError::from_code(c, None), SlackError::Revoked, "{c}");
         }
@@ -279,7 +279,10 @@ mod tests {
         let retry = |e: SlackError| e.retryable();
         assert!(retry(SlackError::RateLimited(1)));
         assert!(retry(SlackError::Other("http_503".into())));
-        for e in ["http_404", "transport", "bad_response", "missing_scope"] {
+        for e in ["transport", "bad_response"] {
+            assert!(retry(SlackError::Other(e.into())), "{e}");
+        }
+        for e in ["http_404", "missing_scope"] {
             assert!(!retry(SlackError::Other(e.into())), "{e}");
         }
         assert!(!retry(SlackError::Revoked) && !retry(SlackError::ChannelGone));
