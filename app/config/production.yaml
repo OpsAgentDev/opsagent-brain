@@ -84,10 +84,9 @@ database:
   # development default of 1 serializes every request behind one connection.
   max_connections: <%= get_env(name="DB_MAX_CONNECTIONS", default="10") %>
   # Run migration up when application loaded.
-  # Convenient for single-instance deploys. Turn it off if you run more than
-  # one instance or migrate as a separate release step, so instances do not
-  # race to migrate the same database.
-  auto_migrate: <%= get_env(name="DB_AUTO_MIGRATE", default="true") %>
+  # Off: migrations run once as Railway's pre-deploy step on `api`. SeaORM takes no lock,
+  # so concurrent migrators would race.
+  auto_migrate: <%= get_env(name="DB_AUTO_MIGRATE", default="false") %>
   # Truncate database when application loaded. This is a dangerous operation, make sure that you using this flag only on dev environments or test mode
   dangerously_truncate: false
   # Recreating schema when application loaded.  This is a dangerous operation, make sure that you using this flag only on dev environments or test mode

@@ -53,6 +53,50 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build .
 
+  backup-image:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f deploy/backup/Dockerfile .
+
+  # The production image: refuses to boot with no variables; serves /readyz with a complete set.
+  production-boot:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_USER: loco, POSTGRES_PASSWORD: loco, POSTGRES_DB: opsagent_brain_prod }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U loco" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t brain .
+      - name: "No variables: non-zero exit naming the missing variable"
+        run: |
+          if out=$(docker run --rm brain 2>&1); then echo "booted without variables" >&2; exit 1; fi
+          echo "$out" | grep -q "environment variable .* not found"
+      - name: "Placeholder production set: /readyz 200 within 60s"
+        run: |
+          # Placeholders only; values from .env.docker.example, production-specific ones overridden.
+          set -- --network host --env-file .env.docker.example -e LOCO_ENV=production \
+            -e DATABASE_URL=postgres://loco:loco@localhost:5432/opsagent_brain_prod \
+            -e REDIS_URL=redis://localhost:6379 -e MAILER_SMTP_URL=smtp://127.0.0.1:1025 \
+            -e OPSAGENT_AWS_OUTBOUND_ROLE_ARN=arn:aws:iam::000000000000:role/placeholder \
+            -e OPSAGENT_TEMPLATE_BASE_URL=https://templates.example.test
+          docker run --rm "$@" brain opsagent-brain db migrate
+          docker run -d --name api "$@" brain
+          timeout 60 bash -c 'until curl -sf http://localhost:3000/readyz >/dev/null; do sleep 2; done'
+      - if: failure()
+        run: docker logs api
+
   compose-smoke:
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest

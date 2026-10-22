@@ -1,6 +1,6 @@
 # Deploying brain on Railway
 
-Source of truth: `docs/tech-spec/deployment.md` in the architecture repo. Railway builds the root `Dockerfile` and deploys on push to `main`; `railway.json` sets the pre-deploy migration (`opsagent-brain db migrate`), the `/readyz` healthcheck and the restart policy. The three services below share that image and differ only in start command and variables. `railway.json` applies to all three; the migration is idempotent, but migrations must stay backward compatible (expand/contract) because `worker` and `scheduler` restart after `api`.
+Source of truth: `docs/tech-spec/deployment.md` in the architecture repo. Railway builds the root `Dockerfile` and deploys on push to `main`; `railway.json` sets the pre-deploy migration (`opsagent-brain db migrate`), the `/readyz` healthcheck and the restart policy. The three services below share that image and differ only in start command and variables. Only `api` may run the pre-deploy command: in the Railway settings of `worker` and `scheduler`, clear the pre-deploy command (and the healthcheck) so they do not inherit `railway.json`'s. Migrations are not serialised: SeaORM's migrator takes no lock, so two concurrent `db migrate` runs can race. Hence one migrator (`api` pre-deploy) and `DB_AUTO_MIGRATE` defaulting to false in production. Migrations must stay backward compatible (expand/contract) because `worker` and `scheduler` restart after `api`.
 
 | Service | Start command | Replicas | Extra variables |
 |---|---|---|---|
@@ -8,7 +8,7 @@ Source of truth: `docs/tech-spec/deployment.md` in the architecture repo. Railwa
 | `worker` | `opsagent-brain start --worker` | 1..N | `DRAINING_SECONDS=120` |
 | `scheduler` | `opsagent-brain scheduler` | exactly 1 | `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS=0`, `DRAINING_SECONDS=30` |
 
-The scheduler must never overlap itself during a deploy, hence overlap 0 and one replica. `worker` and `scheduler` have no HTTP server, so turn the healthcheck off for them in the Railway service settings (override of `railway.json`).
+The scheduler must never overlap itself during a deploy, hence overlap 0 and one replica.
 
 ## Variables (set on all three services; `app/config/production.yaml` fails boot if a required one is missing)
 
@@ -25,7 +25,7 @@ After a deploy (Railway deploys itself on push to `main`), run the manual step: 
 
 ## Backups
 
-PITR is on for the Railway Postgres service. A fifth service `pg-backup` runs `deploy/backup/pg_dump.sh` nightly: a Railway cron service (cron schedule `0 3 * * *`) whose image has `postgresql-client` and `awscli`, with variables `DATABASE_URL`, `BACKUP_BUCKET`, `BACKUP_ENDPOINT_URL` (R2 endpoint; omit for S3), `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (sealed). Set a 30-day expiry lifecycle rule on the bucket's `postgres/` prefix.
+PITR is on for the Railway Postgres service. A fifth service `pg-backup` runs `deploy/backup/pg_dump.sh` nightly: a Railway cron service (cron schedule `0 3 * * *`) built from `deploy/backup/Dockerfile` (build context: repo root; the image runs `pg_dump.sh`), with variables `DATABASE_URL`, `BACKUP_BUCKET`, `BACKUP_ENDPOINT_URL` (R2 endpoint; omit for S3), `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (sealed). Set a 30-day expiry lifecycle rule on the bucket's `postgres/` prefix.
 
 ### Monthly restore test checklist
 
