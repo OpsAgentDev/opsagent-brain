@@ -4,6 +4,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use uuid::Uuid;
 use zeroize::Zeroizing;
 
 /// blob = nonce (12) || ciphertext.
@@ -14,8 +15,8 @@ pub struct WrappedDek {
 }
 
 pub trait Kek: Send + Sync {
-    fn wrap(&self, dek: &[u8; 32]) -> Result<WrappedDek>;
-    fn unwrap(&self, w: &WrappedDek) -> Result<Zeroizing<[u8; 32]>>;
+    fn wrap(&self, organisation_id: Uuid, dek: &[u8; 32]) -> Result<WrappedDek>;
+    fn unwrap(&self, organisation_id: Uuid, w: &WrappedDek) -> Result<Zeroizing<[u8; 32]>>;
     fn current_version(&self) -> u32;
 }
 
@@ -31,6 +32,16 @@ fn wrapping_key(raw: &[u8; 32], version: u32) -> Zeroizing<[u8; 32]> {
         .expand(format!("opsagent-kek-v{version}").as_bytes(), &mut *out)
         .expect("32 bytes is a valid HKDF-SHA256 output length");
     out
+}
+
+/// Binds a wrapped DEK to its organisation and KEK version.
+fn dek_aad(organisation_id: Uuid, version: u32) -> Vec<u8> {
+    [
+        b"opsagent-dek".as_slice(),
+        organisation_id.as_bytes(),
+        &version.to_be_bytes(),
+    ]
+    .concat()
 }
 
 fn decode_key(s: &str) -> Result<[u8; 32]> {
@@ -82,15 +93,19 @@ impl EnvKek {
 }
 
 impl Kek for EnvKek {
-    fn wrap(&self, dek: &[u8; 32]) -> Result<WrappedDek> {
-        let s = encrypt(&wrapping_key(&self.current, self.version), dek, b"");
+    fn wrap(&self, organisation_id: Uuid, dek: &[u8; 32]) -> Result<WrappedDek> {
+        let s = encrypt(
+            &wrapping_key(&self.current, self.version),
+            dek,
+            &dek_aad(organisation_id, self.version),
+        );
         Ok(WrappedDek {
             blob: [s.nonce.as_slice(), &s.ciphertext].concat(),
             version: self.version,
         })
     }
 
-    fn unwrap(&self, w: &WrappedDek) -> Result<Zeroizing<[u8; 32]>> {
+    fn unwrap(&self, organisation_id: Uuid, w: &WrappedDek) -> Result<Zeroizing<[u8; 32]>> {
         let raw = self.raw_for(w.version)?;
         if w.blob.len() < 12 {
             return Err(SecretsError::Decrypt);
@@ -100,7 +115,11 @@ impl Kek for EnvKek {
             ciphertext: ct.to_vec(),
             nonce: nonce.try_into().unwrap(),
         };
-        let pt = decrypt(&wrapping_key(raw, w.version), &sealed, b"")?;
+        let pt = decrypt(
+            &wrapping_key(raw, w.version),
+            &sealed,
+            &dek_aad(organisation_id, w.version),
+        )?;
         let mut dek = Zeroizing::new([0u8; 32]);
         if pt.len() != 32 {
             return Err(SecretsError::Decrypt);
