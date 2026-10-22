@@ -252,7 +252,7 @@ async fn regional(
     let rds = aws_sdk_rds::Client::new(&cfg);
     let ct = aws_sdk_cloudtrail::Client::new(&cfg);
     let gd = aws_sdk_guardduty::Client::new(&cfg);
-    let (mut a, b, c, d, e, mut f, g, h, i) = tokio::join!(
+    let (mut a, mut b, c, d, e, mut f, g, h, i) = tokio::join!(
         gate(want("ec2"), ec2_instances(&ec2, t)),
         gate(want("ebs"), ec2_volumes(&ec2, t)),
         gate(want("eip"), ec2_addresses(&ec2, t)),
@@ -263,7 +263,7 @@ async fn regional(
         gate(want("cloudtrail"), cloudtrails(&ct, t)),
         gate(want("guardduty"), guardduty(&gd, t)),
     );
-    protection_and_ml(&cfg, t, want, out, &mut a, &mut f).await;
+    protection_and_ml(&cfg, t, want, out, &mut a, &mut b, &mut f).await;
     for (svc, r) in [
         ("ec2", a),
         ("ebs", b),
@@ -280,14 +280,15 @@ async fn regional(
 }
 
 /// Backups, certificates, log groups and training jobs; GPU utilisation onto `ec2`
-/// instances and backup coverage onto `rds` instances. Backups are read for an `rds`-only
-/// scope too (coverage needs them) but only returned when `backup` is wanted.
+/// instances and backup coverage onto `ec2`, `ebs` and `rds`. Backups are read for those
+/// scopes too (coverage needs them) but only returned or reported when `backup` is wanted.
 async fn protection_and_ml(
     cfg: &SdkConfig,
     t: &Target<'_>,
     want: &impl Fn(&str) -> bool,
     out: &mut Collect,
     ec2: &mut Option<Result<Vec<Resource>>>,
+    ebs: &mut Option<Result<Vec<Resource>>>,
     rds: &mut Option<Result<Vec<Resource>>>,
 ) {
     let now = Utc::now();
@@ -298,23 +299,31 @@ async fn protection_and_ml(
     let cw = aws_sdk_cloudwatch::Client::new(cfg);
     let mut cert_errs = vec![];
     let (bkp, certs, groups, jobs) = tokio::join!(
-        gate(want("backup") || want("rds"), backups(&bk, t, now)),
+        gate(
+            ["backup", "rds", "ec2", "ebs"].iter().any(|s| want(s)),
+            backups(&bk, t, now)
+        ),
         gate(want("acm"), certificates(&acm, t, &mut cert_errs)),
         gate(want("logs"), log_groups(&lg, t)),
         gate(want("sagemaker"), training_jobs(&sm, t)),
     );
-    if let (Some(Ok(dbs)), Some(Ok(plans))) = (rds.as_mut(), bkp.as_ref()) {
-        mark_backup_coverage(dbs, plans);
+    if let Some(Ok(plans)) = bkp.as_ref() {
+        for v in [&mut *ec2, &mut *ebs, &mut *rds]
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            mark_backup_coverage(v, plans);
+        }
     }
     if let Some(Ok(v)) = ec2.as_mut() {
         if let Some(e) = gpu_utilisation(&cw, v, now).await {
             out.record("cloudwatch", t.region, Some(Err(e)));
         }
     }
-    let bkp = match bkp {
-        Some(Ok(_)) if !want("backup") => None,
-        r => r,
-    };
+    // Read only for coverage: its failure leaves the coverage keys `null` and is reported by
+    // the `backup` chunk itself, so other chunks are not marked partial for it.
+    let bkp = bkp.filter(|_| want("backup"));
     for (svc, r) in [
         ("backup", bkp),
         ("acm", certs),

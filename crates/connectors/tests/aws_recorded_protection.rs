@@ -38,19 +38,18 @@ fn plan_member(id: &str, name: &str) -> aws_sdk_backup::types::BackupPlansListMe
         .build()
 }
 
-/// One selection per plan: `sel-<plan>` naming `resources`, optionally by tag too.
+type SelBuilder = aws_sdk_backup::types::builders::BackupSelectionBuilder;
+
+/// One selection per plan, `sel-<plan>`, shaped by `shape`.
 fn selection_rules(
     plan: &'static str,
-    resources: &'static [&'static str],
-    by_tag: bool,
+    shape: fn(SelBuilder) -> SelBuilder,
 ) -> [aws_smithy_mocks::Rule; 2] {
     use aws_sdk_backup::operation::{
         get_backup_selection::GetBackupSelectionOutput,
         list_backup_selections::ListBackupSelectionsOutput,
     };
-    use aws_sdk_backup::types::{
-        BackupSelection, BackupSelectionsListMember, Condition, ConditionType,
-    };
+    use aws_sdk_backup::types::{BackupSelection, BackupSelectionsListMember};
     let list = mock!(aws_sdk_backup::Client::list_backup_selections)
         .match_requests(move |r| r.backup_plan_id() == Some(plan))
         .then_output(move || {
@@ -65,22 +64,11 @@ fn selection_rules(
     let get = mock!(aws_sdk_backup::Client::get_backup_selection)
         .match_requests(move |r| r.selection_id() == Some(&format!("sel-{plan}")))
         .then_output(move || {
-            let mut sel = BackupSelection::builder()
+            let sel = BackupSelection::builder()
                 .selection_name("s")
-                .iam_role_arn("arn:aws:iam::123456789012:role/backup")
-                .set_resources(Some(resources.iter().map(|r| r.to_string()).collect()));
-            if by_tag {
-                sel = sel.list_of_tags(
-                    Condition::builder()
-                        .condition_type(ConditionType::Stringequals)
-                        .condition_key("backup")
-                        .condition_value("yes")
-                        .build()
-                        .unwrap(),
-                );
-            }
+                .iam_role_arn("arn:aws:iam::123456789012:role/backup");
             GetBackupSelectionOutput::builder()
-                .backup_selection(sel.build().unwrap())
+                .backup_selection(shape(sel).build().unwrap())
                 .build()
         });
     [list, get]
@@ -88,8 +76,50 @@ fn selection_rules(
 
 const DB1: &str = "arn:aws:rds:eu-west-1:123456789012:db:db-1";
 const DB2: &str = "arn:aws:rds:eu-west-1:123456789012:db:db-2";
+const DB5: &str = "arn:aws:rds:eu-west-1:123456789012:db:db-5";
 const DB_NEW: &str = "arn:aws:rds:eu-west-1:123456789012:db:db-new";
 const DB_OLD: &str = "arn:aws:rds:eu-west-1:123456789012:db:db-old";
+const DB_EXCL: &str = "arn:aws:rds:eu-west-1:123456789012:db:db-excluded";
+const DB_COND: &str = "arn:aws:rds:eu-west-1:123456789012:db:db-cond";
+const DB_JOB: &str = "arn:aws:rds:eu-west-1:123456789012:db:db-job";
+
+fn ok_selection(b: SelBuilder) -> SelBuilder {
+    b.resources(DB1)
+        .resources(DB5)
+        .resources(DB_EXCL)
+        .not_resources(DB_EXCL)
+}
+
+fn tag_selection(b: SelBuilder) -> SelBuilder {
+    use aws_sdk_backup::types::{Condition, ConditionType};
+    b.resources("arn:aws:rds:*:*:db:*").list_of_tags(
+        Condition::builder()
+            .condition_type(ConditionType::Stringequals)
+            .condition_key("backup")
+            .condition_value("yes")
+            .build()
+            .unwrap(),
+    )
+}
+
+/// Explicit ARN narrowed by Conditions: the ARN alone is not trusted.
+fn conditioned_selection(b: SelBuilder) -> SelBuilder {
+    use aws_sdk_backup::types::{ConditionParameter, Conditions};
+    b.resources(DB_COND).conditions(
+        Conditions::builder()
+            .string_equals(
+                ConditionParameter::builder()
+                    .condition_key("aws:ResourceTag/backup")
+                    .condition_value("yes")
+                    .build(),
+            )
+            .build(),
+    )
+}
+
+fn new_selection(b: SelBuilder) -> SelBuilder {
+    b.resources(DB_NEW)
+}
 
 #[tokio::test]
 async fn backup_plans_selections_jobs_and_vaults_map_to_contract() {
@@ -106,6 +136,7 @@ async fn backup_plans_selections_jobs_and_vaults_map_to_contract() {
             .backup_plans_list(plan_member("p-ok", "nightly"))
             .backup_plans_list(plan_member("p-bad", "weekly"))
             .backup_plans_list(plan_member("p-new", "fresh"))
+            .backup_plans_list(plan_member("p-cond", "tagged"))
             .build()
     });
     let job = |plan: &str, res: &str, state: S, at: &str| {
@@ -124,10 +155,14 @@ async fn backup_plans_selections_jobs_and_vaults_map_to_contract() {
                 .backup_jobs(job("p-ok", DB1, S::Completed, "2026-09-30T00:00:00Z"))
                 // Still running: no outcome, does not move last_job_at.
                 .backup_jobs(job("p-ok", DB1, S::Running, "2026-09-30T12:00:00Z"))
+                // Same plan, another resource failed.
+                .backup_jobs(job("p-ok", DB5, S::Failed, "2026-09-30T01:00:00Z"))
                 // db-old was removed from p-ok; its failure no longer counts.
                 .backup_jobs(job("p-ok", DB_OLD, S::Failed, "2026-09-30T06:00:00Z"))
+                .backup_jobs(job("p-ok", DB_EXCL, S::Completed, "2026-09-30T06:00:00Z"))
                 .backup_jobs(job("p-bad", DB2, S::Completed, "2026-09-20T00:00:00Z"))
                 .backup_jobs(job("p-bad", DB2, S::Aborted, "2026-09-27T00:00:00Z"))
+                .backup_jobs(job("p-cond", DB_JOB, S::Completed, "2026-09-28T00:00:00Z"))
                 .build()
         });
     let rule = |copy: Option<&str>| {
@@ -166,22 +201,30 @@ async fn backup_plans_selections_jobs_and_vaults_map_to_contract() {
             )
             .build()
     });
-    let [ok_l, ok_g] = selection_rules("p-ok", &[DB1], false);
-    let [bad_l, bad_g] = selection_rules("p-bad", &["arn:aws:rds:*:*:db:*"], true);
-    let [new_l, new_g] = selection_rules("p-new", &[DB_NEW], false);
+    let [ok_l, ok_g] = selection_rules("p-ok", ok_selection);
+    let [bad_l, bad_g] = selection_rules("p-bad", tag_selection);
+    let [new_l, new_g] = selection_rules("p-new", new_selection);
+    let [cond_l, cond_g] = selection_rules("p-cond", conditioned_selection);
     let b = mock_client!(
         aws_sdk_backup,
         RuleMode::MatchAny,
-        [&plans, &jobs, &get_plan, &vaults, &ok_l, &ok_g, &bad_l, &bad_g, &new_l, &new_g]
+        [
+            &plans, &jobs, &get_plan, &vaults, &ok_l, &ok_g, &bad_l, &bad_g, &new_l, &new_g,
+            &cond_l, &cond_g
+        ]
     );
     let r = backups(&b, &T, now()).await.unwrap();
     let find = |id: &str| r.iter().find(|x| x.identity.ends_with(id)).unwrap();
     assert_eq!(find(":p-ok").name, "nightly");
+    // NotResources removes db-excluded; plan-level status is FAILED (db-5).
     assert_eq!(
         find(":p-ok").attributes,
-        json!({"service": "backup", "plan": true, "selections": [DB1],
-               "last_job_status": "COMPLETED", "last_job_at": "2026-09-30T00:00:00Z",
-               "iam_role_arns": ["arn:aws:iam::123456789012:role/backup"]})
+        json!({"service": "backup", "plan": true, "selections": [DB1, DB5],
+               "last_job_status": "FAILED", "last_job_at": "2026-09-30T01:00:00Z",
+               "iam_role_arns": ["arn:aws:iam::123456789012:role/backup"],
+               "resource_jobs": {
+                   DB1: {"status": "COMPLETED", "at": "2026-09-30T00:00:00Z"},
+                   DB5: {"status": "FAILED", "at": "2026-09-30T01:00:00Z"}}})
     );
     // Wildcard selection: covered through its job; ABORTED normalises to FAILED.
     let bad = &find(":p-bad").attributes;
@@ -192,6 +235,8 @@ async fn backup_plans_selections_jobs_and_vaults_map_to_contract() {
     assert_eq!(new["selections"], json!([DB_NEW]));
     assert_eq!(new["last_job_status"], json!(null));
     assert_eq!(new["last_job_at"], json!(null));
+    // Conditions: the explicit ARN is not trusted, the job's resource is.
+    assert_eq!(find(":p-cond").attributes["selections"], json!([DB_JOB]));
     assert_eq!(
         find(":backup-vault:Default").attributes,
         json!({"service": "backup", "vault": true, "cross_account": false})
@@ -215,15 +260,36 @@ async fn backup_plans_selections_jobs_and_vaults_map_to_contract() {
         attributes: json!({"service": "rds", "in_backup_plan": null}),
         observed_at: now(),
     };
-    let mut dbs: Vec<Resource> = [DB1, DB2, DB_NEW, DB_OLD].map(rds).to_vec();
+    let ids = [DB1, DB5, DB2, DB_NEW, DB_OLD, DB_EXCL, DB_COND, DB_JOB];
+    let mut dbs: Vec<Resource> = ids.map(rds).to_vec();
     mark_backup_coverage(&mut dbs, &r);
-    let covered: Vec<_> = dbs
+    let got: Vec<_> = dbs
         .iter()
-        .map(|d| d.attributes["in_backup_plan"].clone())
+        .map(|d| {
+            let a = &d.attributes;
+            (
+                a["in_backup_plan"].clone(),
+                a["backup_last_job_status"].clone(),
+            )
+        })
         .collect();
+    let want = |c: bool, s: serde_json::Value| (json!(c), s);
     assert_eq!(
-        covered,
-        [json!(true), json!(true), json!(true), json!(false)]
+        got,
+        [
+            want(true, json!("COMPLETED")),
+            want(true, json!("FAILED")),
+            want(true, json!("FAILED")),
+            want(true, json!(null)),
+            want(false, json!(null)),
+            want(false, json!(null)),
+            want(false, json!(null)),
+            want(true, json!("COMPLETED")),
+        ]
+    );
+    assert_eq!(
+        dbs[1].attributes["backup_last_job_at"],
+        "2026-09-30T01:00:00Z"
     );
 }
 
@@ -674,8 +740,8 @@ async fn simulate_restore_splits_allowed_and_denied() {
         eval("rds:RestoreDBInstanceFromDBSnapshot", D::Allowed, &[]),
         eval("ec2:RunInstances", D::Allowed, &[]),
     ]);
-    let r = simulate_restore(&iam, ROLE).await.unwrap();
-    assert!(!r.unknown);
+    let r = simulate_restore(&iam, ROLE, "123456789012").await.unwrap();
+    assert!(r.unknown.is_empty());
     assert_eq!(r.denied, vec!["kms:CreateGrant", "kms:Decrypt"]);
     assert_eq!(
         r.allowed,
@@ -696,27 +762,30 @@ async fn simulate_restore_all_allowed() {
             .map(|a| eval(a, D::Allowed, &[]))
             .collect(),
     );
-    let r = simulate_restore(&iam, ROLE).await.unwrap();
-    assert!(!r.unknown && r.denied.is_empty());
+    let r = simulate_restore(&iam, ROLE, "123456789012").await.unwrap();
+    assert!(r.unknown.is_empty() && r.denied.is_empty());
     assert_eq!(r.allowed.len(), 5);
 }
 
 #[tokio::test]
-async fn simulate_restore_missing_context_is_unknown() {
+async fn simulate_restore_missing_context_is_unknown_per_action_and_keeps_explicit_deny() {
     use aws_sdk_iam::types::PolicyEvaluationDecisionType as D;
     let iam = simulate_client(vec![
         eval("backup:StartRestoreJob", D::Allowed, &[]),
+        eval("kms:CreateGrant", D::ExplicitDeny, &["kms:ViaService"]),
         eval("kms:Decrypt", D::ImplicitDeny, &["kms:ViaService"]),
+        eval("ec2:RunInstances", D::ImplicitDeny, &[]),
     ]);
-    let r = simulate_restore(&iam, ROLE).await.unwrap();
-    assert!(r.unknown);
-    assert!(r.denied.is_empty());
+    let r = simulate_restore(&iam, ROLE, "123456789012").await.unwrap();
+    assert_eq!(r.allowed, vec!["backup:StartRestoreJob"]);
+    assert_eq!(r.denied, vec!["ec2:RunInstances", "kms:CreateGrant"]);
+    assert_eq!(r.unknown, vec!["kms:Decrypt"]);
 }
 
 #[tokio::test]
-async fn simulate_restore_missing_or_foreign_role_is_unknown() {
+async fn simulate_restore_role_outcomes() {
     use aws_sdk_iam::operation::simulate_principal_policy::SimulatePrincipalPolicyError;
-    for code in ["NoSuchEntity", "AccessDenied"] {
+    let failing = |code: &'static str| {
         let rule = mock!(aws_sdk_iam::Client::simulate_principal_policy).then_error(move || {
             SimulatePrincipalPolicyError::generic(
                 aws_sdk_iam::error::ErrorMetadata::builder()
@@ -724,20 +793,33 @@ async fn simulate_restore_missing_or_foreign_role_is_unknown() {
                     .build(),
             )
         });
-        let iam = mock_client!(aws_sdk_iam, RuleMode::Sequential, [&rule]);
-        let r = simulate_restore(&iam, ROLE).await.unwrap();
-        assert!(
-            r.unknown && r.denied.is_empty() && r.allowed.is_empty(),
-            "{code}"
-        );
-    }
-    let rule = mock!(aws_sdk_iam::Client::simulate_principal_policy).then_error(|| {
-        SimulatePrincipalPolicyError::generic(
-            aws_sdk_iam::error::ErrorMetadata::builder()
-                .code("Throttling")
-                .build(),
+        (
+            mock_client!(aws_sdk_iam, RuleMode::Sequential, [&rule]),
+            rule,
         )
-    });
-    let iam = mock_client!(aws_sdk_iam, RuleMode::Sequential, [&rule]);
-    assert!(simulate_restore(&iam, ROLE).await.is_err());
+    };
+    let all_unknown = |r: &opsagent_connectors::SimulationResult| {
+        r.unknown == RESTORE_ACTIONS && r.denied.is_empty() && r.allowed.is_empty()
+    };
+    // Missing role: every action unknown.
+    let (iam, _) = failing("NoSuchEntity");
+    assert!(all_unknown(
+        &simulate_restore(&iam, ROLE, "123456789012").await.unwrap()
+    ));
+    // Role in another account: unknown without calling IAM.
+    let (iam, rule) = failing("AccessDenied");
+    assert!(all_unknown(
+        &simulate_restore(&iam, ROLE, "999999999999").await.unwrap()
+    ));
+    assert_eq!(rule.num_calls(), 0);
+    // AccessDenied on our own simulate call: our permission gap, an error with its code.
+    let err = simulate_restore(&iam, ROLE, "123456789012")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, opsagent_connectors::ConnectorError::Api { code: Some(c), .. } if c == "AccessDenied"),
+        "{err:?}"
+    );
+    let (iam, _) = failing("Throttling");
+    assert!(simulate_restore(&iam, ROLE, "123456789012").await.is_err());
 }

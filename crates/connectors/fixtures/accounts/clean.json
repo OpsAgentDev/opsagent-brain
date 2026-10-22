@@ -124,7 +124,9 @@
         "service": "rds",
         "publicly_accessible": false,
         "backup_retention_days": 7,
-        "in_backup_plan": true
+        "in_backup_plan": true,
+        "backup_last_job_status": "COMPLETED",
+        "backup_last_job_at": "2026-09-30T00:00:00Z"
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -146,7 +148,13 @@
         "last_job_at": "2026-09-30T00:00:00Z",
         "iam_role_arns": [
           "arn:aws:iam::000000000000:role/backup"
-        ]
+        ],
+        "resource_jobs": {
+          "db-ok": {
+            "status": "COMPLETED",
+            "at": "2026-09-30T00:00:00Z"
+          }
+        }
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },

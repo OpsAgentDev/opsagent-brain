@@ -152,9 +152,11 @@ impl Connector for AwsConnector {
         role_arn: &str,
     ) -> Result<SimulationResult> {
         let (arn, ext, _, ctx) = aws_role(creds)?;
+        let own = client::parse_role_arn(arn)?.account;
         let session = self
             .session(arn, ext, ctx, simulate::SIMULATE_ACTIONS)
             .await?;
-        simulate::simulate_restore(&aws_sdk_iam::Client::new(&session), role_arn).await
+        let iam = aws_sdk_iam::Client::new(&session);
+        simulate::simulate_restore(&iam, role_arn, &own).await
     }
 }

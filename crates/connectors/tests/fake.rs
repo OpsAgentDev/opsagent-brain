@@ -171,10 +171,20 @@ async fn noisy_has_every_backup_cert_logging_and_gpu_shape() {
         .filter(|r| r.attributes["plan"] == true && r.attributes["last_job_status"] == "FAILED")
         .collect();
     assert_eq!(failed.len(), 1);
-    assert_eq!(
-        failed[0].attributes["selections"].as_array().unwrap().len(),
-        1
-    );
+    // The failed plan covers two resources: one failed, one completed.
+    let covered = failed[0].attributes["selections"].as_array().unwrap();
+    let mut statuses: Vec<_> = inv
+        .iter()
+        .filter(|r| covered.iter().any(|c| c == r.identity.as_str()))
+        .map(|r| r.attributes["backup_last_job_status"].as_str().unwrap())
+        .collect();
+    statuses.sort_unstable();
+    assert_eq!(statuses, ["COMPLETED", "FAILED"]);
+    let failed_resources = inv
+        .iter()
+        .filter(|r| r.service() != "backup" && r.attributes["backup_last_job_status"] == "FAILED")
+        .count();
+    assert_eq!(failed_resources, 1);
     assert_eq!(count(&inv, "rds", |a| a["backup_retention_days"] == 1), 1);
     assert_eq!(count(&inv, "backup", |a| a["vault"] == true), 1);
     // Certificates.
@@ -249,6 +259,14 @@ async fn clean_has_no_backup_cert_logging_or_gpu_problem() {
     assert_eq!(count(&inv, "backup", |a| a["cross_account"] == true), 0);
     assert!(count(&inv, "rds", |a| a["in_backup_plan"] == true) >= 1);
     assert_eq!(count(&inv, "rds", |a| a["in_backup_plan"] != true), 0);
+    assert!(inv
+        .iter()
+        .filter(|r| r.service() != "backup")
+        .all(|r| r.attributes["backup_last_job_status"] != "FAILED"));
+    assert!(inv
+        .iter()
+        .filter(|r| r.service() != "backup")
+        .all(|r| r.attributes["backup_last_job_status"] != "FAILED"));
     assert_eq!(
         count(&inv, "rds", |a| a["backup_retention_days"]
             .as_u64()
@@ -290,7 +308,7 @@ async fn fake_simulation_and_metrics_come_from_the_fixture() {
         .simulate_restore(&creds("clean"), "arn:aws:iam::000000000000:role/backup")
         .await
         .unwrap();
-    assert!(s.denied.is_empty() && s.allowed.len() == 5);
+    assert!(s.denied.is_empty() && s.unknown.is_empty() && s.allowed.len() == 5);
     let q = MetricQuery {
         resource_identity: "i-gpu".into(),
         metric: "gpu_util_avg".into(),

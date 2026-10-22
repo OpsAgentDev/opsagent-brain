@@ -100,7 +100,10 @@
         "service": "ebs",
         "attached": true,
         "size_gb": 100,
-        "monthly_cost_usd": 10.0
+        "monthly_cost_usd": 10.0,
+        "in_backup_plan": true,
+        "backup_last_job_status": "COMPLETED",
+        "backup_last_job_at": "2026-09-27T00:00:00Z"
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -197,7 +200,9 @@
         "service": "rds",
         "publicly_accessible": false,
         "backup_retention_days": 7,
-        "in_backup_plan": true
+        "in_backup_plan": true,
+        "backup_last_job_status": "FAILED",
+        "backup_last_job_at": "2026-09-27T00:00:00Z"
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -308,7 +313,9 @@
         "service": "rds",
         "publicly_accessible": false,
         "backup_retention_days": 1,
-        "in_backup_plan": true
+        "in_backup_plan": true,
+        "backup_last_job_status": "COMPLETED",
+        "backup_last_job_at": "2026-09-30T00:00:00Z"
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -324,7 +331,9 @@
         "service": "rds",
         "publicly_accessible": false,
         "backup_retention_days": 7,
-        "in_backup_plan": false
+        "in_backup_plan": false,
+        "backup_last_job_status": null,
+        "backup_last_job_at": null
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -346,7 +355,13 @@
         "last_job_at": "2026-09-30T00:00:00Z",
         "iam_role_arns": [
           "arn:aws:iam::000000000000:role/backup"
-        ]
+        ],
+        "resource_jobs": {
+          "db-short": {
+            "status": "COMPLETED",
+            "at": "2026-09-30T00:00:00Z"
+          }
+        }
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -362,13 +377,24 @@
         "service": "backup",
         "plan": true,
         "selections": [
-          "db-main"
+          "db-main",
+          "vol-used"
         ],
         "last_job_status": "FAILED",
         "last_job_at": "2026-09-27T00:00:00Z",
         "iam_role_arns": [
           "arn:aws:iam::000000000000:role/backup"
-        ]
+        ],
+        "resource_jobs": {
+          "db-main": {
+            "status": "FAILED",
+            "at": "2026-09-27T00:00:00Z"
+          },
+          "vol-used": {
+            "status": "COMPLETED",
+            "at": "2026-09-27T00:00:00Z"
+          }
+        }
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },

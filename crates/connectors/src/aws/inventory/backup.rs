@@ -85,22 +85,38 @@ async fn selections(b: &aws_sdk_backup::Client, plan_id: &str) -> Result<Selecte
             let Some(sel) = got.backup_selection() else {
                 continue;
             };
-            for r in sel.resources() {
-                if r.contains('*') {
-                    out.dynamic = true;
-                } else {
-                    out.explicit.insert(r.clone());
-                }
-            }
-            out.dynamic |= !sel.list_of_tags().is_empty();
             out.roles.insert(sel.iam_role_arn().to_owned());
+            // Tags, wildcards and Conditions are resolved by AWS: trust only the jobs.
+            let conditioned = sel.conditions().is_some_and(|c| {
+                !(c.string_equals().is_empty()
+                    && c.string_not_equals().is_empty()
+                    && c.string_like().is_empty()
+                    && c.string_not_like().is_empty())
+            });
+            if conditioned
+                || !sel.list_of_tags().is_empty()
+                || sel.resources().iter().any(|r| r.contains('*'))
+            {
+                out.dynamic = true;
+                continue;
+            }
+            // shortcut: exact `NotResources` ARNs only; wildcard exclusions need glob matching.
+            let excluded: BTreeSet<&String> = sel.not_resources().iter().collect();
+            out.explicit.extend(
+                sel.resources()
+                    .iter()
+                    .filter(|r| !excluded.contains(r))
+                    .cloned(),
+            );
         }
     }
     Ok(out)
 }
 
-/// `last_job_status`: FAILED when any covered resource's latest finished job failed, else
-/// COMPLETED when one completed, else `null` (selected but never ran in the window).
+/// Plan-level display: `last_job_status` is FAILED when any covered resource's latest finished
+/// job failed, else COMPLETED when one completed, else `null` (never ran in the window).
+/// `resource_jobs` holds each covered resource's latest finished job; `mark_backup_coverage`
+/// copies it onto the resource, which is what per-resource findings read.
 fn plan_attributes(jobs: &Jobs, plan_id: &str, sel: Selected) -> serde_json::Value {
     let mut covered = sel.explicit;
     if sel.dynamic {
@@ -110,10 +126,11 @@ fn plan_attributes(jobs: &Jobs, plan_id: &str, sel: Selected) -> serde_json::Val
                 .map(|(_, r)| r.clone()),
         );
     }
-    let runs: Vec<(i64, &str)> = covered
+    let per: BTreeMap<&String, (i64, &str)> = covered
         .iter()
-        .filter_map(|r| jobs.get(&(plan_id.to_owned(), r.clone())).copied())
+        .filter_map(|r| Some((r, *jobs.get(&(plan_id.to_owned(), r.clone()))?)))
         .collect();
+    let runs: Vec<(i64, &str)> = per.values().copied().collect();
     let status = ["FAILED", "COMPLETED"]
         .into_iter()
         .find(|s| runs.iter().any(|(_, x)| x == s));
@@ -123,9 +140,17 @@ fn plan_attributes(jobs: &Jobs, plan_id: &str, sel: Selected) -> serde_json::Val
         "plan": true,
         "selections": covered,
         "last_job_status": status,
-        "last_job_at": at.and_then(|a| DateTime::from_timestamp(a, 0)).map(rfc3339),
+        "last_job_at": at.and_then(ts),
         "iam_role_arns": sel.roles,
+        "resource_jobs": per
+            .iter()
+            .map(|(r, (at, st))| (r.to_string(), json!({"status": st, "at": ts(*at)})))
+            .collect::<serde_json::Map<_, _>>(),
     })
+}
+
+fn ts(secs: i64) -> Option<String> {
+    DateTime::from_timestamp(secs, 0).map(rfc3339)
 }
 
 fn vault(t: &Target<'_>, arn: &str, name: &str, cross_account: bool) -> Resource {
@@ -196,19 +221,37 @@ pub async fn backups(
     Ok(out)
 }
 
-/// Sets `in_backup_plan` on RDS instances: true when some plan's `selections` names it.
-pub fn mark_backup_coverage(rds: &mut [Resource], backup: &[Resource]) {
-    let covered: BTreeSet<&str> = backup
+/// Sets `in_backup_plan` (some plan's `selections` names it) and `backup_last_job_status` /
+/// `backup_last_job_at` (its own most recent finished job across those plans, else `null`)
+/// on each resource. Snapshots are skipped.
+pub fn mark_backup_coverage(resources: &mut [Resource], backup: &[Resource]) {
+    let plans: Vec<&serde_json::Value> = backup
         .iter()
         .filter(|r| r.attributes["plan"] == true)
-        .flat_map(|r| r.attributes["selections"].as_array().into_iter().flatten())
-        .filter_map(|s| s.as_str())
+        .map(|r| &r.attributes)
         .collect();
-    for r in rds
+    for r in resources
         .iter_mut()
-        .filter(|r| r.service() == "rds" && r.attributes["snapshot"] != true)
+        .filter(|r| r.attributes["snapshot"] != true)
     {
-        let hit = covered.contains(r.identity.as_str());
-        r.attributes["in_backup_plan"] = json!(hit);
+        let id = r.identity.as_str();
+        let covering = plans.iter().filter(|p| {
+            p["selections"]
+                .as_array()
+                .is_some_and(|s| s.iter().any(|x| x == id))
+        });
+        let mut hit = false;
+        let mut last: Option<&serde_json::Value> = None;
+        for p in covering {
+            hit = true;
+            let job = &p["resource_jobs"][id];
+            if job.is_object() && last.is_none_or(|l| job["at"].as_str() > l["at"].as_str()) {
+                last = Some(job);
+            }
+        }
+        let a = &mut r.attributes;
+        a["in_backup_plan"] = json!(hit);
+        a["backup_last_job_status"] = last.map_or(json!(null), |j| j["status"].clone());
+        a["backup_last_job_at"] = last.map_or(json!(null), |j| j["at"].clone());
     }
 }
