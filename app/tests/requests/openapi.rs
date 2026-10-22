@@ -41,10 +41,10 @@ async fn served_to_owners_only() {
         assert_eq!(doc["servers"][0]["url"], "https://brain.opsagent.dev/v1");
         for p in [
             "/orgs/{org}/findings",
-            "/orgs/{org}/findings/{id}",
             "/orgs/{org}/findings/{id}/accept",
             "/orgs/{org}/resources",
             "/orgs/{org}/runs/{id}",
+            "/orgs/{org}/connections/{id}/scan",
             "/orgs/{org}/connections",
             "/orgs/{org}/members",
             "/auth/me",

@@ -47,3 +47,39 @@ async fn list_and_detail_with_stats() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn scan_is_once_per_hour() {
+    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+        let (t, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
+        let url = format!("/v1/orgs/{org}/connections/{conn}/scan");
+
+        let res = req.post(&url).await;
+        assert_eq!(res.status_code(), 403, "csrf required");
+        let res = req.post(&url).add_header("X-CSRF-Token", &t).await;
+        assert_eq!(res.status_code(), 202, "{}", res.text());
+        let run_id = res.json::<Value>()["run_id"].as_str().unwrap().to_owned();
+        let r: Value = req
+            .get(&format!("/v1/orgs/{org}/runs/{run_id}"))
+            .await
+            .json();
+        assert_eq!(r["job_type"], "full_scan");
+
+        let res = req.post(&url).add_header("X-CSRF-Token", &t).await;
+        assert_eq!(res.status_code(), 429);
+        assert_eq!(res.json::<Value>()["code"], "rate_limited");
+        let after: u64 = res.header("retry-after").to_str().unwrap().parse().unwrap();
+        assert!(after > 3500 && after <= 3600, "{after}");
+
+        let res = req
+            .post(&format!(
+                "/v1/orgs/{org}/connections/{}/scan",
+                uuid::Uuid::new_v4()
+            ))
+            .add_header("X-CSRF-Token", &t)
+            .await;
+        assert_eq!(res.status_code(), 404);
+    })
+    .await;
+}
