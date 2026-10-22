@@ -93,7 +93,8 @@
       "tags": {},
       "attributes": {
         "service": "cloudtrail",
-        "logging": true
+        "logging": true,
+        "bucket_writable": true
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -108,6 +109,93 @@
       "attributes": {
         "service": "guardduty",
         "enabled": true
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "clean",
+      "region": "local",
+      "kind": "database",
+      "identity": "db-ok",
+      "name": "db-ok",
+      "tags": {},
+      "attributes": {
+        "service": "rds",
+        "publicly_accessible": false,
+        "backup_retention_days": 7,
+        "in_backup_plan": true
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "clean",
+      "region": "local",
+      "kind": "storage",
+      "identity": "plan-nightly",
+      "name": "plan-nightly",
+      "tags": {},
+      "attributes": {
+        "service": "backup",
+        "plan": true,
+        "selections": [
+          "db-ok"
+        ],
+        "last_job_status": "COMPLETED",
+        "last_job_at": "2026-09-30T00:00:00Z",
+        "iam_role_arns": [
+          "arn:aws:iam::000000000000:role/backup"
+        ]
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "clean",
+      "region": "local",
+      "kind": "storage",
+      "identity": "vault-default",
+      "name": "vault-default",
+      "tags": {},
+      "attributes": {
+        "service": "backup",
+        "vault": true,
+        "cross_account": false
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "clean",
+      "region": "local",
+      "kind": "certificate",
+      "identity": "cert-ok",
+      "name": "cert-ok",
+      "tags": {},
+      "attributes": {
+        "service": "acm",
+        "not_after": "2027-04-19T00:00:00Z",
+        "renewal_status": "SUCCESS",
+        "in_use_by": [
+          "sg-ok"
+        ],
+        "managed": true
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "clean",
+      "region": "local",
+      "kind": "log",
+      "identity": "/app/clean",
+      "name": "/app/clean",
+      "tags": {},
+      "attributes": {
+        "service": "logs",
+        "retention_days": 30,
+        "stored_bytes": 1000000
       },
       "observed_at": "2026-10-01T00:00:00Z"
     }
@@ -271,5 +359,15 @@
     "account_matches": true,
     "extra_grants": [],
     "missing_grants": []
+  },
+  "simulate_restore": {
+    "allowed": [
+      "backup:StartRestoreJob",
+      "kms:CreateGrant",
+      "kms:Decrypt",
+      "rds:RestoreDBInstanceFromDBSnapshot",
+      "ec2:RunInstances"
+    ],
+    "denied": []
   }
 }
