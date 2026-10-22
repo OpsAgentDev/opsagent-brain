@@ -1,5 +1,6 @@
 pub mod csrf;
 pub mod org_scope;
+pub mod request_span;
 pub mod session;
 
 use async_trait::async_trait;
