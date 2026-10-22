@@ -1,22 +1,30 @@
 //! Inventory: raw AWS responses mapped into `Resource`. Attribute keys are the contract checks
 //! read; they match `fixtures/accounts/noisy.json`. One file per service family.
 
+mod acm;
+mod backup;
 mod ec2;
+mod gpu;
 mod iam;
 mod logging;
+mod logs;
 mod rds;
 mod s3;
 
+pub use acm::certificates;
+pub use backup::{backups, mark_backup_coverage};
 pub use ec2::{ec2_addresses, ec2_instances, ec2_volumes, load_balancers, security_groups};
+pub use gpu::{gpu_utilisation, training_jobs};
 pub use iam::{credential_report, credential_report_users, iam_users};
 pub use logging::{cloudtrails, guardduty};
+pub use logs::log_groups;
 pub use rds::{rds_instances, rds_snapshots};
 pub use s3::s3_buckets;
 
 use super::client::provider_err;
 use crate::{ConnectorError, InventoryResult, Result, Scope, ServiceError};
 use aws_config::{Region, SdkConfig};
-use chrono::Utc;
+use chrono::{DateTime, SecondsFormat, Utc};
 use opsagent_core::resource::{Provider, Resource, ResourceKind};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -44,6 +52,16 @@ pub(crate) const INVENTORY_ACTIONS: &[&str] = &[
     "cloudtrail:GetTrailStatus",
     "guardduty:ListDetectors",
     "guardduty:GetDetector",
+    "backup:ListBackupPlans",
+    "backup:GetBackupPlan",
+    "backup:ListBackupJobs",
+    "backup:ListBackupVaults",
+    "acm:ListCertificates",
+    "acm:DescribeCertificate",
+    "logs:DescribeLogGroups",
+    "cloudwatch:GetMetricData",
+    "cloudwatch:ListMetrics",
+    "sagemaker:ListTrainingJobs",
 ];
 
 /// Account and region a call is made in; builds ARNs and `Resource`s.
@@ -96,6 +114,14 @@ pub fn strip_env(v: &mut Value) {
         Value::Array(xs) => xs.iter_mut().for_each(strip_env),
         _ => {}
     }
+}
+
+fn rfc3339(t: DateTime<Utc>) -> String {
+    t.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+fn rfc3339_aws(t: &aws_sdk_backup::primitives::DateTime) -> Option<String> {
+    DateTime::from_timestamp(t.secs(), t.subsec_nanos()).map(rfc3339)
 }
 
 fn name_or<'a>(tags: &'a BTreeMap<String, String>, id: &'a str) -> &'a str {
@@ -226,7 +252,7 @@ async fn regional(
     let rds = aws_sdk_rds::Client::new(&cfg);
     let ct = aws_sdk_cloudtrail::Client::new(&cfg);
     let gd = aws_sdk_guardduty::Client::new(&cfg);
-    let (a, b, c, d, e, f, g, h, i) = tokio::join!(
+    let (mut a, b, c, d, e, mut f, g, h, i) = tokio::join!(
         gate(want("ec2"), ec2_instances(&ec2, t)),
         gate(want("ebs"), ec2_volumes(&ec2, t)),
         gate(want("eip"), ec2_addresses(&ec2, t)),
@@ -237,6 +263,7 @@ async fn regional(
         gate(want("cloudtrail"), cloudtrails(&ct, t)),
         gate(want("guardduty"), guardduty(&gd, t)),
     );
+    protection_and_ml(&cfg, t, want, out, &mut a, &mut f).await;
     for (svc, r) in [
         ("ec2", a),
         ("ebs", b),
@@ -247,6 +274,51 @@ async fn regional(
         ("rds", g),
         ("cloudtrail", h),
         ("guardduty", i),
+    ] {
+        out.record(svc, t.region, r);
+    }
+}
+
+/// Backups, certificates, log groups and training jobs; GPU utilisation onto `ec2`
+/// instances and backup coverage onto `rds` instances. Backups are read for an `rds`-only
+/// scope too (coverage needs them) but only returned when `backup` is wanted.
+async fn protection_and_ml(
+    cfg: &SdkConfig,
+    t: &Target<'_>,
+    want: &impl Fn(&str) -> bool,
+    out: &mut Collect,
+    ec2: &mut Option<Result<Vec<Resource>>>,
+    rds: &mut Option<Result<Vec<Resource>>>,
+) {
+    let now = Utc::now();
+    let bk = aws_sdk_backup::Client::new(cfg);
+    let acm = aws_sdk_acm::Client::new(cfg);
+    let lg = aws_sdk_cloudwatchlogs::Client::new(cfg);
+    let sm = aws_sdk_sagemaker::Client::new(cfg);
+    let cw = aws_sdk_cloudwatch::Client::new(cfg);
+    let (bkp, certs, groups, jobs) = tokio::join!(
+        gate(want("backup") || want("rds"), backups(&bk, t, now)),
+        gate(want("acm"), certificates(&acm, t)),
+        gate(want("logs"), log_groups(&lg, t)),
+        gate(want("sagemaker"), training_jobs(&sm, t)),
+    );
+    if let (Some(Ok(dbs)), Some(Ok(plans))) = (rds.as_mut(), bkp.as_ref()) {
+        mark_backup_coverage(dbs, plans);
+    }
+    if let Some(Ok(v)) = ec2.as_mut() {
+        if let Err(e) = gpu_utilisation(&cw, v, now).await {
+            out.record("ec2", t.region, Some(Err(e)));
+        }
+    }
+    let bkp = match bkp {
+        Some(Ok(_)) if !want("backup") => None,
+        r => r,
+    };
+    for (svc, r) in [
+        ("backup", bkp),
+        ("acm", certs),
+        ("logs", groups),
+        ("sagemaker", jobs),
     ] {
         out.record(svc, t.region, r);
     }

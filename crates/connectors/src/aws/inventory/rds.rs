@@ -15,6 +15,8 @@ pub async fn rds_instances(rds: &aws_sdk_rds::Client, t: &Target<'_>) -> Result<
                 "service": "rds",
                 "publicly_accessible": db.publicly_accessible(),
                 "backup_retention_days": db.backup_retention_period(),
+                // Set by `mark_backup_coverage`; `null` when backups were not read.
+                "in_backup_plan": null,
             });
             let tags = db
                 .tag_list()

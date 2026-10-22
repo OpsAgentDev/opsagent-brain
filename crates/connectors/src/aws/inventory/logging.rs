@@ -28,7 +28,12 @@ pub async fn cloudtrails(ct: &aws_sdk_cloudtrail::Client, t: &Target<'_>) -> Res
             arn.to_owned(),
             tr.name().unwrap_or_default(),
             BTreeMap::new(),
-            json!({"service": "cloudtrail", "logging": status.is_logging().unwrap_or(false)}),
+            json!({
+                "service": "cloudtrail",
+                "logging": status.is_logging().unwrap_or(false),
+                // A delivery error means the trail cannot write to its bucket.
+                "bucket_writable": status.latest_delivery_error().is_none_or(str::is_empty),
+            }),
         ));
     }
     Ok(out)
