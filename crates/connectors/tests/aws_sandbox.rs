@@ -5,7 +5,7 @@
 
 use opsagent_connectors::{
     aws::{AwsConnector, AwsOutbound},
-    CallContext, Connector, Credentials, Scope,
+    CallContext, Connector, Credentials, Scope, TerraformState,
 };
 use uuid::Uuid;
 
@@ -13,7 +13,10 @@ fn creds() -> Option<Credentials> {
     Some(Credentials::AwsRole {
         role_arn: std::env::var("OPSAGENT_SANDBOX_ROLE_ARN").ok()?,
         external_id: std::env::var("OPSAGENT_SANDBOX_EXTERNAL_ID").ok()?,
-        terraform_state: std::env::var("OPSAGENT_SANDBOX_TERRAFORM_STATE").is_ok(),
+        terraform_state: std::env::var("OPSAGENT_SANDBOX_TF_BUCKET")
+            .ok()
+            .zip(std::env::var("OPSAGENT_SANDBOX_TF_PREFIX").ok())
+            .map(|(bucket, prefix)| TerraformState { bucket, prefix }),
         context: CallContext {
             organisation_id: Uuid::now_v7(),
             run_id: Uuid::now_v7(),

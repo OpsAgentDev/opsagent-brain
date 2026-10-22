@@ -25,13 +25,15 @@ aws-sdk-cloudtrail = "1.127.0"
 aws-sdk-guardduty = "1.151.0"
 aws-sdk-costexplorer = "1.135.0"
 urlencoding = "2"
+serde_yaml = "0.9"
 
 [dev-dependencies]
 aws-sdk-costexplorer = { version = "1.135.0", features = ["test-util"] }
 aws-sdk-ec2 = { version = "1.270.0", features = ["test-util"] }
 aws-sdk-iam = { version = "1.130.0", features = ["test-util"] }
 aws-sdk-sts = { version = "1.121.0", features = ["test-util"] }
+aws-smithy-http-client = { version = "1.5.1", features = ["test-util"] }
 aws-smithy-mocks = "0.3.0"
 aws-smithy-types = "1.9.0"
-serde_yaml = "0.9.34"
+http = "1"
 sha2 = "0.10"

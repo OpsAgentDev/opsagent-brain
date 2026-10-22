@@ -12,6 +12,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Default)]
 pub struct AwsOutbound {
     pub credentials: Option<SharedCredentialsProvider>,
+    /// ARN customer trust policies must name. `None`: derived from `GetCallerIdentity`.
+    pub principal_arn: Option<String>,
     /// Added to every AssumeRole on top of `tenant`, `trigger`, `run`.
     pub session_tags: BTreeMap<String, String>,
 }
@@ -61,8 +63,12 @@ pub fn session_name(ctx: &CallContext) -> String {
     )
 }
 
-pub(crate) fn provider_err(e: impl std::error::Error) -> ConnectorError {
-    ConnectorError::Provider(DisplayErrorContext(e).to_string())
+/// SDK error to `ConnectorError::Api`, keeping the AWS error code.
+pub(crate) fn provider_err(e: impl std::error::Error + ProvideErrorMetadata) -> ConnectorError {
+    ConnectorError::Api {
+        code: e.code().map(str::to_owned),
+        message: DisplayErrorContext(e).to_string(),
+    }
 }
 
 pub fn is_access_denied(e: &impl ProvideErrorMetadata) -> bool {

@@ -2,7 +2,7 @@
 //! read; they match `fixtures/accounts/noisy.json`.
 
 use super::client::provider_err;
-use crate::{InventoryResult, Result, Scope, ServiceError};
+use crate::{ConnectorError, InventoryResult, Result, Scope, ServiceError};
 use aws_config::{Region, SdkConfig};
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -478,11 +478,7 @@ pub async fn s3_buckets(
             .await;
             match res {
                 Ok(r) => out.push(r),
-                Err(e) => errors.push(ServiceError {
-                    service: "s3".into(),
-                    region: format!("bucket:{name}"),
-                    message: e.to_string(),
-                }),
+                Err(e) => errors.push(service_error("s3", &format!("bucket:{name}"), &e)),
             }
         }
     }
@@ -495,8 +491,27 @@ fn days_since(ts: &str, now: DateTime<Utc>) -> Option<i64> {
     Some((now.date_naive() - d).num_days())
 }
 
-/// Parses the IAM credential report CSV into identity resources (root row skipped).
-/// `admin` comes from `admins` (users with `AdministratorAccess` attached).
+/// Splits one CSV record; handles quoted fields and doubled quotes.
+fn csv_fields(line: &str) -> Vec<String> {
+    let (mut out, mut cur, mut quoted) = (vec![], String::new(), false);
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                cur.push('"');
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => out.push(std::mem::take(&mut cur)),
+            c => cur.push(c),
+        }
+    }
+    out.push(cur);
+    out
+}
+
+/// Parses the IAM credential report CSV into identity resources. The `<root_account>` row
+/// becomes a `root: true` resource; `admin` for users comes from `admins`.
 pub fn credential_report_users(
     csv: &str,
     admins: &dyn Fn(&str) -> bool,
@@ -504,26 +519,46 @@ pub fn credential_report_users(
     now: DateTime<Utc>,
 ) -> Vec<Resource> {
     let mut lines = csv.lines();
-    let header: Vec<&str> = lines.next().unwrap_or_default().split(',').collect();
-    let col = |row: &[&str], name: &str| -> String {
+    let header = csv_fields(lines.next().unwrap_or_default());
+    let col = |row: &[String], name: &str| -> String {
         header
             .iter()
-            .position(|h| *h == name)
+            .position(|h| h == name)
             .and_then(|i| row.get(i))
-            .map_or(String::new(), |s| (*s).to_owned())
+            .cloned()
+            .unwrap_or_default()
     };
     let mut out = vec![];
-    for line in lines {
-        let row: Vec<&str> = line.split(',').collect();
+    for line in lines.filter(|l| !l.is_empty()) {
+        let row = csv_fields(line);
         let user = col(&row, "user");
-        if user.is_empty() || user == "<root_account>" {
+        if user.is_empty() {
+            continue;
+        }
+        let active: Vec<&str> = ["access_key_1", "access_key_2"]
+            .into_iter()
+            .filter(|k| col(&row, &format!("{k}_active")) == "true")
+            .collect();
+        let mfa = col(&row, "mfa_active") == "true";
+        if user == "<root_account>" {
+            let attrs = json!({
+                "service": "iam",
+                "root": true,
+                "mfa": mfa,
+                "access_keys_active": active.len() as u8,
+                "console_last_used_days": days_since(&col(&row, "password_last_used"), now),
+            });
+            out.push(t.resource(
+                ResourceKind::Identity,
+                col(&row, "arn"),
+                "root",
+                BTreeMap::new(),
+                attrs,
+            ));
             continue;
         }
         let (mut age, mut used): (Option<i64>, Option<i64>) = (None, None);
-        for k in ["access_key_1", "access_key_2"] {
-            if col(&row, &format!("{k}_active")) != "true" {
-                continue;
-            }
+        for k in active {
             let rotated = days_since(&col(&row, &format!("{k}_last_rotated")), now);
             // A never-used key counts as unused since it was created.
             let last = days_since(&col(&row, &format!("{k}_last_used_date")), now).or(rotated);
@@ -537,7 +572,7 @@ pub fn credential_report_users(
             "service": "iam",
             "key_age_days": age,
             "key_last_used_days": used,
-            "mfa": col(&row, "mfa_active") == "true",
+            "mfa": mfa,
             "console": col(&row, "password_enabled") == "true",
             "admin": admins(&user),
         });
@@ -552,36 +587,54 @@ pub fn credential_report_users(
     out
 }
 
-pub async fn iam_users(iam: &aws_sdk_iam::Client, t: &Target<'_>) -> Result<Vec<Resource>> {
-    use aws_sdk_iam::types::ReportStateType;
-    // The report is generated asynchronously; poll briefly.
-    for attempt in 0.. {
-        let g = iam
-            .generate_credential_report()
-            .send()
-            .await
-            .map_err(provider_err)?;
-        if g.state() == Some(&ReportStateType::Complete) {
-            break;
+/// Generates and fetches the credential report: retries while it is in progress, regenerates
+/// when it has expired, gives up after `max_wait`.
+pub async fn credential_report(
+    iam: &aws_sdk_iam::Client,
+    poll: std::time::Duration,
+    max_wait: std::time::Duration,
+) -> Result<String> {
+    let deadline = tokio::time::Instant::now() + max_wait;
+    let mut generate = true;
+    loop {
+        if generate {
+            iam.generate_credential_report()
+                .send()
+                .await
+                .map_err(provider_err)?;
+            generate = false;
         }
-        if attempt == 15 {
-            return Err(crate::ConnectorError::Provider(
-                "credential report not ready after 30s".into(),
-            ));
+        match iam.get_credential_report().send().await {
+            Ok(r) => {
+                return Ok(r
+                    .content()
+                    .map(|b| String::from_utf8_lossy(b.as_ref()).into_owned())
+                    .unwrap_or_default())
+            }
+            Err(e) => match e.as_service_error() {
+                Some(se)
+                    if se.is_credential_report_not_ready_exception()
+                        || se.is_credential_report_not_present_exception() => {}
+                Some(se) if se.is_credential_report_expired_exception() => generate = true,
+                _ => return Err(provider_err(e)),
+            },
         }
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(ConnectorError::Provider(format!(
+                "credential report not ready after {}s",
+                max_wait.as_secs()
+            )));
+        }
+        tokio::time::sleep(poll).await;
     }
-    let report = iam
-        .get_credential_report()
-        .send()
-        .await
-        .map_err(provider_err)?;
-    let csv = report
-        .content()
-        .map(|b| String::from_utf8_lossy(b.as_ref()).into_owned())
-        .unwrap_or_default();
+}
+
+pub async fn iam_users(iam: &aws_sdk_iam::Client, t: &Target<'_>) -> Result<Vec<Resource>> {
+    use std::time::Duration;
+    let csv = credential_report(iam, Duration::from_secs(2), Duration::from_secs(120)).await?;
     let users: Vec<String> = credential_report_users(&csv, &|_| false, t, Utc::now())
         .into_iter()
+        .filter(|r| r.attributes.get("root").is_none())
         .map(|r| r.name)
         .collect();
     let mut admins = std::collections::HashSet::new();
@@ -610,6 +663,47 @@ pub async fn iam_users(iam: &aws_sdk_iam::Client, t: &Target<'_>) -> Result<Vec<
     ))
 }
 
+fn service_error(service: &str, region: &str, e: &ConnectorError) -> ServiceError {
+    ServiceError {
+        service: service.into(),
+        region: region.into(),
+        code: match e {
+            ConnectorError::Api { code, .. } => code.clone(),
+            _ => None,
+        },
+        message: e.to_string(),
+    }
+}
+
+const TOKEN_CODES: &[&str] = &[
+    "ExpiredToken",
+    "InvalidClientTokenId",
+    "UnrecognizedClientException",
+];
+const DENIED_CODES: &[&str] = &["AccessDenied", "AccessDeniedException"];
+
+/// Outcome of one service call during inventory: `Err(code)` on failure.
+pub type CallOutcome = (String, std::result::Result<(), Option<String>>);
+
+/// The session is unusable when some region fails every call with a token error, or when
+/// every call everywhere fails with a token or access-denied error. AccessDenied confined to
+/// some regions (an SCP) stays a partial error.
+pub fn auth_failure(calls: &[CallOutcome]) -> Option<String> {
+    let failed_with = |r: &std::result::Result<(), Option<String>>, set: &[&str]| matches!(r, Err(Some(c)) if set.contains(&c.as_str()));
+    let regions: std::collections::BTreeSet<&str> = calls.iter().map(|(r, _)| r.as_str()).collect();
+    for region in regions {
+        let mut cs = calls.iter().filter(|(r, _)| r == region).peekable();
+        if cs.peek().is_some() && cs.all(|(_, o)| failed_with(o, TOKEN_CODES)) {
+            return Some(format!(
+                "every call in {region} failed with an invalid or expired token"
+            ));
+        }
+    }
+    let any = [TOKEN_CODES, DENIED_CODES].concat();
+    (!calls.is_empty() && calls.iter().all(|(_, o)| failed_with(o, &any)))
+        .then(|| "every call was denied".to_owned())
+}
+
 async fn gate<F: Future<Output = Result<Vec<Resource>>>>(
     on: bool,
     f: F,
@@ -621,8 +715,9 @@ async fn gate<F: Future<Output = Result<Vec<Resource>>>>(
     }
 }
 
-/// Full inventory for a session. Per-service failures land in `partial_errors`.
-pub(crate) async fn inventory(
+/// Full inventory for a session. Per-service failures land in `partial_errors`; see
+/// `auth_failure` for when the whole call fails with `ConnectorError::Auth`.
+pub async fn inventory(
     session: &SdkConfig,
     partition: &str,
     account: &str,
@@ -634,7 +729,18 @@ pub(crate) async fn inventory(
             .describe_regions()
             .send()
             .await
-            .map_err(provider_err)?;
+            .map_err(|e| {
+                let e = provider_err(e);
+                match &e {
+                    ConnectorError::Api { code: Some(c), .. }
+                        if TOKEN_CODES.contains(&c.as_str())
+                            || DENIED_CODES.contains(&c.as_str()) =>
+                    {
+                        ConnectorError::Auth(e.to_string())
+                    }
+                    _ => e,
+                }
+            })?;
         out.regions()
             .iter()
             .filter_map(|r| r.region_name().map(str::to_owned))
@@ -643,13 +749,17 @@ pub(crate) async fn inventory(
         scope.regions.clone()
     };
     let mut result = InventoryResult::default();
+    let mut calls: Vec<CallOutcome> = vec![];
     let mut record = |service: &str, region: &str, r: Option<Result<Vec<Resource>>>| match r {
-        Some(Ok(v)) => result.resources.extend(v),
-        Some(Err(e)) => result.partial_errors.push(ServiceError {
-            service: service.into(),
-            region: region.into(),
-            message: e.to_string(),
-        }),
+        Some(Ok(v)) => {
+            calls.push((region.into(), Ok(())));
+            result.resources.extend(v);
+        }
+        Some(Err(e)) => {
+            let se = service_error(service, region, &e);
+            calls.push((region.into(), Err(se.code.clone())));
+            result.partial_errors.push(se);
+        }
         None => {}
     };
     for region in &regions {
@@ -708,6 +818,9 @@ pub(crate) async fn inventory(
         let r = s3_buckets(session, &global, &mut errs).await;
         record("s3", "global", Some(r));
         result.partial_errors.extend(errs);
+    }
+    if let Some(why) = auth_failure(&calls) {
+        return Err(ConnectorError::Auth(why));
     }
     Ok(result)
 }

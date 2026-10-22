@@ -10,7 +10,7 @@ pub use client::AwsOutbound;
 
 use crate::{
     CallContext, Capability, Connector, ConnectorError, CostRow, Credentials, InventoryResult,
-    MetricPoint, MetricQuery, Result, Scope, VerifyOutcome,
+    MetricPoint, MetricQuery, Result, Scope, TerraformState, VerifyOutcome,
 };
 use async_trait::async_trait;
 use aws_config::SdkConfig;
@@ -63,14 +63,21 @@ impl AwsConnector {
     }
 }
 
-fn aws_role(creds: &Credentials) -> Result<(&str, &str, bool, &CallContext)> {
+type AwsRole<'a> = (
+    &'a str,
+    &'a str,
+    Option<&'a TerraformState>,
+    &'a CallContext,
+);
+
+fn aws_role(creds: &Credentials) -> Result<AwsRole<'_>> {
     match creds {
         Credentials::AwsRole {
             role_arn,
             external_id,
             terraform_state,
             context,
-        } => Ok((role_arn, external_id, *terraform_state, context)),
+        } => Ok((role_arn, external_id, terraform_state.as_ref(), context)),
         _ => Err(ConnectorError::InvalidCredentials(
             "aws connector needs Credentials::AwsRole".into(),
         )),

@@ -19,7 +19,7 @@ pub async fn cost_daily(
         .start(start.to_string())
         .end(today.to_string())
         .build()
-        .map_err(provider_err)?;
+        .map_err(|e| ConnectorError::Provider(e.to_string()))?;
     let mut rows = vec![];
     let mut token = None;
     loop {

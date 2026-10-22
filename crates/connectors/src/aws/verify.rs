@@ -1,7 +1,8 @@
 use super::client::{assume, is_access_denied, parse_role_arn, provider_err, session_policy};
-use super::policy_diff::{policy_diff, template_v1_actions, PolicyActions};
+use super::policy_diff::{diff_role, DeployedRole, TemplateParams};
 use super::AwsConnector;
-use crate::{CallContext, ConnectorError, Result, VerifyOutcome};
+use crate::{CallContext, ConnectorError, Result, TerraformState, VerifyOutcome};
+use serde_json::Value;
 
 const VERIFY_ACTIONS: &[&str] = &[
     "sts:GetCallerIdentity",
@@ -11,24 +12,27 @@ const VERIFY_ACTIONS: &[&str] = &[
     "iam:ListAttachedRolePolicies",
 ];
 
-/// Reads the deployed role's inline and attached policies. Attached managed policies are not
-/// part of the template, so each one surfaces as an extra `attached-policy:<arn>` grant.
-pub async fn deployed_actions(iam: &aws_sdk_iam::Client, role_name: &str) -> Result<PolicyActions> {
-    let mut p = PolicyActions::default();
+/// IAM returns policy documents URL-encoded.
+fn decode_doc(doc: &str) -> Result<Value> {
+    let doc = urlencoding::decode(doc).map_err(|e| ConnectorError::Provider(e.to_string()))?;
+    serde_json::from_str(&doc).map_err(|e| ConnectorError::Provider(e.to_string()))
+}
+
+/// Reads trust policy, session duration, inline and attached policies of the deployed role.
+pub async fn deployed_role(iam: &aws_sdk_iam::Client, role_name: &str) -> Result<DeployedRole> {
     let role = iam
         .get_role()
         .role_name(role_name)
         .send()
         .await
-        .map_err(provider_err)?;
-    if role
+        .map_err(provider_err)?
         .role
-        .and_then(|r| r.max_session_duration)
-        .unwrap_or(3600)
-        > 3600
-    {
-        p.add(true, "role:MaxSessionDuration>3600");
-    }
+        .ok_or_else(|| ConnectorError::Provider("GetRole returned no role".into()))?;
+    let mut out = DeployedRole {
+        trust: decode_doc(role.assume_role_policy_document().unwrap_or("{}"))?,
+        max_session_duration: role.max_session_duration().unwrap_or(3600),
+        ..Default::default()
+    };
     let mut names = iam
         .list_role_policies()
         .role_name(role_name)
@@ -45,11 +49,7 @@ pub async fn deployed_actions(iam: &aws_sdk_iam::Client, role_name: &str) -> Res
             .await
             .map_err(provider_err)?
             .policy_document;
-        // GetRolePolicy returns the document URL-encoded.
-        let doc = urlencoding::decode(&doc).map_err(|e| ConnectorError::Provider(e.to_string()))?;
-        let doc =
-            serde_json::from_str(&doc).map_err(|e| ConnectorError::Provider(e.to_string()))?;
-        p.add_document(&doc);
+        out.policies.push(decode_doc(&doc)?);
     }
     let mut attached = iam
         .list_attached_role_policies()
@@ -59,25 +59,47 @@ pub async fn deployed_actions(iam: &aws_sdk_iam::Client, role_name: &str) -> Res
         .send();
     while let Some(a) = attached.next().await {
         let a = a.map_err(provider_err)?;
-        p.add(
-            true,
-            &format!("attached-policy:{}", a.policy_arn.unwrap_or_default()),
-        );
+        out.attached_policy_arns
+            .push(a.policy_arn.unwrap_or_default());
     }
-    Ok(p)
+    Ok(out)
+}
+
+/// `arn:aws:sts::<acct>:assumed-role/<name>/<session>` -> `arn:aws:iam::<acct>:role/<name>`.
+/// shortcut: drops any role path; set `AwsOutbound::principal_arn` when the role has one.
+pub fn principal_from_caller(arn: &str) -> String {
+    let parts: Vec<&str> = arn.splitn(6, ':').collect();
+    match parts[..] {
+        [_, partition, "sts", "", account, res] if res.starts_with("assumed-role/") => {
+            let name = res.split('/').nth(1).unwrap_or_default();
+            format!("arn:{partition}:iam::{account}:role/{name}")
+        }
+        _ => arn.to_owned(),
+    }
 }
 
 pub(crate) async fn verify(
     c: &AwsConnector,
     role_arn: &str,
     external_id: &str,
-    terraform_state: bool,
+    terraform_state: Option<&TerraformState>,
     ctx: &CallContext,
 ) -> Result<VerifyOutcome> {
     let arn = parse_role_arn(role_arn)?;
     let base = c.base().await;
     let policy = session_policy(VERIFY_ACTIONS);
     let sts = aws_sdk_sts::Client::new(base);
+    let principal = match &c.outbound.principal_arn {
+        Some(p) => p.clone(),
+        None => {
+            let me = sts
+                .get_caller_identity()
+                .send()
+                .await
+                .map_err(provider_err)?;
+            principal_from_caller(me.arn().unwrap_or_default())
+        }
+    };
     let with = assume(
         &sts,
         base,
@@ -112,9 +134,15 @@ pub(crate) async fn verify(
         .send()
         .await
         .map_err(provider_err)?;
-    let deployed = deployed_actions(&aws_sdk_iam::Client::new(&session), &arn.name).await?;
-    let (extra_grants, missing_grants) =
-        policy_diff(&deployed, &template_v1_actions(terraform_state));
+    let deployed = deployed_role(&aws_sdk_iam::Client::new(&session), &arn.name).await?;
+    let params = TemplateParams {
+        partition: &arn.partition,
+        account: &arn.account,
+        external_id,
+        principal: &principal,
+        terraform: terraform_state.map(|t| (t.bucket.as_str(), t.prefix.as_str())),
+    };
+    let (extra_grants, missing_grants) = diff_role(&deployed, &params);
     Ok(VerifyOutcome {
         assume_with_ok: true,
         assume_without_denied,

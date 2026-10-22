@@ -5,7 +5,7 @@ use aws_smithy_mocks::{mock, mock_client, RuleMode};
 use opsagent_connectors::aws::client::{
     assume, is_access_denied, parse_role_arn, session_name, AwsOutbound,
 };
-use opsagent_connectors::aws::verify::deployed_actions;
+use opsagent_connectors::aws::verify::{deployed_role, principal_from_caller};
 use opsagent_connectors::CallContext;
 use uuid::Uuid;
 
@@ -100,7 +100,7 @@ async fn assume_without_external_id_access_denied_is_detected() {
 }
 
 #[tokio::test]
-async fn deployed_actions_reads_inline_and_attached_policies() {
+async fn deployed_role_reads_trust_inline_and_attached_policies() {
     use aws_sdk_iam::operation::{
         get_role::GetRoleOutput, get_role_policy::GetRolePolicyOutput,
         list_attached_role_policies::ListAttachedRolePoliciesOutput,
@@ -109,7 +109,9 @@ async fn deployed_actions_reads_inline_and_attached_policies() {
     use aws_sdk_iam::types::{AttachedPolicy, Role};
     let doc = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["ec2:Describe*","ec2:TerminateInstances"],"Resource":"*"},{"Effect":"Deny","Action":"kms:Decrypt","Resource":"*"}]}"#;
     let encoded = urlencoding::encode(doc).into_owned();
-    let get_role = mock!(aws_sdk_iam::Client::get_role).then_output(|| {
+    let trust = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::999999999999:role/out"},"Action":["sts:AssumeRole","sts:TagSession"],"Condition":{"StringEquals":{"sts:ExternalId":"ext-1"}}}]}"#;
+    let trust_enc = urlencoding::encode(trust).into_owned();
+    let get_role = mock!(aws_sdk_iam::Client::get_role).then_output(move || {
         GetRoleOutput::builder()
             .role(
                 Role::builder()
@@ -118,7 +120,8 @@ async fn deployed_actions_reads_inline_and_attached_policies() {
                     .role_id("id")
                     .arn("arn:aws:iam::123456789012:role/R")
                     .create_date(aws_smithy_types::DateTime::from_secs(0))
-                    .max_session_duration(3600)
+                    .max_session_duration(7200)
+                    .assume_role_policy_document(trust_enc.clone())
                     .build()
                     .unwrap(),
             )
@@ -156,17 +159,32 @@ async fn deployed_actions_reads_inline_and_attached_policies() {
         RuleMode::MatchAny,
         [&get_role, &list, &get, &attached]
     );
-    let p = deployed_actions(&iam, "R").await.unwrap();
-    let allow: Vec<_> = p.allow.values().cloned().collect();
+    let r = deployed_role(&iam, "R").await.unwrap();
+    assert_eq!(r.max_session_duration, 7200);
     assert_eq!(
-        allow,
-        vec![
-            "attached-policy:arn:aws:iam::aws:policy/ReadOnlyAccess",
-            "ec2:Describe*",
-            "ec2:TerminateInstances"
-        ]
+        r.trust,
+        serde_json::from_str::<serde_json::Value>(trust).unwrap()
     );
-    assert!(p.deny.contains_key("kms:decrypt"));
+    assert_eq!(
+        r.policies,
+        vec![serde_json::from_str::<serde_json::Value>(doc).unwrap()]
+    );
+    assert_eq!(
+        r.attached_policy_arns,
+        vec!["arn:aws:iam::aws:policy/ReadOnlyAccess"]
+    );
+}
+
+#[test]
+fn outbound_principal_from_assumed_role_arn() {
+    assert_eq!(
+        principal_from_caller("arn:aws:sts::999999999999:assumed-role/opsagent-outbound/i-123"),
+        "arn:aws:iam::999999999999:role/opsagent-outbound"
+    );
+    assert_eq!(
+        principal_from_caller("arn:aws:iam::999999999999:user/ci"),
+        "arn:aws:iam::999999999999:user/ci"
+    );
 }
 
 mod inventory {
@@ -392,12 +410,12 @@ mod inventory {
     #[test]
     fn credential_report_maps_users() {
         use chrono::TimeZone;
-        let csv = "user,arn,user_creation_time,password_enabled,password_last_used,password_last_changed,password_next_rotation,mfa_active,access_key_1_active,access_key_1_last_rotated,access_key_1_last_used_date,access_key_1_last_used_region,access_key_1_last_used_service,access_key_2_active,access_key_2_last_rotated,access_key_2_last_used_date,access_key_2_last_used_region,access_key_2_last_used_service,cert_1_active,cert_1_last_rotated,cert_2_active,cert_2_last_rotated
-<root_account>,arn:aws:iam::123456789012:root,2020-01-01T00:00:00+00:00,not_supported,N/A,not_supported,not_supported,true,false,N/A,N/A,N/A,N/A,false,N/A,N/A,N/A,N/A,false,N/A,false,N/A
+        let csv = r#"user,arn,user_creation_time,password_enabled,password_last_used,password_last_changed,password_next_rotation,mfa_active,access_key_1_active,access_key_1_last_rotated,access_key_1_last_used_date,access_key_1_last_used_region,access_key_1_last_used_service,access_key_2_active,access_key_2_last_rotated,access_key_2_last_used_date,access_key_2_last_used_region,access_key_2_last_used_service,cert_1_active,cert_1_last_rotated,cert_2_active,cert_2_last_rotated
+<root_account>,arn:aws:iam::123456789012:root,2020-01-01T00:00:00+00:00,not_supported,2026-10-02T09:00:00+00:00,not_supported,not_supported,false,true,2025-01-01T00:00:00+00:00,N/A,N/A,N/A,false,N/A,N/A,N/A,N/A,false,N/A,false,N/A
 stale,arn:aws:iam::123456789012:user/stale,2020-01-01T00:00:00+00:00,true,N/A,N/A,N/A,false,true,2026-06-24T00:00:00+00:00,2026-07-14T00:00:00+00:00,us-east-1,s3,false,N/A,N/A,N/A,N/A,false,N/A,false,N/A
 admin,arn:aws:iam::123456789012:user/admin,2020-01-01T00:00:00+00:00,true,N/A,N/A,N/A,true,true,2026-10-12T00:00:00+00:00,N/A,N/A,N/A,false,N/A,N/A,N/A,N/A,false,N/A,false,N/A
-bot,arn:aws:iam::123456789012:user/bot,2020-01-01T00:00:00+00:00,false,N/A,N/A,N/A,false,false,N/A,N/A,N/A,N/A,false,N/A,N/A,N/A,N/A,false,N/A,false,N/A
-";
+"ops,bot",arn:aws:iam::123456789012:user/ops-bot,2020-01-01T00:00:00+00:00,false,N/A,N/A,N/A,false,false,N/A,N/A,N/A,N/A,false,N/A,N/A,N/A,N/A,false,N/A,false,N/A
+"#;
         let now = chrono::Utc
             .with_ymd_and_hms(2026, 10, 22, 12, 0, 0)
             .unwrap();
@@ -405,13 +423,20 @@ bot,arn:aws:iam::123456789012:user/bot,2020-01-01T00:00:00+00:00,false,N/A,N/A,N
             region: "global",
             ..T
         };
-        let r = opsagent_connectors::aws::inventory::credential_report_users(
+        let mut r = opsagent_connectors::aws::inventory::credential_report_users(
             csv,
             &|u| u == "admin",
             &g,
             now,
         );
-        assert_eq!(r.len(), 3);
+        assert_eq!(r.len(), 4);
+        let root = r.remove(0);
+        assert_eq!(root.identity, "arn:aws:iam::123456789012:root");
+        assert_eq!(
+            root.attributes,
+            json!({"service": "iam", "root": true, "mfa": false, "access_keys_active": 1,
+                   "console_last_used_days": 20})
+        );
         assert_eq!(r[0].identity, "arn:aws:iam::123456789012:user/stale");
         assert_eq!(r[0].kind, ResourceKind::Identity);
         assert_eq!(
@@ -421,7 +446,64 @@ bot,arn:aws:iam::123456789012:user/bot,2020-01-01T00:00:00+00:00,false,N/A,N/A,N
         );
         assert_eq!(r[1].attributes["key_last_used_days"], 10);
         assert_eq!(r[1].attributes["admin"], true);
+        // Quoted name with a comma does not shift columns.
+        assert_eq!(r[2].name, "ops,bot");
+        assert_eq!(r[2].identity, "arn:aws:iam::123456789012:user/ops-bot");
         assert_eq!(r[2].attributes["key_age_days"], serde_json::Value::Null);
+        assert_eq!(r[2].attributes["console"], false);
+    }
+
+    #[tokio::test]
+    async fn credential_report_waits_and_regenerates() {
+        use aws_sdk_iam::operation::{
+            generate_credential_report::GenerateCredentialReportOutput,
+            get_credential_report::{GetCredentialReportError, GetCredentialReportOutput},
+        };
+        use aws_sdk_iam::types::error::{
+            CredentialReportExpiredException, CredentialReportNotReadyException,
+        };
+        use aws_sdk_iam::types::ReportStateType;
+        let generate = || {
+            mock!(aws_sdk_iam::Client::generate_credential_report).then_output(|| {
+                GenerateCredentialReportOutput::builder()
+                    .state(ReportStateType::Started)
+                    .build()
+            })
+        };
+        let (gen1, gen2) = (generate(), generate());
+        let not_ready = mock!(aws_sdk_iam::Client::get_credential_report).then_error(|| {
+            GetCredentialReportError::CredentialReportNotReadyException(
+                CredentialReportNotReadyException::builder().build(),
+            )
+        });
+        let expired = mock!(aws_sdk_iam::Client::get_credential_report).then_error(|| {
+            GetCredentialReportError::CredentialReportExpiredException(
+                CredentialReportExpiredException::builder().build(),
+            )
+        });
+        let ready = mock!(aws_sdk_iam::Client::get_credential_report).then_output(|| {
+            GetCredentialReportOutput::builder()
+                .content(aws_smithy_types::Blob::new("user,arn\n"))
+                .build()
+        });
+        let iam = mock_client!(
+            aws_sdk_iam,
+            RuleMode::Sequential,
+            [&gen1, &not_ready, &expired, &gen2, &ready]
+        );
+        let ms = std::time::Duration::from_millis(1);
+        let csv = opsagent_connectors::aws::inventory::credential_report(
+            &iam,
+            ms,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(csv, "user,arn\n");
+        assert_eq!(
+            (gen1.num_calls(), gen2.num_calls(), ready.num_calls()),
+            (1, 1, 1)
+        );
     }
 }
 
@@ -476,5 +558,119 @@ mod cost {
         assert_eq!(rows[0].service, "Amazon Elastic Compute Cloud - Compute");
         assert_eq!(rows[0].amount_usd, 12.5);
         assert_eq!(rows[1].amount_usd, 13.25);
+    }
+}
+
+/// Whole-inventory runs over recorded EC2 query-protocol HTTP responses.
+mod auth {
+    use aws_config::{retry::RetryConfig, BehaviorVersion, Region, SdkConfig};
+    use aws_sdk_sts::config::{Credentials, SharedCredentialsProvider};
+    use aws_smithy_http_client::test_util::infallible_client_fn;
+    use opsagent_connectors::aws::inventory::{auth_failure, inventory};
+    use opsagent_connectors::{ConnectorError, Scope};
+
+    fn ec2_error(code: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Errors><Error><Code>{code}</Code>\
+             <Message>recorded</Message></Error></Errors><RequestID>r-1</RequestID></Response>"
+        )
+    }
+
+    /// Hosts containing `fail_host` answer with `code`; others answer an empty success for
+    /// the requested action.
+    fn session(fail_host: &'static str, code: &'static str) -> SdkConfig {
+        let http = infallible_client_fn(move |req| {
+            let host = req.uri().host().unwrap_or_default().to_owned();
+            let body = std::str::from_utf8(req.body().bytes().unwrap_or_default())
+                .unwrap_or_default()
+                .to_owned();
+            if host.contains(fail_host) {
+                return http::Response::builder()
+                    .status(400)
+                    .body(ec2_error(code))
+                    .unwrap();
+            }
+            let action = body
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("Action="))
+                .unwrap_or("Unknown")
+                .to_owned();
+            http::Response::builder()
+                .status(200)
+                .body(format!(
+                    "<{action}Response xmlns=\"http://ec2.amazonaws.com/doc/2016-11-15/\">\
+                     <requestId>r-1</requestId></{action}Response>"
+                ))
+                .unwrap()
+        });
+        SdkConfig::builder()
+            .behavior_version(BehaviorVersion::latest())
+            .region(Region::from_static("us-east-1"))
+            .credentials_provider(SharedCredentialsProvider::new(Credentials::new(
+                "AKID", "secret", None, None, "test",
+            )))
+            .retry_config(RetryConfig::disabled())
+            .http_client(http)
+            .build()
+    }
+
+    fn scope(regions: &[&str]) -> Scope {
+        Scope {
+            regions: regions.iter().map(|r| r.to_string()).collect(),
+            services: ["ec2", "ebs", "eip", "sg"].map(String::from).to_vec(),
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_token_in_every_call_is_an_auth_error() {
+        let err = inventory(
+            &session("amazonaws", "ExpiredToken"),
+            "aws",
+            "123456789012",
+            &scope(&["us-east-1", "eu-west-1"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ConnectorError::Auth(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn access_denied_in_one_region_stays_partial_with_code() {
+        let r = inventory(
+            &session("eu-west-1", "AccessDenied"),
+            "aws",
+            "123456789012",
+            &scope(&["us-east-1", "eu-west-1"]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.partial_errors.len(), 4, "{:?}", r.partial_errors);
+        assert!(r
+            .partial_errors
+            .iter()
+            .all(|e| e.region == "eu-west-1" && e.code.as_deref() == Some("AccessDenied")));
+    }
+
+    #[test]
+    fn auth_failure_rules() {
+        let c = |r: &str, code: Option<&str>| {
+            (
+                r.to_owned(),
+                code.map_or(Ok(()), |c| Err(Some(c.to_owned()))),
+            )
+        };
+        assert!(auth_failure(&[]).is_none());
+        // Token error across a whole region: credentials are bad.
+        assert!(auth_failure(&[c("a", None), c("b", Some("ExpiredToken"))]).is_some());
+        // AccessDenied in one region only (SCP): partial.
+        assert!(auth_failure(&[c("a", None), c("b", Some("AccessDenied"))]).is_none());
+        // Denied everywhere: auth.
+        assert!(auth_failure(&[
+            c("a", Some("AccessDenied")),
+            c("global", Some("AccessDenied"))
+        ])
+        .is_some());
+        // A non-auth failure is never an auth error.
+        assert!(auth_failure(&[c("a", Some("Throttling"))]).is_none());
     }
 }

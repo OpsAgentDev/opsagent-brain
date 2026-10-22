@@ -20,6 +20,15 @@ pub enum ConnectorError {
     InvalidCredentials(String),
     #[error("provider error: {0}")]
     Provider(String),
+    /// A provider API error, with the provider's error code when it sent one.
+    #[error("{message}")]
+    Api {
+        code: Option<String>,
+        message: String,
+    },
+    /// The customer session itself is unusable (expired, invalid, or denied everywhere).
+    #[error("auth error: {0}")]
+    Auth(String),
 }
 pub type Result<T> = std::result::Result<T, ConnectorError>;
 
@@ -55,12 +64,18 @@ pub struct CallContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerraformState {
+    pub bucket: String,
+    pub prefix: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Credentials {
     AwsRole {
         role_arn: String,
         external_id: String,
-        /// Whether the stack was launched with `TerraformStateBucket` and `TerraformStatePrefix`.
-        terraform_state: bool,
+        /// `TerraformStateBucket` / `TerraformStatePrefix` the stack was launched with.
+        terraform_state: Option<TerraformState>,
         context: CallContext,
     },
     Fake {
@@ -87,6 +102,7 @@ pub struct Scope {
 pub struct ServiceError {
     pub service: String,
     pub region: String,
+    pub code: Option<String>,
     pub message: String,
 }
 
