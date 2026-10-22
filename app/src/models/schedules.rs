@@ -190,6 +190,33 @@ pub async fn create_defaults(
     Ok(())
 }
 
+/// `create_defaults` for every connected connection that has no `deliver_briefing` schedule
+/// (connected before delivery schedules existed). Idempotent; returns how many were filled.
+pub async fn backfill_defaults(
+    db: &impl ConnectionTrait,
+    now: DateTime<Utc>,
+) -> Result<usize, DbErr> {
+    // tenancy: the scheduler's global pass; each row's own organisation_id scopes its writes.
+    let rows = db
+        .query_all_raw(stmt(
+            "SELECT c.id, c.organisation_id, c.scan_time_local, c.briefing_time_local \
+             FROM connections c JOIN organisations o ON o.id = c.organisation_id \
+             WHERE c.status = 'connected' AND o.deleted_at IS NULL AND NOT EXISTS \
+             (SELECT 1 FROM schedules s WHERE s.connection_id = c.id AND s.job_type = 'deliver_briefing')",
+            vec![],
+        ))
+        .await?;
+    for r in &rows {
+        let times = (
+            r.try_get("", "scan_time_local")?,
+            r.try_get("", "briefing_time_local")?,
+        );
+        let (org, id) = (r.try_get("", "organisation_id")?, r.try_get("", "id")?);
+        create_defaults(db, org, id, times, now).await?;
+    }
+    Ok(rows.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -233,6 +233,52 @@ async fn connecting_creates_default_schedules_once() {
     .await;
 }
 
+#[tokio::test]
+#[serial]
+async fn tick_gives_connected_connections_without_delivery_schedules_their_defaults_once() {
+    serve(|req, ctx| async move {
+        reset(&ctx).await;
+        // Connected before delivery schedules existed: only its scan schedule is there.
+        let (_, _, id) = connected(&req, &ctx, "old@example.com", "clean").await;
+        conn_schedule(
+            &ctx,
+            &id.to_string(),
+            "full_scan",
+            Utc::now() + Duration::days(1),
+        )
+        .await;
+        let pending = Uuid::new_v4();
+        ctx.db
+            .execute_raw(stmt(
+                "INSERT INTO connections (id, organisation_id, provider, status) \
+                 SELECT $1, organisation_id, 'aws', 'pending' FROM connections WHERE id = $2",
+                vec![pending.into(), id.into()],
+            ))
+            .await
+            .unwrap();
+        let q = format!("SELECT count(*) n FROM schedules WHERE connection_id = '{id}'");
+        let jobs = format!(
+            "SELECT count(*) n FROM schedules WHERE connection_id = '{id}' \
+             AND job_type IN ('deliver_briefing','deliver_weekly')"
+        );
+        let org_q = "SELECT count(*) n FROM schedules WHERE connection_id IS NULL";
+        let pending_q =
+            format!("SELECT count(*) n FROM schedules WHERE connection_id = '{pending}'");
+        for _ in 0..2 {
+            run_tick(&ctx, Utc::now()).await;
+            assert_eq!(count(&ctx, &q).await, 4);
+            assert_eq!(count(&ctx, &jobs).await, 2);
+            assert_eq!(count(&ctx, org_q).await, 1);
+            assert_eq!(
+                count(&ctx, &pending_q).await,
+                0,
+                "not verified: no schedules"
+            );
+        }
+    })
+    .await;
+}
+
 /// Inserts a schedule for a real connection and returns nothing; `job` has a registered worker.
 async fn conn_schedule(ctx: &AppContext, id: &str, job: &str, due: DateTime<Utc>) {
     ctx.db
@@ -268,16 +314,26 @@ async fn due_full_scan_enqueues_the_real_worker_once() {
         assert_eq!(count(&ctx, q).await, 1);
 
         // Same slot again (next_due_at forced back): the run exists, so nothing is enqueued.
+        // (The tick also backfilled the connection's delivery schedules, not yet due.)
+        let scan_only = "UPDATE schedules SET next_due_at = $1 WHERE job_type = 'full_scan'";
         ctx.db
-            .execute_raw(stmt(
-                "UPDATE schedules SET next_due_at = $1",
-                vec![due.into()],
-            ))
+            .execute_raw(stmt(scan_only, vec![due.into()]))
             .await
             .unwrap();
         assert_eq!(run_tick(&ctx, now).await, Report::default());
         assert_eq!(count(&ctx, "SELECT count(*) n FROM runs").await, 1);
-        assert_eq!(next_due(&ctx).await, at("2026-10-23T02:00:00Z"));
+        let next: DateTime<Utc> = ctx
+            .db
+            .query_one_raw(stmt(
+                "SELECT next_due_at FROM schedules WHERE job_type = 'full_scan'",
+                vec![],
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get("", "next_due_at")
+            .unwrap();
+        assert_eq!(next, at("2026-10-23T02:00:00Z"));
     })
     .await;
 }
