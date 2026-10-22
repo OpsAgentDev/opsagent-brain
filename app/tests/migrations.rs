@@ -61,6 +61,24 @@ async fn migrations_slice_schema_constraints_and_roundtrip() {
     exec(&db, &conn("disconnected", "3")).await.unwrap();
     exec(&db, &conn("connected", "3")).await.unwrap();
 
+    // recipients: one row per (org, email, connection), org-wide (NULL connection) included.
+    let rcpt = format!(
+        "INSERT INTO recipients (id, organisation_id, email, status) \
+         VALUES (gen_random_uuid(), {org}, 'r@example.com', 'pending')"
+    );
+    exec(&db, &rcpt).await.unwrap();
+    let err = exec(&db, &rcpt).await.unwrap_err();
+    assert!(is_unique_violation(&err), "{err}");
+    // integrations.status CHECK.
+    let integ = |status: &str| {
+        format!(
+            "INSERT INTO integrations (id, organisation_id, kind, ciphertext, nonce, kek_version, status) \
+             VALUES (gen_random_uuid(), {org}, 'slack', '\\x00', '\\x00', 1, '{status}')"
+        )
+    };
+    assert!(exec(&db, &integ("bogus")).await.is_err());
+    exec(&db, &integ("failing")).await.unwrap();
+
     // audit_events is insert-only.
     exec(&db, "INSERT INTO audit_events (id, actor_type, action) VALUES ('00000000-0000-0000-0000-0000000000aa', 'system', 'x')")
         .await

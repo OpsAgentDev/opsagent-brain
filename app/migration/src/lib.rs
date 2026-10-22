@@ -9,6 +9,7 @@ mod m20261022_000004_inventory;
 mod m20261022_000005_audit;
 mod m20261022_000006_finding_stability;
 mod m20261022_000007_customer_finding_events;
+mod m20261022_000008_deliveries;
 
 pub struct Migrator;
 
@@ -23,6 +24,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261022_000005_audit::Migration),
             Box::new(m20261022_000006_finding_stability::Migration),
             Box::new(m20261022_000007_customer_finding_events::Migration),
+            Box::new(m20261022_000008_deliveries::Migration),
             // inject-above (do not remove this comment)
         ]
     }
