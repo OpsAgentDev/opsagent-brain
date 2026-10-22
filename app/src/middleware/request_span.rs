@@ -10,7 +10,8 @@ use loco_rs::{
     controller::middleware::{request_id::LocoRequestId, MiddlewareLayer},
     Result,
 };
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 pub struct RequestSpan;
 
@@ -41,7 +42,11 @@ impl MiddlewareLayer for RequestSpan {
     }
 
     fn apply(&self, app: AxumRouter<AppContext>) -> Result<AxumRouter<AppContext>> {
-        Ok(app.layer(TraceLayer::new_for_http().make_span_with(span)))
+        // The response event (INFO) carries `status` and `latency`, inside the span above.
+        let trace = TraceLayer::new_for_http()
+            .make_span_with(span)
+            .on_response(DefaultOnResponse::new().level(Level::INFO));
+        Ok(app.layer(trace))
     }
 }
 

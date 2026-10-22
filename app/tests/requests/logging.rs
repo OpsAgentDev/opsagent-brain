@@ -20,10 +20,11 @@ impl std::io::Write for Buf {
 
 #[tokio::test]
 #[serial]
-async fn request_logs_carry_route_template_not_secrets() {
+async fn info_request_logs_carry_route_status_latency_not_secrets() {
     let buf = Buf::default();
     let sub = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
+        .with_max_level(tracing::Level::INFO)
+        .with_ansi(false)
         .with_writer({
             let b = buf.clone();
             move || b.clone()
@@ -38,6 +39,9 @@ async fn request_logs_carry_route_template_not_secrets() {
     .await;
     let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
     assert!(out.contains("/v1/unsubscribe/{token}"), "{out}");
+    // The INFO response event: status and latency.
+    assert!(out.contains("status=410"), "{out}");
+    assert!(out.contains("latency="), "{out}");
     assert!(out.contains("/v1/integrations/slack/callback"), "{out}");
     assert!(!out.contains("SECRETCODE"), "{out}");
     assert!(!out.contains("SECRETTOKEN"), "{out}");
