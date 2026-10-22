@@ -2,10 +2,14 @@ use std::sync::Arc;
 
 use axum_test::TestServer;
 use loco_rs::{app::AppContext, testing::prelude::*};
-use opsagent_brain::mailers::{CaptureMailer, Mailer};
+use opsagent_brain::{
+    app::App,
+    mailers::{CaptureMailer, Mailer},
+};
 use serde_json::{json, Value};
 
-pub fn prepare(ctx: &AppContext) -> Arc<CaptureMailer> {
+/// Process environment the app reads at boot; set before every boot.
+pub fn test_env() {
     // 32 zero bytes, base64.
     std::env::set_var(
         "OPSAGENT_KEK",
@@ -14,6 +18,19 @@ pub fn prepare(ctx: &AppContext) -> Arc<CaptureMailer> {
     std::env::set_var("OPSAGENT_CONNECTORS", "fake");
     std::env::set_var("OPSAGENT_TEMPLATE_BASE_URL", TEMPLATE_BASE);
     std::env::set_var("OPSAGENT_AWS_OUTBOUND_ROLE_ARN", OUTBOUND_ARN);
+}
+
+/// Boots the app with `test_env` and a cookie-saving client, then runs `callback`.
+pub async fn serve<F, Fut>(callback: F)
+where
+    F: FnOnce(TestServer, AppContext) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    test_env();
+    request_with_config::<App, F, Fut>(cookie_config(), callback).await;
+}
+
+pub fn prepare(ctx: &AppContext) -> Arc<CaptureMailer> {
     let mail = Arc::new(CaptureMailer::default());
     let dynamic: Arc<dyn Mailer> = mail.clone();
     ctx.shared_store.insert(dynamic);

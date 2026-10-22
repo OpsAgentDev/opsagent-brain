@@ -3,19 +3,12 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use chrono::{DurationRound, NaiveTime, TimeDelta, Utc};
-use loco_rs::{app::AppContext, bgworker::BackgroundWorker};
-use opsagent_connectors::aws::client::{parse_role_arn, short_id};
-use opsagent_core::{
-    connection::{transition, ConnectionEvent as E, ConnectionStatus as S},
-    run::RunKey,
-};
-use opsagent_ledger::Storage;
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
-};
+use chrono::NaiveTime;
+use loco_rs::app::AppContext;
+use opsagent_connectors::aws::client::short_id;
+use opsagent_core::connection::ConnectionStatus as S;
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
@@ -23,36 +16,20 @@ use uuid::Uuid;
 use super::{OrgIdPath, OrgPath, RunAccepted};
 use crate::{
     api_error::{ApiError, ApiJson, Problem},
+    app::{kek, registry},
     middleware::org_scope::OrgScope,
     models::{
-        _entities::{connection_credentials, connection_verifications, connections},
-        audit,
-        connections::{
-            cas, open_creds, org_dek, seal_creds, status_of, status_str, Creds, TEMPLATE_VERSION,
-        },
-        find_in_org,
-        ledger_storage::PgStorage,
-        now,
+        _entities::{connection_verifications, connections},
+        connections::{status_of, TEMPLATE_VERSION},
+        find_in_org, now,
         organisations::valid_name,
     },
+    services::connections as service,
     views::connections::{view, Connection},
-    workers::verify::{VerifyArgs, VerifyWorker},
 };
 
 fn stack_name(organisation_id: Uuid) -> String {
     format!("OpsAgent-Read-{}", short_id(&organisation_id))
-}
-
-fn disconnected() -> ApiError {
-    ApiError::new(
-        StatusCode::CONFLICT,
-        "connection_disconnected",
-        "This connection was disconnected. Start a new connection instead.",
-    )
-}
-
-fn fake_enabled() -> bool {
-    std::env::var("OPSAGENT_CONNECTORS").as_deref() == Ok("fake")
 }
 
 async fn find(
@@ -116,73 +93,26 @@ async fn create(
 ) -> Result<(StatusCode, Json<CreatedConnection>), ApiError> {
     scope.require_owner()?;
     let name = valid_name(&body.display_name)?;
-    let fake = match body.provider.as_str() {
-        "aws" => false,
-        "fake" if fake_enabled() => true,
-        _ => return Err(ApiError::invalid("provider must be aws")),
-    };
     let org_id = scope.organisation_id;
-    let creds = Creds {
-        external_id: Uuid::new_v4().to_string(),
-        role_arn: None,
-        fake_account: fake.then(|| name.clone()),
-    };
-    let url = if fake {
-        None
-    } else {
-        Some(quick_create_url(org_id, &creds.external_id)?)
-    };
-    let dek = org_dek(&ctx.db, org_id).await?;
-    let sealed = seal_creds(&dek, org_id, &creds)?;
-    let id = Uuid::new_v4();
-    let txn = ctx.db.begin().await?;
-    connections::ActiveModel {
-        id: Set(id),
-        organisation_id: Set(org_id),
-        provider: Set(body.provider.clone()),
-        external_account_id: Set(None),
-        display_name: Set(Some(name)),
-        status: Set(status_str(S::Pending)),
-        status_reason: Set(None),
-        template_version: Set((!fake).then(|| TEMPLATE_VERSION.to_owned())),
-        scan_time_local: Set(None),
-        briefing_time_local: Set(None),
-        slack_channel_id: Set(None),
-        recipients: Set(json!([])),
-        api_rate_ceiling: Set(None),
-        first_connected_at: Set(None),
-        billable_from: Set(None),
-        verify_denied_streak: Set(0),
-        verify_denied_first_at: Set(None),
-        created_at: Set(now()),
-        updated_at: Set(now()),
-    }
-    .insert(&txn)
-    .await?;
-    connection_credentials::ActiveModel {
-        connection_id: Set(id),
-        kind: Set(if fake { "fake" } else { "aws_role" }.into()),
-        ciphertext: Set(sealed.ciphertext),
-        nonce: Set(sealed.nonce.to_vec()),
-        kek_version: Set(dek.version),
-        created_at: Set(now()),
-        updated_at: Set(now()),
-    }
-    .insert(&txn)
-    .await?;
-    audit::record(
-        &txn,
-        Some(org_id),
+    let created = service::create(
+        &ctx.db,
+        kek(&ctx)?.as_ref(),
+        &registry(&ctx)?,
+        org_id,
         scope.user_id,
-        "connection.create",
-        Some(("connection", id.to_string())),
+        &body.provider,
+        name,
     )
     .await?;
-    txn.commit().await?;
+    let url = created
+        .spec
+        .uses_template
+        .then(|| quick_create_url(org_id, &created.creds.external_id))
+        .transpose()?;
     Ok((
         StatusCode::CREATED,
         Json(CreatedConnection {
-            id,
+            id: created.id,
             quick_create_url: url,
             template_version: TEMPLATE_VERSION.into(),
         }),
@@ -250,7 +180,7 @@ async fn update(
     scope.require_owner()?;
     let c = find(&ctx, &scope, &id).await?;
     if status_of(&c)? == S::Disconnected {
-        return Err(disconnected());
+        return Err(service::disconnected());
     }
     let mut a: connections::ActiveModel = c.into();
     if let Some(n) = &body.display_name {
@@ -291,80 +221,10 @@ async fn verify(
 ) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
     scope.require_owner()?;
     let c = find(&ctx, &scope, &id).await?;
-    let from = status_of(&c)?;
-    if from == S::Disconnected {
-        return Err(disconnected());
-    }
-    let dek = org_dek(&ctx.db, c.organisation_id).await?;
-    let cred_row = connection_credentials::Entity::find_by_id(c.id)
-        .one(&ctx.db)
-        .await?
-        .ok_or_else(|| ApiError::internal("connection has no credentials"))?;
-    let mut creds = open_creds(&dek, c.organisation_id, &cred_row)?;
-    if c.provider == "aws" {
-        let arn = parse_role_arn(body.role_arn.trim())
-            .map_err(|_| ApiError::invalid("role_arn must be an IAM role ARN"))?;
-        if arn.partition != "aws" {
-            return Err(ApiError::invalid(format!(
-                "the {} partition is not supported",
-                arn.partition
-            )));
-        }
-        creds.role_arn = Some(body.role_arn.trim().to_owned());
-    }
-    let to = match from {
-        S::Pending => transition(from, E::StackReported),
-        S::Revoked => transition(from, E::RoleReturned),
-        s => Ok(s),
-    }
-    .map_err(ApiError::internal)?;
-    let sealed = seal_creds(&dek, c.organisation_id, &creds)?;
-    let txn = ctx.db.begin().await?;
-    let mut cr: connection_credentials::ActiveModel = cred_row.into();
-    cr.ciphertext = Set(sealed.ciphertext);
-    cr.nonce = Set(sealed.nonce.to_vec());
-    cr.kek_version = Set(dek.version);
-    cr.updated_at = Set(now());
-    cr.update(&txn).await?;
-    let (org_id, conn_id) = (c.organisation_id, c.id);
-    // Guarded on the status read above, so a concurrent Disconnect or worker outcome is not lost.
-    let mut a = <connections::ActiveModel as ActiveModelTrait>::default();
-    if to != from {
-        a.status = Set(status_str(to));
-    }
-    a.updated_at = Set(now());
-    if !cas(&txn, &c, a).await? {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "connection_state_changed",
-            "The connection changed while this request ran. Reload and try again.",
-        ));
-    }
-    audit::record(
-        &txn,
-        Some(org_id),
-        scope.user_id,
-        "connection.verify_requested",
-        Some(("connection", conn_id.to_string())),
-    )
-    .await?;
-    txn.commit().await?;
-    // Ledger first: the run row exists before the job is enqueued, so a lost enqueue is
-    // recoverable from `runs` and a duplicate request in the same minute is the same run.
-    let run = PgStorage::new(ctx.db.clone())
-        .create_run(RunKey {
-            organisation_id: Some(org_id),
-            connection_id: Some(conn_id),
-            job_type: "verify".into(),
-            scheduled_at: Utc::now()
-                .duration_trunc(TimeDelta::minutes(1))
-                .map_err(ApiError::internal)?,
-        })
-        .await
-        .map_err(ApiError::internal)?
-        .run;
-    VerifyWorker::perform_later(&ctx, VerifyArgs { run_id: run.id }).await?;
-    Ok((StatusCode::ACCEPTED, Json(RunAccepted { run_id: run.id })))
+    let run_id =
+        service::request_verify(&ctx, kek(&ctx)?.as_ref(), &c, scope.user_id, &body.role_arn)
+            .await?;
+    Ok((StatusCode::ACCEPTED, Json(RunAccepted { run_id })))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -383,25 +243,8 @@ async fn disconnect(
 ) -> Result<Json<Disconnected>, ApiError> {
     scope.require_owner()?;
     let c = find(&ctx, &scope, &id).await?;
-    let (org_id, conn_id) = (c.organisation_id, c.id);
-    // Already disconnected: answer the same way (idempotent DELETE).
-    if let Ok(to) = transition(status_of(&c)?, E::Disconnect) {
-        let txn = ctx.db.begin().await?;
-        let mut a: connections::ActiveModel = c.into();
-        a.status = Set(status_str(to));
-        a.status_reason = Set(Some("customer_disconnected".into()));
-        a.updated_at = Set(now());
-        a.update(&txn).await?;
-        audit::record(
-            &txn,
-            Some(org_id),
-            scope.user_id,
-            "connection.disconnect",
-            Some(("connection", conn_id.to_string())),
-        )
-        .await?;
-        txn.commit().await?;
-    }
+    let org_id = c.organisation_id;
+    service::disconnect(&ctx.db, c, scope.user_id).await?;
     Ok(Json(Disconnected {
         status: "disconnected".into(),
         next_step: format!(

@@ -4,9 +4,8 @@ use std::{
 };
 
 use async_trait::async_trait;
-use loco_rs::{prelude::*, testing::prelude::request_with_config};
+use loco_rs::prelude::*;
 use opsagent_brain::{
-    app::App,
     models::{
         _entities::{
             connections, evidence, finding_events, findings, resource_history, resources, runs,
@@ -320,7 +319,7 @@ fn sev(s: Severity) -> String {
 #[tokio::test]
 #[serial]
 async fn first_scan_opens_expected_findings_and_scores() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         let run = scan(&ctx, conn, 0, &noisy()).await;
 
@@ -370,7 +369,7 @@ async fn first_scan_opens_expected_findings_and_scores() {
 #[tokio::test]
 #[serial]
 async fn resolve_reopen_and_flap() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         scan(&ctx, conn, 0, &noisy()).await;
 
@@ -437,7 +436,7 @@ async fn resolve_reopen_and_flap() {
 #[tokio::test]
 #[serial]
 async fn accepted_and_snoozed_skip_events_until_expiry() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         scan(&ctx, conn, 0, &noisy()).await;
         let set = |identity: &'static str,
@@ -500,7 +499,7 @@ async fn accepted_and_snoozed_skip_events_until_expiry() {
 #[tokio::test]
 #[serial]
 async fn partial_inventory_resolves_nothing() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         scan(&ctx, conn, 0, &noisy()).await;
         let r2 = scan(&ctx, conn, 1, &rigged(Some(Fault::PartialErrors))).await;
@@ -577,7 +576,7 @@ async fn snapshot(ctx: &AppContext, conn: Uuid, run: Uuid) -> (Vec<Value>, Vec<V
 #[tokio::test]
 #[serial]
 async fn kill_and_resume_after_every_chunk_matches_uninterrupted() {
-    request_with_config::<App, _, _>(cookie_config(), |mut req, ctx| async move {
+    serve(|mut req, ctx| async move {
         let a = connection(&req, &ctx, "a@example.com").await;
         req.clear_cookies();
         let b = connection(&req, &ctx, "b@example.com").await;
@@ -629,7 +628,7 @@ async fn kill_and_resume_after_every_chunk_matches_uninterrupted() {
 #[tokio::test]
 #[serial]
 async fn stale_fence_writes_are_rejected() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         let run = new_run(&ctx, conn, 0).await;
         let storage = PgStorage::new(ctx.db.clone());
@@ -683,7 +682,7 @@ async fn stale_fence_writes_are_rejected() {
 #[tokio::test]
 #[serial]
 async fn sql_and_instruction_text_is_stored_verbatim() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         let evil = r#""; DROP TABLE findings;--"#;
         let k = fixture(|v| {
@@ -709,7 +708,7 @@ async fn sql_and_instruction_text_is_stored_verbatim() {
 #[tokio::test]
 #[serial]
 async fn panicking_check_is_isolated() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         let run = new_run(&ctx, conn, 0).await;
         let st = full_scan::scan_with(
@@ -736,7 +735,7 @@ async fn panicking_check_is_isolated() {
 #[tokio::test]
 #[serial]
 async fn duplicate_draft_keys_merge_into_one_finding() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         for n in 0..2 {
             let run = new_run(&ctx, conn, n).await;
@@ -773,7 +772,7 @@ async fn duplicate_draft_keys_merge_into_one_finding() {
 #[tokio::test]
 #[serial]
 async fn connector_error_ends_partial_and_redelivery_is_noop() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         let k = rigged(Some(Fault::Error));
         let run = scan(&ctx, conn, 0, &k).await;
@@ -796,7 +795,7 @@ async fn connector_error_ends_partial_and_redelivery_is_noop() {
 #[tokio::test]
 #[serial]
 async fn blocked_connection_is_skipped_without_inventory() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         let mut a: connections::ActiveModel = connections::Entity::find_by_id(conn)
             .one(&ctx.db)

@@ -1,11 +1,8 @@
 use std::collections::HashSet;
 
 use chrono::{Duration, Utc};
-use loco_rs::{prelude::*, testing::prelude::request_with_config};
-use opsagent_brain::{
-    app::App,
-    models::_entities::{audit_events, finding_events, findings},
-};
+use loco_rs::prelude::*;
+use opsagent_brain::models::_entities::{audit_events, finding_events, findings};
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -35,7 +32,7 @@ fn ids(page: &Value) -> Vec<String> {
 #[tokio::test]
 #[serial]
 async fn list_pages_with_cursor_and_filters() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let (_, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
         scan(&ctx, conn, 0, &noisy()).await;
         let base = format!("/v1/orgs/{org}/findings");
@@ -77,7 +74,7 @@ async fn list_pages_with_cursor_and_filters() {
 #[tokio::test]
 #[serial]
 async fn detail_has_evidence_and_events() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let (_, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
         scan(&ctx, conn, 0, &noisy()).await;
         let id = finding_id(&ctx, "sg-ssh").await;
@@ -96,7 +93,7 @@ async fn detail_has_evidence_and_events() {
 #[tokio::test]
 #[serial]
 async fn accept_snooze_reopen_and_report() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let (t, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
         scan(&ctx, conn, 0, &noisy()).await;
         let id = finding_id(&ctx, "sg-ssh").await;
@@ -168,7 +165,7 @@ async fn accept_snooze_reopen_and_report() {
 #[tokio::test]
 #[serial]
 async fn other_orgs_finding_is_the_same_404_as_unknown() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let (tb, _, conn_b) = connected(&req, &ctx, "b@example.com", "noisy").await;
         scan(&ctx, conn_b, 0, &noisy()).await;
         let id_b = finding_id(&ctx, "sg-ssh").await;

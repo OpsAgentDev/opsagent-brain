@@ -1,0 +1,191 @@
+//! Connection use cases: create, request verification, disconnect (PRD 7.2).
+use axum::http::StatusCode;
+use chrono::{DurationRound, TimeDelta, Utc};
+use loco_rs::app::AppContext;
+use opsagent_connectors::{
+    registry::{self, ProviderSpec},
+    ConnectorError, Registry,
+};
+use opsagent_core::{
+    connection::{transition, ConnectionEvent as E, ConnectionStatus as S},
+    run::RunKey,
+};
+use opsagent_secrets::Kek;
+use sea_orm::{ActiveModelTrait, DatabaseConnection, Set, TransactionTrait};
+use serde_json::json;
+use uuid::Uuid;
+
+use crate::{
+    api_error::ApiError,
+    models::{
+        _entities::connections,
+        audit,
+        connections::{
+            cas, insert_creds, load_creds, save_creds, status_of, status_str, Creds,
+            TEMPLATE_VERSION,
+        },
+        now,
+    },
+    services::runs,
+};
+
+pub fn disconnected() -> ApiError {
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "connection_disconnected",
+        "This connection was disconnected. Start a new connection instead.",
+    )
+}
+
+/// A connection just created, with what the caller needs to show the next step.
+pub struct Created {
+    pub id: Uuid,
+    pub creds: Creds,
+    pub spec: ProviderSpec,
+}
+
+/// Creates a `pending` connection and its sealed credentials, for owner `actor`.
+pub async fn create(
+    db: &DatabaseConnection,
+    kek: &dyn Kek,
+    registry: &Registry,
+    organisation_id: Uuid,
+    actor: Uuid,
+    provider: &str,
+    name: String,
+) -> Result<Created, ApiError> {
+    let spec = registry
+        .spec(provider)
+        .map_err(|_| ApiError::invalid("provider must be aws"))?;
+    let creds = registry::new_creds(provider, Uuid::new_v4().to_string(), &name);
+    let id = Uuid::new_v4();
+    let txn = db.begin().await?;
+    connections::ActiveModel {
+        id: Set(id),
+        organisation_id: Set(organisation_id),
+        provider: Set(provider.to_owned()),
+        external_account_id: Set(None),
+        display_name: Set(Some(name)),
+        status: Set(status_str(S::Pending)),
+        status_reason: Set(None),
+        template_version: Set(spec.uses_template.then(|| TEMPLATE_VERSION.to_owned())),
+        scan_time_local: Set(None),
+        briefing_time_local: Set(None),
+        slack_channel_id: Set(None),
+        recipients: Set(json!([])),
+        api_rate_ceiling: Set(None),
+        first_connected_at: Set(None),
+        billable_from: Set(None),
+        verify_denied_streak: Set(0),
+        verify_denied_first_at: Set(None),
+        created_at: Set(now()),
+        updated_at: Set(now()),
+    }
+    .insert(&txn)
+    .await?;
+    insert_creds(&txn, kek, organisation_id, id, spec.credential_kind, &creds).await?;
+    audit::record(
+        &txn,
+        Some(organisation_id),
+        actor,
+        "connection.create",
+        Some(("connection", id.to_string())),
+    )
+    .await?;
+    txn.commit().await?;
+    Ok(Created { id, creds, spec })
+}
+
+fn role_error(e: ConnectorError) -> ApiError {
+    match e {
+        ConnectorError::InvalidCredentials(m) => ApiError::invalid(m),
+        e => ApiError::internal(e),
+    }
+}
+
+/// Stores the reported role and queues a `verify` run; returns the run id. A duplicate
+/// request in the same minute is the same run.
+pub async fn request_verify(
+    ctx: &AppContext,
+    kek: &dyn Kek,
+    c: &connections::Model,
+    actor: Uuid,
+    role_arn: &str,
+) -> Result<Uuid, ApiError> {
+    let from = status_of(c)?;
+    if from == S::Disconnected {
+        return Err(disconnected());
+    }
+    let role = registry::reported_role(&c.provider, role_arn).map_err(role_error)?;
+    let mut creds = load_creds(&ctx.db, kek, c).await?;
+    if role.is_some() {
+        creds.role_arn = role;
+    }
+    let to = match from {
+        S::Pending => transition(from, E::StackReported),
+        S::Revoked => transition(from, E::RoleReturned),
+        s => Ok(s),
+    }
+    .map_err(ApiError::internal)?;
+    let txn = ctx.db.begin().await?;
+    save_creds(&txn, kek, c, &creds).await?;
+    // Guarded on the status read above, so a concurrent Disconnect or worker outcome is not lost.
+    let mut a = <connections::ActiveModel as ActiveModelTrait>::default();
+    if to != from {
+        a.status = Set(status_str(to));
+    }
+    a.updated_at = Set(now());
+    if !cas(&txn, c, a).await? {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "connection_state_changed",
+            "The connection changed while this request ran. Reload and try again.",
+        ));
+    }
+    audit::record(
+        &txn,
+        Some(c.organisation_id),
+        actor,
+        "connection.verify_requested",
+        Some(("connection", c.id.to_string())),
+    )
+    .await?;
+    txn.commit().await?;
+    let key = RunKey {
+        organisation_id: Some(c.organisation_id),
+        connection_id: Some(c.id),
+        job_type: "verify".into(),
+        scheduled_at: Utc::now()
+            .duration_trunc(TimeDelta::minutes(1))
+            .map_err(ApiError::internal)?,
+    };
+    Ok(runs::enqueue(ctx, key, Utc::now()).await?.run.id)
+}
+
+/// Disconnects for owner `actor`; already disconnected is a no-op (idempotent DELETE).
+pub async fn disconnect(
+    db: &DatabaseConnection,
+    c: connections::Model,
+    actor: Uuid,
+) -> Result<(), ApiError> {
+    let Ok(to) = transition(status_of(&c)?, E::Disconnect) else {
+        return Ok(());
+    };
+    let (org_id, conn_id) = (c.organisation_id, c.id);
+    let txn = db.begin().await?;
+    let mut a: connections::ActiveModel = c.into();
+    a.status = Set(status_str(to));
+    a.status_reason = Set(Some("customer_disconnected".into()));
+    a.updated_at = Set(now());
+    a.update(&txn).await?;
+    audit::record(
+        &txn,
+        Some(org_id),
+        actor,
+        "connection.disconnect",
+        Some(("connection", conn_id.to_string())),
+    )
+    .await?;
+    txn.commit().await?;
+    Ok(())
+}

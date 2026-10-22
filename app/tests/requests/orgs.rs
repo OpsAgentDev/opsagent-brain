@@ -1,8 +1,5 @@
-use loco_rs::{prelude::*, testing::prelude::request_with_config};
-use opsagent_brain::{
-    app::App,
-    models::_entities::{audit_events, organisations},
-};
+use loco_rs::prelude::*;
+use opsagent_brain::models::_entities::{audit_events, organisations};
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -11,7 +8,7 @@ use super::support::*;
 #[tokio::test]
 #[serial]
 async fn create_org_requires_csrf_then_stores_wrapped_dek() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let token = sign_in(&req, &mail, "owner@example.com").await;
 
@@ -49,7 +46,7 @@ async fn create_org_requires_csrf_then_stores_wrapped_dek() {
 #[tokio::test]
 #[serial]
 async fn non_member_gets_same_404_as_unknown_org() {
-    request_with_config::<App, _, _>(cookie_config(), |mut req, ctx| async move {
+    serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
         let ta = sign_in(&req, &mail, "a@example.com").await;
         create_org(&req, &ta, "Org A").await;
@@ -76,7 +73,7 @@ async fn non_member_gets_same_404_as_unknown_org() {
 #[tokio::test]
 #[serial]
 async fn removing_last_owner_is_409() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let t = sign_in(&req, &mail, "o@example.com").await;
         let org = create_org(&req, &t, "Solo").await;
@@ -99,7 +96,7 @@ async fn removing_last_owner_is_409() {
 #[tokio::test]
 #[serial]
 async fn invites_owner_only_and_bound_to_email() {
-    request_with_config::<App, _, _>(cookie_config(), |mut req, ctx| async move {
+    serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
         let t = sign_in(&req, &mail, "owner@example.com").await;
         let org = create_org(&req, &t, "Team").await;

@@ -1,8 +1,5 @@
-use loco_rs::{prelude::*, testing::prelude::request_with_config};
-use opsagent_brain::{
-    app::App,
-    models::_entities::{audit_events, connections},
-};
+use loco_rs::prelude::*;
+use opsagent_brain::models::_entities::{audit_events, connections};
 use serde_json::Value;
 use serial_test::serial;
 
@@ -12,7 +9,7 @@ use crate::workers::full_scan::{noisy, scan};
 #[tokio::test]
 #[serial]
 async fn list_and_detail_with_stats() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let (_, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
         let run = scan(&ctx, conn, 0, &noisy()).await;
         scan(&ctx, conn, 1, &noisy()).await;
@@ -54,7 +51,7 @@ async fn list_and_detail_with_stats() {
 #[tokio::test]
 #[serial]
 async fn scan_is_once_per_hour() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let (t, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
         let url = format!("/v1/orgs/{org}/connections/{conn}/scan");
 
@@ -101,7 +98,7 @@ async fn scan_is_once_per_hour() {
 #[tokio::test]
 #[serial]
 async fn scan_needs_a_connected_or_degraded_connection() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let (t, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
         for status in ["blocked", "disconnected", "pending"] {
             let mut a: connections::ActiveModel = connections::Entity::find_by_id(conn)

@@ -10,12 +10,14 @@ use uuid::Uuid;
 use super::OrgPath;
 use crate::{
     api_error::{ApiError, ApiJson, Problem},
+    app::kek,
     middleware::org_scope::{AuthUser, OrgScope},
     models::{
         _entities::{members, organisations},
-        audit, now,
-        organisations::{create, valid_name, valid_timezone},
+        now,
+        organisations::{valid_name, valid_timezone},
     },
+    services::orgs,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -56,7 +58,7 @@ async fn create_org(
 ) -> Result<(StatusCode, Json<Org>), ApiError> {
     let name = valid_name(&body.name)?;
     let tz = valid_timezone(body.timezone.as_deref().unwrap_or("UTC"))?;
-    let org = create(&ctx.db, user_id, &name, &tz).await?;
+    let org = orgs::create(&ctx.db, kek(&ctx)?.as_ref(), user_id, &name, &tz).await?;
     Ok((StatusCode::CREATED, Json(view(&org, "owner"))))
 }
 
@@ -126,19 +128,7 @@ async fn update(
     responses((status = 204), (status = 403, body = Problem), (status = 404, body = Problem)))]
 async fn delete(State(ctx): State<AppContext>, scope: OrgScope) -> Result<StatusCode, ApiError> {
     scope.require_owner()?;
-    // TODO(billing): cancel the Stripe subscription before marking the org deleted.
-    let mut a: organisations::ActiveModel = load(&ctx, &scope).await?.into();
-    a.deleted_at = Set(Some(now()));
-    a.updated_at = Set(now());
-    a.update(&ctx.db).await?;
-    audit::record(
-        &ctx.db,
-        Some(scope.organisation_id),
-        scope.user_id,
-        "org.delete",
-        Some(("organisation", scope.organisation_id.to_string())),
-    )
-    .await?;
+    orgs::delete(&ctx.db, scope.organisation_id, scope.user_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

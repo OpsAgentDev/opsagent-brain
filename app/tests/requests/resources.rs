@@ -1,7 +1,5 @@
 use std::collections::HashSet;
 
-use loco_rs::testing::prelude::request_with_config;
-use opsagent_brain::app::App;
 use serde_json::Value;
 use serial_test::serial;
 
@@ -20,7 +18,7 @@ fn ids(page: &Value) -> Vec<String> {
 #[tokio::test]
 #[serial]
 async fn list_pages_filters_and_searches() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let (_, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
         scan(&ctx, conn, 0, &noisy()).await;
         let base = format!("/v1/orgs/{org}/resources");

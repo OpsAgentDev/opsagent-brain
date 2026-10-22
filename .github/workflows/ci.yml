@@ -89,6 +89,7 @@ jobs:
           set -- --network host --env-file .env.docker.example -e LOCO_ENV=production \
             -e DATABASE_URL=postgres://loco:loco@localhost:5432/opsagent_brain_prod \
             -e REDIS_URL=redis://localhost:6379 -e MAILER_SMTP_URL=smtp://127.0.0.1:1025 \
+            -e OPSAGENT_CONNECTORS=aws \
             -e OPSAGENT_AWS_OUTBOUND_ROLE_ARN=arn:aws:iam::000000000000:role/placeholder \
             -e OPSAGENT_TEMPLATE_BASE_URL=https://templates.example.test
           docker run --rm "$@" brain opsagent-brain db migrate

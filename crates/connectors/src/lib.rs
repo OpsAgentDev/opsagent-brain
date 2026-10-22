@@ -7,6 +7,9 @@ use uuid::Uuid;
 
 pub mod aws;
 pub mod fake;
+pub mod registry;
+
+pub use registry::Registry;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectorError {
@@ -135,15 +138,4 @@ pub trait Connector: Send + Sync {
     async fn inventory(&self, creds: &Credentials, scope: &Scope) -> Result<InventoryResult>;
     async fn cost_daily(&self, creds: &Credentials, days: u32) -> Result<Vec<CostRow>>;
     async fn metrics(&self, creds: &Credentials, q: MetricQuery) -> Result<Vec<MetricPoint>>;
-}
-
-/// Caller passes the value of `OPSAGENT_CONNECTORS`.
-pub fn registry(selected: &str) -> Result<Box<dyn Connector>> {
-    match selected {
-        "fake" => Ok(Box::new(fake::FakeConnector::default())),
-        "aws" => Ok(Box::new(
-            aws::AwsConnector::new(aws::AwsOutbound::default()),
-        )),
-        other => Err(ConnectorError::Unknown(other.to_owned())),
-    }
 }

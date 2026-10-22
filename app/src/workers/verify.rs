@@ -3,27 +3,28 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use loco_rs::{app::AppContext, bgworker::BackgroundWorker, config::QueueConfig, Error, Result};
-use opsagent_connectors::{
-    aws::{AwsConnector, AwsOutbound},
-    registry, CallContext, Connector, ConnectorError, Credentials, VerifyOutcome,
-};
+use loco_rs::{app::AppContext, bgworker::BackgroundWorker, Result};
+use opsagent_connectors::{registry as providers, CallContext, Connector, VerifyOutcome};
 use opsagent_core::{
     connection::{transition, ConnectionEvent as E, ConnectionStatus as S},
     run::RunStatus,
 };
-use opsagent_ledger::{lease, redis, retry::backoff, LedgerError, RunRow, Storage};
+use opsagent_ledger::{lease, LedgerError, RunRow, Storage};
 use sea_orm::{ActiveModelTrait, ConnectionTrait, EntityTrait, Set, SqlErr, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::models::{
-    _entities::{connection_verifications, connections},
-    audit,
-    connections::{account_of, cas, load_creds, status_of, status_str, Creds},
-    ledger_storage::PgStorage,
-    now, schedules,
+use super::common::{classify, connector_for, err, lerr, redis_client, retry, LResult};
+use crate::{
+    app::kek,
+    models::{
+        _entities::{connection_verifications, connections},
+        audit,
+        connections::{cas, load_creds, status_of, status_str},
+        ledger_storage::PgStorage,
+        now, schedules,
+    },
 };
 
 const LEASE_TTL: Duration = Duration::from_secs(120);
@@ -78,57 +79,6 @@ fn decide(o: &VerifyOutcome) -> Verdict {
     }
 }
 
-pub(crate) fn err(e: impl std::fmt::Display) -> Error {
-    Error::string(&e.to_string())
-}
-
-/// `OPSAGENT_CONNECTORS` picks the implementation; `aws` gets the outbound principal explicitly.
-pub(crate) fn connector() -> Result<Box<dyn Connector>> {
-    match std::env::var("OPSAGENT_CONNECTORS")
-        .as_deref()
-        .unwrap_or("aws")
-    {
-        "aws" => Ok(Box::new(AwsConnector::new(AwsOutbound {
-            principal_arn: Some(
-                std::env::var("OPSAGENT_AWS_OUTBOUND_ROLE_ARN")
-                    .map_err(|_| err("OPSAGENT_AWS_OUTBOUND_ROLE_ARN is not set"))?,
-            ),
-            ..Default::default()
-        }))),
-        other => registry(other).map_err(err),
-    }
-}
-
-pub(crate) fn redis_client(ctx: &AppContext) -> Result<redis::Client> {
-    let Some(QueueConfig::Redis(cfg)) = &ctx.config.queue else {
-        return Err(err("workers need the redis queue config"));
-    };
-    redis::Client::open(cfg.uri.as_str()).map_err(err)
-}
-
-pub(crate) fn credentials(
-    c: &connections::Model,
-    creds: &Creds,
-    run_id: Uuid,
-    trigger: &str,
-) -> Result<Credentials> {
-    Ok(match c.provider.as_str() {
-        "fake" => Credentials::Fake {
-            account: creds.fake_account.clone().unwrap_or_default(),
-        },
-        _ => Credentials::AwsRole {
-            role_arn: creds.role_arn.clone().ok_or_else(|| err("no role ARN"))?,
-            external_id: creds.external_id.clone(),
-            terraform_state: None,
-            context: CallContext {
-                organisation_id: c.organisation_id,
-                run_id,
-                trigger: trigger.into(),
-            },
-        },
-    })
-}
-
 fn is_unique_violation(e: &sea_orm::DbErr) -> bool {
     matches!(e.sql_err(), Some(SqlErr::UniqueConstraintViolation(_)))
 }
@@ -140,38 +90,45 @@ impl BackgroundWorker<VerifyArgs> for VerifyWorker {
     }
 
     async fn perform(&self, args: VerifyArgs) -> Result<()> {
-        let storage = PgStorage::new(self.ctx.db.clone());
-        let run = storage.load_run(args.run_id).await.map_err(err)?;
-        if matches!(
-            run.status,
-            RunStatus::Done | RunStatus::Failed | RunStatus::Skipped
-        ) {
-            return Ok(()); // Duplicate delivery of a finished run.
-        }
-        let redis = redis_client(&self.ctx)?;
-        let worker = format!("verify-{}", Uuid::new_v4());
-        let lease = match lease::acquire(&storage, &redis, run.id, &worker, LEASE_TTL).await {
-            Ok(Some(l)) => l,
-            Ok(None) | Err(LedgerError::LeaseHeld) => return Ok(()), // another worker has it
-            Err(e) => return Err(err(e)),
-        };
-        let res = self.run(&storage, &run, lease.fence).await;
-        lease::release(&redis, &lease).await;
-        match res {
-            Ok(()) | Err(LedgerError::StaleFence) => Ok(()),
-            Err(e) => Err(err(e)),
-        }
+        let k = connector_for(&self.ctx, args.run_id).await?;
+        verify(&self.ctx, args.run_id, k.as_ref()).await
     }
 }
 
-type LResult<T> = std::result::Result<T, LedgerError>;
-
-pub(crate) fn lerr(e: impl std::fmt::Display) -> LedgerError {
-    LedgerError::Storage(e.to_string())
+/// Runs (or re-runs) verify run `run_id` with connector `k` under a fenced lease.
+pub async fn verify(ctx: &AppContext, run_id: Uuid, k: &dyn Connector) -> Result<()> {
+    let storage = PgStorage::new(ctx.db.clone());
+    let run = storage.load_run(run_id).await.map_err(err)?;
+    if matches!(
+        run.status,
+        RunStatus::Done | RunStatus::Failed | RunStatus::Skipped
+    ) {
+        return Ok(()); // Duplicate delivery of a finished run.
+    }
+    let redis = redis_client(ctx)?;
+    let worker = format!("verify-{}", Uuid::new_v4());
+    let lease = match lease::acquire(&storage, &redis, run.id, &worker, LEASE_TTL).await {
+        Ok(Some(l)) => l,
+        Ok(None) | Err(LedgerError::LeaseHeld) => return Ok(()), // another worker has it
+        Err(e) => return Err(err(e)),
+    };
+    let w = VerifyWorker { ctx: ctx.clone() };
+    let res = w.run(&storage, &run, lease.fence, k).await;
+    lease::release(&redis, &lease).await;
+    match res {
+        Ok(()) | Err(LedgerError::StaleFence) => Ok(()),
+        Err(e) => Err(err(e)),
+    }
 }
 
 impl VerifyWorker {
-    async fn run(&self, storage: &PgStorage, run: &RunRow, fence: u64) -> LResult<()> {
+    async fn run(
+        &self,
+        storage: &PgStorage,
+        run: &RunRow,
+        fence: u64,
+        k: &dyn Connector,
+    ) -> LResult<()> {
         storage
             .set_status(run.id, fence, RunStatus::Running, None)
             .await?;
@@ -189,16 +146,19 @@ impl VerifyWorker {
                 .set_status(run.id, fence, RunStatus::Skipped, reason)
                 .await;
         }
-        let creds = load_creds(db, &c).await.map_err(lerr)?;
-        let outcome = match connector() {
-            Ok(k) => match credentials(&c, &creds, run.id, "verify") {
-                Ok(cr) => k.verify(&cr).await,
-                Err(e) => Err(ConnectorError::InvalidCredentials(e.to_string())),
-            },
-            Err(e) => Err(ConnectorError::Unknown(e.to_string())),
+        let kek = kek(&self.ctx).map_err(lerr)?;
+        let creds = load_creds(db, kek.as_ref(), &c).await.map_err(lerr)?;
+        let context = CallContext {
+            organisation_id: c.organisation_id,
+            run_id: run.id,
+            trigger: "verify".into(),
         };
-        let o = match outcome {
-            Ok(o) => o,
+        let outcome = match providers::credentials(&c.provider, &creds, context) {
+            Ok(cr) => k.verify(&cr).await.map(|o| (o, cr)),
+            Err(e) => Err(e),
+        };
+        let (o, cr) = match outcome {
+            Ok(v) => v,
             // Throttling and 5xx: retry, never change state.
             Err(e) => {
                 let (code, transient) = classify(&e);
@@ -221,7 +181,7 @@ impl VerifyWorker {
                             .await
                     }
                 };
-                let (st, why) = if self.apply(&c, &creds, run.id, to, reason, &o).await? {
+                let (st, why) = if self.apply(&c, cr.account(), run.id, to, reason, &o).await? {
                     (RunStatus::Done, None)
                 } else {
                     (RunStatus::Skipped, Some("connection_changed".into()))
@@ -310,7 +270,7 @@ impl VerifyWorker {
     async fn apply(
         &self,
         c: &connections::Model,
-        creds: &Creds,
+        account: Option<String>,
         run_id: Uuid,
         to: S,
         reason: Option<String>,
@@ -324,7 +284,7 @@ impl VerifyWorker {
         a.verify_denied_first_at = Set(None);
         a.updated_at = Set(now());
         if matches!(to, S::Connected | S::Degraded) {
-            let account = account_of(c, creds).ok_or_else(|| lerr("no account for role"))?;
+            let account = account.ok_or_else(|| lerr("no account for role"))?;
             a.external_account_id = Set(Some(account));
         }
         if to == S::Connected && c.first_connected_at.is_none() {
@@ -406,66 +366,6 @@ impl VerifyWorker {
     }
 }
 
-/// Ledger-owned retry: 1, 5, 15, 60 minutes. `false` (run marked failed) once exhausted.
-async fn retry(storage: &PgStorage, run: &RunRow, fence: u64) -> LResult<bool> {
-    match backoff(run.attempts) {
-        Some(d) => {
-            let at = Utc::now() + chrono::Duration::from_std(d).map_err(lerr)?;
-            // TODO(dispatch): the due-run dispatcher re-enqueues queued runs at next_attempt_at.
-            storage.schedule_retry(run.id, run.attempts + 1, at).await?;
-            Ok(true)
-        }
-        None => {
-            let reason = Some("retries_exhausted".into());
-            storage
-                .set_status(run.id, fence, RunStatus::Failed, reason)
-                .await?;
-            Ok(false)
-        }
-    }
-}
-
-/// AWS error codes worth retrying: throttling and server-side faults. Any other code is a
-/// deterministic 4xx (ValidationError, NoSuchEntity, MalformedPolicyDocument, ...).
-const TRANSIENT_CODES: &[&str] = &[
-    "Throttling",
-    "ThrottlingException",
-    "ThrottledException",
-    "RequestThrottled",
-    "RequestThrottledException",
-    "RequestLimitExceeded",
-    "TooManyRequestsException",
-    "SlowDown",
-    "PriorRequestNotComplete",
-    "RequestTimeout",
-    "RequestTimeoutException",
-    "ServiceUnavailable",
-    "ServiceUnavailableException",
-    "InternalError",
-    "InternalFailure",
-    "InternalServerError",
-    "InternalServiceError",
-];
-
-/// Stable error code (never the message) and whether a retry can help.
-fn classify(e: &ConnectorError) -> (String, bool) {
-    use ConnectorError as C;
-    match e {
-        C::Api {
-            code: Some(code), ..
-        } => (code.clone(), TRANSIENT_CODES.contains(&code.as_str())),
-        // No code: the request never got an answer (timeout, connection reset).
-        C::Api { code: None, .. } => ("network".into(), true),
-        C::Provider(_) => ("provider_error".into(), false),
-        C::NotFound => ("not_found".into(), false),
-        C::InvalidCredentials(_) => ("invalid_credentials".into(), false),
-        C::Auth(_) => ("auth".into(), false),
-        C::Template(_) => ("template".into(), false),
-        C::Fixture(_) => ("fixture".into(), false),
-        C::Unknown(_) => ("unknown_connector".into(), false),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,30 +378,6 @@ mod tests {
             extra_grants: vec![],
             missing_grants: vec![],
         }
-    }
-
-    #[test]
-    fn classify_retries_only_throttling_5xx_and_network() {
-        let api = |c: Option<&str>| ConnectorError::Api {
-            code: c.map(Into::into),
-            message: "m".into(),
-        };
-        for c in ["Throttling", "ServiceUnavailable", "InternalFailure"] {
-            assert_eq!(classify(&api(Some(c))), (c.to_owned(), true));
-        }
-        for c in [
-            "ValidationError",
-            "NoSuchEntity",
-            "MalformedPolicyDocument",
-            "InvalidInput",
-        ] {
-            assert_eq!(classify(&api(Some(c))), (c.to_owned(), false));
-        }
-        assert_eq!(classify(&api(None)), ("network".into(), true));
-        assert_eq!(
-            classify(&ConnectorError::NotFound),
-            ("not_found".into(), false)
-        );
     }
 
     #[test]

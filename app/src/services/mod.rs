@@ -1,6 +1,10 @@
+pub mod connections;
 pub mod finding_actions;
 pub mod finding_lifecycle;
 pub mod inventory_upsert;
 pub mod manual_scan;
+pub mod members;
+pub mod orgs;
 pub mod pagination;
 pub mod redact;
+pub mod runs;

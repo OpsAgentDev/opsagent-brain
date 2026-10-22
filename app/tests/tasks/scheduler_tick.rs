@@ -1,7 +1,6 @@
 use chrono::{DateTime, Duration, Utc};
-use loco_rs::{prelude::*, testing::prelude::request_with_config};
+use loco_rs::prelude::*;
 use opsagent_brain::{
-    app::App,
     models::ledger_storage::{stmt, PgStorage},
     tasks::scheduler_tick::{tick, Report},
 };
@@ -65,7 +64,7 @@ async fn run_tick(ctx: &AppContext, now: DateTime<Utc>) -> Report {
 #[tokio::test]
 #[serial]
 async fn due_schedule_yields_one_run_after_two_ticks() {
-    request_with_config::<App, _, _>(cookie_config(), |_req, ctx| async move {
+    serve(|_req, ctx| async move {
         reset(&ctx).await;
         let now = at("2026-10-22T08:00:30Z");
         schedule(&ctx, "0 8 * * *", "UTC", at("2026-10-22T08:00:00Z")).await;
@@ -90,7 +89,7 @@ async fn due_schedule_yields_one_run_after_two_ticks() {
 #[tokio::test]
 #[serial]
 async fn dst_gap_lands_on_next_valid_minute_and_overlap_runs_once() {
-    request_with_config::<App, _, _>(cookie_config(), |_req, ctx| async move {
+    serve(|_req, ctx| async move {
         reset(&ctx).await;
         // 02:30 does not exist on 2026-03-08 in New York: 03:30 EDT.
         schedule(
@@ -131,7 +130,7 @@ async fn dst_gap_lands_on_next_valid_minute_and_overlap_runs_once() {
 #[tokio::test]
 #[serial]
 async fn second_lock_holder_does_not_tick() {
-    request_with_config::<App, _, _>(cookie_config(), |_req, ctx| async move {
+    serve(|_req, ctx| async move {
         reset(&ctx).await;
         schedule(&ctx, "0 8 * * *", "UTC", at("2026-10-22T08:00:00Z")).await;
         let other = Database::connect(ctx.config.database.uri.clone())
@@ -158,7 +157,7 @@ async fn second_lock_holder_does_not_tick() {
 #[tokio::test]
 #[serial]
 async fn queued_run_with_due_next_attempt_is_reenqueued_once() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         reset(&ctx).await;
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
@@ -203,7 +202,7 @@ async fn queued_run_with_due_next_attempt_is_reenqueued_once() {
 #[tokio::test]
 #[serial]
 async fn schedule_three_days_overdue_catches_up_once() {
-    request_with_config::<App, _, _>(cookie_config(), |_req, ctx| async move {
+    serve(|_req, ctx| async move {
         reset(&ctx).await;
         let now = at("2026-10-22T09:00:00Z");
         schedule(&ctx, "0 8 * * *", "UTC", at("2026-10-19T08:00:00Z")).await;
@@ -218,7 +217,7 @@ async fn schedule_three_days_overdue_catches_up_once() {
 #[tokio::test]
 #[serial]
 async fn connecting_creates_default_schedules_once() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         reset(&ctx).await;
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
@@ -249,7 +248,7 @@ async fn conn_schedule(ctx: &AppContext, id: &str, job: &str, due: DateTime<Utc>
 #[tokio::test]
 #[serial]
 async fn due_full_scan_enqueues_the_real_worker_once() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         reset(&ctx).await;
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
@@ -283,7 +282,7 @@ async fn due_full_scan_enqueues_the_real_worker_once() {
 #[tokio::test]
 #[serial]
 async fn run_written_but_not_enqueued_is_picked_up_by_the_next_tick() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         reset(&ctx).await;
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
@@ -317,7 +316,7 @@ async fn run_written_but_not_enqueued_is_picked_up_by_the_next_tick() {
 #[tokio::test]
 #[serial]
 async fn worker_retry_written_during_inline_enqueue_survives_the_marker_clear() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         reset(&ctx).await;
         let mail = prepare(&ctx);
         let (_, _, id) = fake_connection(&req, &mail, "o@example.com", "Org", "denied").await;

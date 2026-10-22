@@ -1,8 +1,5 @@
-use loco_rs::{prelude::*, testing::prelude::request_with_config};
-use opsagent_brain::{
-    app::App,
-    models::_entities::{sessions, users},
-};
+use loco_rs::prelude::*;
+use opsagent_brain::models::_entities::{sessions, users};
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -11,7 +8,7 @@ use super::support::*;
 #[tokio::test]
 #[serial]
 async fn magic_link_creates_user_and_sends_one_mail() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let res = req
             .post("/v1/auth/magic-link")
@@ -38,7 +35,7 @@ async fn magic_link_creates_user_and_sends_one_mail() {
 #[tokio::test]
 #[serial]
 async fn magic_link_redeem_sets_cookie_and_is_single_use() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         req.post("/v1/auth/magic-link")
             .json(&json!({"email": "a@example.com"}))
@@ -92,7 +89,7 @@ async fn magic_link_redeem_sets_cookie_and_is_single_use() {
 #[tokio::test]
 #[serial]
 async fn authenticated_request_slides_session_expiry() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         sign_in(&req, &mail, "slide@example.com").await;
         let expiry = || async {
@@ -115,7 +112,7 @@ async fn authenticated_request_slides_session_expiry() {
 #[tokio::test]
 #[serial]
 async fn csrf_exempt_get_works_without_token_and_me_needs_session() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let res = req.get("/v1/auth/me").await;
         assert_eq!(res.status_code(), 401);
@@ -133,7 +130,7 @@ async fn csrf_exempt_get_works_without_token_and_me_needs_session() {
 #[tokio::test]
 #[serial]
 async fn sign_out_requires_csrf_and_ends_session() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let token = sign_in(&req, &mail, "out@example.com").await;
         assert_eq!(req.post("/v1/auth/sign-out").await.status_code(), 403);
@@ -152,7 +149,7 @@ async fn sign_out_requires_csrf_and_ends_session() {
 async fn github_start_returns_authorize_url_with_state_and_pkce() {
     std::env::set_var("GITHUB_CLIENT_ID", "cid");
     std::env::set_var("GITHUB_CLIENT_SECRET", "secret");
-    request_with_config::<App, _, _>(cookie_config(), |req, _ctx| async move {
+    serve(|req, _ctx| async move {
         let res = req.post("/v1/auth/sign-in/github/start").await;
         assert_eq!(res.status_code(), 200);
         let url = res.json::<Value>()["url"].as_str().unwrap().to_string();
@@ -175,7 +172,7 @@ async fn github_start_returns_authorize_url_with_state_and_pkce() {
 #[tokio::test]
 #[serial]
 async fn signed_out_session_is_not_resurrected() {
-    request_with_config::<App, _, _>(cookie_config(), |mut req, ctx| async move {
+    serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
         let token = sign_in(&req, &mail, "gone@example.com").await;
         let sid = sessions::Entity::find()
@@ -208,7 +205,7 @@ async fn signed_out_session_is_not_resurrected() {
 #[tokio::test]
 #[serial]
 async fn cors_allows_only_the_web_origin_with_credentials() {
-    request_with_config::<App, _, _>(cookie_config(), |req, _ctx| async move {
+    serve(|req, _ctx| async move {
         let preflight = |origin: &'static str| {
             req.method(axum::http::Method::OPTIONS, "/v1/auth/csrf")
                 .add_header("Origin", origin)

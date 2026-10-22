@@ -1,7 +1,6 @@
 use std::process::Command;
 
-use loco_rs::testing::prelude::request_with_config;
-use opsagent_brain::{app::App, controllers::openapi::document_json, models::members};
+use opsagent_brain::{controllers::openapi::document_json, models::members};
 use serde_json::Value;
 use serial_test::serial;
 
@@ -13,7 +12,7 @@ const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/openapi-di
 #[tokio::test]
 #[serial]
 async fn served_to_owners_only() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let res = req.get("/openapi.json").await;
         assert_eq!(res.status_code(), 404, "anonymous");
 

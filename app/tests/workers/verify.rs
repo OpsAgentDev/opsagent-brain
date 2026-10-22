@@ -1,7 +1,6 @@
 use chrono::{Duration, Utc};
-use loco_rs::{bgworker::BackgroundWorker, prelude::*, testing::prelude::request_with_config};
+use loco_rs::{bgworker::BackgroundWorker, prelude::*};
 use opsagent_brain::{
-    app::App,
     models::{
         _entities::{audit_events, connection_verifications, connections, runs},
         ledger_storage::PgStorage,
@@ -52,7 +51,7 @@ async fn set(ctx: &AppContext, id: Uuid, f: impl FnOnce(&mut connections::Active
 #[tokio::test]
 #[serial]
 async fn second_org_racing_to_same_account_ends_blocked() {
-    request_with_config::<App, _, _>(cookie_config(), |mut req, ctx| async move {
+    serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
         let (_, oa, ida) = fake_connection(&req, &mail, "a@example.com", "Alpha", "clean").await;
         req.clear_cookies();
@@ -81,7 +80,7 @@ async fn second_org_racing_to_same_account_ends_blocked() {
 #[tokio::test]
 #[serial]
 async fn same_run_key_is_one_run_and_one_verification() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let (_, _, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
         let id: Uuid = id.parse().unwrap();
@@ -114,7 +113,7 @@ async fn same_run_key_is_one_run_and_one_verification() {
 #[tokio::test]
 #[serial]
 async fn access_denied_three_times_over_an_hour_revokes() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let (_, _, id) = fake_connection(&req, &mail, "o@example.com", "Org", "denied").await;
         let id: Uuid = id.parse().unwrap();
@@ -162,7 +161,7 @@ async fn access_denied_three_times_over_an_hour_revokes() {
 #[tokio::test]
 #[serial]
 async fn non_retryable_connector_error_is_recorded_on_first_run() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         // No fixture for this account: the fake connector answers NotFound.
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "nosuch").await;

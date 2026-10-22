@@ -1,10 +1,7 @@
-use loco_rs::{prelude::*, testing::prelude::request_with_config};
-use opsagent_brain::{
-    app::App,
-    models::{
-        _entities::{audit_events, connection_credentials, connection_verifications, connections},
-        connections::cas,
-    },
+use loco_rs::prelude::*;
+use opsagent_brain::models::{
+    _entities::{audit_events, connection_credentials, connection_verifications, connections},
+    connections::cas,
 };
 use serde_json::{json, Value};
 use serial_test::serial;
@@ -41,7 +38,7 @@ async fn audits(ctx: &AppContext, action: &str) -> u64 {
 #[tokio::test]
 #[serial]
 async fn create_returns_quick_create_url_and_never_shows_external_id_again() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let t = sign_in(&req, &mail, "owner@example.com").await;
         let org = slug(&create_org(&req, &t, "Acme").await);
@@ -90,7 +87,7 @@ async fn create_returns_quick_create_url_and_never_shows_external_id_again() {
 #[tokio::test]
 #[serial]
 async fn verify_outcomes_set_status() {
-    request_with_config::<App, _, _>(cookie_config(), |mut req, ctx| async move {
+    serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
         for (i, (account, status)) in [
             ("clean", "connected"),
@@ -142,7 +139,7 @@ async fn verify_outcomes_set_status() {
 #[tokio::test]
 #[serial]
 async fn same_account_in_second_org_is_blocked_by_worker_without_org_names() {
-    request_with_config::<App, _, _>(cookie_config(), |mut req, ctx| async move {
+    serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
         let (ta, oa, ida) =
             fake_connection(&req, &mail, "a@example.com", "Alpha Org", "clean").await;
@@ -175,7 +172,7 @@ async fn same_account_in_second_org_is_blocked_by_worker_without_org_names() {
 #[tokio::test]
 #[serial]
 async fn status_cas_refuses_a_stale_read() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
         let stale = row(&ctx, &id).await; // read as pending
@@ -199,7 +196,7 @@ async fn status_cas_refuses_a_stale_read() {
 #[tokio::test]
 #[serial]
 async fn cross_org_connection_is_same_404_as_unknown() {
-    request_with_config::<App, _, _>(cookie_config(), |mut req, ctx| async move {
+    serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
         let (_, _, idb) = fake_connection(&req, &mail, "b@example.com", "Org B", "clean").await;
         req.clear_cookies();
@@ -231,7 +228,7 @@ async fn cross_org_connection_is_same_404_as_unknown() {
 #[tokio::test]
 #[serial]
 async fn patch_validates_and_delete_disconnects() {
-    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
         let url = format!("/v1/orgs/{org}/connections/{id}");

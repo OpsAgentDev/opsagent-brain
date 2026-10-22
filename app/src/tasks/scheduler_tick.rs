@@ -4,12 +4,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use loco_rs::{
     app::AppContext,
-    bgworker::BackgroundWorker,
     task::{Task, TaskInfo, Vars},
     Result,
 };
 use opsagent_core::run::RunKey;
-use opsagent_ledger::{CreateRunOutcome, Storage};
 use sea_orm::{
     ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DatabaseTransaction,
     TransactionTrait,
@@ -17,14 +15,8 @@ use sea_orm::{
 use uuid::Uuid;
 
 use crate::{
-    models::{
-        ledger_storage::{stmt, PgStorage},
-        schedules::next_after,
-    },
-    workers::{
-        full_scan::{FullScanArgs, FullScanWorker},
-        verify::{err, VerifyArgs, VerifyWorker},
-    },
+    models::{ledger_storage::stmt, schedules::next_after},
+    services::runs::{create_marked, dispatch},
 };
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -52,31 +44,6 @@ impl Task for SchedulerTick {
         }
         Ok(())
     }
-}
-
-/// Enqueue the worker for a run; `false` for job types without a worker yet.
-async fn enqueue(ctx: &AppContext, job_type: &str, run_id: Uuid) -> Result<bool> {
-    match job_type {
-        "verify" => VerifyWorker::perform_later(ctx, VerifyArgs { run_id }).await?,
-        "full_scan" => FullScanWorker::perform_later(ctx, FullScanArgs { run_id }).await?,
-        other => {
-            tracing::warn!(job_type = other, %run_id, "no worker registered, not enqueued");
-            return Ok(false);
-        }
-    };
-    Ok(true)
-}
-
-/// Enqueue after the run row is committed (a worker must be able to load it), then clear the
-/// outbox marker `due_schedule` set. Only the exact marker is cleared, so a retry time the
-/// worker has since written survives. A crash in between leaves the marker for the next tick.
-async fn dispatch(ctx: &AppContext, id: Uuid, job: &str, marker: DateTime<Utc>) -> Result<bool> {
-    let sent = enqueue(ctx, job, id).await?;
-    PgStorage::new(ctx.db.clone())
-        .clear_enqueue_marker(id, marker)
-        .await
-        .map_err(err)?;
-    Ok(sent)
 }
 
 /// One tick at `now`. `None` when another scheduler holds the advisory lock.
@@ -139,24 +106,6 @@ async fn lock_and_load(
     }))
 }
 
-/// Creates the run on the same transaction; a new run gets the outbox marker. Returns the
-/// transaction back (the storage owns it while it works).
-async fn create_and_mark(
-    txn: DatabaseTransaction,
-    key: RunKey,
-    now: DateTime<Utc>,
-) -> Result<(DatabaseTransaction, CreateRunOutcome)> {
-    let storage = PgStorage::new(txn);
-    let out = storage.create_run(key).await.map_err(err)?;
-    if out.created {
-        storage
-            .mark_enqueue_pending(out.run.id, now)
-            .await
-            .map_err(err)?;
-    }
-    Ok((storage.into_inner(), out))
-}
-
 /// Moves `next_due_at` forward; `None` (unparseable cron or zone) disables the schedule.
 async fn advance(txn: &DatabaseTransaction, id: Uuid, next: Option<DateTime<Utc>>) -> Result<()> {
     let st = match next {
@@ -193,7 +142,7 @@ async fn due_schedule(
         return Ok(None);
     }
     let job = due.key.job_type.clone();
-    let (txn, out) = create_and_mark(txn, due.key, now).await?;
+    let (txn, out) = create_marked(txn, due.key, now).await?;
     advance(&txn, id, next).await?;
     txn.commit().await?;
     Ok(out.created.then_some((out.run.id, job)))

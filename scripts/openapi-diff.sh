@@ -9,6 +9,8 @@ generated="${OPENAPI_GENERATED:-}"
 if [ -z "$generated" ]; then
   generated="$(mktemp)"
   trap 'rm -f "$generated"' EXIT
+  # The app builds its KEK at boot; the dump needs any well-formed key (32 zero bytes).
+  export OPSAGENT_KEK="${OPSAGENT_KEK:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}"
   (cd app && cargo run -q -p opsagent-brain -- task openapi:dump "path:$generated")
 fi
 if ! diff -u "$committed" "$generated"; then

@@ -1,5 +1,6 @@
 use opsagent_connectors::{
-    fake::FakeConnector, registry, Connector, ConnectorError, Credentials, MetricQuery, Scope,
+    aws::AwsOutbound, fake::FakeConnector, Connector, ConnectorError, Credentials, MetricQuery,
+    Scope,
 };
 use opsagent_core::resource::{Provider, ResourceKind};
 
@@ -112,9 +113,11 @@ async fn unknown_account_and_registry() {
         FakeConnector::new("nope"),
         Err(ConnectorError::NotFound)
     ));
-    assert!(matches!(registry("bogus"), Err(ConnectorError::Unknown(n)) if n == "bogus"));
-    assert_eq!(registry("aws").unwrap().provider(), Provider::Aws);
-    let c = registry("fake").unwrap();
+    let real = opsagent_connectors::Registry::new(AwsOutbound::default(), false);
+    assert!(matches!(real.connector("bogus"), Err(ConnectorError::Unknown(n)) if n == "bogus"));
+    assert_eq!(real.connector("aws").unwrap().provider(), Provider::Aws);
+    let fake = opsagent_connectors::Registry::new(AwsOutbound::default(), true);
+    let c = fake.connector("fake").unwrap();
     assert_eq!(c.provider(), Provider::Fake);
     let q = MetricQuery {
         resource_identity: "x".into(),

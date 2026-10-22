@@ -20,6 +20,7 @@ fn key() -> RunKey {
 #[tokio::test]
 #[serial]
 async fn pg_storage_dedupes_keys_and_enforces_fence() {
+    crate::requests::support::test_env();
     let boot = boot_test::<App>().await.unwrap();
     let s = PgStorage::new(boot.app_context.db.clone());
 
@@ -81,6 +82,7 @@ async fn pg_storage_dedupes_keys_and_enforces_fence() {
 #[tokio::test]
 #[serial]
 async fn run_chunked_completes_on_pg_storage() {
+    crate::requests::support::test_env();
     let boot = boot_test::<App>().await.unwrap();
     let s = PgStorage::new(boot.app_context.db.clone());
     let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:56379".into());

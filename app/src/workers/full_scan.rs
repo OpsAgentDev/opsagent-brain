@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use loco_rs::{app::AppContext, bgworker::BackgroundWorker, Result};
 use opsagent_checks::{Check, CheckCtx, MetricStore};
-use opsagent_connectors::{Connector, Credentials, Scope};
+use opsagent_connectors::{registry as providers, CallContext, Connector, Credentials, Scope};
 use opsagent_core::{connection::ConnectionStatus as S, resource::Resource, run::RunStatus};
 use opsagent_ledger::{lease, run_chunked, ChunkOutcome, LedgerError, RunChunkedOptions, Storage};
 use sea_orm::{ConnectionTrait, EntityTrait, TransactionTrait};
@@ -18,8 +18,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::verify::{connector, credentials, err, lerr, redis_client};
+use super::common::{connector_for, err, lerr, redis_client, LResult};
 use crate::{
+    app::kek,
     models::{
         _entities::connections,
         connections::{load_creds, status_of},
@@ -34,8 +35,6 @@ use crate::{
 pub const JOB: &str = "full_scan";
 const FINALIZE: &str = "finalize";
 const TIME_CAP: Duration = Duration::from_secs(6 * 3600);
-
-type LResult<T> = std::result::Result<T, LedgerError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FullScanArgs {
@@ -53,7 +52,7 @@ impl BackgroundWorker<FullScanArgs> for FullScanWorker {
     }
 
     async fn perform(&self, args: FullScanArgs) -> Result<()> {
-        let k = connector()?;
+        let k = connector_for(&self.ctx, args.run_id).await?;
         let opts = RunChunkedOptions {
             worker_id: format!("{JOB}-{}", Uuid::new_v4()),
             time_cap: TIME_CAP,
@@ -113,8 +112,14 @@ pub async fn scan_with(
         lease::release(&redis, &l).await;
         return res.map(|()| RunStatus::Skipped);
     }
-    let creds = load_creds(db, &c).await.map_err(lerr)?;
-    let cr = credentials(&c, &creds, run_id, JOB).map_err(lerr)?;
+    let kek = kek(ctx).map_err(lerr)?;
+    let creds = load_creds(db, kek.as_ref(), &c).await.map_err(lerr)?;
+    let context = CallContext {
+        organisation_id: c.organisation_id,
+        run_id,
+        trigger: JOB.into(),
+    };
+    let cr = providers::credentials(&c.provider, &creds, context).map_err(lerr)?;
     let redis = redis_client(ctx).map_err(lerr)?;
 
     // shortcut: chunks come from an unscoped inventory call on every (re)start, which doubles
