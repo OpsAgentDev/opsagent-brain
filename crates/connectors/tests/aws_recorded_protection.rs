@@ -10,6 +10,7 @@ use opsagent_connectors::aws::inventory::{
 };
 use opsagent_connectors::aws::metrics::metric_points;
 use opsagent_connectors::aws::simulate::{simulate_restore, RESTORE_ACTIONS};
+use opsagent_connectors::ConnectorError;
 use opsagent_core::resource::{Provider, Resource, ResourceKind};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -955,4 +956,77 @@ async fn failed_coverage_read_in_ebs_chunk_is_a_backup_partial_error() {
     ] {
         assert!(!a.contains_key(k), "{k} present");
     }
+}
+
+/// One own-account or foreign trail whose status call fails with `code`.
+async fn trail_status_error(
+    org: bool,
+    acct: &str,
+    code: &'static str,
+) -> Result<Vec<Resource>, ConnectorError> {
+    use aws_sdk_cloudtrail::operation::{
+        describe_trails::DescribeTrailsOutput, get_trail_status::GetTrailStatusError,
+    };
+    use aws_sdk_cloudtrail::types::Trail;
+    let arn = format!("arn:aws:cloudtrail:eu-west-1:{acct}:trail/t");
+    let d = mock!(aws_sdk_cloudtrail::Client::describe_trails).then_output(move || {
+        DescribeTrailsOutput::builder()
+            .trail_list(
+                Trail::builder()
+                    .name("t")
+                    .trail_arn(arn.clone())
+                    .is_organization_trail(org)
+                    .build(),
+            )
+            .build()
+    });
+    let s = mock!(aws_sdk_cloudtrail::Client::get_trail_status).then_error(move || {
+        GetTrailStatusError::generic(
+            aws_sdk_cloudtrail::error::ErrorMetadata::builder()
+                .code(code)
+                .build(),
+        )
+    });
+    let ct = mock_client!(aws_sdk_cloudtrail, RuleMode::Sequential, [&d, &s]);
+    cloudtrails(&ct, &T).await
+}
+
+#[tokio::test]
+async fn foreign_org_trail_tolerates_only_denied_or_not_found() {
+    for code in [
+        "AccessDenied",
+        "AccessDeniedException",
+        "TrailNotFoundException",
+    ] {
+        let r = trail_status_error(true, "999999999999", code)
+            .await
+            .unwrap();
+        assert!(r[0].attributes.get("logging").is_none(), "{code}");
+        assert!(r[0].attributes.get("bucket_writable").is_none(), "{code}");
+    }
+    assert!(
+        trail_status_error(true, "999999999999", "ThrottlingException")
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn own_or_non_org_trail_status_error_fails_the_service() {
+    // Own-account org trail, and a foreign trail that is not an organization trail.
+    assert!(
+        trail_status_error(true, "123456789012", "AccessDeniedException")
+            .await
+            .is_err()
+    );
+    assert!(
+        trail_status_error(false, "999999999999", "AccessDeniedException")
+            .await
+            .is_err()
+    );
+    assert!(
+        trail_status_error(false, "123456789012", "TrailNotFoundException")
+            .await
+            .is_err()
+    );
 }

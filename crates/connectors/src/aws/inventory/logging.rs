@@ -22,10 +22,8 @@ pub async fn cloudtrails(ct: &aws_sdk_cloudtrail::Client, t: &Target<'_>) -> Res
         if !seen.insert(arn) {
             continue;
         }
-        let mut attrs = json!({
-            "service": "cloudtrail",
-            "is_organization": tr.is_organization_trail().unwrap_or(false),
-        });
+        let org = tr.is_organization_trail().unwrap_or(false);
+        let mut attrs = json!({"service": "cloudtrail", "is_organization": org});
         // A refused status call (e.g. an organization trail of another account) leaves
         // `logging` and `bucket_writable` absent rather than failing the read.
         match ct.get_trail_status().name(arn).send().await {
@@ -39,11 +37,15 @@ pub async fn cloudtrails(ct: &aws_sdk_cloudtrail::Client, t: &Target<'_>) -> Res
             }
             Err(e) => {
                 let e = provider_err(e);
-                let code = match &e {
-                    crate::ConnectorError::Api { code, .. } => code.as_deref(),
-                    _ => None,
-                };
-                tracing::debug!(error_code = ?code, "trail status unavailable");
+                // Only a foreign organization trail may be unreadable; any other failure
+                // makes the whole service unavailable so the check never guesses.
+                let foreign = org && arn.split(':').nth(4).is_some_and(|a| a != t.account);
+                let tolerated = matches!(&e, crate::ConnectorError::Api { code: Some(c), .. }
+                    if matches!(c.as_str(), "AccessDeniedException" | "AccessDenied" | "TrailNotFoundException"));
+                if !(foreign && tolerated) {
+                    return Err(e);
+                }
+                tracing::debug!("foreign organization trail status unavailable");
             }
         }
         out.push(t.resource(

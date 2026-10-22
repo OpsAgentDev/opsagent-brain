@@ -157,8 +157,61 @@ fn org_trail_with_unknown_status_is_present() {
     assert!(run(&LoggingGaps, &[org(OTHER, json!({}))], &[]).is_empty());
 }
 
+fn unknown(id: &str, org: bool) -> Resource {
+    res(
+        id,
+        "r",
+        json!({"service":"cloudtrail","is_organization":org}),
+    )
+}
+
 #[test]
-fn non_org_trail_with_unknown_status_is_skipped() {
-    let rs = [res("t", "r", json!({"service":"cloudtrail"}))];
+fn own_unknown_alone_is_status_unknown() {
+    let d = run(&LoggingGaps, &[unknown("t", false)], &[]);
+    assert_eq!(
+        set(&d),
+        vec![t("cloudtrail:1", "trail_status_unknown", Medium)]
+    );
+    assert!(d[0].evidence[0].excerpt.contains('t'));
+}
+
+#[test]
+fn own_org_trail_unknown_is_status_unknown() {
+    let rs = [org(OWN, json!({}))];
+    assert_eq!(
+        set(&run(&LoggingGaps, &rs, &[])),
+        vec![t("cloudtrail:1", "trail_status_unknown", Medium)]
+    );
+}
+
+#[test]
+fn own_unknown_with_own_broken_is_status_unknown_not_critical() {
+    let rs = [unknown("u", false), trail("b", false, true)];
+    let d = run(&LoggingGaps, &rs, &[]);
+    assert_eq!(
+        set(&d),
+        vec![t("cloudtrail:1", "trail_status_unknown", Medium)]
+    );
+    assert!(d[0].evidence[0].excerpt.ends_with(": u"));
+}
+
+#[test]
+fn foreign_unknown_counts_present_even_with_own_broken() {
+    let rs = [org(OTHER, json!({})), trail("b", false, true)];
     assert!(run(&LoggingGaps, &rs, &[]).is_empty());
+}
+
+#[test]
+fn own_unknown_does_not_override_a_healthy_trail() {
+    let rs = [unknown("u", false), trail("ok", true, true)];
+    assert!(run(&LoggingGaps, &rs, &[]).is_empty());
+}
+
+#[test]
+fn unavailable_cloudtrail_suppresses_status_unknown() {
+    let parts = CtxParts {
+        unavailable: ["cloudtrail".to_owned()].into(),
+        ..Default::default()
+    };
+    assert!(run_with(&parts, &LoggingGaps, &[unknown("u", false)], &[]).is_empty());
 }
