@@ -6,14 +6,34 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
 #[sea_orm(table_name = "email_suppressions")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false, column_type = "Text")]
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
+    #[sea_orm(unique_key = "email_suppressions_org_email_uniq")]
+    pub organisation_id: Option<Uuid>,
+    #[sea_orm(column_type = "Text", unique_key = "email_suppressions_org_email_uniq")]
     pub email_hash: String,
     #[sea_orm(column_type = "Text")]
     pub reason: String,
+    pub expires_at: Option<DateTimeWithTimeZone>,
     pub created_at: DateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::organisations::Entity",
+        from = "Column::OrganisationId",
+        to = "super::organisations::Column::Id",
+        on_update = "NoAction",
+        on_delete = "NoAction"
+    )]
+    Organisations,
+}
+
+impl Related<super::organisations::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Organisations.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}

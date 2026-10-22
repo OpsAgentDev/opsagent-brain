@@ -11,6 +11,7 @@ pub fn magic_link(to: &str, link: &str) -> Mail {
 }
 
 pub fn invite(to: &str, org_name: &str, link: &str) -> Mail {
+    let org_name = &mail_safe_name(org_name);
     Mail {
         to: to.into(),
         subject: format!("You are invited to {org_name} on OpsAgent"),
@@ -46,7 +47,7 @@ pub fn recipient_confirm(to: &str, org_name: &str, link: &str) -> Mail {
 
 #[cfg(test)]
 mod tests {
-    use super::mail_safe_name;
+    use super::{invite, mail_safe_name};
 
     #[test]
     fn org_name_is_capped_and_has_no_control_chars() {
@@ -54,5 +55,15 @@ mod tests {
         assert!(!n.contains(['\r', '\n', '\u{202E}']), "{n}");
         assert_eq!(n.chars().count(), 60);
         assert_eq!(mail_safe_name("  Acme  Ltd "), "Acme Ltd");
+    }
+
+    #[test]
+    fn invite_mail_uses_the_safe_name() {
+        let m = invite(
+            "a@example.com",
+            &format!("Org\u{202E}{}", "b".repeat(100)),
+            "https://x",
+        );
+        assert!(!m.subject.contains('\u{202E}') && !m.text.contains(&"b".repeat(60)));
     }
 }

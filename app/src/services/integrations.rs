@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use opsagent_secrets::Kek;
 use sea_orm::{
     sea_query::OnConflict, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder,
-    Set, TransactionTrait,
+    Set, SqlErr, TransactionTrait,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -19,6 +19,9 @@ use crate::{
     },
     settings::Settings,
 };
+
+/// Another organisation already holds this Slack workspace (one workspace, one organisation).
+pub const WORKSPACE_IN_USE: &str = "slack_workspace_in_use";
 
 pub fn slack_redirect_uri(s: &Settings) -> String {
     format!(
@@ -47,6 +50,7 @@ pub fn slack_authorize_url(s: &Settings, state: &str) -> Result<String, ApiError
 }
 
 /// Seals the bot token and makes it the org's active Slack integration (a reinstall replaces it).
+/// 409 `slack_workspace_in_use` when another organisation's active integration has the team.
 pub async fn save_slack(
     db: &DatabaseConnection,
     kek: &dyn Kek,
@@ -78,7 +82,19 @@ pub async fn save_slack(
     integrations::Entity::insert(row)
         .on_conflict(upsert)
         .exec_without_returning(&txn)
-        .await?;
+        .await
+        .map_err(|e| match e.sql_err() {
+            Some(SqlErr::UniqueConstraintViolation(m))
+                if m.contains("integrations_slack_team_uniq") =>
+            {
+                ApiError::new(
+                    StatusCode::CONFLICT,
+                    WORKSPACE_IN_USE,
+                    "This Slack workspace is linked to another organisation.",
+                )
+            }
+            _ => e.into(),
+        })?;
     audit::record(
         &txn,
         Some(organisation_id),

@@ -137,12 +137,12 @@ async fn slack_callback(
         }
     };
     let kek = kek(&ctx)?;
-    // A failed save is an internal error, already logged by `ApiError::internal`.
-    if service::save_slack(&ctx.db, kek.as_ref(), org_id, user_id, &install)
-        .await
-        .is_err()
-    {
-        return fail("internal");
+    // Any other failure is internal and already logged by `ApiError::internal`.
+    if let Err(e) = service::save_slack(&ctx.db, kek.as_ref(), org_id, user_id, &install).await {
+        return fail(match e.code() {
+            service::WORKSPACE_IN_USE => service::WORKSPACE_IN_USE,
+            _ => "internal",
+        });
     }
     Ok(to_web(&s, "slack=connected"))
 }

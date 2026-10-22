@@ -9,8 +9,8 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use opsagent_ledger::redis;
 use sea_orm::{
-    sea_query::OnConflict, ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection,
-    DbErr, EntityTrait, QueryFilter, Set, SqlErr, TransactionTrait,
+    sea_query::OnConflict, ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait,
+    DatabaseConnection, DbErr, EntityTrait, QueryFilter, Set, SqlErr, TransactionTrait,
 };
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -20,7 +20,9 @@ use crate::{
     mailers::{magic_link as mail, Mailer},
     models::{
         _entities::{
-            connections, email_suppressions, members, organisations,
+            connections,
+            email_suppressions::{self, Column as S},
+            members, organisations,
             recipients::{self, Column as C},
             users,
         },
@@ -39,7 +41,8 @@ const CONFIRM_DAYS: i64 = 7;
 pub const MAILS_PER_ADDRESS: i64 = 3;
 /// Confirm mails per organisation per day.
 pub const MAILS_PER_ORG: i64 = 20;
-/// Unconfirmed confirm mails per address in 30 days before it is suppressed as `ignored`.
+/// Unconfirmed confirm mails per (org, address) in 30 days before the address is suppressed as
+/// `ignored` for that organisation.
 pub const UNCONFIRMED_CAP: i64 = 2;
 const UNCONFIRMED_WINDOW_SECS: i64 = 30 * DAY_SECS;
 
@@ -48,29 +51,90 @@ pub fn email_hash(email: &str) -> String {
     format!("{:x}", Sha256::digest(email.to_lowercase()))
 }
 
-fn unconfirmed_key(hash: &str) -> String {
-    format!("recipient_confirm:unconfirmed:{hash}")
+/// Unconfirmed confirm mails are counted per (organisation, address).
+fn unconfirmed_key(organisation_id: Uuid, hash: &str) -> String {
+    format!("recipient_confirm:unconfirmed:{organisation_id}:{hash}")
 }
 
-async fn suppress(db: &impl ConnectionTrait, hash: String, reason: &str) -> Result<(), DbErr> {
+/// Days an `ignored` suppression lasts.
+pub const IGNORED_DAYS: i64 = 90;
+
+/// Records a global `unsubscribed` suppression (kept if present).
+async fn suppress_unsubscribed(db: &impl ConnectionTrait, hash: String) -> Result<(), DbErr> {
     let row = email_suppressions::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        organisation_id: Set(None),
         email_hash: Set(hash),
-        reason: Set(reason.into()),
+        reason: Set("unsubscribed".into()),
+        expires_at: Set(None),
         created_at: Set(now()),
     };
+    upsert(
+        db,
+        row,
+        OnConflict::columns([S::OrganisationId, S::EmailHash])
+            .do_nothing()
+            .to_owned(),
+    )
+    .await
+}
+
+/// Records (or renews) a 90-day `ignored` suppression for `organisation_id` only.
+async fn suppress_ignored(
+    db: &impl ConnectionTrait,
+    organisation_id: Uuid,
+    hash: String,
+) -> Result<(), DbErr> {
+    let row = email_suppressions::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        organisation_id: Set(Some(organisation_id)),
+        email_hash: Set(hash),
+        reason: Set("ignored".into()),
+        expires_at: Set(Some((Utc::now() + Duration::days(IGNORED_DAYS)).into())),
+        created_at: Set(now()),
+    };
+    let renew = OnConflict::columns([S::OrganisationId, S::EmailHash])
+        .update_column(S::ExpiresAt)
+        .to_owned();
+    upsert(db, row, renew).await
+}
+
+async fn upsert(
+    db: &impl ConnectionTrait,
+    row: email_suppressions::ActiveModel,
+    on: OnConflict,
+) -> Result<(), DbErr> {
     email_suppressions::Entity::insert(row)
-        .on_conflict(
-            OnConflict::column(email_suppressions::Column::EmailHash)
-                .do_nothing()
-                .to_owned(),
-        )
+        .on_conflict(on)
         .exec_without_returning(db)
         .await
         .map(|_| ())
 }
 
+/// Whether mail from `organisation_id` to `email` is suppressed: a global unsubscribe, or an
+/// unexpired `ignored` row for that organisation. Every delivery mail checks this.
+pub async fn is_suppressed(
+    db: &impl ConnectionTrait,
+    organisation_id: Uuid,
+    email: &str,
+) -> Result<bool, DbErr> {
+    let found = email_suppressions::Entity::find()
+        .filter(S::EmailHash.eq(email_hash(email)))
+        .filter(
+            Condition::any().add(S::OrganisationId.is_null()).add(
+                Condition::all()
+                    .add(S::OrganisationId.eq(organisation_id))
+                    .add(S::ExpiresAt.gt(now())),
+            ),
+        )
+        .one(db)
+        .await?;
+    Ok(found.is_some())
+}
+
 /// Whether a confirm mail to `email` may go out now: not suppressed, within the daily caps,
-/// and not the third unconfirmed mail in 30 days (which suppresses the address as `ignored`).
+/// and not the third unconfirmed mail in 30 days (which suppresses the address as `ignored`
+/// for this organisation).
 /// Fails closed when Redis is unavailable.
 async fn may_mail(
     db: &DatabaseConnection,
@@ -78,15 +142,10 @@ async fn may_mail(
     organisation_id: Uuid,
     email: &str,
 ) -> Result<bool, ApiError> {
-    let hash = email_hash(email);
-    // Suppressions are global by design (any organisation).
-    if email_suppressions::Entity::find_by_id(hash.clone())
-        .one(db)
-        .await?
-        .is_some()
-    {
+    if is_suppressed(db, organisation_id, email).await? {
         return Ok(false);
     }
+    let hash = email_hash(email);
     let counted = async {
         let mut c = redis.get_multiplexed_async_connection().await?;
         let address = format!("ratelimit:recipient_confirm:email:{hash}");
@@ -98,7 +157,7 @@ async fn may_mail(
         }
         let fresh = hit(
             &mut c,
-            &unconfirmed_key(&hash),
+            &unconfirmed_key(organisation_id, &hash),
             UNCONFIRMED_CAP,
             UNCONFIRMED_WINDOW_SECS,
         )
@@ -108,7 +167,7 @@ async fn may_mail(
     match counted.await {
         Ok(Some(ok)) => Ok(ok),
         Ok(None) => {
-            suppress(db, hash, "ignored").await?;
+            suppress_ignored(db, organisation_id, hash).await?;
             Ok(false)
         }
         Err(_) => {
@@ -342,7 +401,10 @@ pub async fn confirm(
     // A confirmed address is not ignoring us; best effort.
     if let Ok(mut c) = redis.get_multiplexed_async_connection().await {
         let _: redis::RedisResult<()> = redis::cmd("DEL")
-            .arg(unconfirmed_key(&email_hash(&row.email)))
+            .arg(unconfirmed_key(
+                row.organisation_id,
+                &email_hash(&row.email),
+            ))
             .query_async(&mut c)
             .await;
     }
@@ -383,7 +445,7 @@ pub async fn unsubscribe(
         )
         .await?;
     }
-    suppress(&txn, email_hash(&row.email), "unsubscribed").await?;
+    suppress_unsubscribed(&txn, email_hash(&row.email)).await?;
     txn.commit().await?;
     Ok(())
 }

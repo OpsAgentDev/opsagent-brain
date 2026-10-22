@@ -14,6 +14,10 @@ const UP: &str = r#"CREATE TABLE integrations (
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked','failing')),
   created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (organisation_id, kind));
+-- One Slack workspace links to one organisation: a shared bot token would let one
+-- organisation's revoke or delete break another's.
+CREATE UNIQUE INDEX integrations_slack_team_uniq ON integrations ((config->>'team_id'))
+  WHERE kind = 'slack' AND status = 'active';
 CREATE TABLE deliveries (
   id uuid PRIMARY KEY,
   organisation_id uuid NOT NULL REFERENCES organisations(id),

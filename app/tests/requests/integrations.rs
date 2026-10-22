@@ -523,13 +523,11 @@ async fn unsubscribe_link_is_stable_and_suppresses_the_address() {
             .unwrap();
         assert!(row.unsubscribed_at.is_some());
         assert_eq!(audits(&ctx, "recipient.unsubscribe").await, 1);
-        let s = email_suppressions::Entity::find_by_id(recipient_service::email_hash(
-            "EXT@example.com",
-        ))
-        .one(&ctx.db)
-        .await
-        .unwrap()
-        .unwrap();
+        let s = suppression(recipient_service::email_hash("EXT@example.com"))
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(s.reason, "unsubscribed");
 
         // Another organisation adding the address gets a 201 but no mail is sent.
@@ -574,6 +572,11 @@ async fn unsubscribe_link_is_stable_and_suppresses_the_address() {
     .await;
 }
 
+/// The suppression row for an email hash (any organisation).
+fn suppression(hash: String) -> sea_orm::Select<email_suppressions::Entity> {
+    email_suppressions::Entity::find().filter(email_suppressions::Column::EmailHash.eq(hash))
+}
+
 /// Confirm mails sent to `email` so far.
 fn mails_to(mail: &CaptureMailer, email: &str) -> usize {
     mail.sent().iter().filter(|m| m.to == email).count()
@@ -610,13 +613,11 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
         .await;
         assert_eq!(res.status_code(), 201);
         assert_eq!(mails_to(&mail, "quiet@example.com"), 2);
-        let s = email_suppressions::Entity::find_by_id(recipient_service::email_hash(
-            "quiet@example.com",
-        ))
-        .one(&ctx.db)
-        .await
-        .unwrap()
-        .unwrap();
+        let s = suppression(recipient_service::email_hash("quiet@example.com"))
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(s.reason, "ignored");
 
         // Per address: 3 a day, even when each one is confirmed.
@@ -647,13 +648,11 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
         }
         assert_eq!(mails_to(&mail, "busy@example.com"), 3);
         assert!(
-            email_suppressions::Entity::find_by_id(recipient_service::email_hash(
-                "busy@example.com"
-            ))
-            .one(&ctx.db)
-            .await
-            .unwrap()
-            .is_none()
+            suppression(recipient_service::email_hash("busy@example.com"))
+                .one(&ctx.db)
+                .await
+                .unwrap()
+                .is_none()
         );
 
         // Per organisation: 20 a day. Six attempts above passed the address cap (5 sent, 1 refused
@@ -676,17 +675,146 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
 
 #[tokio::test]
 #[serial]
-async fn confirm_mail_caps_and_strips_the_org_name() {
+async fn org_names_refuse_control_chars_and_mail_caps_the_name() {
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let t = sign_in(&req, &mail, "owner@example.com").await;
-        let name = format!("Evil\nBcc: victim@example.com {}", "x".repeat(60));
-        let org = slug(&create_org(&req, &t, &name).await);
+        for bad in [
+            "Evil\nBcc: victim@example.com",
+            "Evil\r\nX",
+            "Abc\u{202E}fdp.exe",
+        ] {
+            let res = req
+                .post("/v1/orgs")
+                .add_header("X-CSRF-Token", &t)
+                .json(&json!({ "name": bad }))
+                .await;
+            assert_eq!(res.status_code(), 422, "{bad:?}");
+        }
+        let org = slug(&create_org(&req, &t, &format!("Long {}", "x".repeat(90))).await);
         add_recipient(&req, &t, &org, json!({"email": "ext@example.com"})).await;
         let m = mail.sent().pop().unwrap();
-        assert!(!m.subject.contains('\n'), "{}", m.subject);
         assert!(m.subject.chars().count() <= "Confirm OpsAgent reports for ".len() + 60);
         assert!(!m.text.contains(&"x".repeat(60)));
+        let res = req
+            .post(&format!("/v1/orgs/{org}/invites"))
+            .add_header("X-CSRF-Token", &t)
+            .json(&json!({"email": "inv@example.com", "role": "member"}))
+            .await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        let m = mail.sent().pop().unwrap();
+        assert!(!m.subject.contains(&"x".repeat(60)), "{}", m.subject);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn ignored_suppression_is_per_org_and_expires() {
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, c1) = fake_connection(&req, &mail, "owner@example.com", "Acme", "clean").await;
+        let c2 = create_connection(&req, &t, &org, "fake", "clean").await["id"].clone();
+        for c in [Value::Null, json!(c1), c2] {
+            add_recipient(
+                &req,
+                &t,
+                &org,
+                json!({"email": "quiet@example.com", "connection_id": c}),
+            )
+            .await;
+        }
+        assert_eq!(mails_to(&mail, "quiet@example.com"), 2);
+
+        // Org B still reaches the address (on a later day: the per-address daily cap is global).
+        let mut c = redis_of(&ctx).get_connection().unwrap();
+        let _: () = opsagent_ledger::redis::cmd("DEL")
+            .arg(format!(
+                "ratelimit:recipient_confirm:email:{}",
+                recipient_service::email_hash("quiet@example.com")
+            ))
+            .query(&mut c)
+            .unwrap();
+        req.clear_cookies();
+        let tb = sign_in(&req, &mail, "b@example.com").await;
+        let org_b = slug(&create_org(&req, &tb, "Other").await);
+        add_recipient(&req, &tb, &org_b, json!({"email": "quiet@example.com"})).await;
+        assert_eq!(mails_to(&mail, "quiet@example.com"), 3);
+
+        // 90 days later (and the 30-day counter long gone), org A may mail again.
+        let row = email_suppressions::Entity::find()
+            .filter(email_suppressions::Column::Reason.eq("ignored"))
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        let left = row.expires_at.unwrap() - chrono::Utc::now().fixed_offset();
+        assert!(left.num_days() >= 89 && left.num_days() <= 90, "{left}");
+        let mut a: email_suppressions::ActiveModel = row.into();
+        a.expires_at = Set(Some(
+            (chrono::Utc::now() - chrono::Duration::seconds(1)).into(),
+        ));
+        a.update(&ctx.db).await.unwrap();
+        let keys: Vec<String> = opsagent_ledger::redis::cmd("KEYS")
+            .arg("*recipient_confirm:*")
+            .query(&mut c)
+            .unwrap();
+        let _: () = opsagent_ledger::redis::cmd("DEL")
+            .arg(&keys)
+            .query(&mut c)
+            .unwrap();
+        req.clear_cookies();
+        let t = sign_in(&req, &mail, "owner@example.com").await;
+        let c3 = create_connection(&req, &t, &org, "fake", "clean").await["id"].clone();
+        add_recipient(
+            &req,
+            &t,
+            &org,
+            json!({"email": "quiet@example.com", "connection_id": c3}),
+        )
+        .await;
+        assert_eq!(mails_to(&mail, "quiet@example.com"), 4);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_slack_workspace_links_to_one_org() {
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        let slack = MockServer::start().await;
+        installed(&req, &ctx, &mail, &slack).await;
+        req.clear_cookies();
+        let t = sign_in(&req, &mail, "b@example.com").await;
+        let org_b = slug(&create_org(&req, &t, "Other").await);
+        let state = state_of(&start(&req, &t, &org_b).await);
+        let res = callback(&req, "good", &state).await;
+        assert_eq!(res.status_code(), 302);
+        assert_eq!(
+            res.header("location"),
+            "http://localhost:3000/settings/delivery?slack=error&code=slack_workspace_in_use"
+        );
+        assert_eq!(
+            integrations::Entity::find().count(&ctx.db).await.unwrap(),
+            1
+        );
+        // The holding org can still reinstall.
+        req.clear_cookies();
+        let t = sign_in(&req, &mail, "owner@example.com").await;
+        let org_a = organisations::Entity::find()
+            .filter(organisations::Column::Name.eq("Acme"))
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap()
+            .slug;
+        let state = state_of(&start(&req, &t, &org_a).await);
+        let res = callback(&req, "good", &state).await;
+        assert_eq!(
+            res.header("location"),
+            "http://localhost:3000/settings/delivery?slack=connected"
+        );
     })
     .await;
 }
