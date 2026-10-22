@@ -39,6 +39,7 @@ async fn killed_after_each_checkpoint_resumes_with_effects_once() {
                 .await?;
                 Ok(ChunkOutcome {
                     stats: json!({ c.clone(): 1 }),
+                    cursor: json!({ c.clone(): 2 }),
                 })
             })
             .await
@@ -51,6 +52,7 @@ async fn killed_after_each_checkpoint_resumes_with_effects_once() {
     let row = s.load_run(run.id).await.unwrap();
     assert_eq!(row.status, RunStatus::Done);
     assert_eq!(row.checkpoint.stats, json!({"c0":1,"c1":1,"c2":1}));
+    assert_eq!(row.checkpoint.cursor, json!({"c0":2,"c1":2,"c2":2}));
 }
 
 #[tokio::test]
@@ -77,7 +79,7 @@ async fn lease_lost_returns_partial() {
                     .await
                     .unwrap()
                     .unwrap();
-                Ok(ChunkOutcome { stats: json!({}) })
+                Ok(ChunkOutcome::default())
             }
         },
     )
@@ -102,7 +104,7 @@ async fn time_cap_returns_partial() {
         o,
         |_c, _l| async {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            Ok(ChunkOutcome { stats: json!({}) })
+            Ok(ChunkOutcome::default())
         },
     )
     .await
@@ -132,7 +134,7 @@ async fn kill_between_effect_done_and_checkpoint_runs_effect_once() {
                 if !killed.swap(true, SeqCst) {
                     return Err(opsagent_ledger::LedgerError::Killed); // effect done, no checkpoint
                 }
-                Ok(ChunkOutcome { stats: json!({}) })
+                Ok(ChunkOutcome::default())
             }
         })
     };
@@ -164,7 +166,7 @@ async fn dropping_run_chunked_stops_heartbeat() {
     o.heartbeat_every = Duration::from_millis(40);
     let fut = run_chunked(&s, &r, run.id, vec!["a".into()], o, |_c, _l| async {
         tokio::time::sleep(Duration::from_secs(30)).await;
-        Ok(ChunkOutcome { stats: json!({}) })
+        Ok(ChunkOutcome::default())
     });
     let _ = tokio::time::timeout(Duration::from_millis(300), fut).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -278,7 +280,7 @@ async fn stale_fence_on_initial_running_returns_partial() {
         opts("w"),
         |_c, _l| async {
             ran.fetch_add(1, SeqCst);
-            Ok(ChunkOutcome { stats: json!({}) })
+            Ok(ChunkOutcome::default())
         },
     )
     .await;
@@ -305,7 +307,10 @@ async fn partial_reason_in_stats_ends_partial_even_after_resume() {
                 } else {
                     json!({})
                 };
-                Ok(ChunkOutcome { stats })
+                Ok(ChunkOutcome {
+                    stats,
+                    ..Default::default()
+                })
             })
             .await
         }
@@ -333,7 +338,7 @@ async fn failing_chunk_ends_the_run_failed_or_queued_for_retry() {
                     retry,
                 });
             }
-            Ok(ChunkOutcome { stats: json!({}) })
+            Ok(ChunkOutcome::default())
         })
         .await
         .unwrap();
@@ -361,7 +366,7 @@ async fn storage_error_on_checkpoint_ends_the_run_failed() {
         run.id,
         vec!["a".into()],
         opts("w"),
-        |_c, _l| async { Ok(ChunkOutcome { stats: json!({}) }) },
+        |_c, _l| async { Ok(ChunkOutcome::default()) },
     )
     .await
     .unwrap();
