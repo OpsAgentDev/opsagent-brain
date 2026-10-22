@@ -620,7 +620,8 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
             .unwrap();
         assert_eq!(s.reason, "ignored");
 
-        // Per address: 3 a day, even when each one is confirmed.
+        // One owner: 2 per address in 30 days across their orgs, even when each is confirmed
+        // (the per-(org, address) 3/day cap sits above it).
         for c in [Value::Null, json!(c1), json!(c2), json!(c3)] {
             add_recipient(
                 &req,
@@ -646,7 +647,7 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
                     .await;
             }
         }
-        assert_eq!(mails_to(&mail, "busy@example.com"), 3);
+        assert_eq!(mails_to(&mail, "busy@example.com"), 2);
         assert!(suppression(mail_guard::email_hash("busy@example.com"))
             .one(&ctx.db)
             .await
@@ -978,16 +979,73 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
 
 #[tokio::test]
 #[serial]
-async fn many_orgs_of_one_owner_do_not_block_confirms() {
+async fn one_owner_with_five_orgs_sends_two_confirm_mails_per_address() {
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let t = sign_in(&req, &mail, "one@example.com").await;
-        for i in 0..3 {
+        for i in 0..5 {
             let org = slug(&create_org(&req, &t, &format!("Org {i}")).await);
-            add_recipient(&req, &t, &org, json!({"email": "target@example.com"})).await;
+            let res = add_recipient(&req, &t, &org, json!({"email": "target@example.com"})).await;
+            assert_eq!(res.status_code(), 201);
         }
-        assert_eq!(mails_to(&mail, "target@example.com"), 3);
+        assert_eq!(mails_to(&mail, "target@example.com"), 2);
+        // Withheld silently: no suppression row, no block.
         assert!(blocked(&ctx).await.is_none());
+        assert_eq!(
+            email_suppressions::Entity::find()
+                .filter(email_suppressions::Column::Reason.eq("ignored"))
+                .count(&ctx.db)
+                .await
+                .unwrap(),
+            0
+        );
+    })
+    .await;
+}
+
+/// Deletes the daily confirm-mail counters (a new day); 30-day counters stay.
+fn next_day(ctx: &AppContext) {
+    let mut c = redis_of(ctx).get_connection().unwrap();
+    let keys: Vec<String> = opsagent_ledger::redis::cmd("KEYS")
+        .arg("ratelimit:recipient_confirm:*")
+        .query(&mut c)
+        .unwrap();
+    if !keys.is_empty() {
+        let _: () = opsagent_ledger::redis::cmd("DEL")
+            .arg(&keys)
+            .query(&mut c)
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn ten_confirm_mails_in_30_days_block_the_eleventh() {
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        let mut first = None;
+        for i in 0..11 {
+            next_day(&ctx);
+            let (t, org, _) = org_with_routes(&mut req, &mail, &format!("o{i}@example.com")).await;
+            first.get_or_insert(org.clone());
+            // Each one confirms, so the distinct-owner trigger never fires.
+            add_and_confirm(&req, &mail, &t, &org, "target@example.com", &Value::Null).await;
+        }
+        assert_eq!(mails_to(&mail, "target@example.com"), 10);
+        let row = blocked(&ctx).await.expect("confirm_blocked row");
+        assert!(row.organisation_id.is_none() && row.expires_at.is_some());
+        // The first (confirmed) recipient still gets deliveries.
+        let org = organisations::Entity::find()
+            .filter(organisations::Column::Slug.eq(first.unwrap()))
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            mail_guard::may_deliver(&ctx.db, org.id, "target@example.com")
+                .await
+                .unwrap()
+        );
     })
     .await;
 }
@@ -997,14 +1055,15 @@ async fn many_orgs_of_one_owner_do_not_block_confirms() {
 async fn confirm_mails_per_address_cap_at_six_a_day_across_orgs() {
     serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
-        for owner in ["a@example.com", "b@example.com"] {
+        // Three owners, two mails each (their own 30-day cap), all confirmed: 6 in one day.
+        for owner in ["a@example.com", "b@example.com", "c@example.com"] {
             let (t, org, routes) = org_with_routes(&mut req, &mail, owner).await;
-            for r in &routes {
+            for r in &routes[..2] {
                 add_and_confirm(&req, &mail, &t, &org, "busy@example.com", r).await;
             }
         }
         assert_eq!(mails_to(&mail, "busy@example.com"), 6);
-        let (t, org, routes) = org_with_routes(&mut req, &mail, "c@example.com").await;
+        let (t, org, routes) = org_with_routes(&mut req, &mail, "d@example.com").await;
         add_and_confirm(&req, &mail, &t, &org, "busy@example.com", &routes[0]).await;
         assert_eq!(mails_to(&mail, "busy@example.com"), 6);
         // Confirmed everywhere, so nothing was suppressed.
