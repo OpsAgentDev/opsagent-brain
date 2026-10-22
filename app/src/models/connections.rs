@@ -1,7 +1,7 @@
 use loco_rs::{Error, Result};
 use opsagent_core::connection::ConnectionStatus;
 use opsagent_secrets::{open, seal, Aad, EnvKek, Kek, Sealed, WrappedDek};
-use sea_orm::{ConnectionTrait, EntityTrait};
+use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -9,8 +9,6 @@ use zeroize::Zeroizing;
 use super::_entities::{connection_credentials, connections, organisations};
 
 pub const TEMPLATE_VERSION: &str = "1";
-/// Claimed states; mirrors the partial unique index on (provider, external_account_id).
-pub const CLAIMED: [&str; 3] = ["connected", "degraded", "revoked"];
 
 /// Plaintext of `connection_credentials.ciphertext`. Never serialised into an API response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,4 +102,19 @@ pub fn account_of(c: &connections::Model, creds: &Creds) -> Option<String> {
             .and_then(|a| opsagent_connectors::aws::client::parse_role_arn(a).ok())
             .map(|a| a.account),
     }
+}
+
+/// Writes `a` only if the row still has `c.status` (the status the caller read). `false`: it changed.
+pub async fn cas(
+    db: &impl ConnectionTrait,
+    c: &connections::Model,
+    a: connections::ActiveModel,
+) -> std::result::Result<bool, DbErr> {
+    let r = connections::Entity::update_many()
+        .set(a)
+        .filter(connections::Column::Id.eq(c.id))
+        .filter(connections::Column::Status.eq(&c.status))
+        .exec(db)
+        .await?;
+    Ok(r.rows_affected == 1)
 }

@@ -1,8 +1,9 @@
 use loco_rs::{prelude::*, testing::prelude::request_with_config};
 use opsagent_brain::{
     app::App,
-    models::_entities::{
-        audit_events, connection_credentials, connection_verifications, connections,
+    models::{
+        _entities::{audit_events, connection_credentials, connection_verifications, connections},
+        connections::cas,
     },
 };
 use serde_json::{json, Value};
@@ -140,21 +141,57 @@ async fn verify_outcomes_set_status() {
 
 #[tokio::test]
 #[serial]
-async fn same_account_in_second_org_is_409_without_org_names() {
+async fn same_account_in_second_org_is_blocked_by_worker_without_org_names() {
     request_with_config::<App, _, _>(cookie_config(), |mut req, ctx| async move {
         let mail = prepare(&ctx);
         let (ta, oa, ida) =
             fake_connection(&req, &mail, "a@example.com", "Alpha Org", "clean").await;
         assert_eq!(verify(&req, &ta, &oa, &ida, "").await.status_code(), 202);
+        assert_eq!(row(&ctx, &ida).await.status, "connected");
         req.clear_cookies();
         let (tb, ob, idb) =
             fake_connection(&req, &mail, "b@example.com", "Beta Org", "clean").await;
         let res = verify(&req, &tb, &ob, &idb, "").await;
-        assert_eq!(res.status_code(), 409);
-        let body = res.text();
-        assert_eq!(res.json::<Value>()["code"], "account_already_connected");
-        assert!(!body.contains("Alpha") && !body.contains("Beta"), "{body}");
-        assert_eq!(row(&ctx, &idb).await.status, "pending");
+        assert_eq!(res.status_code(), 202, "{}", res.text());
+        let b = row(&ctx, &idb).await;
+        assert_eq!(b.status, "blocked");
+        assert_eq!(
+            b.status_reason.as_deref(),
+            Some("account_already_connected")
+        );
+        let body = req
+            .get(&format!("/v1/orgs/{ob}/connections/{idb}"))
+            .await
+            .text();
+        assert!(
+            !body.contains("Alpha") && !body.contains("Beta Org"),
+            "{body}"
+        );
+        assert_eq!(row(&ctx, &ida).await.status, "connected");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn status_cas_refuses_a_stale_read() {
+    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
+        let stale = row(&ctx, &id).await; // read as pending
+        let res = req
+            .delete(&format!("/v1/orgs/{org}/connections/{id}"))
+            .add_header("X-CSRF-Token", &t)
+            .await;
+        assert_eq!(res.status_code(), 200);
+        let write = |s: &str| connections::ActiveModel {
+            status: Set(s.into()),
+            ..Default::default()
+        };
+        assert!(!cas(&ctx.db, &stale, write("verifying")).await.unwrap());
+        assert_eq!(row(&ctx, &id).await.status, "disconnected");
+        let fresh = row(&ctx, &id).await;
+        assert!(cas(&ctx.db, &fresh, write("disconnected")).await.unwrap());
     })
     .await;
 }

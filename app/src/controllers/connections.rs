@@ -30,8 +30,7 @@ use crate::{
         _entities::{connection_credentials, connection_verifications, connections},
         audit,
         connections::{
-            account_of, open_creds, org_dek, seal_creds, status_of, status_str, Creds, CLAIMED,
-            TEMPLATE_VERSION,
+            cas, open_creds, org_dek, seal_creds, status_of, status_str, Creds, TEMPLATE_VERSION,
         },
         ledger_storage::PgStorage,
         now,
@@ -312,24 +311,6 @@ async fn verify(
         }
         creds.role_arn = Some(body.role_arn.trim().to_owned());
     }
-    if let Some(account) = account_of(&c, &creds) {
-        let taken = connections::Entity::find()
-            .filter(connections::Column::Provider.eq(&c.provider))
-            .filter(connections::Column::ExternalAccountId.eq(account))
-            .filter(connections::Column::Status.is_in(CLAIMED))
-            .filter(connections::Column::Id.ne(c.id))
-            .one(&ctx.db)
-            .await?
-            .is_some();
-        if taken {
-            // TODO(notify): email the owners of the organisation that holds the account.
-            return Err(ApiError::new(
-                StatusCode::CONFLICT,
-                "account_already_connected",
-                "This cloud account is already connected to OpsAgent. Contact support to transfer it.",
-            ));
-        }
-    }
     let to = match from {
         S::Pending => transition(from, E::StackReported),
         S::Revoked => transition(from, E::RoleReturned),
@@ -345,10 +326,19 @@ async fn verify(
     cr.updated_at = Set(now());
     cr.update(&txn).await?;
     let (org_id, conn_id) = (c.organisation_id, c.id);
-    let mut a: connections::ActiveModel = c.into();
-    a.status = Set(status_str(to));
+    // Guarded on the status read above, so a concurrent Disconnect or worker outcome is not lost.
+    let mut a = <connections::ActiveModel as ActiveModelTrait>::default();
+    if to != from {
+        a.status = Set(status_str(to));
+    }
     a.updated_at = Set(now());
-    a.update(&txn).await?;
+    if !cas(&txn, &c, a).await? {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "connection_state_changed",
+            "The connection changed while this request ran. Reload and try again.",
+        ));
+    }
     audit::record(
         &txn,
         Some(org_id),

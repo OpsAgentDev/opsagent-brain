@@ -3,7 +3,7 @@ use loco_rs::{bgworker::BackgroundWorker, prelude::*, testing::prelude::request_
 use opsagent_brain::{
     app::App,
     models::{
-        _entities::{connection_verifications, connections, runs},
+        _entities::{audit_events, connection_verifications, connections, runs},
         ledger_storage::PgStorage,
     },
     workers::verify::{VerifyArgs, VerifyWorker},
@@ -154,6 +154,44 @@ async fn access_denied_three_times_over_an_hour_revokes() {
         run_worker(&ctx, id, 3).await;
         let c = conn(&ctx, id).await;
         assert_eq!(c.status, "revoked");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn non_retryable_connector_error_is_recorded_on_first_run() {
+    request_with_config::<App, _, _>(cookie_config(), |req, ctx| async move {
+        let mail = prepare(&ctx);
+        // No fixture for this account: the fake connector answers NotFound.
+        let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "nosuch").await;
+        let res = verify(&req, &t, &org, &id, "").await;
+        assert_eq!(res.status_code(), 202, "{}", res.text());
+        let id: Uuid = id.parse().unwrap();
+        let c = conn(&ctx, id).await;
+        assert_eq!(c.status, "verifying");
+        assert_eq!(c.status_reason.as_deref(), Some("verify_error:not_found"));
+        let v = connection_verifications::Entity::find()
+            .filter(connection_verifications::Column::ConnectionId.eq(id))
+            .all(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].outcome, "error");
+        let run = runs::Entity::find_by_id(v[0].run_id.unwrap())
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((run.status.as_str(), run.attempts), ("failed", 0));
+        let a = audit_events::Entity::find()
+            .filter(audit_events::Column::Action.eq("connection.verify_outcome"))
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(a.outcome.as_deref(), Some("error"));
+        assert_eq!(a.metadata["code"], "not_found");
     })
     .await;
 }

@@ -13,10 +13,7 @@ use opsagent_core::{
     run::RunStatus,
 };
 use opsagent_ledger::{lease, redis, retry::backoff, LedgerError, RunRow, Storage};
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, Set, SqlErr,
-    TransactionTrait,
-};
+use sea_orm::{ActiveModelTrait, ConnectionTrait, EntityTrait, Set, SqlErr, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -24,7 +21,7 @@ use uuid::Uuid;
 use crate::models::{
     _entities::{connection_credentials, connection_verifications, connections},
     audit,
-    connections::{account_of, open_creds, org_dek, status_of, status_str, Creds},
+    connections::{account_of, cas, open_creds, org_dek, status_of, status_str, Creds},
     ledger_storage::PgStorage,
     now,
 };
@@ -127,21 +124,6 @@ fn credentials(c: &connections::Model, creds: &Creds, run_id: Uuid) -> Result<Cr
     })
 }
 
-/// Writes `a` only if the row still has the status this run read (a concurrent Disconnect wins).
-async fn cas(
-    db: &impl ConnectionTrait,
-    c: &connections::Model,
-    a: connections::ActiveModel,
-) -> std::result::Result<bool, sea_orm::DbErr> {
-    let r = connections::Entity::update_many()
-        .set(a)
-        .filter(connections::Column::Id.eq(c.id))
-        .filter(connections::Column::Status.eq(&c.status))
-        .exec(db)
-        .await?;
-    Ok(r.rows_affected == 1)
-}
-
 fn is_unique_violation(e: &sea_orm::DbErr) -> bool {
     matches!(e.sql_err(), Some(SqlErr::UniqueConstraintViolation(_)))
 }
@@ -219,18 +201,14 @@ impl VerifyWorker {
         let o = match outcome {
             Ok(o) => o,
             // Throttling and 5xx: retry, never change state.
-            Err(e @ (ConnectorError::Provider(_) | ConnectorError::Api { .. })) => {
-                tracing::warn!(error = %e, run = %run.id, "verify: retryable provider error");
-                return retry(storage, run, fence).await;
-            }
             Err(e) => {
-                tracing::warn!(error = %e, run = %run.id, "verify: failed");
-                let detail = e.to_string();
-                self.record(&c, run.id, None, "error", Some(&detail))
-                    .await?;
-                return storage
-                    .set_status(run.id, fence, RunStatus::Failed, Some(e.to_string()))
-                    .await;
+                let (code, transient) = classify(&e);
+                tracing::warn!(error = %e, run = %run.id, code, transient, "verify: connector error");
+                // Throttling, 5xx and network: retry without changing state, until exhausted.
+                if transient && retry(storage, run, fence).await? {
+                    return Ok(());
+                }
+                return self.fail(storage, run, fence, &c, &code).await;
             }
         };
         match decide(&o) {
@@ -302,8 +280,32 @@ impl VerifyWorker {
                 .set_status(run.id, fence, RunStatus::Done, None)
                 .await
         } else {
-            retry(storage, run, fence).await
+            retry(storage, run, fence).await.map(|_| ())
         }
+    }
+
+    /// Terminal error: status unchanged, `status_reason=verify_error:<code>`, error row, run failed.
+    async fn fail(
+        &self,
+        storage: &PgStorage,
+        run: &RunRow,
+        fence: u64,
+        c: &connections::Model,
+        code: &str,
+    ) -> LResult<()> {
+        let txn = self.ctx.db.begin().await.map_err(lerr)?;
+        let mut a = <connections::ActiveModel as ActiveModelTrait>::default();
+        a.status_reason = Set(Some(format!("verify_error:{code}")));
+        a.updated_at = Set(now());
+        if cas(&txn, c, a).await.map_err(lerr)? {
+            self.record_in(&txn, c, run.id, None, "error", Some(code))
+                .await?;
+        }
+        txn.commit().await.map_err(lerr)?;
+        let reason = Some(format!("verify_error:{code}"));
+        storage
+            .set_status(run.id, fence, RunStatus::Failed, reason)
+            .await
     }
 
     async fn apply(
@@ -361,18 +363,6 @@ impl VerifyWorker {
         Ok(true)
     }
 
-    async fn record(
-        &self,
-        c: &connections::Model,
-        run_id: Uuid,
-        o: Option<&VerifyOutcome>,
-        outcome: &str,
-        detail: Option<&str>,
-    ) -> LResult<()> {
-        self.record_in(&self.ctx.db, c, run_id, o, outcome, detail)
-            .await
-    }
-
     /// One `connection_verifications` row plus the audit event, per verify outcome.
     async fn record_in(
         &self,
@@ -381,7 +371,7 @@ impl VerifyWorker {
         run_id: Uuid,
         o: Option<&VerifyOutcome>,
         outcome: &str,
-        detail: Option<&str>,
+        code: Option<&str>,
     ) -> LResult<()> {
         connection_verifications::ActiveModel {
             id: Set(Uuid::new_v4()),
@@ -405,27 +395,70 @@ impl VerifyWorker {
             "connection.verify_outcome",
             ("connection", c.id.to_string()),
             outcome,
-            json!({ "run_id": run_id, "detail": detail }),
+            json!({ "run_id": run_id, "code": code }),
         )
         .await
         .map_err(lerr)
     }
 }
 
-/// Ledger-owned retry: 1, 5, 15, 60 minutes, then `failed`.
-async fn retry(storage: &PgStorage, run: &RunRow, fence: u64) -> LResult<()> {
+/// Ledger-owned retry: 1, 5, 15, 60 minutes. `false` (run marked failed) once exhausted.
+async fn retry(storage: &PgStorage, run: &RunRow, fence: u64) -> LResult<bool> {
     match backoff(run.attempts) {
         Some(d) => {
             let at = Utc::now() + chrono::Duration::from_std(d).map_err(lerr)?;
             // TODO(dispatch): the due-run dispatcher re-enqueues queued runs at next_attempt_at.
-            storage.schedule_retry(run.id, run.attempts + 1, at).await
+            storage.schedule_retry(run.id, run.attempts + 1, at).await?;
+            Ok(true)
         }
         None => {
             let reason = Some("retries_exhausted".into());
             storage
                 .set_status(run.id, fence, RunStatus::Failed, reason)
-                .await
+                .await?;
+            Ok(false)
         }
+    }
+}
+
+/// AWS error codes worth retrying: throttling and server-side faults. Any other code is a
+/// deterministic 4xx (ValidationError, NoSuchEntity, MalformedPolicyDocument, ...).
+const TRANSIENT_CODES: &[&str] = &[
+    "Throttling",
+    "ThrottlingException",
+    "ThrottledException",
+    "RequestThrottled",
+    "RequestThrottledException",
+    "RequestLimitExceeded",
+    "TooManyRequestsException",
+    "SlowDown",
+    "PriorRequestNotComplete",
+    "RequestTimeout",
+    "RequestTimeoutException",
+    "ServiceUnavailable",
+    "ServiceUnavailableException",
+    "InternalError",
+    "InternalFailure",
+    "InternalServerError",
+    "InternalServiceError",
+];
+
+/// Stable error code (never the message) and whether a retry can help.
+fn classify(e: &ConnectorError) -> (String, bool) {
+    use ConnectorError as C;
+    match e {
+        C::Api {
+            code: Some(code), ..
+        } => (code.clone(), TRANSIENT_CODES.contains(&code.as_str())),
+        // No code: the request never got an answer (timeout, connection reset).
+        C::Api { code: None, .. } => ("network".into(), true),
+        C::Provider(_) => ("provider_error".into(), false),
+        C::NotFound => ("not_found".into(), false),
+        C::InvalidCredentials(_) => ("invalid_credentials".into(), false),
+        C::Auth(_) => ("auth".into(), false),
+        C::Template(_) => ("template".into(), false),
+        C::Fixture(_) => ("fixture".into(), false),
+        C::Unknown(_) => ("unknown_connector".into(), false),
     }
 }
 
@@ -441,6 +474,30 @@ mod tests {
             extra_grants: vec![],
             missing_grants: vec![],
         }
+    }
+
+    #[test]
+    fn classify_retries_only_throttling_5xx_and_network() {
+        let api = |c: Option<&str>| ConnectorError::Api {
+            code: c.map(Into::into),
+            message: "m".into(),
+        };
+        for c in ["Throttling", "ServiceUnavailable", "InternalFailure"] {
+            assert_eq!(classify(&api(Some(c))), (c.to_owned(), true));
+        }
+        for c in [
+            "ValidationError",
+            "NoSuchEntity",
+            "MalformedPolicyDocument",
+            "InvalidInput",
+        ] {
+            assert_eq!(classify(&api(Some(c))), (c.to_owned(), false));
+        }
+        assert_eq!(classify(&api(None)), ("network".into(), true));
+        assert_eq!(
+            classify(&ConnectorError::NotFound),
+            ("not_found".into(), false)
+        );
     }
 
     #[test]
