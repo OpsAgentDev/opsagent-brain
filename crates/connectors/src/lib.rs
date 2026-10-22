@@ -3,6 +3,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use opsagent_core::resource::{Provider, Resource};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use uuid::Uuid;
 
 pub mod aws;
 pub mod fake;
@@ -15,6 +16,10 @@ pub enum ConnectorError {
     NotFound,
     #[error("fixture error: {0}")]
     Fixture(String),
+    #[error("invalid credentials: {0}")]
+    InvalidCredentials(String),
+    #[error("provider error: {0}")]
+    Provider(String),
 }
 pub type Result<T> = std::result::Result<T, ConnectorError>;
 
@@ -41,11 +46,22 @@ pub struct VerifyOutcome {
     pub missing_grants: Vec<String>,
 }
 
+/// Who a provider call is made for. AWS puts it in the session name and session tags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallContext {
+    pub organisation_id: Uuid,
+    pub run_id: Uuid,
+    pub trigger: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Credentials {
     AwsRole {
         role_arn: String,
         external_id: String,
+        /// Whether the stack was launched with `TerraformStateBucket` and `TerraformStatePrefix`.
+        terraform_state: bool,
+        context: CallContext,
     },
     Fake {
         account: String,
@@ -89,10 +105,13 @@ pub trait Connector: Send + Sync {
     async fn metrics(&self, creds: &Credentials, q: MetricQuery) -> Result<Vec<MetricPoint>>;
 }
 
-/// Caller passes the value of `OPSAGENT_CONNECTORS`. Task 8 adds "aws".
+/// Caller passes the value of `OPSAGENT_CONNECTORS`.
 pub fn registry(selected: &str) -> Result<Box<dyn Connector>> {
     match selected {
         "fake" => Ok(Box::new(fake::FakeConnector::default())),
+        "aws" => Ok(Box::new(
+            aws::AwsConnector::new(aws::AwsOutbound::default()),
+        )),
         other => Err(ConnectorError::Unknown(other.to_owned())),
     }
 }

@@ -28,6 +28,9 @@ urlencoding = "2"
 
 [dev-dependencies]
 aws-sdk-ec2 = { version = "1.270.0", features = ["test-util"] }
+aws-sdk-iam = { version = "1.130.0", features = ["test-util"] }
+aws-sdk-sts = { version = "1.121.0", features = ["test-util"] }
 aws-smithy-mocks = "0.3.0"
+aws-smithy-types = "1.9.0"
 serde_yaml = "0.9.34"
 sha2 = "0.10"
