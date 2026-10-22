@@ -4,33 +4,44 @@
 use super::{rfc3339_aws, Target};
 use crate::aws::client::provider_err;
 use crate::aws::metrics::{instance_from_arn, metric_points};
-use crate::Result;
+use crate::{ConnectorError, Result};
 use aws_sdk_sagemaker::types::{SortBy, SortOrder, TrainingJobStatus};
 use chrono::{DateTime, Utc};
 use opsagent_core::resource::{Resource, ResourceKind};
 use serde_json::json;
 use std::collections::BTreeMap;
 
-/// Sets `gpu_util_24h` (mean of hourly agent points, `null` without data or when not running)
-/// on every `accelerated` instance.
+/// Sets `gpu_util_24h` (mean of hourly agent points, `null` without data, when not running,
+/// or when the read failed) on every `accelerated` instance. Returns the first failure.
 pub async fn gpu_utilisation(
     cw: &aws_sdk_cloudwatch::Client,
     instances: &mut [Resource],
     now: DateTime<Utc>,
-) -> Result<()> {
+) -> Option<ConnectorError> {
+    let mut first = None;
     for r in instances
         .iter_mut()
         .filter(|r| r.attributes["accelerated"] == true)
     {
         let mut avg = None;
         if r.attributes["state"] == "running" {
-            let (_, id) = instance_from_arn(&r.identity)?;
-            let p = metric_points(cw, id, "gpu_util_avg", 24, now).await?;
-            avg = (!p.is_empty()).then(|| p.iter().map(|x| x.value).sum::<f64>() / p.len() as f64);
+            let points = match instance_from_arn(&r.identity) {
+                Ok((_, id)) => metric_points(cw, id, "gpu_util_avg", 24, now).await,
+                Err(e) => Err(e),
+            };
+            match points {
+                Ok(p) if !p.is_empty() => {
+                    avg = Some(p.iter().map(|x| x.value).sum::<f64>() / p.len() as f64);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    first.get_or_insert(e);
+                }
+            }
         }
         r.attributes["gpu_util_24h"] = json!(avg);
     }
-    Ok(())
+    first
 }
 
 /// Job name without its trailing run id (`resnet-20260929` -> `resnet`).

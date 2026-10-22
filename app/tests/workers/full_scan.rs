@@ -617,8 +617,18 @@ async fn kill_and_resume_after_every_chunk_matches_uninterrupted() {
         })
         .await
         .unwrap();
-        // 10 services in `noisy` plus the finalize chunk, each killed once, then the clean pass.
-        assert_eq!(n, 12);
+        // One chunk per `service@region` in `noisy` plus finalize, each killed once, then the
+        // clean pass.
+        let chunks: std::collections::BTreeSet<(String, String)> = noisy_json()["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                let svc = r["attributes"]["service"].as_str().unwrap_or_default();
+                (svc.to_owned(), r["region"].as_str().unwrap().to_owned())
+            })
+            .collect();
+        assert_eq!(n, chunks.len() + 2);
         assert_eq!(run_row(&ctx, rb).await.status, "done");
         assert_eq!(snapshot(&ctx, a, ra).await, snapshot(&ctx, b, rb).await);
 

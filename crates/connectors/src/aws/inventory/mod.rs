@@ -30,7 +30,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::future::Future;
 
-pub(crate) const INVENTORY_ACTIONS: &[&str] = &[
+pub const INVENTORY_ACTIONS: &[&str] = &[
     "ec2:DescribeRegions",
     "ec2:DescribeInstances",
     "ec2:DescribeVolumes",
@@ -296,9 +296,10 @@ async fn protection_and_ml(
     let lg = aws_sdk_cloudwatchlogs::Client::new(cfg);
     let sm = aws_sdk_sagemaker::Client::new(cfg);
     let cw = aws_sdk_cloudwatch::Client::new(cfg);
+    let mut cert_errs = vec![];
     let (bkp, certs, groups, jobs) = tokio::join!(
         gate(want("backup") || want("rds"), backups(&bk, t, now)),
-        gate(want("acm"), certificates(&acm, t)),
+        gate(want("acm"), certificates(&acm, t, &mut cert_errs)),
         gate(want("logs"), log_groups(&lg, t)),
         gate(want("sagemaker"), training_jobs(&sm, t)),
     );
@@ -306,8 +307,8 @@ async fn protection_and_ml(
         mark_backup_coverage(dbs, plans);
     }
     if let Some(Ok(v)) = ec2.as_mut() {
-        if let Err(e) = gpu_utilisation(&cw, v, now).await {
-            out.record("ec2", t.region, Some(Err(e)));
+        if let Some(e) = gpu_utilisation(&cw, v, now).await {
+            out.record("cloudwatch", t.region, Some(Err(e)));
         }
     }
     let bkp = match bkp {
@@ -322,6 +323,7 @@ async fn protection_and_ml(
     ] {
         out.record(svc, t.region, r);
     }
+    out.result.partial_errors.extend(cert_errs);
 }
 
 /// Full inventory for a session. Per-service failures land in `partial_errors`; see

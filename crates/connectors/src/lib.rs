@@ -151,10 +151,14 @@ pub struct MetricPoint {
 }
 
 /// `iam:SimulatePrincipalPolicy` outcome for the restore actions, split by decision.
+/// `unknown`: the simulation could not decide (see `Connector::simulate_restore`); `denied`
+/// is then empty so no check reports a missing permission it could not prove.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SimulationResult {
     pub allowed: Vec<String>,
     pub denied: Vec<String>,
+    #[serde(default)]
+    pub unknown: bool,
 }
 
 #[async_trait]
@@ -166,6 +170,9 @@ pub trait Connector: Send + Sync {
     async fn cost_daily(&self, creds: &Credentials, days: u32) -> Result<Vec<CostRow>>;
     async fn metrics(&self, creds: &Credentials, q: MetricQuery) -> Result<Vec<MetricPoint>>;
     /// Whether `role_arn` may run a restore (backup, KMS grant and decrypt, RDS, EC2).
+    /// Contract: returns `unknown: true` with `denied` empty, never `Err`, when a result needs
+    /// context values the simulation lacks, the role does not exist, or the role is in an
+    /// account the session cannot read. Other provider failures are `Err`.
     async fn simulate_restore(
         &self,
         _creds: &Credentials,

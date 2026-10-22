@@ -1,9 +1,9 @@
 //! Certificate Manager certificates. Endpoint presented-certificate mismatch needs a TLS probe
 //! and is Plan 3 for AWS; only fixtures emit the `endpoint` shape today.
-use super::{rfc3339_aws, Target};
+use super::{rfc3339_aws, service_error, Target};
 use crate::aws::client::provider_err;
-use crate::Result;
-use aws_sdk_acm::types::{CertificateType, RenewalStatus};
+use crate::{Result, ServiceError};
+use aws_sdk_acm::types::{CertificateType, Filters, KeyAlgorithm, RenewalStatus};
 use opsagent_core::resource::{Resource, ResourceKind};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -16,9 +16,32 @@ fn renewal(s: Option<&RenewalStatus>) -> Option<&'static str> {
     }
 }
 
-pub async fn certificates(acm: &aws_sdk_acm::Client, t: &Target<'_>) -> Result<Vec<Resource>> {
+/// Without `keyTypes` ListCertificates returns RSA_1024/RSA_2048 only, hiding ECDSA certs.
+const KEY_TYPES: [KeyAlgorithm; 7] = [
+    KeyAlgorithm::Rsa1024,
+    KeyAlgorithm::Rsa2048,
+    KeyAlgorithm::Rsa3072,
+    KeyAlgorithm::Rsa4096,
+    KeyAlgorithm::EcPrime256v1,
+    KeyAlgorithm::EcSecp384r1,
+    KeyAlgorithm::EcSecp521r1,
+];
+
+/// Every certificate; one that fails to describe lands in `errs` and the rest still return.
+pub async fn certificates(
+    acm: &aws_sdk_acm::Client,
+    t: &Target<'_>,
+    errs: &mut Vec<ServiceError>,
+) -> Result<Vec<Resource>> {
     let mut arns = vec![];
-    let mut pages = acm.list_certificates().into_paginator().send();
+    let filters = Filters::builder()
+        .set_key_types(Some(KEY_TYPES.to_vec()))
+        .build();
+    let mut pages = acm
+        .list_certificates()
+        .includes(filters)
+        .into_paginator()
+        .send();
     while let Some(page) = pages.next().await {
         let page = page.map_err(provider_err)?;
         arns.extend(
@@ -29,12 +52,18 @@ pub async fn certificates(acm: &aws_sdk_acm::Client, t: &Target<'_>) -> Result<V
     }
     let mut out = vec![];
     for arn in arns {
-        let d = acm
+        let d = match acm
             .describe_certificate()
             .certificate_arn(&arn)
             .send()
             .await
-            .map_err(provider_err)?;
+        {
+            Ok(d) => d,
+            Err(e) => {
+                errs.push(service_error("acm", t.region, &provider_err(e)));
+                continue;
+            }
+        };
         let Some(c) = d.certificate() else { continue };
         let attrs = json!({
             "service": "acm",

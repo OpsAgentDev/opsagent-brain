@@ -6,7 +6,7 @@ use aws_sdk_cloudwatch::primitives::DateTime as AwsTime;
 use aws_sdk_cloudwatch::types::{Dimension, Metric, MetricDataQuery, MetricStat};
 use chrono::{DateTime, Duration, Utc};
 
-pub(crate) const METRIC_ACTIONS: &[&str] = &["cloudwatch:GetMetricData", "cloudwatch:ListMetrics"];
+pub const METRIC_ACTIONS: &[&str] = &["cloudwatch:GetMetricData", "cloudwatch:ListMetrics"];
 
 const PERIOD_S: i32 = 3600;
 

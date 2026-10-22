@@ -223,3 +223,43 @@ fn invalid_terraform_bucket_or_prefix_is_rejected() {
     }
     assert!(render_template_v1(&params(Some(("tf.state-01", "envs/prod/")))).is_ok());
 }
+
+/// IAM action patterns: `*` matches any run of characters; names are case-insensitive.
+fn action_matches(pattern: &str, action: &str) -> bool {
+    let (p, a) = (pattern.to_ascii_lowercase(), action.to_ascii_lowercase());
+    match p.split_once('*') {
+        None => p == a,
+        Some((head, tail)) => {
+            a.len() >= head.len() + tail.len() && a.starts_with(head) && a.ends_with(tail)
+        }
+    }
+}
+
+#[test]
+fn every_session_action_is_allowed_by_the_template_and_not_denied() {
+    use opsagent_connectors::aws::{
+        inventory::INVENTORY_ACTIONS, metrics::METRIC_ACTIONS, simulate::SIMULATE_ACTIONS,
+    };
+    let s = stmts(&render_template_v1(&params(None)).unwrap().policies);
+    let actions = |effect: &str| -> Vec<String> {
+        s.iter()
+            .filter(|x| x["Effect"] == effect)
+            .flat_map(|x| x["Action"].as_array().unwrap().clone())
+            .map(|a| a.as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (allow, deny) = (actions("Allow"), actions("Deny"));
+    assert!(action_matches("backup:List*", "backup:ListBackupJobs"));
+    assert!(!action_matches("s3:GetObject*", "s3:ListAllMyBuckets"));
+    for a in INVENTORY_ACTIONS
+        .iter()
+        .chain(METRIC_ACTIONS)
+        .chain(SIMULATE_ACTIONS)
+    {
+        assert!(
+            allow.iter().any(|p| action_matches(p, a)),
+            "{a} not allowed"
+        );
+        assert!(!deny.iter().any(|p| action_matches(p, a)), "{a} denied");
+    }
+}
