@@ -1,4 +1,4 @@
-use crate::ctx::{draft, svc, Check, CheckCtx};
+use crate::ctx::{draft, Check, CheckCtx};
 use opsagent_connectors::Capability;
 use opsagent_core::finding::{FindingDraft, Severity};
 use opsagent_core::resource::Provider;
@@ -18,7 +18,7 @@ impl Check for IamHygiene {
 
     fn run(&self, ctx: &CheckCtx) -> Vec<FindingDraft> {
         let mut out = vec![];
-        for r in ctx.resources.iter().filter(|r| svc(r) == "iam") {
+        for r in ctx.resources.iter().filter(|r| r.service() == "iam") {
             let a = &r.attributes;
             let mut add = |v: &str, sev, title: String, step: &str, ex: String| {
                 let s = format!("{title}.");

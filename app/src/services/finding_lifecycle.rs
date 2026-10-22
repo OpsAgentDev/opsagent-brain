@@ -13,6 +13,7 @@ use uuid::Uuid;
 use super::{inventory_upsert::exec, redact::redact};
 use crate::models::{
     _entities::{connections, findings},
+    enum_of, enum_str,
     ledger_storage::{db_err, stmt},
 };
 
@@ -22,17 +23,6 @@ const FLAP_TIMES: i32 = 3;
 const EVIDENCE_TTL: Duration = Duration::days(90);
 /// Consecutive seen runs after which a flapping finding counts as stable again.
 const STABLE_RUNS: i32 = 7;
-
-fn sev_str(s: Severity) -> String {
-    serde_json::to_value(s)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default()
-}
-
-fn sev_of(s: &str) -> Option<Severity> {
-    serde_json::from_value(Json::String(s.into())).ok()
-}
 
 type Key = (String, String, String);
 
@@ -133,7 +123,7 @@ async fn insert(
             d.key.check_id.clone().into(),
             d.key.resource_identity.clone().into(),
             d.key.variant.clone().into(),
-            sev_str(d.severity).into(),
+            enum_str(d.severity).into(),
             d.title.clone().into(),
             d.summary.clone().into(),
             d.next_step.clone().into(),
@@ -208,7 +198,7 @@ async fn seen_again(
         vec![
             f.id.into(),
             status.into(),
-            sev_str(d.severity).into(),
+            enum_str(d.severity).into(),
             d.title.clone().into(),
             d.summary.clone().into(),
             d.next_step.clone().into(),
@@ -220,7 +210,7 @@ async fn seen_again(
         ],
     )
     .await?;
-    let from = sev_of(&f.severity);
+    let from = enum_of(&f.severity);
     for e in events {
         event(db, f.id, run_id, e, from, Some(d.severity), now).await?;
     }
@@ -269,7 +259,7 @@ async fn resolve(
     )
     .await?;
     if f.status != "flapping" {
-        let s = sev_of(&f.severity);
+        let s = enum_of(&f.severity);
         event(db, f.id, run_id, "resolved", s, s, now).await?;
     }
     Ok(())
@@ -311,8 +301,8 @@ async fn event(
             finding_id.into(),
             run_id.into(),
             kind.into(),
-            from.map(sev_str).into(),
-            to.map(sev_str).into(),
+            from.map(enum_str).into(),
+            to.map(enum_str).into(),
             now.into(),
         ],
     )
@@ -374,13 +364,13 @@ pub async fn posture(db: &impl ConnectionTrait, c: &connections::Model) -> Resul
         Severity::Info,
     ]
     .into_iter()
-    .map(|s| (sev_str(s), 0))
+    .map(|s| (enum_str(s), 0))
     .collect();
     let mut sum = 0f32;
     for r in rows {
         let s: String = r.try_get("", "severity").map_err(db_err)?;
         let n: i64 = r.try_get("", "n").map_err(db_err)?;
-        sum += sev_of(&s).map_or(0.0, Severity::weight) * n as f32;
+        sum += enum_of(&s).map_or(0.0, Severity::weight) * n as f32;
         counts.insert(s, n);
     }
     Ok(json!({ "score": f64::from((100.0 - sum).max(0.0)), "counts_by_severity": counts }))

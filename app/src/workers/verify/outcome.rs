@@ -19,10 +19,11 @@ use super::{
     Step, VerifyWorker,
 };
 use crate::{
+    models::enum_str,
     models::{
         _entities::{connection_verifications, connections},
         audit,
-        connections::{cas, status_str},
+        connections::cas,
         ledger_storage::{hold_fence, PgStorage},
         now, schedules,
     },
@@ -97,7 +98,7 @@ impl VerifyWorker {
         a.verify_denied_streak = Set(streak);
         a.verify_denied_first_at = Set(Some(first));
         if let Some(to) = revoke {
-            a.status = Set(status_str(to));
+            a.status = Set(enum_str(to));
             a.status_reason = Set(Some("access_denied".into()));
             // TODO(notify): email owners once on revoked.
         }
@@ -165,7 +166,7 @@ impl VerifyWorker {
     ) -> LResult<bool> {
         let (run, c) = (step.run, step.c);
         let mut a = <connections::ActiveModel as ActiveModelTrait>::default();
-        a.status = Set(status_str(to));
+        a.status = Set(enum_str(to));
         a.status_reason = Set(reason);
         a.verify_denied_streak = Set(0);
         a.verify_denied_first_at = Set(None);
@@ -186,7 +187,7 @@ impl VerifyWorker {
         let Some(written) = self.write_status(tx.db(), c, a, to).await? else {
             return Ok(false);
         };
-        self.record_in(tx.db(), c, run.id, Some(o), &status_str(written), None)
+        self.record_in(tx.db(), c, run.id, Some(o), &enum_str(written), None)
             .await?;
         let now = Utc::now();
         let first_scan = if first_connect && written == S::Connected {
@@ -246,7 +247,7 @@ impl VerifyWorker {
                 sp.rollback().await.map_err(lerr)?;
                 // TODO(notify): email the owners of the organisation that holds the account.
                 let blocked = connections::ActiveModel {
-                    status: Set(status_str(S::Blocked)),
+                    status: Set(enum_str(S::Blocked)),
                     status_reason: Set(Some("account_already_connected".into())),
                     updated_at: Set(now()),
                     ..Default::default()

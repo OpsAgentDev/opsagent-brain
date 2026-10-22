@@ -1,5 +1,5 @@
 //! The verdict of one verify call, by priority (PRD 7.2).
-use opsagent_connectors::VerifyOutcome;
+use opsagent_connectors::{aws::policy_diff::grant_names, VerifyOutcome};
 use opsagent_core::connection::ConnectionEvent as E;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -10,11 +10,7 @@ pub(super) enum Verdict {
 }
 
 fn names(grants: &[String]) -> String {
-    grants
-        .iter()
-        .map(|g| g.split(" on ").next().unwrap_or(g))
-        .collect::<Vec<_>>()
-        .join(", ")
+    grant_names(grants.iter().map(String::as_str)).join(", ")
 }
 
 /// Order matters: the confused-deputy guard wins over everything else.

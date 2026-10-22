@@ -1,4 +1,4 @@
-use crate::ctx::{draft, svc, Check, CheckCtx};
+use crate::ctx::{draft, Check, CheckCtx};
 use opsagent_connectors::Capability;
 use opsagent_core::finding::{Evidence, FindingDraft, FindingKey, Severity};
 use opsagent_core::resource::Provider;
@@ -40,7 +40,7 @@ impl Check for CostAndIdle {
         for r in ctx.resources {
             let a = &r.attributes;
             let usd = a["monthly_cost_usd"].as_f64().unwrap_or(0.0);
-            let (variant, title, step, excerpt) = match svc(r) {
+            let (variant, title, step, excerpt) = match r.service() {
                 "ebs" if a["attached"] == false => (
                     "unattached_volume",
                     format!("Unattached volume {}", r.identity),

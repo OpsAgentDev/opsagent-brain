@@ -56,6 +56,13 @@ pub struct Resource {
     pub observed_at: DateTime<Utc>,
 }
 
+impl Resource {
+    /// The provider service the resource belongs to (`attributes.service`), or `""`.
+    pub fn service(&self) -> &str {
+        self.attributes["service"].as_str().unwrap_or("")
+    }
+}
+
 /// Stable identity: the provider's own id when it has one, else `kind:region:name`.
 pub fn resource_identity(
     provider_id: Option<&str>,

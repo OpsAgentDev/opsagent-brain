@@ -242,6 +242,14 @@ impl PolicyStatements {
     }
 }
 
+/// The IAM action of each grant label (`action on resources when ...`), for display.
+pub fn grant_names<'a>(labels: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    labels
+        .into_iter()
+        .map(|g| g.split(" on ").next().unwrap_or(g))
+        .collect()
+}
+
 fn label(scope: &StatementScope, action: &str, scope_known: bool) -> String {
     let a = if scope.not_action {
         format!("notaction:{action}")

@@ -1,4 +1,4 @@
-use crate::ctx::{draft, svc, Check, CheckCtx};
+use crate::ctx::{draft, Check, CheckCtx};
 use opsagent_connectors::Capability;
 use opsagent_core::finding::{FindingDraft, Severity};
 use opsagent_core::resource::Provider;
@@ -23,7 +23,8 @@ impl Check for PublicExposure {
         for r in ctx.resources {
             let a = &r.attributes;
             let id = &r.identity;
-            let (variant, sev, title, step, ex): (&str, _, String, &str, String) = match svc(r) {
+            let (variant, sev, title, step, ex): (&str, _, String, &str, String) = match r.service()
+            {
                 "rds" if a["snapshot"] == true && a["public"] == true => (
                     "public_snapshot",
                     Severity::Critical,

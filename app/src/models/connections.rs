@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 
 use super::{
     _entities::{connection_credentials, connections, organisations},
-    now,
+    enum_of, now,
 };
 
 pub use opsagent_connectors::registry::Creds;
@@ -29,15 +29,7 @@ fn secrets_err(e: opsagent_secrets::SecretsError) -> Error {
 }
 
 pub fn status_of(c: &connections::Model) -> Result<ConnectionStatus> {
-    serde_json::from_value(serde_json::Value::String(c.status.clone()))
-        .map_err(|e| Error::string(&format!("bad connection status: {e}")))
-}
-
-pub fn status_str(s: ConnectionStatus) -> String {
-    serde_json::to_value(s)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default()
+    enum_of(&c.status).ok_or_else(|| Error::string(&format!("bad connection status: {}", c.status)))
 }
 
 /// The org DEK, unwrapped with the KEK.

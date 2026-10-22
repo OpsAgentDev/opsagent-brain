@@ -8,6 +8,8 @@ use opsagent_ledger::{
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, QueryResult, Statement, Value};
 use uuid::Uuid;
 
+use super::{enum_of, enum_str};
+
 /// Bound to the pool by default, or to a transaction to commit run writes with other work.
 pub struct PgStorage<C = DatabaseConnection> {
     db: C,
@@ -66,13 +68,6 @@ pub async fn hold_fence(txn: &impl ConnectionTrait, run_id: Uuid, fence: u64) ->
     .ok_or(LedgerError::StaleFence)
 }
 
-pub fn status_str(s: RunStatus) -> String {
-    serde_json::to_value(s)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default()
-}
-
 const COLS: &str = "id, organisation_id, connection_id, job_type, scheduled_at, status, checkpoint, fence, attempts, partial_reason";
 
 fn row(r: &QueryResult) -> Result<RunRow> {
@@ -89,7 +84,7 @@ fn row(r: &QueryResult) -> Result<RunRow> {
             job_type: r.try_get("", "job_type").map_err(db_err)?,
             scheduled_at,
         },
-        status: serde_json::from_value(serde_json::Value::String(status)).map_err(db_err)?,
+        status: enum_of(&status).ok_or_else(|| db_err(format!("bad run status: {status}")))?,
         checkpoint: serde_json::from_value(checkpoint).map_err(db_err)?,
         fence: u64::try_from(fence).map_err(db_err)?,
         attempts: u32::try_from(attempts).map_err(db_err)?,
@@ -185,7 +180,7 @@ impl<C: ConnectionTrait + Send + Sync> Storage for PgStorage<C> {
                 vec![
                     id.into(),
                     (fence as i64).into(),
-                    status_str(status).into(),
+                    enum_str(status).into(),
                     partial_reason.into(),
                 ],
             )

@@ -5,20 +5,18 @@ use serde_json::Value;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use opsagent_connectors::aws::policy_diff::grant_names;
+
 use crate::models::_entities::{connection_verifications, connections};
 
 fn hhmm(t: Option<NaiveTime>) -> Option<String> {
     t.map(|t| t.format("%H:%M").to_string())
 }
 
-/// Grant labels are `action on resources when ...`; the API shows action names only.
-fn grant_names(v: &Value) -> Vec<String> {
-    v.as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(|g| g.split(" on ").next().unwrap_or(g).to_owned())
-        .collect()
+/// The API shows the IAM action names of the stored grant labels only.
+fn grant_actions(v: &Value) -> Vec<String> {
+    let labels = v.as_array().into_iter().flatten().filter_map(Value::as_str);
+    grant_names(labels).into_iter().map(str::to_owned).collect()
 }
 
 #[derive(Serialize, ToSchema)]
@@ -76,8 +74,8 @@ pub fn view(c: &connections::Model, last: Option<&connection_verifications::Mode
             assume_with_ok: v.assume_with_ok,
             assume_without_denied: v.assume_without_denied,
             policy_matches: v.policy_matches,
-            extra_grants: grant_names(&v.extra_grants),
-            missing_grants: grant_names(&v.missing_grants),
+            extra_grants: grant_actions(&v.extra_grants),
+            missing_grants: grant_actions(&v.missing_grants),
         }),
     }
 }

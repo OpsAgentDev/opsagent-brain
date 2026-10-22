@@ -17,12 +17,12 @@ use uuid::Uuid;
 
 use crate::{
     api_error::ApiError,
+    models::enum_str,
     models::{
         _entities::connections,
         audit,
         connections::{
-            cas, insert_creds, load_creds, save_creds, status_of, status_str, Creds,
-            TEMPLATE_VERSION,
+            cas, insert_creds, load_creds, save_creds, status_of, Creds, TEMPLATE_VERSION,
         },
         now, schedules,
     },
@@ -66,7 +66,7 @@ pub async fn create(
         provider: Set(provider.to_owned()),
         external_account_id: Set(None),
         display_name: Set(Some(name)),
-        status: Set(status_str(S::Pending)),
+        status: Set(enum_str(S::Pending)),
         status_reason: Set(None),
         template_version: Set(spec.uses_template.then(|| TEMPLATE_VERSION.to_owned())),
         scan_time_local: Set(None),
@@ -141,7 +141,7 @@ pub async fn request_verify(
     // Guarded on the status read above, so a concurrent Disconnect or worker outcome is not lost.
     let mut a = <connections::ActiveModel as ActiveModelTrait>::default();
     if to != from {
-        a.status = Set(status_str(to));
+        a.status = Set(enum_str(to));
     }
     a.updated_at = Set(now());
     if !cas(&txn, c, a).await? {
@@ -205,7 +205,7 @@ pub async fn end(
         return Ok(false);
     };
     let mut a: connections::ActiveModel = c.into();
-    a.status = Set(status_str(to));
+    a.status = Set(enum_str(to));
     a.status_reason = Set(Some(reason.into()));
     a.updated_at = Set(now());
     a.update(db).await?;

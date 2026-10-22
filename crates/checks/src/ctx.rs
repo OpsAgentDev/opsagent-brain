@@ -32,11 +32,6 @@ pub trait Check {
     fn run(&self, ctx: &CheckCtx) -> Vec<FindingDraft>;
 }
 
-/// Shared helpers for checks.
-pub(crate) fn svc(r: &Resource) -> &str {
-    r.attributes["service"].as_str().unwrap_or("")
-}
-
 pub(crate) fn draft(
     ctx: &CheckCtx,
     check_id: &str,
@@ -60,7 +55,7 @@ pub(crate) fn draft(
         next_step: next_step.into(),
         cost_monthly_usd: r.attributes["monthly_cost_usd"].as_f64(),
         evidence: vec![Evidence {
-            source: format!("{}:{}", svc(r), r.identity),
+            source: format!("{}:{}", r.service(), r.identity),
             excerpt,
         }],
     }

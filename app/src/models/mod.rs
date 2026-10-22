@@ -12,9 +12,23 @@ use sea_orm::{
     prelude::DateTimeWithTimeZone, ColumnTrait, ConnectionTrait, EntityTrait, PrimaryKeyTrait,
     QueryFilter,
 };
+use serde::{de::DeserializeOwned, Serialize};
 use uuid::Uuid;
 
 use crate::api_error::ApiError;
+
+/// A unit enum's serde name (`ConnectionStatus::Connected` -> `connected`).
+pub fn enum_str<T: Serialize>(v: T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// The unit enum named `s` (`enum_str` reversed); `None` for an unknown name.
+pub fn enum_of<T: DeserializeOwned>(s: &str) -> Option<T> {
+    serde_json::from_value(serde_json::Value::String(s.to_owned())).ok()
+}
 
 pub fn now() -> DateTimeWithTimeZone {
     chrono::Utc::now().into()

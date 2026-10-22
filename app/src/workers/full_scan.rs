@@ -31,6 +31,7 @@ use crate::{
         _entities::connections,
         audit,
         connections::{load_creds, status_of},
+        enum_of,
         ledger_storage::{db_err, hold_fence, stmt, PgStorage},
         organisations,
     },
@@ -71,10 +72,6 @@ impl BackgroundWorker<FullScanArgs> for FullScanWorker {
             Err(e) => Err(err(e)),
         }
     }
-}
-
-fn service(r: &Resource) -> &str {
-    r.attributes["service"].as_str().unwrap_or("")
 }
 
 /// Runs (or resumes) the scan for `run_id` with the registry's connector. The run row must exist.
@@ -281,7 +278,7 @@ async fn discover(k: &dyn Connector, cr: &Credentials) -> std::result::Result<Ve
     let mut chunks: Vec<String> = inv
         .resources
         .iter()
-        .map(|r| (service(r), r.region.as_str()))
+        .map(|r| (r.service(), r.region.as_str()))
         .chain(
             inv.partial_errors
                 .iter()
@@ -468,7 +465,7 @@ async fn seen(
                     .try_get::<Option<String>>("", "region")
                     .map_err(db_err)?
                     .unwrap_or_default(),
-                kind: serde_json::from_value(json!(kind)).map_err(db_err)?,
+                kind: enum_of(&kind).ok_or_else(|| db_err(format!("bad resource kind: {kind}")))?,
                 identity: r.try_get("", "identity").map_err(db_err)?,
                 name: r
                     .try_get::<Option<String>>("", "name")

@@ -115,10 +115,7 @@ impl Connector for FakeConnector {
         let mut out = self.fixture(creds)?.resources.clone();
         out.retain(|r| {
             (scope.regions.is_empty() || scope.regions.contains(&r.region))
-                && (scope.services.is_empty()
-                    || r.attributes["service"]
-                        .as_str()
-                        .is_some_and(|s| scope.services.iter().any(|x| x == s)))
+                && (scope.services.is_empty() || scope.services.iter().any(|x| x == r.service()))
         });
         Ok(InventoryResult {
             resources: out,
