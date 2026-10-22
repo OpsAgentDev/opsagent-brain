@@ -1,0 +1,2937 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "OpsAgent brain",
+    "version": "0.1.0"
+  },
+  "servers": [
+    {
+      "url": "https://brain.opsagent.dev/v1"
+    }
+  ],
+  "paths": {
+    "/auth/csrf": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_csrf_token",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Csrf"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/magic-link": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Always 202, so the response never reveals whether an address is valid or known, or whether\nit was rate limited (5 per address and 30 per client IP per hour).",
+        "operationId": "auth_request_link",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MagicLinkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Sent if the address is valid and under the rate limit"
+          }
+        }
+      }
+    },
+    "/auth/magic-link/redeem": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_redeem_link",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedeemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Session cookie set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Redirect"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_me",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/sign-in/github/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_github_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Session cookie set; redirects to the web dashboard"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/sign-in/github/start": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_github_start",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizeUrl"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/sign-out": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_sign_out",
+        "responses": {
+          "204": {}
+        }
+      }
+    },
+    "/invites/{token}/accept": {
+      "post": {
+        "tags": [
+          "members"
+        ],
+        "operationId": "members_accept",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Invite token from the mail.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Membership"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs": {
+      "get": {
+        "tags": [
+          "orgs"
+        ],
+        "operationId": "orgs_list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Org"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "orgs"
+        ],
+        "operationId": "orgs_create_org",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewOrg"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Org"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}": {
+      "get": {
+        "tags": [
+          "orgs"
+        ],
+        "operationId": "orgs_show",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Org"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "orgs"
+        ],
+        "operationId": "orgs_delete",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "orgs"
+        ],
+        "operationId": "orgs_update",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrgPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Org"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/connections": {
+      "get": {
+        "tags": [
+          "connections"
+        ],
+        "operationId": "connections_list",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Connection"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "connections"
+        ],
+        "operationId": "connections_create",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewConnection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedConnection"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/connections/{id}": {
+      "get": {
+        "tags": [
+          "connections"
+        ],
+        "operationId": "connections_show",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Connection"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "connections"
+        ],
+        "operationId": "connections_disconnect",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Disconnected"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "connections"
+        ],
+        "operationId": "connections_update",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectionPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Connection"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/connections/{id}/scan": {
+      "post": {
+        "tags": [
+          "runs"
+        ],
+        "operationId": "runs_scan",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunAccepted"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Not connected or degraded (`connection_not_scannable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A scan ran within the last hour; see `Retry-After`.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds until a scan is allowed"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/connections/{id}/verify": {
+      "post": {
+        "tags": [
+          "connections"
+        ],
+        "operationId": "connections_verify",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunAccepted"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/findings": {
+      "get": {
+        "tags": [
+          "findings"
+        ],
+        "operationId": "findings_list",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "connection",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "check",
+            "in": "query",
+            "description": "Check id, e.g. `no_mfa`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` from the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, default 50; values above 200 are clamped to 200.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_FindingSummary"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/findings/{id}": {
+      "get": {
+        "tags": [
+          "findings"
+        ],
+        "operationId": "findings_show",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/findings/{id}/accept": {
+      "post": {
+        "tags": [
+          "findings"
+        ],
+        "operationId": "findings_accept",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Finding"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/findings/{id}/reopen": {
+      "post": {
+        "tags": [
+          "findings"
+        ],
+        "operationId": "findings_reopen",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Finding"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/findings/{id}/report-explanation": {
+      "post": {
+        "tags": [
+          "findings"
+        ],
+        "operationId": "findings_report_explanation",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExplanationReport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/findings/{id}/snooze": {
+      "post": {
+        "tags": [
+          "findings"
+        ],
+        "operationId": "findings_snooze",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnoozeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Finding"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/invites": {
+      "post": {
+        "tags": [
+          "members"
+        ],
+        "operationId": "members_invite",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewInvite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invite"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/members": {
+      "get": {
+        "tags": [
+          "members"
+        ],
+        "operationId": "members_list",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Member"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/members/{id}": {
+      "delete": {
+        "tags": [
+          "members"
+        ],
+        "operationId": "members_remove",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/resources": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "resources_list",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "connection",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Case-insensitive substring of name or identity.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` from the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, default 50; values above 200 are clamped to 200.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ResourceSummary"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/runs": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "operationId": "runs_list",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "connection",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Job type.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` from the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, default 50; values above 200 are clamped to 200.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_RunSummary"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/runs/{id}": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "operationId": "runs_show",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AcceptBody": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required."
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Default now + 90 days; at most 365 days ahead."
+          }
+        }
+      },
+      "AuthorizeUrl": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "Connection": {
+        "type": "object",
+        "required": [
+          "id",
+          "provider",
+          "status",
+          "created_at"
+        ],
+        "properties": {
+          "api_rate_ceiling": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "billable_from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "briefing_time_local": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "external_account_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "first_connected_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "last_verification": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Verification"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "scan_time_local": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`HH:MM` in the organisation's timezone."
+          },
+          "status": {
+            "type": "string",
+            "description": "`pending`, `verifying`, `connected`, `degraded`, `revoked`, `blocked` or `disconnected`."
+          },
+          "status_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "template_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ConnectionPatch": {
+        "type": "object",
+        "properties": {
+          "api_rate_ceiling": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "At least 1."
+          },
+          "briefing_time_local": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`HH:MM`."
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scan_time_local": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`HH:MM` in the organisation's timezone; the nightly scan moves there from the next day."
+          }
+        }
+      },
+      "CreatedConnection": {
+        "type": "object",
+        "required": [
+          "id",
+          "template_version"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quick_create_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "CloudFormation quick-create link for the read role; null for test providers."
+          },
+          "template_version": {
+            "type": "string"
+          }
+        }
+      },
+      "Csrf": {
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Send as `X-CSRF-Token` on every mutating request."
+          }
+        }
+      },
+      "Disconnected": {
+        "type": "object",
+        "required": [
+          "status",
+          "next_step"
+        ],
+        "properties": {
+          "next_step": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "Always `disconnected`."
+          }
+        }
+      },
+      "EvidenceItem": {
+        "type": "object",
+        "required": [
+          "source",
+          "excerpt",
+          "redacted",
+          "run_id",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "excerpt": {
+            "type": "string",
+            "description": "Redacted before storage."
+          },
+          "redacted": {
+            "type": "boolean"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      },
+      "ExplanationReport": {
+        "type": "object",
+        "required": [
+          "note"
+        ],
+        "properties": {
+          "note": {
+            "type": "string",
+            "description": "What is wrong with the explanation; at most 2000 characters."
+          }
+        }
+      },
+      "Finding": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/FindingSummary"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "accepted_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "accepted_until": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "first_seen_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "uuid"
+              },
+              "last_seen_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "uuid"
+              },
+              "next_step": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resolved_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "resolved_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "snoozed_until": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "FindingDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Finding"
+          },
+          {
+            "type": "object",
+            "required": [
+              "evidence",
+              "events"
+            ],
+            "properties": {
+              "events": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/FindingEvent"
+                },
+                "description": "Newest first, at most 20."
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/EvidenceItem"
+                }
+              },
+              "explanation": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "Model explanation; null until explanations exist."
+              }
+            }
+          }
+        ]
+      },
+      "FindingEvent": {
+        "type": "object",
+        "required": [
+          "event_type",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "from_severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Null for customer actions."
+          },
+          "to_severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "FindingSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "connection_id",
+          "check_id",
+          "resource_identity",
+          "variant",
+          "severity",
+          "status",
+          "title",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "check_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "cost_monthly_usd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "resource_identity": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "description": "`critical`, `high`, `medium`, `low` or `info`."
+          },
+          "status": {
+            "type": "string",
+            "description": "`open`, `resolved`, `accepted`, `snoozed` or `flapping`."
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "variant": {
+            "type": "string"
+          }
+        }
+      },
+      "Invite": {
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "role",
+          "expires_at"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "role": {
+            "type": "string"
+          }
+        }
+      },
+      "MagicLinkRequest": {
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          }
+        }
+      },
+      "Me": {
+        "type": "object",
+        "required": [
+          "id",
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Member": {
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "email",
+          "role"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "Membership": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "slug",
+          "role"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Organisation id."
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "NewConnection": {
+        "type": "object",
+        "required": [
+          "provider",
+          "display_name"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "description": "`aws`."
+          }
+        }
+      },
+      "NewInvite": {
+        "type": "object",
+        "required": [
+          "email",
+          "role"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "description": "`owner` or `member`."
+          }
+        }
+      },
+      "NewOrg": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "IANA zone; default `UTC`."
+          }
+        }
+      },
+      "Org": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "slug",
+          "timezone",
+          "role",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "description": "The caller's role: `owner` or `member`."
+          },
+          "slug": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string"
+          }
+        }
+      },
+      "OrgPatch": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Page_FindingSummary": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "connection_id",
+                "check_id",
+                "resource_identity",
+                "variant",
+                "severity",
+                "status",
+                "title",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "check_id": {
+                  "type": "string"
+                },
+                "connection_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "cost_monthly_usd": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "resource_identity": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string",
+                  "description": "`critical`, `high`, `medium`, `low` or `info`."
+                },
+                "status": {
+                  "type": "string",
+                  "description": "`open`, `resolved`, `accepted`, `snoozed` or `flapping`."
+                },
+                "title": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "variant": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` to get the next page; null on the last page."
+          }
+        }
+      },
+      "Page_ResourceSummary": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "connection_id",
+                "kind",
+                "identity",
+                "tags",
+                "first_seen_at",
+                "last_seen_at"
+              ],
+              "properties": {
+                "connection_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "first_seen_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "gone_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "Set when the resource was missing from a complete inventory."
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "identity": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "last_seen_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "region": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "tags": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` to get the next page; null on the last page."
+          }
+        }
+      },
+      "Page_RunSummary": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "job_type",
+                "status",
+                "scheduled_at"
+              ],
+              "properties": {
+                "connection_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "finished_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "job_type": {
+                  "type": "string",
+                  "description": "`full_scan`, `verify`, ..."
+                },
+                "partial_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "scheduled_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "started_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "`queued`, `running`, `done`, `partial`, `failed` or `skipped`."
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` to get the next page; null on the last page."
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "description": "The wire shape of every error (`application/problem+json`).",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "instance",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable machine-readable code, e.g. `not_found`, `validation`, `rate_limited`, `csrf`."
+          },
+          "detail": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "description": "Unique per response."
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "RedeemRequest": {
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        }
+      },
+      "Redirect": {
+        "type": "object",
+        "required": [
+          "redirect"
+        ],
+        "properties": {
+          "redirect": {
+            "type": "string"
+          }
+        }
+      },
+      "ResourceSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "connection_id",
+          "kind",
+          "identity",
+          "tags",
+          "first_seen_at",
+          "last_seen_at"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "first_seen_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "gone_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Set when the resource was missing from a complete inventory."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "identity": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last_seen_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": "object"
+          }
+        }
+      },
+      "Run": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RunSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "attempts"
+            ],
+            "properties": {
+              "attempts": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "stats": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "Job statistics from the checkpoint (for `full_scan`: score, counts, partial); null if none."
+              }
+            }
+          }
+        ]
+      },
+      "RunAccepted": {
+        "type": "object",
+        "description": "202 body for endpoints that enqueue a run.",
+        "required": [
+          "run_id"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "RunSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "job_type",
+          "status",
+          "scheduled_at"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "job_type": {
+            "type": "string",
+            "description": "`full_scan`, `verify`, ..."
+          },
+          "partial_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scheduled_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "description": "`queued`, `running`, `done`, `partial`, `failed` or `skipped`."
+          }
+        }
+      },
+      "SnoozeBody": {
+        "type": "object",
+        "required": [
+          "until"
+        ],
+        "properties": {
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "At most 30 days ahead."
+          }
+        }
+      },
+      "Verification": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "at",
+          "extra_grants",
+          "missing_grants"
+        ],
+        "properties": {
+          "assume_with_ok": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "assume_without_denied": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "extra_grants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "IAM action names granted beyond the template."
+          },
+          "missing_grants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "IAM action names the template grants but the role lacks."
+          },
+          "outcome": {
+            "type": "string",
+            "description": "Verification outcome code."
+          },
+          "policy_matches": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "VerifyBody": {
+        "type": "object",
+        "properties": {
+          "role_arn": {
+            "type": "string",
+            "description": "The read role's ARN from the stack outputs (required for `aws`)."
+          }
+        }
+      }
+    }
+  }
+}

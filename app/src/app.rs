@@ -1,7 +1,8 @@
 use async_trait::async_trait;
+use axum::Router as AxumRouter;
 use loco_rs::{
     app::{AppContext, Hooks, Initializer},
-    bgworker::Queue,
+    bgworker::{BackgroundWorker, Queue},
     boot::{create_app, BootResult, StartMode},
     config::Config,
     controller::AppRoutes,
@@ -10,9 +11,48 @@ use loco_rs::{
     Result,
 };
 use migration::Migrator;
-use std::path::Path;
+use opsagent_connectors::{aws::AwsOutbound, Registry};
+use opsagent_secrets::{CachingKek, EnvKek, Kek};
+use std::{path::Path, sync::Arc, time::Duration};
 
-use crate::controllers;
+use crate::{
+    controllers,
+    middleware::AuthInitializer,
+    tasks::{openapi_dump::OpenapiDump, scan_now::ScanNow, scheduler_tick::SchedulerTick},
+    workers::{full_scan::FullScanWorker, verify::VerifyWorker},
+};
+
+/// security.md: unwrapped DEKs stay in memory for at most 10 minutes.
+const DEK_TTL: Duration = Duration::from_secs(600);
+
+/// `OPSAGENT_CONNECTORS`: `fake` serves every provider from fixtures (tests, local runs) and
+/// is refused in production; `aws` (the default) uses the real connectors.
+fn fake_connectors(value: Option<&str>, production: bool) -> Result<bool> {
+    match value.unwrap_or("aws") {
+        "fake" if production => Err(loco_rs::Error::string(
+            "OPSAGENT_CONNECTORS=fake is not allowed in production",
+        )),
+        "fake" => Ok(true),
+        "aws" => Ok(false),
+        other => Err(loco_rs::Error::string(&format!(
+            "OPSAGENT_CONNECTORS must be aws or fake, got {other}"
+        ))),
+    }
+}
+
+/// The process-wide KEK (with the DEK cache), installed at boot.
+pub fn kek(ctx: &AppContext) -> Result<Arc<dyn Kek>> {
+    ctx.shared_store
+        .get::<Arc<dyn Kek>>()
+        .ok_or_else(|| loco_rs::Error::string("KEK not installed"))
+}
+
+/// The connector registry, installed at boot.
+pub fn registry(ctx: &AppContext) -> Result<Registry> {
+    ctx.shared_store
+        .get::<Registry>()
+        .ok_or_else(|| loco_rs::Error::string("connector registry not installed"))
+}
 
 pub struct App;
 #[async_trait]
@@ -39,19 +79,48 @@ impl Hooks for App {
         create_app::<Self, Migrator>(mode, environment, config).await
     }
 
+    /// Builds the adapters every mode (server, workers, tasks) shares, once.
+    async fn after_context(ctx: AppContext) -> Result<AppContext> {
+        let env_kek = EnvKek::from_env().map_err(|e| loco_rs::Error::string(&e.to_string()))?;
+        let kek: Arc<dyn Kek> = Arc::new(CachingKek::new(env_kek, DEK_TTL));
+        ctx.shared_store.insert(kek);
+        let production = ctx.environment == Environment::Production;
+        let fake = fake_connectors(
+            std::env::var("OPSAGENT_CONNECTORS").ok().as_deref(),
+            production,
+        )?;
+        let outbound = AwsOutbound {
+            principal_arn: std::env::var("OPSAGENT_AWS_OUTBOUND_ROLE_ARN").ok(),
+            ..Default::default()
+        };
+        ctx.shared_store.insert(Registry::new(outbound, fake));
+        Ok(ctx)
+    }
+
     async fn initializers(_ctx: &AppContext) -> Result<Vec<Box<dyn Initializer>>> {
-        Ok(vec![])
+        Ok(vec![Box::new(AuthInitializer)])
+    }
+
+    /// `/v1` and `/openapi.json` come from the `utoipa-axum` router so every route is in the
+    /// OpenAPI document. Merged here (not in `after_routes`) so Loco's middleware stack wraps them.
+    async fn before_routes(_ctx: &AppContext) -> Result<AxumRouter<AppContext>> {
+        Ok(controllers::openapi::routes())
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {
         AppRoutes::with_default_routes().add_route(controllers::health::routes())
     }
 
-    async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {
-        Ok(())
+    async fn connect_workers(ctx: &AppContext, queue: &Queue) -> Result<()> {
+        queue.register(VerifyWorker::build(ctx)).await?;
+        queue.register(FullScanWorker::build(ctx)).await
     }
 
-    fn register_tasks(_tasks: &mut Tasks) {}
+    fn register_tasks(tasks: &mut Tasks) {
+        tasks.register(OpenapiDump);
+        tasks.register(ScanNow);
+        tasks.register(SchedulerTick);
+    }
 
     async fn truncate(_ctx: &AppContext) -> Result<()> {
         Ok(())
@@ -59,5 +128,19 @@ impl Hooks for App {
 
     async fn seed(_ctx: &AppContext, _base: &Path) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake_connectors;
+
+    #[test]
+    fn production_refuses_fake_connectors() {
+        assert!(fake_connectors(Some("fake"), true).is_err());
+        assert!(fake_connectors(Some("fake"), false).unwrap());
+        assert!(!fake_connectors(Some("aws"), true).unwrap());
+        assert!(!fake_connectors(None, true).unwrap());
+        assert!(fake_connectors(Some("bogus"), false).is_err());
     }
 }

@@ -22,6 +22,10 @@ server:
   host: http://localhost
   # Out of the box middleware configuration. to disable middleware you can changed the `enable` field to `false` of comment the middleware block
   middlewares:
+    # Client IP for the magic-link rate limit: the rightmost X-Forwarded-For entry, which the
+    # single trusted proxy in front of the app (Railway's edge) sets.
+    remote_ip:
+      enable: true
 
 # Worker Configuration
 workers:
@@ -41,23 +45,6 @@ queue:
   # Dangerously flush all data in Redis on startup. dangerous operation, make sure that you using this flag only on dev environments or test mode
   dangerously_flush: false
   
-
-# Mailer Configuration.
-mailer:
-  stub: true
-  # SMTP mailer configuration.
-  smtp:
-    # Enable/Disable smtp mailer.
-    enable: true
-    # SMTP server host. e.x localhost, smtp.gmail.com
-    host: <%= get_env(name="MAILER_HOST", default="localhost") %>
-    # SMTP server port
-    port: 1025
-    # Use secure connection (SSL/TLS).
-    secure: false
-    # auth:
-    #   user:
-    #   password:
 
 # Initializers Configuration
 # initializers:
@@ -87,3 +74,13 @@ database:
   # Recreating schema when application loaded.  This is a dangerous operation, make sure that you using this flag only on dev environments or test mode
   dangerously_recreate: true
 
+
+# Auth, sessions and mail links (read by src/settings.rs).
+settings:
+  web_base_url: "<%= get_env(name="WEB_BASE_URL", default="http://localhost:3000") %>"
+  api_base_url: "<%= get_env(name="APP_BASE_URL", default="http://localhost:5150") %>"
+  session_secret: "<%= get_env(name="SESSION_SECRET", default="test-session-secret-not-for-prod") %>"
+  cookie_secure: <%= get_env(name="COOKIE_SECURE", default="true") %>
+  cookie_domain: "<%= get_env(name="COOKIE_DOMAIN", default="") %>"
+  github_client_id: "<%= get_env(name="GITHUB_CLIENT_ID", default="") %>"
+  github_client_secret: "<%= get_env(name="GITHUB_CLIENT_SECRET", default="") %>"

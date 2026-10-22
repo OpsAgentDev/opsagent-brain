@@ -1,0 +1,225 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: OpsAgent read-only role, template version 1. Read-only allowlist plus an explicit data-plane deny.
+
+Parameters:
+  ExternalId:
+    Type: String
+    NoEcho: true
+    MinLength: 1
+    Description: ExternalId issued by OpsAgent for this connection.
+  OpsAgentPrincipal:
+    Type: String
+    Description: ARN of the OpsAgent outbound role allowed to assume this role.
+  OrgShortId:
+    Type: String
+    AllowedPattern: "[a-z0-9]{8}"
+    Description: Short OpsAgent organisation id, used in the role name.
+  TemplateVersion:
+    Type: String
+    Default: "1"
+    AllowedValues: ["1"]
+  TerraformStateBucket:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+    Description: Optional. Bucket holding Terraform state OpsAgent may read.
+  TerraformStatePrefix:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[^*$]*/$"
+    Description: Optional. Key prefix of the Terraform state objects; no "*" or "$", ends with "/".
+
+Conditions:
+  HasTerraformState: !And
+    - !Not [!Equals [!Ref TerraformStateBucket, ""]]
+    - !Not [!Equals [!Ref TerraformStatePrefix, ""]]
+
+Resources:
+  OpsAgentReadRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "OpsAgentReadRole-${OrgShortId}"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref OpsAgentPrincipal
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+      Policies:
+        - PolicyName: OpsAgentReadAllowlist
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadMetadata
+                Effect: Allow
+                Action:
+                  - ec2:Describe*
+                  - ec2:List*
+                  - ec2:Get*
+                  - ecs:Describe*
+                  - ecs:List*
+                  - ecs:Get*
+                  - eks:Describe*
+                  - eks:List*
+                  - eks:Get*
+                  - lambda:Describe*
+                  - lambda:List*
+                  - lambda:Get*
+                  - rds:Describe*
+                  - rds:List*
+                  - rds:Get*
+                  - elasticloadbalancing:Describe*
+                  - elasticloadbalancing:List*
+                  - elasticloadbalancing:Get*
+                  - autoscaling:Describe*
+                  - autoscaling:List*
+                  - autoscaling:Get*
+                  - cloudwatch:Describe*
+                  - cloudwatch:List*
+                  - cloudwatch:Get*
+                  - config:Describe*
+                  - config:List*
+                  - config:Get*
+                  - securityhub:Describe*
+                  - securityhub:List*
+                  - securityhub:Get*
+                  - guardduty:Describe*
+                  - guardduty:List*
+                  - guardduty:Get*
+                  - acm:Describe*
+                  - acm:List*
+                  - acm:Get*
+                  - backup:Describe*
+                  - backup:List*
+                  - backup:Get*
+                  - budgets:Describe*
+                  - budgets:List*
+                  - budgets:Get*
+                  - health:Describe*
+                  - health:List*
+                  - health:Get*
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - cloudtrail:LookupEvents
+                  - cloudtrail:DescribeTrails
+                  - cloudtrail:GetTrailStatus
+                  - iam:GetAccountSummary
+                  - iam:ListUsers
+                  - iam:ListAccessKeys
+                  - iam:GetAccessKeyLastUsed
+                  - iam:ListMFADevices
+                  - iam:GetCredentialReport
+                  - iam:GenerateCredentialReport
+                  - iam:ListAttachedUserPolicies
+                  - iam:ListRoles
+                  - iam:SimulatePrincipalPolicy
+                  - s3:ListAllMyBuckets
+                  - s3:GetBucketPolicyStatus
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetAccountPublicAccessBlock
+                  - s3:GetBucketLocation
+                  - s3:GetBucketTagging
+                  - ce:GetCostAndUsage
+                  - ce:GetAnomalies
+                  - sagemaker:List*
+                  - sagemaker:Describe*
+                  - kms:ListKeys
+                  - kms:DescribeKey
+                  - sts:GetCallerIdentity
+                Resource: "*"
+              - Sid: ReadOptInLogEvents
+                Effect: Allow
+                Action:
+                  - logs:FilterLogEvents
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/opsagent:logs: allow
+              - Sid: ReadOwnRolePolicy
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/OpsAgentReadRole-*"
+        - PolicyName: OpsAgentDenyDataPlane
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DenyDataPlane
+                Effect: Deny
+                Action:
+                  - ssm:GetParameter*
+                  - secretsmanager:GetSecretValue
+                  - kms:Decrypt
+                  - sqs:ReceiveMessage
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:BatchGetItem
+                  - lambda:GetFunction
+                  - ec2:GetPasswordData
+                  - ec2:GetConsoleOutput
+                  - ec2:GetConsoleScreenshot
+                  - rds:DownloadDBLogFilePortion
+                  # Reads that return user data, container environment or hyperparameters.
+                  - ec2:GetLaunchTemplateData
+                  - ec2:DescribeLaunchTemplateVersions
+                  - ec2:DescribeInstanceAttribute
+                  - autoscaling:DescribeLaunchConfigurations
+                  - lambda:GetLayerVersion
+                  - lambda:GetLayerVersionByArn
+                  - ecs:DescribeTasks
+                  - sagemaker:DescribeModel
+                  - sagemaker:DescribeEndpointConfig
+                  - sagemaker:DescribeTrainingJob
+                  - sagemaker:DescribeProcessingJob
+                  - sagemaker:DescribeTransformJob
+                Resource: "*"
+              # Explicit Deny beats Allow, so the Terraform state prefix is carved out of the deny when set.
+              - !If
+                - HasTerraformState
+                - Sid: DenyObjectReads
+                  Effect: Deny
+                  Action:
+                    - s3:GetObject*
+                  NotResource: !Sub "arn:${AWS::Partition}:s3:::${TerraformStateBucket}/${TerraformStatePrefix}*"
+                - Sid: DenyObjectReads
+                  Effect: Deny
+                  Action:
+                    - s3:GetObject*
+                  Resource: "*"
+              - Sid: DenyUntaggedLogEvents
+                Effect: Deny
+                Action:
+                  - logs:GetLogEvents
+                Resource: "*"
+                Condition:
+                  StringNotEquals:
+                    aws:ResourceTag/opsagent:logs: allow
+        - !If
+          - HasTerraformState
+          - PolicyName: OpsAgentTerraformState
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Sid: ReadTerraformState
+                  Effect: Allow
+                  Action:
+                    - s3:GetObject
+                  Resource: !Sub "arn:${AWS::Partition}:s3:::${TerraformStateBucket}/${TerraformStatePrefix}*"
+          - !Ref AWS::NoValue
+
+Outputs:
+  RoleArn:
+    Value: !GetAtt OpsAgentReadRole.Arn
+  TemplateVersion:
+    Value: !Ref TemplateVersion

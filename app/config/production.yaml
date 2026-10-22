@@ -6,9 +6,10 @@
 # is what you want — a production app that silently falls back to a development
 # secret or a localhost database is worse than one that refuses to boot.
 #
-# The variables this file requires:
-#   DATABASE_URL, JWT_SECRET, HOST, and the MAILER_* / REDIS_URL set below,
-#   depending on which features you generated.
+# Required (no default, boot fails if unset; same list as docs/tech-spec/deployment.md and
+# deploy/README.md): DATABASE_URL, REDIS_URL, APP_BASE_URL, WEB_BASE_URL, SESSION_SECRET,
+# OPSAGENT_KEK, OPSAGENT_CONNECTORS, OPSAGENT_AWS_OUTBOUND_ROLE_ARN, OPSAGENT_TEMPLATE_BASE_URL.
+# RESEND_API_KEY is checked at api boot by the mailer (unless a loopback MAILER_SMTP_URL is set).
 
 # Application logging configuration
 logger:
@@ -36,9 +37,13 @@ server:
   binding: <%= get_env(name="BINDING", default="0.0.0.0") %>
   # The UI hostname or IP address that mailers will point to.
   # Required: links in outgoing mail have to name the real host.
-  host: <%= get_env(name="HOST") %>
+  host: <%= get_env(name="HOST", default="http://localhost") %>
   # Out of the box middleware configuration. to disable middleware you can changed the `enable` field to `false` of comment the middleware block
   middlewares:
+    # Client IP for the magic-link rate limit: the rightmost X-Forwarded-For entry, which the
+    # single trusted proxy in front of the app (Railway's edge) sets.
+    remote_ip:
+      enable: true
 
 # Worker Configuration
 workers:
@@ -58,24 +63,6 @@ queue:
   # Dangerously flush all data in Redis on startup. dangerous operation, make sure that you using this flag only on dev environments or test mode
   dangerously_flush: false
   
-
-# Mailer Configuration.
-mailer:
-  # SMTP mailer configuration.
-  smtp:
-    # Enable/Disable smtp mailer.
-    enable: true
-    # SMTP server host. e.x localhost, smtp.gmail.com
-    host: <%= get_env(name="MAILER_HOST") %>
-    # SMTP server port
-    port: <%= get_env(name="MAILER_PORT", default="587") %>
-    # Use secure connection (SSL/TLS).
-    secure: true
-    auth:
-      user: <%= get_env(name="MAILER_USER") %>
-      password: <%= get_env(name="MAILER_PASSWORD") %>
-    # Override the SMTP hello name (default is the machine's hostname)
-    # hello_name:
 
 # Initializers Configuration
 # initializers:
@@ -101,12 +88,35 @@ database:
   # development default of 1 serializes every request behind one connection.
   max_connections: <%= get_env(name="DB_MAX_CONNECTIONS", default="10") %>
   # Run migration up when application loaded.
-  # Convenient for single-instance deploys. Turn it off if you run more than
-  # one instance or migrate as a separate release step, so instances do not
-  # race to migrate the same database.
-  auto_migrate: <%= get_env(name="DB_AUTO_MIGRATE", default="true") %>
+  # Off: migrations run once as Railway's pre-deploy step on `api`. SeaORM takes no lock,
+  # so concurrent migrators would race.
+  auto_migrate: <%= get_env(name="DB_AUTO_MIGRATE", default="false") %>
   # Truncate database when application loaded. This is a dangerous operation, make sure that you using this flag only on dev environments or test mode
   dangerously_truncate: false
   # Recreating schema when application loaded.  This is a dangerous operation, make sure that you using this flag only on dev environments or test mode
   dangerously_recreate: false
 
+
+# Auth, sessions and mail links (read by src/settings.rs).
+settings:
+  web_base_url: "<%= get_env(name="WEB_BASE_URL") %>"
+  api_base_url: "<%= get_env(name="APP_BASE_URL") %>"
+  session_secret: "<%= get_env(name="SESSION_SECRET") %>"
+  cookie_secure: <%= get_env(name="COOKIE_SECURE", default="true") %>
+  cookie_domain: "<%= get_env(name="COOKIE_DOMAIN", default="opsagent.dev") %>"
+  github_client_id: "<%= get_env(name="GITHUB_CLIENT_ID", default="") %>"
+  github_client_secret: "<%= get_env(name="GITHUB_CLIENT_SECRET", default="") %>"
+  # Boot guard only: these are read from the environment at use, but must exist at boot in
+  # every mode (api, worker, scheduler). Unknown keys are ignored by Settings.
+  required_env:
+    - "<%= get_env(name="OPSAGENT_KEK") %>"
+    - "<%= get_env(name="OPSAGENT_CONNECTORS") %>"
+    - "<%= get_env(name="OPSAGENT_AWS_OUTBOUND_ROLE_ARN") %>"
+    - "<%= get_env(name="OPSAGENT_TEMPLATE_BASE_URL") %>"
+
+# Scheduler (`cargo loco scheduler`, exactly one instance): tick every minute.
+scheduler:
+  jobs:
+    tick:
+      run: "scheduler:tick"
+      schedule: "0 * * * * *"

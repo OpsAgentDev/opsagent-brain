@@ -1,0 +1,42 @@
+[package]
+name = "opsagent-connectors"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Domain crate: keep framework-free (see scripts/check-crate-isolation.sh).
+[dependencies]
+opsagent-core = { path = "../core" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+thiserror = "1"
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+aws-config = { version = "1.13.0", features = ["behavior-version-latest"] }
+aws-sdk-sts = { version = "1.121.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-iam = { version = "1.130.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-ec2 = { version = "1.270.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1.154.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-rds = { version = "1.156.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-elasticloadbalancingv2 = { version = "1.131.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-cloudtrail = { version = "1.127.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-guardduty = { version = "1.151.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-costexplorer = { version = "1.135.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+urlencoding = "2"
+serde_norway = "0.9"
+
+[dev-dependencies]
+aws-sdk-costexplorer = { version = "1.135.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
+aws-sdk-ec2 = { version = "1.270.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
+aws-sdk-iam = { version = "1.130.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
+aws-sdk-sts = { version = "1.121.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
+aws-smithy-http-client = { version = "1.5.1", features = ["test-util"] }
+aws-smithy-mocks = "0.3.0"
+aws-smithy-types = "1.9.0"
+http = "1"
+sha2 = "0.10"
+
+[lints]
+workspace = true

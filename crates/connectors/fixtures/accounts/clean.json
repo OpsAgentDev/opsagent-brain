@@ -1,0 +1,275 @@
+{
+  "account": "clean",
+  "resources": [
+    {
+      "provider": "fake",
+      "account": "clean",
+      "region": "local",
+      "kind": "compute",
+      "identity": "i-ok",
+      "name": "i-ok",
+      "tags": {},
+      "attributes": {
+        "service": "ec2",
+        "state": "running",
+        "instance_type": "m5.large",
+        "accelerated": false,
+        "cpu_avg_7d": 45.0,
+        "monthly_cost_usd": 60.0
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "clean",
+      "region": "local",
+      "kind": "storage",
+      "identity": "vol-ok",
+      "name": "vol-ok",
+      "tags": {},
+      "attributes": {
+        "service": "ebs",
+        "attached": true,
+        "size_gb": 100,
+        "monthly_cost_usd": 10.0
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "clean",
+      "region": "local",
+      "kind": "identity",
+      "identity": "user-ok",
+      "name": "user-ok",
+      "tags": {},
+      "attributes": {
+        "service": "iam",
+        "key_age_days": 30,
+        "key_last_used_days": 1,
+        "mfa": true,
+        "console": true,
+        "admin": false
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "clean",
+      "region": "local",
+      "kind": "storage",
+      "identity": "bucket-ok",
+      "name": "bucket-ok",
+      "tags": {},
+      "attributes": {
+        "service": "s3",
+        "block_public_access": true,
+        "public_policy_prefix": null
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "clean",
+      "region": "local",
+      "kind": "network",
+      "identity": "sg-ok",
+      "name": "sg-ok",
+      "tags": {},
+      "attributes": {
+        "service": "sg",
+        "open_world_ports": [],
+        "attached_to": "lb"
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "clean",
+      "region": "local",
+      "kind": "log",
+      "identity": "cloudtrail-main",
+      "name": "cloudtrail-main",
+      "tags": {},
+      "attributes": {
+        "service": "cloudtrail",
+        "logging": true
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "clean",
+      "region": "local",
+      "kind": "log",
+      "identity": "guardduty",
+      "name": "guardduty",
+      "tags": {},
+      "attributes": {
+        "service": "guardduty",
+        "enabled": true
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    }
+  ],
+  "cost_daily": [
+    {
+      "date": "2026-09-01",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-02",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-03",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-04",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-05",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-06",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-07",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-08",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-09",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-10",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-11",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-12",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-13",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-14",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-15",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-16",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-17",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-18",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-19",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-20",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-21",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-22",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-23",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-24",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-25",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-26",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-27",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-28",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-29",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-30",
+      "service": "ec2",
+      "amount_usd": 50.0
+    }
+  ],
+  "metrics": {},
+  "verify": {
+    "assume_with_ok": true,
+    "assume_without_denied": true,
+    "account_matches": true,
+    "extra_grants": [],
+    "missing_grants": []
+  }
+}
