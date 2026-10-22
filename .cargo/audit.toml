@@ -1,0 +1,6 @@
+[advisories]
+ignore = [
+  # unsafe-libyaml unmaintained: still pulled by loco-rs 1.2.0 (serde_yaml_ng, and
+  # loco-gen -> rrgen -> serde_yaml). Not ours; drop when loco moves off it.
+  "RUSTSEC-2024-0449",
+]

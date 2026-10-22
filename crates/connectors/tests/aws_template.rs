@@ -39,10 +39,10 @@ fn embedded_template_is_the_file() {
 
 #[test]
 fn trust_requires_external_id_and_allows_tag_session() {
-    let y: serde_yaml::Value = serde_yaml::from_str(&raw()).unwrap();
+    let y: serde_norway::Value = serde_norway::from_str(&raw()).unwrap();
     assert_eq!(
         y["Resources"]["OpsAgentReadRole"]["Properties"]["MaxSessionDuration"],
-        serde_yaml::Value::from(3600)
+        serde_norway::Value::from(3600)
     );
     let t = render_template_v1(&params(None)).unwrap().trust;
     assert_eq!(
@@ -135,7 +135,7 @@ fn with_terraform_params_prefix_is_carved_out_and_allowed() {
 
 #[test]
 fn terraform_parameters_are_constrained() {
-    let y: serde_yaml::Value = serde_yaml::from_str(&raw()).unwrap();
+    let y: serde_norway::Value = serde_norway::from_str(&raw()).unwrap();
     let p = &y["Parameters"];
     assert_eq!(
         p["TerraformStateBucket"]["AllowedPattern"].as_str(),
@@ -149,7 +149,7 @@ fn terraform_parameters_are_constrained() {
 
 #[test]
 fn outputs_and_iam_scope() {
-    let y: serde_yaml::Value = serde_yaml::from_str(&raw()).unwrap();
+    let y: serde_norway::Value = serde_norway::from_str(&raw()).unwrap();
     assert!(y["Outputs"]["RoleArn"].is_mapping());
     assert!(y["Outputs"]["TemplateVersion"].is_mapping());
     let s = stmts(&render_template_v1(&params(None)).unwrap().policies);

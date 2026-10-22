@@ -5,7 +5,7 @@
 
 use crate::{ConnectorError, Result};
 use serde_json::Value;
-use serde_yaml::Value as Yaml;
+use serde_norway::Value as Yaml;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const TEMPLATE_V1_YAML: &str =
@@ -137,7 +137,7 @@ fn resolve(v: &Yaml, p: &TemplateParams) -> Result<Option<Value>> {
 
 pub fn render_template_v1(p: &TemplateParams) -> Result<RenderedRole> {
     p.validate()?;
-    let y: Yaml = serde_yaml::from_str(TEMPLATE_V1_YAML).map_err(|e| tpl_err(e.to_string()))?;
+    let y: Yaml = serde_norway::from_str(TEMPLATE_V1_YAML).map_err(|e| tpl_err(e.to_string()))?;
     let props = &y["Resources"]["OpsAgentReadRole"]["Properties"];
     let trust = resolve(&props["AssumeRolePolicyDocument"], p)?
         .ok_or_else(|| tpl_err("template has no trust policy".into()))?;
