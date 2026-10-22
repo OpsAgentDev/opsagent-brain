@@ -52,14 +52,10 @@ async fn noisy_exact_set() {
     let (r, c) = load("noisy").await;
     let got = set(&run(&Certificates, &r, &c));
     let mut want = vec![
-        t("cert-expiring", "expires_7d", Critical),
-        t("cert-renewal-failed", "renewal_failed", High),
-        t("cert-unattached", "unattached", Info),
-        t(
-            "endpoint:api.noisy.example:443",
-            "endpoint_mismatch",
-            Medium,
-        ),
+        t("cert-expiring", "certificate", Critical),
+        t("cert-renewal-failed", "certificate", High),
+        t("cert-unattached", "certificate", Info),
+        t("endpoint:api.noisy.example:443", "certificate", Medium),
     ];
     want.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
     assert_eq!(got, want);
@@ -74,13 +70,13 @@ async fn clean_is_empty() {
 #[test]
 fn expires_30d_high() {
     let d = run_noon(&[cert("c", "2026-10-20T00:00:00Z", "SUCCESS", &["lb"], true)]);
-    assert_eq!(set(&d), vec![t("c", "expires_30d", High)]);
+    assert_eq!(set(&d), vec![t("c", "certificate", High)]);
 }
 
 #[test]
 fn renewal_failed_with_5_days_is_critical_and_lists_both() {
     let d = run_noon(&[cert("c", "2026-10-06T12:00:00Z", "FAILED", &["lb"], true)]);
-    assert_eq!(set(&d), vec![t("c", "expires_7d", Critical)]);
+    assert_eq!(set(&d), vec![t("c", "certificate", Critical)]);
     let ex = &d[0].evidence[0].excerpt;
     assert!(ex.contains("FAILED") && ex.contains("days_left=5"), "{ex}");
 }
@@ -88,7 +84,7 @@ fn renewal_failed_with_5_days_is_critical_and_lists_both() {
 #[test]
 fn unattached_and_expiring_reports_expiry() {
     let d = run_noon(&[cert("c", "2026-10-05T00:00:00Z", "SUCCESS", &[], true)]);
-    assert_eq!(set(&d), vec![t("c", "expires_7d", Critical)]);
+    assert_eq!(set(&d), vec![t("c", "certificate", Critical)]);
     assert!(d[0].evidence[0].excerpt.contains("in_use_by=[]"));
 }
 
@@ -104,5 +100,27 @@ fn imported_cert_judged_on_expiry_only() {
             json!({"service":"acm","not_after":"2026-10-05T00:00:00Z","in_use_by":["lb"],"managed":false}),
         ),
     ]);
-    assert_eq!(set(&d), vec![t("soon", "expires_7d", Critical)]);
+    assert_eq!(set(&d), vec![t("soon", "certificate", Critical)]);
+}
+
+#[test]
+fn key_stable_while_severity_rises() {
+    let at = |na| run_noon(&[cert("c", na, "SUCCESS", &["lb"], true)]);
+    let (a, b) = (at("2026-10-26T12:00:00Z"), at("2026-10-06T12:00:00Z"));
+    assert_eq!(a[0].key, b[0].key);
+    assert_eq!((a[0].severity, b[0].severity), (High, Critical));
+}
+
+#[test]
+fn expired_is_critical_with_title() {
+    let d = run_noon(&[cert("c", "2026-09-28T12:00:00Z", "SUCCESS", &["lb"], true)]);
+    assert_eq!(set(&d), vec![t("c", "certificate", Critical)]);
+    assert!(d[0].title.contains("expired 3 days ago"), "{}", d[0].title);
+}
+
+#[test]
+fn renewal_failed_with_20_days_is_high() {
+    let d = run_noon(&[cert("c", "2026-10-21T12:00:00Z", "FAILED", &["lb"], true)]);
+    assert_eq!(set(&d), vec![t("c", "certificate", High)]);
+    assert!(d[0].title.contains("managed renewal failed"));
 }

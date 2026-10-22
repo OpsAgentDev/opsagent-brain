@@ -23,7 +23,7 @@ impl Check for Certificates {
             let a = &r.attributes;
             let id = &r.identity;
             // Candidates in worst-first order; the first is the one finding emitted.
-            let mut hits: Vec<(&str, Severity, String, &str)> = vec![];
+            let mut hits: Vec<(Severity, String, &str)> = vec![];
             let mut facts: Vec<String> = vec![];
 
             if a["presented_serial"].is_string() && a["presented_serial"] != a["expected_serial"] {
@@ -35,10 +35,11 @@ impl Check for Certificates {
             }
             let mismatch = !facts.is_empty();
 
-            let days = a["not_after"]
+            let left = a["not_after"]
                 .as_str()
                 .and_then(|s| s.parse::<DateTime<Utc>>().ok())
-                .map(|t| (t - ctx.now).num_days());
+                .map(|t| t - ctx.now);
+            let days = left.map(|l| l.num_days());
             if let Some(d) = days {
                 facts.push(format!("days_left={d}"));
             }
@@ -54,23 +55,24 @@ impl Check for Certificates {
 
             if let Some(d) = days.filter(|d| *d < 7) {
                 hits.push((
-                    "expires_7d",
                     Severity::Critical,
-                    format!("Certificate {id} expires in {d} days"),
+                    if left.is_some_and(|l| l.num_seconds() < 0) {
+                        format!("Certificate {id} expired {} days ago", -d)
+                    } else {
+                        format!("Certificate {id} expires in {d} days")
+                    },
                     "Renew or replace the certificate now.",
                 ));
             }
             if failed {
                 hits.push((
-                    "renewal_failed",
                     Severity::High,
-                    format!("Certificate {id} failed to renew"),
+                    format!("Certificate {id}: managed renewal failed"),
                     "Fix the validation that blocks renewal (DNS record or email approval).",
                 ));
             }
             if let Some(d) = days.filter(|d| *d < 30) {
                 hits.push((
-                    "expires_30d",
                     Severity::High,
                     format!("Certificate {id} expires in {d} days"),
                     "Plan the renewal, or confirm automatic renewal will run.",
@@ -78,28 +80,27 @@ impl Check for Certificates {
             }
             if mismatch {
                 hits.push((
-                    "endpoint_mismatch",
                     Severity::Medium,
-                    format!("Endpoint {id} presents a different certificate than expected"),
+                    format!("Endpoint {id}: presented certificate does not match"),
                     "Attach the expected certificate to the endpoint.",
                 ));
             }
             if unattached {
                 hits.push((
-                    "unattached",
                     Severity::Info,
                     format!("Certificate {id} is not attached to anything"),
                     "Delete it if it is no longer needed.",
                 ));
             }
 
-            if let Some((variant, sev, title, step)) = hits.into_iter().next() {
+            // One stable variant per certificate so the key never changes as days pass.
+            if let Some((sev, title, step)) = hits.into_iter().next() {
                 let s = format!("{title}.");
                 out.push(draft(
                     ctx,
                     "05",
                     r,
-                    variant,
+                    "certificate",
                     sev,
                     (title, s, step),
                     facts.join(" "),
