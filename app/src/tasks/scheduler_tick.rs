@@ -110,11 +110,13 @@ async fn lock_and_load(
 
 /// Moves `next_due_at` forward; `None` (unparseable cron or zone) disables the schedule.
 async fn advance(txn: &DatabaseTransaction, id: Uuid, next: Option<DateTime<Utc>>) -> Result<()> {
+    // tenancy: the scheduler serves every organisation; the row was locked by id just before.
     let st = match next {
         Some(t) => stmt(
             "UPDATE schedules SET next_due_at = $2, updated_at = now() WHERE id = $1",
             vec![id.into(), t.into()],
         ),
+        // tenancy: as above.
         None => stmt(
             "UPDATE schedules SET enabled = false, updated_at = now() WHERE id = $1",
             vec![id.into()],

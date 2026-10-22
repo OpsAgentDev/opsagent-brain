@@ -165,6 +165,7 @@ pub async fn cas(
 ) -> std::result::Result<bool, DbErr> {
     let r = connections::Entity::update_many()
         .set(a)
+        .filter(connections::Column::OrganisationId.eq(c.organisation_id))
         .filter(connections::Column::Id.eq(c.id))
         .filter(connections::Column::Status.eq(&c.status))
         .exec(db)

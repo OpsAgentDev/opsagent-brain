@@ -17,7 +17,9 @@ use opsagent_ledger::{
     retry::settle,
     run_chunked, ChunkOutcome, LedgerError, RunChunkedOptions, RunRow, Storage,
 };
-use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, TransactionTrait};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter, TransactionTrait,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -230,6 +232,7 @@ async fn audit_start(db: &DatabaseConnection, c: &connections::Model, run_id: Uu
 async fn connection(db: &DatabaseConnection, run: &RunRow) -> LResult<connections::Model> {
     let conn_id = run.key.connection_id.ok_or(LedgerError::NotFound)?;
     connections::Entity::find_by_id(conn_id)
+        .filter(connections::Column::OrganisationId.eq(run.key.organisation_id))
         .one(db)
         .await
         .map_err(lerr)?
@@ -381,16 +384,16 @@ impl Scan<'_> {
             exec(
                 &txn,
                 "UPDATE resources r SET gone_at = $3, updated_at = now() \
-                 WHERE r.connection_id = $1 AND r.gone_at IS NULL AND NOT EXISTS \
+                 WHERE r.organisation_id = $4 AND r.connection_id = $1 AND r.gone_at IS NULL AND NOT EXISTS \
                  (SELECT 1 FROM resource_history h WHERE h.resource_id = r.id AND h.run_id = $2)",
-                vec![c.id.into(), run_id.into(), now.into()],
+                vec![c.id.into(), run_id.into(), now.into(), c.organisation_id.into()],
             )
             .await?;
         }
         let resources = seen(&txn, c, k, run_id).await?;
         let (drafts, check_errors) = run_checks(self.checks, k, c, &resources, &cost, now, run_id);
-        finding_lifecycle::apply(&txn, c.id, run_id, &drafts, now, partial).await?;
-        let mut stats = finding_lifecycle::posture(&txn, c.id).await?;
+        finding_lifecycle::apply(&txn, c, run_id, &drafts, now, partial).await?;
+        let mut stats = finding_lifecycle::posture(&txn, c).await?;
         stats["partial"] = json!(partial);
         stats["check_errors"] = json!(check_errors);
         if so_far["revoked"] == json!(true) {
@@ -449,8 +452,8 @@ async fn seen(
         .query_all_raw(stmt(
             "SELECT r.kind, r.identity, r.name, r.region, r.tags, h.attributes, h.observed_at \
              FROM resources r JOIN resource_history h ON h.resource_id = r.id AND h.run_id = $2 \
-             WHERE r.connection_id = $1 ORDER BY r.identity",
-            vec![c.id.into(), run_id.into()],
+             WHERE r.organisation_id = $3 AND r.connection_id = $1 ORDER BY r.identity",
+            vec![c.id.into(), run_id.into(), c.organisation_id.into()],
         ))
         .await
         .map_err(db_err)?;

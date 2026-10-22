@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use super::{inventory_upsert::exec, redact::redact};
 use crate::models::{
-    _entities::findings,
+    _entities::{connections, findings},
     ledger_storage::{db_err, stmt},
 };
 
@@ -47,14 +47,15 @@ fn key_of(f: &findings::Model) -> Key {
 /// Applies one run's drafts. `partial`: the inventory was incomplete, so nothing is resolved.
 pub async fn apply(
     db: &impl ConnectionTrait,
-    connection_id: Uuid,
+    c: &connections::Model,
     run_id: Uuid,
     drafts: &[FindingDraft],
     now: DateTime<Utc>,
     partial: bool,
 ) -> Result<()> {
     let existing: HashMap<Key, findings::Model> = findings::Entity::find()
-        .filter(findings::Column::ConnectionId.eq(connection_id))
+        .filter(findings::Column::OrganisationId.eq(c.organisation_id))
+        .filter(findings::Column::ConnectionId.eq(c.id))
         .all(db)
         .await
         .map_err(db_err)?
@@ -71,7 +72,7 @@ pub async fn apply(
         seen.insert(k.clone());
         let id = match existing.get(&k) {
             None => {
-                let id = insert(db, connection_id, run_id, d).await?;
+                let id = insert(db, c, run_id, d).await?;
                 event(db, id, run_id, "opened", None, Some(d.severity), now).await?;
                 id
             }
@@ -116,7 +117,7 @@ fn dedupe(drafts: &[FindingDraft]) -> Vec<FindingDraft> {
 
 async fn insert(
     db: &impl ConnectionTrait,
-    connection_id: Uuid,
+    c: &connections::Model,
     run_id: Uuid,
     d: &FindingDraft,
 ) -> Result<Uuid> {
@@ -125,11 +126,10 @@ async fn insert(
         db,
         "INSERT INTO findings (id, organisation_id, connection_id, check_id, resource_identity, variant, \
          severity, status, title, summary, next_step, cost_monthly_usd, first_seen_run_id, last_seen_run_id) \
-         SELECT $1, organisation_id, id, $3, $4, $5, $6, 'open', $7, $8, $9, $10, $11, $11 \
-         FROM connections WHERE id = $2",
+         VALUES ($1, $12, $2, $3, $4, $5, $6, 'open', $7, $8, $9, $10, $11, $11)",
         vec![
             id.into(),
-            connection_id.into(),
+            c.id.into(),
             d.key.check_id.clone().into(),
             d.key.resource_identity.clone().into(),
             d.key.variant.clone().into(),
@@ -139,6 +139,7 @@ async fn insert(
             d.next_step.clone().into(),
             d.cost_monthly_usd.into(),
             run_id.into(),
+            c.organisation_id.into(),
         ],
     )
     .await?;
@@ -203,7 +204,7 @@ async fn seen_again(
         db,
         "UPDATE findings SET status = $2, severity = $3, title = $4, summary = $5, next_step = $6, \
          cost_monthly_usd = $7, last_seen_run_id = $8, flap_count = $9, stable_runs = $10, resolved_at = NULL, \
-         resolved_reason = NULL, updated_at = now() WHERE id = $1",
+         resolved_reason = NULL, updated_at = now() WHERE id = $1 AND organisation_id = $11",
         vec![
             f.id.into(),
             status.into(),
@@ -215,6 +216,7 @@ async fn seen_again(
             run_id.into(),
             flap_count.into(),
             stable.into(),
+            f.organisation_id.into(),
         ],
     )
     .await?;
@@ -243,8 +245,13 @@ async fn resolve(
 ) -> Result<()> {
     let gone = db
         .query_one_raw(stmt(
-            "SELECT 1 FROM resources WHERE connection_id = $1 AND identity = $2 AND gone_at IS NOT NULL",
-            vec![f.connection_id.into(), f.resource_identity.clone().into()],
+            "SELECT 1 FROM resources WHERE organisation_id = $3 AND connection_id = $1 AND identity = $2 \
+             AND gone_at IS NOT NULL",
+            vec![
+                f.connection_id.into(),
+                f.resource_identity.clone().into(),
+                f.organisation_id.into(),
+            ],
         ))
         .await
         .map_err(db_err)?
@@ -257,8 +264,8 @@ async fn resolve(
     exec(
         db,
         "UPDATE findings SET status = 'resolved', resolved_at = $2, resolved_reason = $3, stable_runs = 0, \
-         updated_at = now() WHERE id = $1",
-        vec![f.id.into(), now.into(), reason.into()],
+         updated_at = now() WHERE id = $1 AND organisation_id = $4",
+        vec![f.id.into(), now.into(), reason.into(), f.organisation_id.into()],
     )
     .await?;
     if f.status != "flapping" {
@@ -350,11 +357,12 @@ async fn evidence(
 
 /// Posture score per checks.md: `max(0, 100 − Σ weight(open))`; accepted, snoozed and flapping
 /// are excluded by counting `open` only.
-pub async fn posture(db: &impl ConnectionTrait, connection_id: Uuid) -> Result<Json> {
+pub async fn posture(db: &impl ConnectionTrait, c: &connections::Model) -> Result<Json> {
     let rows = db
         .query_all_raw(stmt(
-            "SELECT severity, count(*) AS n FROM findings WHERE connection_id = $1 AND status = 'open' GROUP BY severity",
-            vec![Value::from(connection_id)],
+            "SELECT severity, count(*) AS n FROM findings WHERE organisation_id = $2 AND connection_id = $1 \
+             AND status = 'open' GROUP BY severity",
+            vec![Value::from(c.id), Value::from(c.organisation_id)],
         ))
         .await
         .map_err(db_err)?;

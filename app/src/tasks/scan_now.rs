@@ -31,6 +31,7 @@ impl Task for ScanNow {
 
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let id: Uuid = vars.cli_arg("connection")?.parse().map_err(err)?;
+        // tenancy: operator task; the connection id names its organisation.
         let c = connections::Entity::find_by_id(id)
             .one(&ctx.db)
             .await?

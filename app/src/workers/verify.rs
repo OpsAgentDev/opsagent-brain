@@ -16,7 +16,10 @@ use opsagent_ledger::{
     retry::{retry_or_fail, settle},
     LedgerError, RunRow, Storage,
 };
-use sea_orm::{ActiveModelTrait, ConnectionTrait, EntityTrait, Set, SqlErr, TransactionTrait};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, Set, SqlErr,
+    TransactionTrait,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -153,6 +156,7 @@ impl VerifyWorker {
             .await?;
         let conn_id = run.key.connection_id.ok_or(LedgerError::NotFound)?;
         let c = connections::Entity::find_by_id(conn_id)
+            .filter(connections::Column::OrganisationId.eq(run.key.organisation_id))
             .one(&self.ctx.db)
             .await
             .map_err(lerr)?

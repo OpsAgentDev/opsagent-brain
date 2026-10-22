@@ -111,6 +111,7 @@ mod tests {
 
     #[test]
     fn q_wildcards_are_escaped() {
+        // tenancy: SQL rendering only, never executed.
         let sql = resources::Entity::find()
             .select_only()
             .filter(Expr::col(resources::Column::Name).ilike(contains("a%_\\'")))

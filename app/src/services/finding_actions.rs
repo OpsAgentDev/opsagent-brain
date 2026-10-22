@@ -124,6 +124,7 @@ pub async fn apply(
         )
         .col_expr(findings::Column::SnoozedUntil, Expr::value(c.snoozed_until))
         .col_expr(findings::Column::UpdatedAt, Expr::value(now))
+        .filter(findings::Column::OrganisationId.eq(f.organisation_id))
         .filter(findings::Column::Id.eq(f.id))
         .filter(findings::Column::Status.eq(f.status.as_str()))
         .exec_with_returning(&txn)

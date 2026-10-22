@@ -76,6 +76,7 @@ pub async fn accept(
     token: &str,
 ) -> Result<(organisations::Model, String), ApiError> {
     let gone = || ApiError::gone("invite_invalid");
+    // tenancy: the token is the lookup key; the invite names its organisation.
     let inv = invites::Entity::find()
         .filter(invites::Column::TokenHash.eq(magic_links::hash_token(token)))
         .filter(invites::Column::Status.eq("pending"))
@@ -104,6 +105,7 @@ pub async fn accept(
     let claimed = invites::Entity::update_many()
         .col_expr(invites::Column::Status, "accepted".into())
         .col_expr(invites::Column::UpdatedAt, now().into())
+        .filter(invites::Column::OrganisationId.eq(inv.organisation_id))
         .filter(invites::Column::Id.eq(inv.id))
         .filter(invites::Column::Status.eq("pending"))
         .exec(&txn)
@@ -161,7 +163,11 @@ pub async fn remove(
             "An organisation must keep at least one owner.",
         ));
     }
-    members::Entity::delete_by_id(member_id).exec(&txn).await?;
+    members::Entity::delete_many()
+        .filter(members::Column::OrganisationId.eq(organisation_id))
+        .filter(members::Column::Id.eq(member_id))
+        .exec(&txn)
+        .await?;
     // A removed user must not be able to rejoin through a still-pending invite.
     if let Some(u) = users::Entity::find_by_id(target.user_id).one(&txn).await? {
         invites::Entity::update_many()

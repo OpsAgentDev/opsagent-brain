@@ -68,6 +68,7 @@ async fn list(
     State(ctx): State<AppContext>,
     AuthUser(user_id): AuthUser,
 ) -> Result<Json<Vec<Org>>, ApiError> {
+    // tenancy: the caller's own memberships, across organisations.
     let rows = members::Entity::find()
         .filter(members::Column::UserId.eq(user_id))
         .find_also_related(organisations::Entity)

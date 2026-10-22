@@ -51,6 +51,7 @@ pub fn db_err(e: impl std::fmt::Display) -> LedgerError {
 /// transaction cannot commit domain writes. `Err(StaleFence)` otherwise.
 pub async fn hold_fence(txn: &impl ConnectionTrait, run_id: Uuid, fence: u64) -> Result<()> {
     txn.query_one_raw(stmt(
+        // tenancy: the ledger addresses runs by id (from the queue); the row names its organisation.
         "SELECT 1 FROM runs WHERE id = $1 AND fence = $2 FOR UPDATE",
         vec![run_id.into(), (fence as i64).into()],
     ))
@@ -127,6 +128,7 @@ impl<C: ConnectionTrait + Send + Sync> Storage for PgStorage<C> {
     }
 
     async fn load_run(&self, id: Uuid) -> Result<RunRow> {
+        // tenancy: the ledger addresses runs by id (from the queue); the row names its organisation.
         let sql = format!("SELECT {COLS} FROM runs WHERE id = $1");
         row(&self
             .one(&sql, vec![id.into()])
@@ -137,6 +139,7 @@ impl<C: ConnectionTrait + Send + Sync> Storage for PgStorage<C> {
     async fn bump_fence(&self, id: Uuid) -> Result<u64> {
         let r = self
             .one(
+                // tenancy: the ledger addresses runs by id (from the queue); the row names its organisation.
                 "UPDATE runs SET fence = fence + 1, updated_at = now() WHERE id = $1 RETURNING fence",
                 vec![id.into()],
             )
@@ -149,6 +152,7 @@ impl<C: ConnectionTrait + Send + Sync> Storage for PgStorage<C> {
     async fn write_checkpoint(&self, id: Uuid, fence: u64, cp: &Checkpoint) -> Result<()> {
         let n = self
             .exec(
+                // tenancy: the ledger addresses runs by id (from the queue); the row names its organisation.
                 "UPDATE runs SET checkpoint = $3, updated_at = now() WHERE id = $1 AND fence = $2",
                 vec![id.into(), (fence as i64).into(), cp_json(cp)?.into()],
             )
@@ -168,6 +172,7 @@ impl<C: ConnectionTrait + Send + Sync> Storage for PgStorage<C> {
     ) -> Result<()> {
         let n = self
             .exec(
+                // tenancy: the ledger addresses runs by id (from the queue); the row names its organisation.
                 "UPDATE runs SET status = $3, partial_reason = $4, updated_at = now(), \
                  started_at = CASE WHEN $3 = 'running' THEN coalesce(started_at, now()) ELSE started_at END, \
                  finished_at = CASE WHEN $3 IN ('done','failed','partial','skipped') THEN now() ELSE NULL END \
@@ -232,6 +237,7 @@ impl<C: ConnectionTrait + Send + Sync> Storage for PgStorage<C> {
     async fn mark_enqueue_pending(&self, id: Uuid, at: DateTime<Utc>) -> Result<()> {
         let n = self
             .exec(
+                // tenancy: the ledger addresses runs by id (from the queue); the row names its organisation.
                 "UPDATE runs SET next_attempt_at = $2, updated_at = now() WHERE id = $1",
                 vec![id.into(), at.into()],
             )
@@ -245,6 +251,7 @@ impl<C: ConnectionTrait + Send + Sync> Storage for PgStorage<C> {
     async fn clear_enqueue_marker(&self, id: Uuid, marker_at: DateTime<Utc>) -> Result<bool> {
         let n = self
             .exec(
+                // tenancy: the ledger addresses runs by id (from the queue); the row names its organisation.
                 "UPDATE runs SET next_attempt_at = NULL, updated_at = now() WHERE id = $1 AND next_attempt_at = $2",
                 vec![id.into(), marker_at.into()],
             )
@@ -255,6 +262,7 @@ impl<C: ConnectionTrait + Send + Sync> Storage for PgStorage<C> {
     async fn schedule_retry(&self, id: Uuid, attempts: u32, next_at: DateTime<Utc>) -> Result<()> {
         let n = self
             .exec(
+                // tenancy: the ledger addresses runs by id (from the queue); the row names its organisation.
                 "UPDATE runs SET attempts = $2, next_attempt_at = $3, status = 'queued', updated_at = now() WHERE id = $1",
                 vec![id.into(), (attempts as i32).into(), next_at.into()],
             )
