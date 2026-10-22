@@ -13,7 +13,8 @@ async fn noisy_inventory_has_expected_shapes() {
     let inv = c
         .inventory(&creds("noisy"), &Scope::default())
         .await
-        .unwrap();
+        .unwrap()
+        .resources;
     assert!(inv.len() >= 12);
     assert!(inv
         .iter()
@@ -86,6 +87,7 @@ async fn clean_is_flat() {
         .inventory(&creds("clean"), &Scope::default())
         .await
         .unwrap()
+        .resources
         .is_empty());
 }
 

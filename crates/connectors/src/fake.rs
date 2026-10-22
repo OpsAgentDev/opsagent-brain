@@ -1,6 +1,6 @@
 use crate::{
-    Capability, Connector, ConnectorError, CostRow, Credentials, MetricPoint, MetricQuery, Result,
-    Scope, VerifyOutcome,
+    Capability, Connector, ConnectorError, CostRow, Credentials, InventoryResult, MetricPoint,
+    MetricQuery, Result, Scope, VerifyOutcome,
 };
 use async_trait::async_trait;
 use opsagent_core::resource::{Provider, Resource};
@@ -101,7 +101,7 @@ impl Connector for FakeConnector {
         Ok(self.fixture(creds)?.verify.clone())
     }
 
-    async fn inventory(&self, creds: &Credentials, scope: &Scope) -> Result<Vec<Resource>> {
+    async fn inventory(&self, creds: &Credentials, scope: &Scope) -> Result<InventoryResult> {
         let mut out = self.fixture(creds)?.resources.clone();
         out.retain(|r| {
             (scope.regions.is_empty() || scope.regions.contains(&r.region))
@@ -110,7 +110,10 @@ impl Connector for FakeConnector {
                         .as_str()
                         .is_some_and(|s| scope.services.iter().any(|x| x == s)))
         });
-        Ok(out)
+        Ok(InventoryResult {
+            resources: out,
+            partial_errors: vec![],
+        })
     }
 
     async fn cost_daily(&self, creds: &Credentials, days: u32) -> Result<Vec<CostRow>> {

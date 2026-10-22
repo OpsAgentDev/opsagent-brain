@@ -37,3 +37,8 @@ path = "src/bin/main.rs"
 loco-rs = { workspace = true, features = ["testing"] }
 serial_test = "3.1.1"
 axum-test = "17"
+
+# loco_rs::Error is framework-owned; it crosses clippy's size limit once aws-smithy enables
+# serde_json/preserve_order in the unified workspace build.
+[lints.clippy]
+result_large_err = "allow"

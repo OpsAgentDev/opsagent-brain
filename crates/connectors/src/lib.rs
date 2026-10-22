@@ -82,6 +82,20 @@ pub struct Scope {
     pub services: Vec<String>,
 }
 
+/// A service call that failed during inventory; the rest of the inventory still returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceError {
+    pub service: String,
+    pub region: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InventoryResult {
+    pub resources: Vec<Resource>,
+    pub partial_errors: Vec<ServiceError>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetricQuery {
     pub resource_identity: String,
@@ -100,7 +114,7 @@ pub trait Connector: Send + Sync {
     fn provider(&self) -> Provider;
     fn capabilities(&self) -> BTreeSet<Capability>;
     async fn verify(&self, creds: &Credentials) -> Result<VerifyOutcome>;
-    async fn inventory(&self, creds: &Credentials, scope: &Scope) -> Result<Vec<Resource>>;
+    async fn inventory(&self, creds: &Credentials, scope: &Scope) -> Result<InventoryResult>;
     async fn cost_daily(&self, creds: &Credentials, days: u32) -> Result<Vec<CostRow>>;
     async fn metrics(&self, creds: &Credentials, q: MetricQuery) -> Result<Vec<MetricPoint>>;
 }
