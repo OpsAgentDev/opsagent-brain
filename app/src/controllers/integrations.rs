@@ -167,7 +167,7 @@ pub struct Integration {
     pub id: Uuid,
     /// `slack`, `github`, `terraform`, `prometheus` or `k8s`.
     pub kind: String,
-    /// `active`, `revoked` or `failing`.
+    /// `active` or `revoked`.
     pub status: String,
     /// Slack workspace name.
     pub team_name: Option<String>,

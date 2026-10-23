@@ -3059,7 +3059,7 @@
           },
           "status": {
             "type": "string",
-            "description": "`active`, `revoked` or `failing`."
+            "description": "`active` or `revoked`."
           },
           "team_name": {
             "type": [
