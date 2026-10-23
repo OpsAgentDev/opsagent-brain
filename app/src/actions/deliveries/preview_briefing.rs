@@ -66,10 +66,11 @@ mod tests {
 
     use chrono::Utc;
     use opsagent_core::{
+        finding::{Evidence, FindingDraft, FindingKey, Severity},
         repo::{PageRequest, SystemClock},
         run::{RunKey, RunStatus},
     };
-    use opsagent_deliver::repo::DeliveryFilter;
+    use opsagent_deliver::repo::{DeliveryFilter, NewDelivery, BRIEFING, SENT};
     use opsagent_ledger::Storage;
     use uuid::Uuid;
 
@@ -78,6 +79,39 @@ mod tests {
         actions::{runs::test_support::connected, uow::Repos},
         adapters::memory::MemStore,
     };
+
+    const TITLE: &str = "Root account has no MFA";
+
+    fn draft(connection_id: Uuid) -> FindingDraft {
+        FindingDraft {
+            key: FindingKey {
+                connection_id,
+                check_id: "01".into(),
+                resource_identity: "root".into(),
+                variant: String::new(),
+            },
+            severity: Severity::High,
+            title: TITLE.into(),
+            summary: "s".into(),
+            next_step: "n".into(),
+            cost_monthly_usd: None,
+            evidence: vec![Evidence {
+                source: "src".into(),
+                excerpt: "ex".into(),
+            }],
+        }
+    }
+
+    async fn rows(store: &MemStore, org: Uuid) -> usize {
+        let page = PageRequest {
+            after: None,
+            limit: 10,
+        };
+        let got = store
+            .deliveries()
+            .list(org, DeliveryFilter::default(), page);
+        got.await.unwrap().items.len()
+    }
 
     #[tokio::test]
     async fn preview_writes_no_delivery_row() {
@@ -96,23 +130,30 @@ mod tests {
             .set_status(run.id, fence, RunStatus::Done, None)
             .await
             .unwrap();
+        // An earlier briefing, then a new high finding: a daily briefing that names it.
+        let sent = NewDelivery {
+            connection_id: Some(c.id),
+            run_id: Uuid::new_v4(),
+            key: BRIEFING,
+            kind: BRIEFING,
+            channel: "slack",
+            target: "C0",
+            status: SENT,
+            external_ref: None,
+        };
+        store.deliveries().record(org, sent).await.unwrap();
+        let f = store.findings();
+        f.upsert_seen(org, c.id, run.id, &[draft(c.id)], Utc::now())
+            .await
+            .unwrap();
         let p = PreviewBriefing::new(
             Arc::new(store.clone()),
             "https://web.test".into(),
             Arc::new(SystemClock),
         );
         let got = p.run(org, c.id).await.unwrap();
-        assert_eq!(got.kind, "first_scan", "{got:?}");
-        assert!(got.text.contains("https://web.test"), "{}", got.text);
-        let page = PageRequest {
-            after: None,
-            limit: 10,
-        };
-        let rows = store
-            .deliveries()
-            .list(org, DeliveryFilter::default(), page)
-            .await
-            .unwrap();
-        assert!(rows.items.is_empty(), "preview wrote a delivery row");
+        assert_eq!(got.kind, "daily", "{got:?}");
+        assert!(got.text.contains(TITLE), "{}", got.text);
+        assert_eq!(rows(&store, org).await, 1, "preview wrote a delivery row");
     }
 }

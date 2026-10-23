@@ -85,4 +85,16 @@ contract_suite! {
         assert_eq!(got.get("a@example.com"), Some(&a.id));
         assert!(s.recipients().ids_by_email(o, &[]).await.unwrap().is_empty());
     }
+
+    async fn ids_by_email_ignores_case_and_the_oldest_row_wins(s, seed) {
+        let o = org_id(s, "acme").await;
+        let conn = seed.connection(o).await;
+        let first = s.recipients().insert(o, email("A@Example.com", None)).await.unwrap();
+        let mut later = email("a@example.com", None);
+        later.connection_id = Some(conn);
+        let second = s.recipients().insert(o, later).await.unwrap();
+        assert_ne!(first.id, second.id);
+        let got = s.recipients().ids_by_email(o, &["a@example.com".to_owned()]).await.unwrap();
+        assert_eq!(got.get("a@example.com"), Some(&first.id), "{got:?}");
+    }
 }
