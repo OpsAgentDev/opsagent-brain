@@ -1,0 +1,17 @@
+name: Build room
+description: Free root disk and add swap on /mnt so the AWS SDK crates compile on the small private-repo runner.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        df -h / /mnt
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        docker image prune -af >/dev/null
+        # Swap on the runner's temp disk, not root, which the build needs.
+        sudo fallocate -l 8G /mnt/swapfile-ci
+        sudo chmod 600 /mnt/swapfile-ci
+        sudo mkswap /mnt/swapfile-ci >/dev/null
+        sudo swapon /mnt/swapfile-ci
+        df -h / /mnt
+        free -h
