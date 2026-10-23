@@ -152,6 +152,10 @@ impl Tx for Pg<DatabaseTransaction> {
         self.0.commit().await.map_err(db_err)
     }
 
+    fn queue(&self) -> &dyn opsagent_ledger::Queue {
+        self
+    }
+
     async fn savepoint(&self) -> RepoResult<Box<dyn Tx>> {
         Ok(Box::new(Pg(self.0.begin().await.map_err(db_err)?)))
     }

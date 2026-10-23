@@ -126,3 +126,78 @@ async fn migrations_slice_schema_constraints_and_roundtrip() {
     Migrator::down(&db, None).await.unwrap();
     Migrator::up(&db, None).await.unwrap();
 }
+
+#[tokio::test]
+#[serial]
+async fn jobs_table_has_spec_columns_and_both_partial_indexes() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://loco:loco@localhost:5432/opsagent_brain_test".into());
+    let db = migration::sea_orm::Database::connect(&url).await.unwrap();
+    Migrator::fresh(&db).await.unwrap();
+
+    let cols = db
+        .query_all_raw(migration::sea_orm::Statement::from_string(
+            migration::sea_orm::DbBackend::Postgres,
+            "SELECT column_name || ' ' || data_type || ' ' || is_nullable AS c \
+             FROM information_schema.columns WHERE table_name = 'jobs' ORDER BY ordinal_position",
+        ))
+        .await
+        .unwrap();
+    let cols: Vec<String> = cols.iter().map(|r| r.try_get("", "c").unwrap()).collect();
+    assert_eq!(
+        cols,
+        [
+            "id uuid NO",
+            "kind text NO",
+            "args jsonb NO",
+            "run_id uuid YES",
+            "run_at timestamp with time zone NO",
+            "attempts integer NO",
+            "max_attempts integer NO",
+            "locked_at timestamp with time zone YES",
+            "locked_by text YES",
+            "last_error text YES",
+            "created_at timestamp with time zone NO",
+        ]
+    );
+    let idx = db
+        .query_all_raw(migration::sea_orm::Statement::from_string(
+            migration::sea_orm::DbBackend::Postgres,
+            "SELECT indexdef FROM pg_indexes WHERE tablename = 'jobs' \
+             AND indexname IN ('jobs_ready', 'jobs_one_per_run') ORDER BY indexname",
+        ))
+        .await
+        .unwrap();
+    let idx: Vec<String> = idx
+        .iter()
+        .map(|r| r.try_get("", "indexdef").unwrap())
+        .collect();
+    assert_eq!(idx.len(), 2, "{idx:?}");
+    assert!(
+        idx[0].contains("UNIQUE INDEX jobs_one_per_run") && idx[0].contains("(run_id IS NOT NULL)")
+    );
+    assert!(
+        idx[1].contains("INDEX jobs_ready")
+            && idx[1].contains("(run_at)")
+            && idx[1].contains("(locked_at IS NULL)")
+    );
+
+    // Defaults fill id, attempts and created_at; a second job for one run collides.
+    exec(&db, "INSERT INTO runs (id, job_type, scheduled_at) VALUES ('00000000-0000-0000-0000-0000000000b1', 'verify', now())")
+        .await
+        .unwrap();
+    let job = "INSERT INTO jobs (kind, args, run_id, run_at, max_attempts) \
+               VALUES ('verify', '{}', '00000000-0000-0000-0000-0000000000b1', now(), 5)";
+    exec(&db, job).await.unwrap();
+    let err = exec(&db, job).await.unwrap_err();
+    assert!(is_unique_violation(&err), "{err}");
+    // Jobs without a run do not collide.
+    let free =
+        "INSERT INTO jobs (kind, args, run_at, max_attempts) VALUES ('verify', '{}', now(), 5)";
+    exec(&db, free).await.unwrap();
+    exec(&db, free).await.unwrap();
+
+    Migrator::down(&db, Some(1)).await.unwrap();
+    assert!(exec(&db, "SELECT 1 FROM jobs").await.is_err());
+    Migrator::up(&db, None).await.unwrap();
+}

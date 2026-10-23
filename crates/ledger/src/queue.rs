@@ -1,4 +1,6 @@
 //! The job queue port: hands a run to the worker for its kind (app-shell.md, jobs).
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -50,6 +52,43 @@ pub struct NewJob {
 #[async_trait]
 pub trait Queue: Send + Sync {
     async fn enqueue(&self, job: NewJob) -> Result<()>;
+}
+
+/// A dequeued job, locked by the worker that took it. `attempts` counts this one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: Uuid,
+    pub kind: JobKind,
+    pub run_id: Uuid,
+    pub attempts: i32,
+    pub max_attempts: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobFailure {
+    Retrying {
+        at: DateTime<Utc>,
+    },
+    /// Attempts exhausted: the job stays locked with its error and the run is failed.
+    Dead,
+}
+
+/// The worker side of the queue.
+#[async_trait]
+pub trait JobSource: Send + Sync {
+    /// Locks the oldest due job of one of `kinds`; a lock older than `lock_max_age` counts as free.
+    async fn dequeue(
+        &self,
+        worker_id: &str,
+        kinds: &[JobKind],
+        lock_max_age: Duration,
+    ) -> Result<Option<Job>>;
+    /// The job succeeded: deletes it.
+    async fn complete(&self, id: Uuid) -> Result<()>;
+    /// Unlocks for a retry at `now + retry::backoff(retries so far)`, or `Dead`.
+    async fn fail(&self, job: &Job, error: &str, now: DateTime<Utc>) -> Result<JobFailure>;
+    /// Shutdown: unlocks this worker's jobs without counting the interrupted attempt.
+    async fn release_mine(&self, worker_id: &str) -> Result<u64>;
 }
 
 #[cfg(test)]

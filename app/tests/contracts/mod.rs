@@ -146,3 +146,4 @@ macro_rules! contract_suite {
     )*};
 }
 pub(crate) use contract_suite;
+mod queue;
