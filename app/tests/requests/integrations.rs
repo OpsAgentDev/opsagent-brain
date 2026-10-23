@@ -483,7 +483,7 @@ async fn unsubscribe_link_is_stable_and_suppresses_the_address() {
             .await
             .unwrap()
             .unwrap();
-        let secret = Settings::get(&ctx).session_secret;
+        let secret = Settings::get(&ctx).unsubscribe_key().to_owned();
         // Two mails carry the same link, and both work (idempotent).
         let web = "http://localhost:3000";
         let first = recipient_service::unsubscribe_url(web, &secret, row.id);
@@ -975,7 +975,7 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
             .await
             .unwrap()
             .unwrap();
-        let tok = recipient_service::unsubscribe_token(&Settings::get(&ctx).session_secret, r.id);
+        let tok = recipient_service::unsubscribe_token(Settings::get(&ctx).unsubscribe_key(), r.id);
         assert_eq!(
             req.post(&format!("/v1/unsubscribe/{tok}"))
                 .await

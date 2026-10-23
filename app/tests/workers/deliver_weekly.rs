@@ -185,7 +185,7 @@ async fn non_member_mail_has_the_unsubscribe_link_and_members_do_not() {
         let to: Vec<_> = sent.iter().map(|m| m.to.as_str()).collect();
         assert_eq!(to, ["dev@example.com", "client@example.com"]);
         let s = Settings::get(&ctx);
-        let url = unsubscribe_url(&s.web_base_url, &s.session_secret, outside);
+        let url = unsubscribe_url(&s.web_base_url, s.unsubscribe_key(), outside);
         assert!(sent[1].text.contains(&url), "{}", sent[1].text);
         assert!(sent[1].html.as_deref().unwrap().contains(&url));
         assert!(!sent[0].text.contains("nsubscribe"), "{}", sent[0].text);
@@ -227,8 +227,8 @@ async fn member_mail_ignores_an_unsubscribe_from_another_organisation() {
         )
         .await;
         let s = Settings::get(&ctx);
-        let token = unsubscribe_token(&s.session_secret, in_a);
-        unsubscribe(&ctx.db, &s.session_secret, &token)
+        let token = unsubscribe_token(s.unsubscribe_key(), in_a);
+        unsubscribe(&ctx.db, s.unsubscribe_key(), &token)
             .await
             .unwrap();
         let u = user(&ctx, "dev@example.com").await;

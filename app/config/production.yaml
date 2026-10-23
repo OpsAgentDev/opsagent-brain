@@ -102,6 +102,7 @@ settings:
   web_base_url: "<%= get_env(name="WEB_BASE_URL") %>"
   api_base_url: "<%= get_env(name="APP_BASE_URL") %>"
   session_secret: "<%= get_env(name="SESSION_SECRET") %>"
+  unsubscribe_secret: "<%= get_env(name="UNSUBSCRIBE_SECRET", default="") %>"
   cookie_secure: <%= get_env(name="COOKIE_SECURE", default="true") %>
   cookie_domain: "<%= get_env(name="COOKIE_DOMAIN", default="opsagent.dev") %>"
   github_client_id: "<%= get_env(name="GITHUB_CLIENT_ID", default="") %>"

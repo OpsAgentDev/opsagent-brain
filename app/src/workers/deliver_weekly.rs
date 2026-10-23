@@ -164,7 +164,7 @@ async fn weekly(ctx: &AppContext, c: &connections::Model) -> LResult<Weekly> {
 fn weekly_mail(w: &Weekly, to: &Recipient, s: &Settings) -> Mail {
     let (mut text, mut html) = (render_text(w), render_html(w));
     if !to.member {
-        let url = unsubscribe_url(&s.web_base_url, &s.session_secret, to.id);
+        let url = unsubscribe_url(&s.web_base_url, s.unsubscribe_key(), to.id);
         text += &format!("\nUnsubscribe: {url}\n");
         let footer = format!("<p><a href=\"{url}\">Unsubscribe</a></p>\n</body>");
         html = html.replacen("</body>", &footer, 1);

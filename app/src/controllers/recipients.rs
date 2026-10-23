@@ -153,8 +153,8 @@ async fn unsubscribe(
     State(ctx): State<AppContext>,
     Path(token): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let secret = Settings::get(&ctx).session_secret;
-    service::unsubscribe(&ctx.db, &secret, &token).await?;
+    let s = Settings::get(&ctx);
+    service::unsubscribe(&ctx.db, s.unsubscribe_key(), &token).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

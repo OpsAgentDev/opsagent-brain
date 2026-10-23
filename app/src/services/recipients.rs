@@ -35,7 +35,7 @@ use crate::{
 pub const PENDING: &str = "pending";
 pub const ACTIVE: &str = "active";
 const CONFIRM_DAYS: i64 = 7;
-/// The HMAC key for unsubscribe tokens, derived from `SESSION_SECRET`.
+/// The HMAC key for unsubscribe tokens, derived from `Settings::unsubscribe_key`.
 fn unsubscribe_mac(secret: &str, id: Uuid) -> Hmac<Sha256> {
     let mut key = [0u8; 32];
     Hkdf::<Sha256>::new(None, secret.as_bytes())

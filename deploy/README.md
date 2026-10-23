@@ -14,7 +14,7 @@ The scheduler must never overlap itself during a deploy, hence overlap 0 and one
 
 | Kind | Variables |
 |---|---|
-| Sealed | `OPSAGENT_KEK`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `GITHUB_CLIENT_SECRET`, `RESEND_API_KEY`, `SESSION_SECRET`, `JWT_SIGNING_KEY` |
+| Sealed | `OPSAGENT_KEK`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `GITHUB_CLIENT_SECRET`, `RESEND_API_KEY`, `SESSION_SECRET`, `UNSUBSCRIBE_SECRET`, `JWT_SIGNING_KEY` |
 | Plain | `DATABASE_URL`, `REDIS_URL`, `APP_BASE_URL`, `WEB_BASE_URL`, `SLACK_CLIENT_ID`, `MAIL_FROM`, `OPSAGENT_CONNECTORS=aws`, `OPSAGENT_AWS_OUTBOUND_ROLE_ARN`, `OPSAGENT_TEMPLATE_BASE_URL` |
 
 Required today: `DATABASE_URL`, `REDIS_URL`, `APP_BASE_URL`, `WEB_BASE_URL`, `SESSION_SECRET`, `OPSAGENT_KEK`, `OPSAGENT_CONNECTORS`, `OPSAGENT_AWS_OUTBOUND_ROLE_ARN`, `OPSAGENT_TEMPLATE_BASE_URL`, and `RESEND_API_KEY` (a loopback `MAILER_SMTP_URL` replaces it). Plan 2 adds Slack delivery and recipient mail, so `RESEND_API_KEY` is needed at boot by every production process, including one-off CLI commands (`opsagent-brain task ...`, `db migrate`, `scheduler`): without it boot fails with "RESEND_API_KEY is required in production". Set it on all three services and in any shell that runs a task.
@@ -28,7 +28,7 @@ Plan 2 variables (placeholders only; real values live in Railway):
 | `MAIL_FROM` | plain | sender for recipient mail, e.g. `OpsAgent <briefing@opsagent.dev>`; default `OpsAgent <login@opsagent.dev>` |
 | `SLACK_API_BASE_URL` | plain, optional | default `https://slack.com/api`; override only for tests |
 
-Unsubscribe tokens are HMACs keyed from `SESSION_SECRET` (sealed), so no separate secret exists; rotating `SESSION_SECRET` invalidates outstanding unsubscribe links. `SLACK_SIGNING_SECRET`, Stripe and `JWT_SIGNING_KEY` are listed for later plans and not read yet. Optional: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `COOKIE_DOMAIN` (default `opsagent.dev`), `OPSAGENT_KEK_VERSION`, `OPSAGENT_KEK_PREV`, `LOG_LEVEL`. Railway sets `PORT`. Local compose values live in `.env.docker.example`.
+Unsubscribe tokens are HMACs keyed from `UNSUBSCRIBE_SECRET` (sealed, at least 16 bytes), falling back to `SESSION_SECRET` when unset. Set it before the first weekly ships; to switch from the fallback without breaking links already sent, set it equal to the current `SESSION_SECRET`. Rotating `UNSUBSCRIBE_SECRET` invalidates every outstanding unsubscribe link, so do not rotate it; once it is set, `SESSION_SECRET` may rotate freely. `SLACK_SIGNING_SECRET`, Stripe and `JWT_SIGNING_KEY` are listed for later plans and not read yet. Optional: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `COOKIE_DOMAIN` (default `opsagent.dev`), `OPSAGENT_KEK_VERSION`, `OPSAGENT_KEK_PREV`, `LOG_LEVEL`. Railway sets `PORT`. Local compose values live in `.env.docker.example`.
 
 ## Slack app
 
