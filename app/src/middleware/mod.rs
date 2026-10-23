@@ -23,7 +23,7 @@ use crate::{
     settings::Settings,
 };
 
-/// Installs settings, the mailer, the Slack client, the session layer and the CSRF guard.
+/// Installs the session layer and the CSRF guard (settings come from `install_adapters`).
 pub struct AuthInitializer;
 
 #[async_trait]
@@ -33,14 +33,9 @@ impl Initializer for AuthInitializer {
     }
 
     async fn after_routes(&self, router: AxumRouter, ctx: &AppContext) -> Result<AxumRouter> {
-        let settings = Settings::load(ctx)?;
+        let settings = Settings::get(ctx);
         let layer = session::layer(ctx.db.clone(), &settings);
         let cors = cors_layer(&settings.web_base_url)?;
-        let slack: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(&settings.slack_api_base_url));
-        ctx.shared_store.insert(slack);
-        ctx.shared_store.insert(settings);
-        let production = ctx.environment == Environment::Production;
-        ctx.shared_store.insert(mailers::from_env(production)?);
         // Last layer is outermost: the session must load before the CSRF guard runs, and CORS
         // wraps both so their error responses still reach the browser.
         Ok(router
@@ -67,14 +62,26 @@ fn cors_layer(web_base_url: &str) -> Result<CorsLayer> {
         ]))
 }
 
-/// The mailer installed by `AuthInitializer` (tests may replace it in the shared store).
+/// Settings, the Slack client and the mailer, for every mode (server, workers, tasks): called
+/// from `App::after_context`.
+pub fn install_adapters(ctx: &AppContext) -> Result<()> {
+    let settings = Settings::load(ctx)?;
+    let slack: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(&settings.slack_api_base_url));
+    ctx.shared_store.insert(slack);
+    ctx.shared_store.insert(settings);
+    let production = ctx.environment == Environment::Production;
+    ctx.shared_store.insert(mailers::from_env(production)?);
+    Ok(())
+}
+
+/// The mailer installed by `install_adapters` (tests may replace it in the shared store).
 pub fn mailer(ctx: &AppContext) -> Arc<dyn mailers::Mailer> {
     ctx.shared_store
         .get::<Arc<dyn mailers::Mailer>>()
         .expect("mailer not installed")
 }
 
-/// The Slack client installed by `AuthInitializer` (tests may replace it in the shared store).
+/// The Slack client installed by `install_adapters` (tests may replace it in the shared store).
 pub fn slack(ctx: &AppContext) -> Arc<dyn SlackClient> {
     ctx.shared_store
         .get::<Arc<dyn SlackClient>>()

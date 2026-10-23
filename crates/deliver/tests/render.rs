@@ -83,7 +83,14 @@ fn weekly_with_title(title: &str) -> String {
     f.cost_monthly_usd = Some(50.0);
     let mut c = conn();
     c.display_name = "<b>acme</b>".into();
-    let w = build_weekly(&c, &[f], &spend, &WeeklyExtras::default(), now(), LINK_BASE);
+    let w = build_weekly(
+        &c,
+        &[f],
+        Some(&spend),
+        &WeeklyExtras::default(),
+        now(),
+        LINK_BASE,
+    );
     render_html(&w)
 }
 
@@ -191,7 +198,7 @@ fn weekly_slack_is_escaped_and_fits() {
         would_have_done: vec!["w".repeat(300); 50],
         ..Default::default()
     };
-    let w = build_weekly(&conn(), &[f], &spend, &extras, now(), LINK_BASE);
+    let w = build_weekly(&conn(), &[f], Some(&spend), &extras, now(), LINK_BASE);
     let t = render_slack(&w);
     assert!(t.len() <= 3_900, "len {}", t.len());
     assert!(!t.contains("<!channel>"));
@@ -200,4 +207,24 @@ fn weekly_slack_is_escaped_and_fits() {
     assert!(t.contains("Need a human?"));
     assert!(t.contains("https://harun.dev"));
     assert!(t.contains(LINK_BASE));
+}
+
+#[test]
+fn untracked_spend_renders_as_not_tracked_not_zero() {
+    let w = build_weekly(
+        &conn(),
+        &[],
+        None,
+        &WeeklyExtras::default(),
+        now(),
+        LINK_BASE,
+    );
+    for (name, out) in [
+        ("text", render_text(&w)),
+        ("slack", render_slack(&w)),
+        ("html", render_html(&w)),
+    ] {
+        assert!(out.contains("not tracked yet"), "{name}: {out}");
+        assert!(!out.contains("$0.00"), "{name}: {out}");
+    }
 }

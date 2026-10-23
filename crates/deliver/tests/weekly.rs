@@ -34,7 +34,7 @@ fn recommended_cost_action_is_largest_open_saving() {
     let w = build_weekly(
         &conn(),
         &[small, big, gone],
-        &spend(),
+        Some(&spend()),
         &extras(),
         now(),
         LINK_BASE,
@@ -71,8 +71,8 @@ fn weekly_text_has_every_section_with_delta_signs() {
             "cert expires in 20 days",
         ),
     ];
-    let w = build_weekly(&conn(), &fs, &spend(), &extras(), now(), LINK_BASE);
-    assert_eq!(w.spend.delta_usd, 250.5);
+    let w = build_weekly(&conn(), &fs, Some(&spend()), &extras(), now(), LINK_BASE);
+    assert_eq!(w.spend.as_ref().map(|s| s.delta_usd), Some(250.5));
     assert_eq!(w.posture.delta, Some(-5.0));
     assert_eq!((w.iam.open, w.iam.opened, w.iam.resolved), (1, 1, 0));
     let t = render_text(&w);
@@ -105,7 +105,7 @@ fn weekly_text_has_every_section_with_delta_signs() {
 fn spend_drop_shows_minus_sign() {
     let mut s = spend();
     s.this_week_usd = 900.0;
-    let w = build_weekly(&conn(), &[], &s, &extras(), now(), LINK_BASE);
+    let w = build_weekly(&conn(), &[], Some(&s), &extras(), now(), LINK_BASE);
     assert!(render_text(&w).contains("-$100.00"));
 }
 
@@ -113,7 +113,7 @@ fn spend_drop_shows_minus_sign() {
 fn new_connection_says_baselines_forming() {
     let mut c = conn();
     c.first_scan_at = Some(now() - Duration::days(2));
-    let w = build_weekly(&c, &[], &spend(), &extras(), now(), LINK_BASE);
+    let w = build_weekly(&c, &[], Some(&spend()), &extras(), now(), LINK_BASE);
     assert!(w.first_week);
     assert!(render_text(&w).contains("first week; baselines forming"));
 }
@@ -145,7 +145,7 @@ fn flapping_findings_count_as_live() {
     let w = build_weekly(
         &conn(),
         &[iam, backup, cert],
-        &spend(),
+        Some(&spend()),
         &extras(),
         now(),
         LINK_BASE,

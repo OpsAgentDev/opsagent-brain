@@ -4,16 +4,21 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lettre::{
-    address::AddressError, message::Mailbox, AsyncSmtpTransport, AsyncTransport, Message,
-    Tokio1Executor,
+    address::AddressError,
+    message::{Mailbox, MultiPart},
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
 use loco_rs::{Error, Result};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Mail {
     pub to: String,
     pub subject: String,
     pub text: String,
+    /// HTML alternative to `text`.
+    pub html: Option<String>,
+    /// Sent as Resend's `Idempotency-Key`: a retried send is delivered once.
+    pub idempotency_key: Option<String>,
 }
 
 #[async_trait]
@@ -66,16 +71,21 @@ pub struct ResendMailer {
 #[async_trait]
 impl Mailer for ResendMailer {
     async fn send(&self, mail: Mail) -> std::result::Result<(), String> {
-        let res = self
+        let mut body = serde_json::json!({
+            "from": self.from, "to": [mail.to], "subject": mail.subject, "text": mail.text
+        });
+        if let Some(html) = mail.html {
+            body["html"] = html.into();
+        }
+        let mut req = self
             .http
             .post("https://api.resend.com/emails")
             .bearer_auth(&self.key)
-            .json(&serde_json::json!({
-                "from": self.from, "to": [mail.to], "subject": mail.subject, "text": mail.text
-            }))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+            .json(&body);
+        if let Some(k) = &mail.idempotency_key {
+            req = req.header("Idempotency-Key", k);
+        }
+        let res = req.send().await.map_err(|e| e.to_string())?;
         res.error_for_status()
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -103,12 +113,15 @@ impl SmtpMailer {
 #[async_trait]
 impl Mailer for SmtpMailer {
     async fn send(&self, mail: Mail) -> std::result::Result<(), String> {
-        let msg = Message::builder()
+        let b = Message::builder()
             .from(self.from.clone())
             .to(mail.to.parse().map_err(|e: AddressError| e.to_string())?)
-            .subject(mail.subject)
-            .body(mail.text)
-            .map_err(|e| e.to_string())?;
+            .subject(mail.subject);
+        let msg = match mail.html {
+            Some(html) => b.multipart(MultiPart::alternative_plain_html(mail.text, html)),
+            None => b.body(mail.text),
+        }
+        .map_err(|e| e.to_string())?;
         self.transport
             .send(msg)
             .await
@@ -201,6 +214,7 @@ mod tests {
                 to: "a@example.com".into(),
                 subject: "Sign in".into(),
                 text: "https://x.test/auth/callback?token=SECRET123".into(),
+                ..Default::default()
             })
             .await
             .unwrap();

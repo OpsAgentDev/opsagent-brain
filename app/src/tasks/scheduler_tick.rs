@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::{
     models::{
         ledger_storage::{stmt, PgStorage},
-        schedules::next_after,
+        schedules::{backfill_defaults, next_after},
     },
     services::runs::{create_marked, dispatch},
     workers::common::err,
@@ -163,6 +163,10 @@ async fn tick_locked(
     now: DateTime<Utc>,
 ) -> Result<Report> {
     let mut report = Report::default();
+    // Connections verified before delivery schedules existed get them here, before the due scan.
+    if let Err(e) = backfill_defaults(db, now).await {
+        tracing::error!(error = %e, "schedule backfill failed");
+    }
     let due = db
         .query_all_raw(stmt(
             // Deleted organisations are never scheduled (their schedules are disabled on delete too).

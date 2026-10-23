@@ -244,7 +244,8 @@ pub struct Patch {
 }
 
 /// Applies `p`. A new scan time rewrites the nightly `full_scan` schedule, effective from the
-/// next local day so today's scan neither repeats nor moves (PRD 7.3).
+/// next local day so today's scan neither repeats nor moves (PRD 7.3). A new briefing time
+/// rewrites `deliver_briefing`, effective from its next occurrence.
 pub async fn update(
     db: &DatabaseConnection,
     c: connections::Model,
@@ -284,6 +285,16 @@ pub async fn update(
             &schedules::daily_at(t),
             from,
         )
+        .await?;
+    }
+    if let Some(t) = p.briefing_time_local {
+        // From now: a later time today still briefs today; an already-sent briefing makes the
+        // next one "nothing changed" unless something did.
+        let now = Utc::now();
+        let cron = schedules::daily_at(t);
+        schedules::set_cron(&txn, org_id, conn_id, "deliver_briefing", &cron, |_| {
+            Some(now)
+        })
         .await?;
     }
     txn.commit().await?;

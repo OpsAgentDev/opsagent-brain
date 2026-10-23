@@ -8,13 +8,17 @@
 <p>Inventory: {{ self.inventory() }}</p>
 {% else %}
 <h2>Spend</h2>
-<p>{{ self.usd(w.spend.this_week_usd) }} this week vs {{ self.usd(w.spend.last_week_usd) }} last week ({{ self.signed_usd(w.spend.delta_usd) }})</p>
-{% if !w.spend.anomalies.is_empty() %}
+{% if let Some(s) = w.spend %}
+<p>{{ self.usd(s.this_week_usd) }} this week vs {{ self.usd(s.last_week_usd) }} last week ({{ self.signed_usd(s.delta_usd) }})</p>
+{% if !s.anomalies.is_empty() %}
 <ul>
-{% for (day, amount, baseline) in w.spend.anomalies %}
+{% for (day, amount, baseline) in s.anomalies %}
 <li>Anomaly {{ day }}: {{ self.usd(amount) }} vs baseline {{ self.usd(baseline) }}</li>
 {% endfor %}
 </ul>
+{% endif %}
+{% else %}
+<p>Spend: not tracked yet</p>
 {% endif %}
 <h2>Recommended cost action</h2>
 {% if let Some(a) = w.recommended_cost_action %}

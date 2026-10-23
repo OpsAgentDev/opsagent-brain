@@ -39,10 +39,10 @@ impl Settings {
         Ok(s)
     }
 
-    /// Settings are installed by `AuthInitializer`; handlers read them from the shared store.
+    /// Settings are installed by `middleware::install_adapters`; callers read them from the shared store.
     pub fn get(ctx: &AppContext) -> Self {
         ctx.shared_store
             .get::<Self>()
-            .expect("Settings not installed (AuthInitializer missing)")
+            .expect("Settings not installed (install_adapters missing)")
     }
 }

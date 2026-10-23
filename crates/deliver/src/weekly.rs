@@ -15,7 +15,7 @@ const AWAITING_MAX: usize = 10;
 pub fn build_weekly(
     conn: &ConnectionSnapshot,
     findings: &[FindingSnapshot],
-    spend: &SpendSnapshot,
+    spend: Option<&SpendSnapshot>,
     extras: &WeeklyExtras,
     now: DateTime<Utc>,
     link_base: &str,
@@ -42,12 +42,12 @@ pub fn build_weekly(
         first_week: conn
             .first_scan_at
             .is_none_or(|t| now - t < Duration::days(7)),
-        spend: SpendSection {
-            this_week_usd: spend.this_week_usd,
-            last_week_usd: spend.last_week_usd,
-            delta_usd: spend.this_week_usd - spend.last_week_usd,
-            anomalies: spend.anomalies.clone(),
-        },
+        spend: spend.map(|s| SpendSection {
+            this_week_usd: s.this_week_usd,
+            last_week_usd: s.last_week_usd,
+            delta_usd: s.this_week_usd - s.last_week_usd,
+            anomalies: s.anomalies.clone(),
+        }),
         recommended_cost_action: findings
             .iter()
             .filter(open)
