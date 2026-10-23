@@ -9,7 +9,7 @@ use opsagent_secrets::Kek;
 use crate::{
     actions::{
         auth, connections, findings, integrations, members, orgs, recipients, resources, runs,
-        uow::UnitOfWork, Actions, RateLimiter,
+        uow::UnitOfWork, Actions, ConnectorSource, RateLimiter,
     },
     adapters::slack::SlackClient,
     mailers::Mailer,
@@ -27,17 +27,20 @@ pub struct Deps {
     pub clock: Arc<dyn Clock>,
     pub settings: Settings,
     pub queue: Arc<dyn Queue>,
+    /// The scheduler tick opens its own small pool on it.
+    pub db_url: String,
     /// Leases and per-connection claims (`opsagent_ledger::lease`).
     pub ledger_redis: redis::Client,
 }
 
 pub fn build_actions(d: &Deps) -> Actions {
     let dispatcher = Arc::new(runs::RunDispatcher::new(d.uow.clone(), d.queue.clone()));
+    let connectors: Arc<dyn ConnectorSource> = Arc::new(d.registry.clone());
     let full_scan = runs::FullScan::new(
         d.uow.clone(),
         d.ledger_redis.clone(),
         d.kek.clone(),
-        d.registry.clone(),
+        connectors.clone(),
         d.clock.clone(),
     );
     Actions {
@@ -110,6 +113,15 @@ pub fn build_actions(d: &Deps) -> Actions {
             ),
             list_runs: runs::ListRuns::new(d.uow.clone()),
             get_run: runs::GetRun::new(d.uow.clone()),
+            verify_connection: runs::VerifyConnection::new(
+                d.uow.clone(),
+                d.ledger_redis.clone(),
+                d.kek.clone(),
+                connectors,
+                dispatcher.clone(),
+                d.clock.clone(),
+            ),
+            scheduler_tick: runs::SchedulerTick::new(d.db_url.clone(), dispatcher.clone()),
             dispatcher,
             scan_now: runs::ScanNow::new(d.uow.clone(), full_scan.clone(), d.clock.clone()),
             full_scan,

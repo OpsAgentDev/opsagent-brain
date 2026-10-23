@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveTime, Utc};
 use opsagent_core::{connection::ConnectionStatus, repo::RepoResult, run::RunKey};
 use opsagent_deliver::{
-    repo::{SchedulesRepo, SinceFn},
+    repo::{DueRun, SchedulesRepo, SinceFn},
     schedule::{daily_at, next_after, BRIEFING, FULL_SCAN, VERIFY_WEEKLY, WEEKLY},
 };
 use uuid::Uuid;
@@ -180,5 +180,22 @@ impl SchedulesRepo for MemStore {
             }
         }
         Ok(())
+    }
+
+    async fn due_runs(&self, now: DateTime<Utc>) -> RepoResult<Vec<DueRun>> {
+        let s = self.state();
+        let deleted = |org: Option<Uuid>| org.is_some_and(|o| s.org_deleted(o));
+        let mut due: Vec<DueRun> = s
+            .parked_due(now)
+            .into_iter()
+            .map(|(run_id, org, job_type, marker)| DueRun {
+                run_id,
+                job_type,
+                marker,
+                organisation_deleted: deleted(org),
+            })
+            .collect();
+        due.sort_by_key(|d| d.marker);
+        Ok(due)
     }
 }

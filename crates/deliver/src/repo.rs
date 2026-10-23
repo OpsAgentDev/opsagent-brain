@@ -256,6 +256,16 @@ pub trait DeliveriesRepo: Send + Sync {
     ) -> RepoResult<Vec<FindingSnapshot>>;
 }
 
+/// A parked run whose retry (or interrupted enqueue) is due.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DueRun {
+    pub run_id: Uuid,
+    pub job_type: String,
+    /// Its `next_attempt_at`, the marker a hand-off clears.
+    pub marker: DateTime<Utc>,
+    pub organisation_deleted: bool,
+}
+
 /// The first instant to schedule from, given the schedule's zone.
 pub type SinceFn<'a> = &'a (dyn Fn(&str) -> Option<DateTime<Utc>> + Send + Sync);
 
@@ -300,4 +310,7 @@ pub trait SchedulesRepo: Send + Sync {
     /// Moves `next_due_at` to `next`; `None` disables the schedule.
     /// tenancy: scheduler pass, the row locked by `lock_due`.
     async fn advance(&self, id: Uuid, next: Option<DateTime<Utc>>) -> RepoResult<()>;
+    /// Queued runs whose `next_attempt_at` is due at `now`, earliest first.
+    /// tenancy: scheduler pass; each run names its organisation.
+    async fn due_runs(&self, now: DateTime<Utc>) -> RepoResult<Vec<DueRun>>;
 }

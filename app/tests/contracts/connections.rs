@@ -1,6 +1,9 @@
 use opsagent_brain::actions::uow::Repos;
 use opsagent_core::{
-    connection::{Connection, ConnectionPatch, ConnectionStatus as S, NewConnection, SealedCreds},
+    connection::{
+        Connection, ConnectionPatch, ConnectionStatus as S, NewConnection, SealedCreds,
+        Verification, Verified,
+    },
     org::NewOrganisation,
     repo::RepoError,
 };
@@ -26,6 +29,29 @@ pub fn sealed(b: u8) -> SealedCreds {
         ciphertext: vec![b; 8],
         nonce: vec![b; 12],
         kek_version: 1,
+    }
+}
+
+fn at(secs: i64) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::from_timestamp(1_800_000_000 + secs, 0).unwrap()
+}
+
+fn verification(outcome: &str, secs: i64) -> Verification {
+    Verification {
+        outcome: outcome.into(),
+        at: at(secs),
+        assume_with_ok: Some(true),
+        assume_without_denied: Some(true),
+        policy_matches: Some(outcome == "connected"),
+        extra_grants: serde_json::json!([]),
+        missing_grants: serde_json::json!(["ec2:Describe* on *"]),
+    }
+}
+
+fn verified(account: &str) -> Verified {
+    Verified {
+        account: Some(account.into()),
+        ..Default::default()
     }
 }
 
@@ -63,6 +89,62 @@ contract_suite! {
         let repo = s.connections();
         assert_eq!(repo.last_verification(o, c.id).await.unwrap(), None);
         assert_eq!(repo.last_verification(other, c.id).await.unwrap(), None);
+    }
+
+    async fn last_verification_is_the_latest_and_none_in_other_org(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        let c = connection(s, o, "Prod").await;
+        let repo = s.connections();
+        let run = Uuid::new_v4();
+        repo.record_verification(o, c.id, run, &verification("degraded", 0)).await.unwrap();
+        repo.record_verification(o, c.id, run, &verification("connected", 60)).await.unwrap();
+        let last = repo.last_verification(o, c.id).await.unwrap();
+        assert_eq!(last, Some(verification("connected", 60)));
+        assert_eq!(repo.last_verification(other, c.id).await.unwrap(), None);
+        let err = repo.record_verification(other, c.id, run, &verification("x", 0)).await;
+        assert!(matches!(err, Err(RepoError::NotFound)), "{err:?}");
+    }
+
+    async fn verify_state_round_trips_and_clears_the_streak(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        let c = connection(s, o, "Prod").await;
+        let repo = s.connections();
+        repo.record_denial(o, c.id, 2, at(0)).await.unwrap();
+        let d = repo.get(o, c.id).await.unwrap().unwrap();
+        assert_eq!((d.verify_denied_streak, d.verify_denied_first_at), (2, Some(at(0))));
+        let v = Verified {
+            reason: Some("missing_grants: ec2:Describe*".into()),
+            first_connected_at: Some(at(5)),
+            ..verified("111111111111")
+        };
+        repo.record_verified(o, c.id, v).await.unwrap();
+        let g = repo.get(o, c.id).await.unwrap().unwrap();
+        assert_eq!((g.verify_denied_streak, g.verify_denied_first_at), (0, None));
+        assert_eq!(g.external_account_id.as_deref(), Some("111111111111"));
+        assert_eq!(g.status_reason.as_deref(), Some("missing_grants: ec2:Describe*"));
+        assert_eq!((g.first_connected_at, g.billable_from), (Some(at(5)), Some(at(5))));
+        // No account and no reason: the account stays, the reason is cleared.
+        repo.record_verified(o, c.id, Verified::default()).await.unwrap();
+        let g = repo.get(o, c.id).await.unwrap().unwrap();
+        assert_eq!((g.external_account_id.as_deref(), g.status_reason), (Some("111111111111"), None));
+        let err = repo.record_denial(other, c.id, 1, at(0)).await;
+        assert!(matches!(err, Err(RepoError::NotFound)), "{err:?}");
+        let err = repo.record_verified(other, c.id, Verified::default()).await;
+        assert!(matches!(err, Err(RepoError::NotFound)), "{err:?}");
+    }
+
+    async fn a_claimed_account_is_unique_per_provider(s) {
+        let (oa, ob) = (org(s).await, org(s).await);
+        let (a, b) = (connection(s, oa, "A").await, connection(s, ob, "B").await);
+        let repo = s.connections();
+        repo.record_verified(oa, a.id, verified("222222222222")).await.unwrap();
+        assert!(repo.cas_status(oa, a.id, S::Pending, S::Connected, None).await.unwrap());
+        // An unclaimed row may carry the account; claiming it is refused.
+        repo.record_verified(ob, b.id, verified("222222222222")).await.unwrap();
+        let err = repo.cas_status(ob, b.id, S::Pending, S::Connected, None).await;
+        assert!(matches!(err, Err(RepoError::Conflict("account"))), "{err:?}");
+        assert_eq!(repo.get(ob, b.id).await.unwrap().unwrap().status, S::Pending);
+        assert!(repo.cas_status(ob, b.id, S::Pending, S::Blocked, None).await.unwrap());
     }
 
     async fn get_in_other_org_is_none(s) {
