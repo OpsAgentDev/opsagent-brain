@@ -75,7 +75,8 @@ pub async fn delete(
     repo.lock(organisation_id).await?;
     repo.soft_delete(organisation_id, Utc::now()).await?;
     for c in repo.connections().list(organisation_id).await? {
-        connections_service::end(&repo, c, "organisation_deleted").await?;
+        connections_service::end_connection(&repo, organisation_id, c.id, "organisation_deleted")
+            .await?;
     }
     repo.disable_for_org(organisation_id).await?;
     let target = Some(("organisation", organisation_id.to_string()));

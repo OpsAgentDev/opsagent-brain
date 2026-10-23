@@ -1,6 +1,7 @@
 //! Connection use cases (PRD 7.2): create, read, update, verify, disconnect.
 mod create_connection;
 mod disconnect_connection;
+mod end;
 mod get_connection;
 mod list_connections;
 mod request_verify;
@@ -9,7 +10,8 @@ mod update_connection;
 use axum::http::StatusCode;
 
 pub use create_connection::{CreateConnection, Created};
-pub use disconnect_connection::{end, DisconnectConnection};
+pub use disconnect_connection::DisconnectConnection;
+pub use end::end_connection;
 pub use get_connection::GetConnection;
 pub use list_connections::ListConnections;
 pub use request_verify::RequestVerify;
