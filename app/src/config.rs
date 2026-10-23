@@ -1,8 +1,6 @@
 //! `Config`: every setting is an environment variable, and its default lives here and only here.
 use std::str::FromStr;
 
-use tracing_subscriber::EnvFilter;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppEnv {
     Development,
@@ -65,7 +63,8 @@ pub struct Config {
     pub slack_api_base_url: String,
     pub connectors: ConnectorMode,
     pub aws_outbound_role_arn: Option<String>,
-    pub template_base_url: Option<String>,
+    /// Where the customer-facing CloudFormation templates are served.
+    pub template_base_url: String,
     pub worker_concurrency: usize,
     pub worker_poll_ms: u64,
     pub job_lock_max_age_secs: u64,
@@ -145,7 +144,10 @@ impl Config {
             slack_api_base_url: s("SLACK_API_BASE_URL", "https://slack.com/api"),
             connectors: connectors(&s("OPSAGENT_CONNECTORS", "aws"), prod)?,
             aws_outbound_role_arn: get("OPSAGENT_AWS_OUTBOUND_ROLE_ARN"),
-            template_base_url: get("OPSAGENT_TEMPLATE_BASE_URL"),
+            template_base_url: s(
+                "OPSAGENT_TEMPLATE_BASE_URL",
+                "https://templates.opsagent.dev",
+            ),
             worker_concurrency: p(&get, "WORKER_CONCURRENCY", "4")?,
             worker_poll_ms: p(&get, "WORKER_POLL_MS", "1000")?,
             // 420 min, the old reaper age, above the 6 h scan cap.
@@ -233,35 +235,6 @@ fn p<T: FromStr>(
         .map_err(|_| invalid(name, &format!("not a valid {}", std::any::type_name::<T>())))
 }
 
-/// Same filter as Loco's logger: `RUST_LOG` wins, else these modules at `log_level`.
-const LOG_MODULES: [&str; 5] = [
-    "loco_rs",
-    "sea_orm_migration",
-    "tower_http",
-    "sqlx::query",
-    "opsagent_brain",
-];
-
-/// Installs the process subscriber. Off in tests unless `RUST_LOG` is set (the Loco test
-/// logger was disabled). A second call is a no-op.
-pub fn init_tracing(c: &Config) {
-    let filter = match EnvFilter::try_from_default_env() {
-        Ok(f) => f,
-        Err(_) if c.env == AppEnv::Test => return,
-        Err(_) => {
-            let level = &c.log_level;
-            let directives: Vec<_> = LOG_MODULES.iter().map(|m| format!("{m}={level}")).collect();
-            EnvFilter::new(directives.join(","))
-        }
-    };
-    let fmt = tracing_subscriber::fmt().with_env_filter(filter);
-    let _ = match c.log_format {
-        LogFormat::Pretty => fmt.pretty().try_init(),
-        LogFormat::Compact => fmt.compact().try_init(),
-        LogFormat::Json => fmt.json().try_init(),
-    };
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -321,9 +294,10 @@ mod tests {
         }
         let c = cfg(&production(&[]));
         assert_eq!(
-            (c.binding.as_str(), c.log_format, c.db_max_connections),
-            ("0.0.0.0", LogFormat::Json, 10)
+            (c.binding.as_str(), c.port, c.log_level.as_str()),
+            ("0.0.0.0", 5150, "info")
         );
+        assert_eq!((c.log_format, c.db_max_connections), (LogFormat::Json, 10));
         assert!(c.cookie_secure && !c.db_auto_migrate);
         assert_eq!(c.cookie_domain, "opsagent.dev");
     }

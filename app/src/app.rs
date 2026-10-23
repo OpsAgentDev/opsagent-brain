@@ -16,9 +16,10 @@ use std::{path::Path, sync::Arc};
 use crate::{
     actions::Actions,
     adapters::loco_queue::LocoQueue,
-    boot::{self, Deps},
-    config::{init_tracing, Config as AppConfig},
+    boot,
+    config::Config as AppConfig,
     controllers,
+    logging::init_tracing,
     middleware::{self, AuthInitializer},
     state::AppState,
     tasks::{
@@ -47,9 +48,10 @@ pub fn actions(ctx: &AppContext) -> Result<Arc<Actions>> {
     Ok(state(ctx)?.actions.clone())
 }
 
+#[cfg(feature = "test-support")]
 /// Test seam until Task 15's `TestApp` hands its doubles to `boot`: replaces the state with
 /// `f` applied to its adapters, so every action is rebuilt over them.
-pub fn replace_deps(ctx: &AppContext, f: impl FnOnce(&mut Deps)) -> Result<()> {
+pub fn replace_deps(ctx: &AppContext, f: impl FnOnce(&mut boot::Deps)) -> Result<()> {
     let mut deps = state(ctx)?.deps.clone();
     f(&mut deps);
     ctx.shared_store.insert(boot::assemble(deps));
@@ -82,8 +84,9 @@ impl Hooks for App {
     }
 
     /// Builds the state every mode (server, workers, tasks) shares, once. Loco has already
-    /// resolved the environment (and forces `test` under its test harness), so it wins over
-    /// `APP_ENV`.
+    /// resolved the environment (and forces `test` under its test harness), so in this
+    /// transitional wiring Loco's environment overrides `APP_ENV`: deploys keep setting
+    /// `LOCO_ENV` until Task 14's `main` reads `APP_ENV` itself.
     async fn after_context(ctx: AppContext) -> Result<AppContext> {
         let env = ctx.environment.to_string();
         let vars = |k: &str| match k {
