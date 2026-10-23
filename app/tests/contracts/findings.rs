@@ -113,7 +113,8 @@ contract_suite! {
         scan(s, seed, org, a, &[draft(a, "no_mfa", "u", Severity::High), draft(a, "old_key", "u", Severity::Low)]).await;
         scan(s, seed, org, b, &[draft(b, "no_mfa", "u", Severity::High)]).await;
         let r2 = scan(s, seed, org, a, &[]).await;
-        let n = s.findings().resolve_unseen(org, a, r2, &["no_mfa".into()], t(1)).await.unwrap();
+        // `old_key`'s capability was partial: it is exempt.
+        let n = s.findings().resolve_unseen(org, a, r2, &["old_key".into()], t(1)).await.unwrap();
         assert_eq!(n, 1);
         let status = |conn: Uuid, check: &str| {
             let f = FindingFilter { connection_id: Some(conn), check_id: Some(check.into()), ..Default::default() };
@@ -125,7 +126,22 @@ contract_suite! {
         assert_eq!(status(b, "no_mfa").await.status, "open");
         assert_eq!(s.findings().events(org, gone.id).await.unwrap()[0].kind, "resolved");
         // Already resolved: nothing more to do.
-        assert_eq!(s.findings().resolve_unseen(org, a, r2, &["no_mfa".into()], t(1)).await.unwrap(), 0);
+        assert_eq!(s.findings().resolve_unseen(org, a, r2, &["old_key".into()], t(1)).await.unwrap(), 0);
+    }
+
+    async fn resolve_unseen_resolves_removed_check_findings(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        // Check "99" is not in any registry; a later full run must still resolve it.
+        scan(s, seed, org, conn, &[draft(conn, "99", "u", Severity::Medium)]).await;
+        let seen_now = [draft(conn, "no_mfa", "u", Severity::High)];
+        let r2 = scan(s, seed, org, conn, &seen_now).await;
+        assert_eq!(s.findings().resolve_unseen(org, conn, r2, &[], t(1)).await.unwrap(), 1);
+        let one = |check: &str| {
+            let f = FindingFilter { check_id: Some(check.into()), ..Default::default() };
+            async move { s.findings().list(org, f, all()).await.unwrap().items.remove(0) }
+        };
+        assert_eq!(one("99").await.status, "resolved");
+        assert_eq!(one("no_mfa").await.status, "open");
     }
 
     async fn change_status_writes_one_event(s, seed) {

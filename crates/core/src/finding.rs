@@ -145,13 +145,14 @@ pub trait FindingsRepo: Send + Sync {
         drafts: &[FindingDraft],
         now: DateTime<Utc>,
     ) -> RepoResult<()>;
-    /// Resolve open or flapping findings of `check_ids` not seen in `run_id`; returns how many.
+    /// Resolve open or flapping findings not seen in `run_id`, except those of
+    /// `except_check_ids` (checks whose capability was partial); returns how many.
     async fn resolve_unseen(
         &self,
         organisation_id: Uuid,
         connection_id: Uuid,
         run_id: Uuid,
-        check_ids: &[String],
+        except_check_ids: &[String],
         now: DateTime<Utc>,
     ) -> RepoResult<u64>;
     async fn posture_rows(

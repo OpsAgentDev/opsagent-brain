@@ -232,17 +232,14 @@ impl<C: Conn> FindingsRepo for Pg<C> {
         organisation_id: Uuid,
         connection_id: Uuid,
         run_id: Uuid,
-        check_ids: &[String],
+        except_check_ids: &[String],
         now: DateTime<Utc>,
     ) -> RepoResult<u64> {
         use findings::Column as F;
-        if check_ids.is_empty() {
-            return Ok(0);
-        }
         let unseen = findings::Entity::find()
             .filter(F::OrganisationId.eq(organisation_id))
             .filter(F::ConnectionId.eq(connection_id))
-            .filter(F::CheckId.is_in(check_ids.iter().cloned()))
+            .filter(F::CheckId.is_not_in(except_check_ids.iter().cloned()))
             .filter(F::Status.is_in(["open", "flapping"]))
             .filter(
                 Condition::any()

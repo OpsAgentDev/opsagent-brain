@@ -206,7 +206,7 @@ impl FindingsRepo for MemStore {
         organisation_id: Uuid,
         connection_id: Uuid,
         run_id: Uuid,
-        check_ids: &[String],
+        except_check_ids: &[String],
         now: DateTime<Utc>,
     ) -> RepoResult<u64> {
         let mut n = 0;
@@ -214,7 +214,7 @@ impl FindingsRepo for MemStore {
             let f = &r.finding;
             f.organisation_id == organisation_id
                 && f.connection_id == connection_id
-                && check_ids.contains(&f.key.check_id)
+                && !except_check_ids.contains(&f.key.check_id)
                 && matches!(f.status.as_str(), "open" | "flapping")
                 && f.last_seen_run_id != Some(run_id)
         }) {
