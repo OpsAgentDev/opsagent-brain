@@ -1,1 +1,3 @@
 af31639749db04f3b16debd2029c93c33f67b6f3:app/src/services/redact.rs:generic-api-key:107
+app/src/actions/findings/redact.rs:generic-api-key:107
+588882006175937501089af77246e5899aea7a66:app/src/actions/findings/report_explanation.rs:aws-access-token:79
