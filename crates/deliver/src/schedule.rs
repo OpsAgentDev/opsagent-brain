@@ -1,4 +1,4 @@
-//! Schedule maths and default schedules (PRD 7.3). Cron is evaluated in the org's IANA zone.
+//! Schedule maths and the default schedules (PRD 7.3). Cron is evaluated in the org's IANA zone.
 use std::str::FromStr;
 
 use chrono::{
@@ -6,10 +6,6 @@ use chrono::{
 };
 use chrono_tz::Tz;
 use cron::Schedule;
-use sea_orm::{ConnectionTrait, DbErr};
-use uuid::Uuid;
-
-use super::ledger_storage::stmt;
 
 /// Nightly full scan at 02:00 local unless the connection sets `scan_time_local`.
 pub const FULL_SCAN: &str = "0 2 * * *";
@@ -91,132 +87,6 @@ pub fn end_of_local_day(tz: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     Some(instant(tz, tomorrow.and_hms_opt(0, 0, 0)?)? - Duration::seconds(1))
 }
 
-async fn org_timezone(db: &impl ConnectionTrait, organisation_id: Uuid) -> Result<String, DbErr> {
-    Ok(db
-        .query_one_raw(stmt(
-            "SELECT timezone FROM organisations WHERE id = $1",
-            vec![organisation_id.into()],
-        ))
-        .await?
-        .map(|r| r.try_get("", "timezone"))
-        .transpose()?
-        .unwrap_or_else(|| "UTC".into()))
-}
-
-/// Points the connection's `job_type` schedule at `cron` (in its stored zone), next due after
-/// `from(zone)`. No-op if the schedule is missing or already on `cron`.
-pub async fn set_cron(
-    db: &impl ConnectionTrait,
-    organisation_id: Uuid,
-    connection_id: Uuid,
-    job_type: &str,
-    cron: &str,
-    from: impl Fn(&str) -> Option<DateTime<Utc>>,
-) -> Result<(), DbErr> {
-    let Some(row) = db
-        .query_one_raw(stmt(
-            "SELECT id, timezone FROM schedules WHERE organisation_id = $1 AND connection_id = $2 \
-             AND job_type = $3 AND cron_local <> $4",
-            vec![
-                organisation_id.into(),
-                connection_id.into(),
-                job_type.into(),
-                cron.into(),
-            ],
-        ))
-        .await?
-    else {
-        return Ok(());
-    };
-    let (id, tz): (Uuid, String) = (row.try_get("", "id")?, row.try_get("", "timezone")?);
-    let next = from(&tz).and_then(|t| next_after(cron, &tz, t));
-    db.execute_raw(stmt(
-        "UPDATE schedules SET cron_local = $3, next_due_at = $4, updated_at = now() \
-         WHERE organisation_id = $1 AND id = $2",
-        vec![organisation_id.into(), id.into(), cron.into(), next.into()],
-    ))
-    .await?;
-    Ok(())
-}
-
-/// Default schedules for a newly connected connection: the nightly scan (at `scan_time` when
-/// set), the weekly verify, the briefing (at `briefing_time` when set) and the weekly report;
-/// plus the organisation's weekly summary. Idempotent on `(connection_id, job_type)` and, for
-/// the summary, `(organisation_id, job_type)`.
-pub async fn create_defaults(
-    db: &impl ConnectionTrait,
-    organisation_id: Uuid,
-    connection_id: Uuid,
-    times: (Option<NaiveTime>, Option<NaiveTime>),
-    now: DateTime<Utc>,
-) -> Result<(), DbErr> {
-    let tz = org_timezone(db, organisation_id).await?;
-    let scan = times.0.map_or_else(|| FULL_SCAN.to_owned(), daily_at);
-    let briefing = times.1.map_or_else(|| BRIEFING.to_owned(), daily_at);
-    db.execute_raw(stmt(
-        "INSERT INTO schedules (id, organisation_id, job_type, cron_local, timezone, next_due_at) \
-         VALUES ($1, $2, 'deliver_weekly', $3, $4, $5) \
-         ON CONFLICT (organisation_id, job_type) WHERE connection_id IS NULL DO NOTHING",
-        vec![
-            Uuid::now_v7().into(),
-            organisation_id.into(),
-            WEEKLY.into(),
-            tz.clone().into(),
-            next_after(WEEKLY, &tz, now).into(),
-        ],
-    ))
-    .await?;
-    for (job, cron) in [
-        ("full_scan", scan.as_str()),
-        ("verify", VERIFY_WEEKLY),
-        ("deliver_briefing", briefing.as_str()),
-        ("deliver_weekly", WEEKLY),
-    ] {
-        db.execute_raw(stmt(
-            "INSERT INTO schedules (id, organisation_id, connection_id, job_type, cron_local, timezone, next_due_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (connection_id, job_type) DO NOTHING",
-            vec![
-                Uuid::now_v7().into(),
-                organisation_id.into(),
-                connection_id.into(),
-                job.into(),
-                cron.into(),
-                tz.clone().into(),
-                next_after(cron, &tz, now).into(),
-            ],
-        ))
-        .await?;
-    }
-    Ok(())
-}
-
-/// `create_defaults` for every connected connection that has no `deliver_briefing` schedule
-/// (connected before delivery schedules existed). Idempotent; returns how many were filled.
-pub async fn backfill_defaults(
-    db: &impl ConnectionTrait,
-    now: DateTime<Utc>,
-) -> Result<usize, DbErr> {
-    // tenancy: the scheduler's global pass; each row's own organisation_id scopes its writes.
-    let rows = db
-        .query_all_raw(stmt(
-            "SELECT c.id, c.organisation_id, c.scan_time_local, c.briefing_time_local \
-             FROM connections c JOIN organisations o ON o.id = c.organisation_id \
-             WHERE c.status = 'connected' AND o.deleted_at IS NULL AND NOT EXISTS \
-             (SELECT 1 FROM schedules s WHERE s.connection_id = c.id AND s.job_type = 'deliver_briefing')",
-            vec![],
-        ))
-        .await?;
-    for r in &rows {
-        let times = (
-            r.try_get("", "scan_time_local")?,
-            r.try_get("", "briefing_time_local")?,
-        );
-        let (org, id) = (r.try_get("", "organisation_id")?, r.try_get("", "id")?);
-        create_defaults(db, org, id, times, now).await?;
-    }
-    Ok(rows.len())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,8 +127,8 @@ mod tests {
     }
 
     #[test]
-    fn dst_gap_shifts_forward_and_overlap_runs_once() {
-        // 02:30 EST does not exist on 2026-03-08: runs at 03:30 EDT (07:30Z).
+    fn next_after_dst_gap_moves_to_next_valid_minute() {
+        // 02:30 EST does not exist on 2026-03-08: it moves forward by the gap, to 03:30 EDT (07:30Z).
         assert_eq!(
             next_after("30 2 * * *", "America/New_York", at("2026-03-08T06:00:00Z")),
             Some(at("2026-03-08T07:30:00Z"))

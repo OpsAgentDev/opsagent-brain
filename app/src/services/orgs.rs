@@ -5,18 +5,14 @@ use opsagent_core::{
     org::{slugify, NewOrganisation, Organisation, OrganisationsRepo, Role},
     repo::RepoError,
 };
+use opsagent_deliver::repo::SchedulesRepo;
 use opsagent_secrets::{generate_dek, Kek};
 use rand::RngCore;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, TransactionTrait};
 use uuid::Uuid;
 
 use crate::{
-    adapters::db::Pg,
-    api_error::ApiError,
-    models::{
-        _entities::{connections, schedules},
-        now,
-    },
+    adapters::db::Pg, api_error::ApiError, models::_entities::connections,
     services::connections as connections_service,
 };
 
@@ -81,12 +77,7 @@ pub async fn delete(
     for c in live {
         connections_service::end(&txn, c, "organisation_deleted").await?;
     }
-    schedules::Entity::update_many()
-        .col_expr(schedules::Column::Enabled, false.into())
-        .col_expr(schedules::Column::UpdatedAt, now().into())
-        .filter(schedules::Column::OrganisationId.eq(organisation_id))
-        .exec(&txn)
-        .await?;
+    repo.disable_for_org(organisation_id).await?;
     let target = Some(("organisation", organisation_id.to_string()));
     repo.record(AuditEntry::member(
         Some(organisation_id),

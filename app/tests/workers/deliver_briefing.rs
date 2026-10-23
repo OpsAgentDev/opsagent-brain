@@ -10,12 +10,12 @@ use opsagent_brain::{
     models::{
         _entities::{deliveries, integrations, runs, schedules},
         ledger_storage::{stmt, PgStorage},
-        schedules::next_after,
     },
     services::integrations::save_slack,
     workers::deliver_briefing,
 };
 use opsagent_core::run::{RunKey, RunStatus};
+use opsagent_deliver::schedule::next_after;
 use opsagent_ledger::{harness, RunChunkedOptions, Storage};
 use sea_orm::ConnectionTrait;
 use serde_json::{json, Value};

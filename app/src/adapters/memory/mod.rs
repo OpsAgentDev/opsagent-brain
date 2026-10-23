@@ -1,7 +1,11 @@
 //! In-memory fakes of every repository, for tests. `begin` snapshots the whole state and
 //! `commit` writes the snapshot back, so a dropped transaction leaves nothing behind.
 mod audit;
+mod deliveries;
+mod integrations;
 mod orgs;
+mod recipients;
+mod schedules;
 mod users;
 
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -11,8 +15,12 @@ use chrono::{DateTime, Utc};
 use opsagent_core::{
     audit::{AuditEntry, AuditLog},
     org::{Invite, Organisation, OrganisationsRepo, Role},
-    repo::RepoResult,
+    repo::{Cursor, PageOf, PageRequest, RepoResult},
     user::{User, UsersRepo},
+};
+use opsagent_deliver::repo::{
+    DeliveriesRepo, DeliveryRow, Integration, IntegrationsRepo, RecipientRow, RecipientsRepo,
+    SchedulesRepo, Suppression,
 };
 use uuid::Uuid;
 
@@ -42,6 +50,32 @@ struct MagicLinkRow {
     used: bool,
 }
 
+#[derive(Clone)]
+struct MemRecipient {
+    row: RecipientRow,
+    confirm: Option<(String, DateTime<Utc>)>,
+}
+
+#[derive(Clone)]
+struct SuppressionRow {
+    organisation_id: Option<Uuid>,
+    email_hash: String,
+    kind: Suppression,
+    expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone)]
+struct ScheduleRow {
+    id: Uuid,
+    organisation_id: Uuid,
+    connection_id: Option<Uuid>,
+    job_type: String,
+    cron_local: String,
+    timezone: String,
+    next_due_at: Option<DateTime<Utc>>,
+    enabled: bool,
+}
+
 #[derive(Clone, Default)]
 pub struct MemState {
     orgs: Vec<Organisation>,
@@ -50,6 +84,11 @@ pub struct MemState {
     users: Vec<User>,
     magic_links: Vec<MagicLinkRow>,
     audit: Vec<AuditEntry>,
+    recipients: Vec<MemRecipient>,
+    suppressions: Vec<SuppressionRow>,
+    integrations: Vec<Integration>,
+    deliveries: Vec<DeliveryRow>,
+    schedules: Vec<ScheduleRow>,
 }
 
 #[derive(Clone, Default)]
@@ -70,6 +109,18 @@ impl Repos for MemStore {
         self
     }
     fn audit(&self) -> &dyn AuditLog {
+        self
+    }
+    fn recipients(&self) -> &dyn RecipientsRepo {
+        self
+    }
+    fn integrations(&self) -> &dyn IntegrationsRepo {
+        self
+    }
+    fn deliveries(&self) -> &dyn DeliveriesRepo {
+        self
+    }
+    fn schedules(&self) -> &dyn SchedulesRepo {
         self
     }
 }
@@ -102,6 +153,18 @@ impl Repos for MemTx {
     fn audit(&self) -> &dyn AuditLog {
         &self.work
     }
+    fn recipients(&self) -> &dyn RecipientsRepo {
+        &self.work
+    }
+    fn integrations(&self) -> &dyn IntegrationsRepo {
+        &self.work
+    }
+    fn deliveries(&self) -> &dyn DeliveriesRepo {
+        &self.work
+    }
+    fn schedules(&self) -> &dyn SchedulesRepo {
+        &self.work
+    }
 }
 
 #[async_trait]
@@ -111,4 +174,18 @@ impl Tx for MemTx {
         *self.parent.state() = done;
         Ok(())
     }
+}
+
+/// One keyset page of `rows`, newest `key` first (as `db::page`).
+fn page<T>(mut rows: Vec<T>, key: impl Fn(&T) -> Cursor, req: PageRequest) -> PageOf<T> {
+    rows.sort_by_key(|r| std::cmp::Reverse(key(r)));
+    let mut items: Vec<T> = rows
+        .into_iter()
+        .filter(|r| req.after.is_none_or(|after| key(r) < after))
+        .take(req.limit as usize + 1)
+        .collect();
+    let more = items.len() as u64 > req.limit;
+    items.truncate(req.limit as usize);
+    let next = more.then(|| items.last().map(&key)).flatten();
+    PageOf { items, next }
 }

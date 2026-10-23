@@ -1,8 +1,12 @@
 //! SeaORM implementations of the repository traits. `Pg` wraps a pool, a transaction, or a
 //! borrowed handle to either.
 mod audit;
+mod deliveries;
+mod integrations;
 mod orgs;
 mod page;
+mod recipients;
+mod schedules;
 mod users;
 
 use std::fmt::Display;
@@ -15,6 +19,7 @@ use opsagent_core::{
     repo::{RepoError, RepoResult},
     user::{Email, UsersRepo},
 };
+use opsagent_deliver::repo::{DeliveriesRepo, IntegrationsRepo, RecipientsRepo, SchedulesRepo};
 use sea_orm::{
     prelude::DateTimeWithTimeZone, ConnectionTrait, DatabaseConnection, DatabaseTransaction,
     TransactionTrait,
@@ -87,6 +92,18 @@ impl<C: Conn> Repos for Pg<C> {
         self
     }
     fn audit(&self) -> &dyn AuditLog {
+        self
+    }
+    fn recipients(&self) -> &dyn RecipientsRepo {
+        self
+    }
+    fn integrations(&self) -> &dyn IntegrationsRepo {
+        self
+    }
+    fn deliveries(&self) -> &dyn DeliveriesRepo {
+        self
+    }
+    fn schedules(&self) -> &dyn SchedulesRepo {
         self
     }
 }

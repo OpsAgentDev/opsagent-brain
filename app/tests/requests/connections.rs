@@ -315,10 +315,8 @@ async fn changing_the_role_of_a_live_connection_needs_a_reconnect() {
 #[tokio::test]
 #[serial]
 async fn new_scan_time_moves_the_nightly_scan_from_tomorrow() {
-    use opsagent_brain::models::{
-        _entities::schedules,
-        schedules::{end_of_local_day, next_after},
-    };
+    use opsagent_brain::models::_entities::schedules;
+    use opsagent_deliver::schedule::{end_of_local_day, next_after};
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;

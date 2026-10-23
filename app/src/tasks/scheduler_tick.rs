@@ -7,19 +7,14 @@ use loco_rs::{
     task::{Task, TaskInfo, Vars},
     Result,
 };
-use opsagent_core::run::RunKey;
+use opsagent_deliver::{repo::SchedulesRepo, schedule::next_after};
 use opsagent_ledger::Storage;
-use sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DatabaseTransaction,
-    TransactionTrait,
-};
+use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection, TransactionTrait};
 use uuid::Uuid;
 
 use crate::{
-    models::{
-        ledger_storage::{stmt, PgStorage},
-        schedules::{backfill_defaults, next_after},
-    },
+    adapters::db::Pg,
+    models::ledger_storage::{stmt, PgStorage},
     services::runs::{create_marked, dispatch},
     workers::common::err,
 };
@@ -77,60 +72,6 @@ pub async fn tick(ctx: &AppContext, now: DateTime<Utc>) -> Result<Option<Report>
     report.map(Some)
 }
 
-struct Due {
-    key: RunKey,
-    cron: String,
-    tz: String,
-}
-
-/// Locks the schedule row if it is still due and unclaimed.
-async fn lock_and_load(
-    txn: &DatabaseTransaction,
-    id: Uuid,
-    now: DateTime<Utc>,
-) -> Result<Option<Due>> {
-    let Some(s) = txn
-        .query_one_raw(stmt(
-            "SELECT s.organisation_id, s.connection_id, s.job_type, s.cron_local, s.timezone, s.next_due_at \
-             FROM schedules s WHERE s.id = $1 AND s.enabled AND s.next_due_at <= $2 \
-             AND NOT EXISTS (SELECT 1 FROM organisations o WHERE o.id = s.organisation_id AND o.deleted_at IS NOT NULL) \
-             FOR UPDATE OF s SKIP LOCKED",
-            vec![id.into(), now.into()],
-        ))
-        .await?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(Due {
-        key: RunKey {
-            organisation_id: s.try_get("", "organisation_id")?,
-            connection_id: s.try_get("", "connection_id")?,
-            job_type: s.try_get("", "job_type")?,
-            scheduled_at: s.try_get("", "next_due_at")?,
-        },
-        cron: s.try_get("", "cron_local")?,
-        tz: s.try_get("", "timezone")?,
-    }))
-}
-
-/// Moves `next_due_at` forward; `None` (unparseable cron or zone) disables the schedule.
-async fn advance(txn: &DatabaseTransaction, id: Uuid, next: Option<DateTime<Utc>>) -> Result<()> {
-    // tenancy: the scheduler serves every organisation; the row was locked by id just before.
-    let st = match next {
-        Some(t) => stmt(
-            "UPDATE schedules SET next_due_at = $2, updated_at = now() WHERE id = $1",
-            vec![id.into(), t.into()],
-        ),
-        // tenancy: as above.
-        None => stmt(
-            "UPDATE schedules SET enabled = false, updated_at = now() WHERE id = $1",
-            vec![id.into()],
-        ),
-    };
-    txn.execute_raw(st).await?;
-    Ok(())
-}
-
 /// One schedule, one transaction: lock, create the run, advance `next_due_at`, commit. Returns
 /// the run only when this call created it.
 async fn due_schedule(
@@ -139,20 +80,20 @@ async fn due_schedule(
     now: DateTime<Utc>,
 ) -> Result<Option<(Uuid, String)>> {
     let txn = db.begin().await?;
-    let Some(due) = lock_and_load(&txn, id, now).await? else {
+    let Some((key, cron, tz)) = Pg::new(&txn).lock_due(id, now).await.map_err(err)? else {
         return Ok(None);
     };
     // Missed ticks collapse into this one run; the next slot is after `now` (PRD 7.3).
-    let next = next_after(&due.cron, &due.tz, now);
+    let next = next_after(&cron, &tz, now);
     if next.is_none() {
-        tracing::error!(schedule = %id, cron = due.cron, tz = due.tz, "invalid schedule, disabling");
-        advance(&txn, id, None).await?;
+        tracing::error!(schedule = %id, cron, tz, "invalid schedule, disabling");
+        Pg::new(&txn).advance(id, None).await.map_err(err)?;
         txn.commit().await?;
         return Ok(None);
     }
-    let job = due.key.job_type.clone();
-    let (txn, out) = create_marked(txn, due.key, now).await?;
-    advance(&txn, id, next).await?;
+    let job = key.job_type.clone();
+    let (txn, out) = create_marked(txn, key, now).await?;
+    Pg::new(&txn).advance(id, next).await.map_err(err)?;
     txn.commit().await?;
     Ok(out.created.then_some((out.run.id, job)))
 }
@@ -164,20 +105,11 @@ async fn tick_locked(
 ) -> Result<Report> {
     let mut report = Report::default();
     // Connections verified before delivery schedules existed get them here, before the due scan.
-    if let Err(e) = backfill_defaults(db, now).await {
+    let repo = Pg::new(db);
+    if let Err(e) = repo.backfill_defaults(now).await {
         tracing::error!(error = %e, "schedule backfill failed");
     }
-    let due = db
-        .query_all_raw(stmt(
-            // Deleted organisations are never scheduled (their schedules are disabled on delete too).
-            "SELECT s.id FROM schedules s WHERE s.enabled AND s.next_due_at <= $1 AND NOT EXISTS \
-             (SELECT 1 FROM organisations o WHERE o.id = s.organisation_id AND o.deleted_at IS NOT NULL) \
-             ORDER BY s.next_due_at",
-            vec![now.into()],
-        ))
-        .await?;
-    for id in due {
-        let id: Uuid = id.try_get("", "id")?;
+    for id in repo.due_ids(now).await.map_err(err)? {
         // One bad schedule must not block the others; its transaction rolled back, so it is due again next tick.
         match due_schedule(db, id, now).await {
             Ok(Some((run, job))) => match dispatch(ctx, run, &job, now).await {

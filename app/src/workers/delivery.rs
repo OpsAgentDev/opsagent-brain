@@ -1,23 +1,22 @@
 //! Shared by `deliver_briefing` and `deliver_weekly`: one email or one Slack post per run and
 //! effect key (side-effect ledger), each with its `deliveries` row. Logs codes only: never
 //! message text, tokens or addresses (logging.md).
+use chrono::Utc;
 use loco_rs::app::AppContext;
+use opsagent_deliver::repo::{DeliveriesRepo, Integration, IntegrationsRepo, NewDelivery};
 use opsagent_ledger::{effects::with_effect, retry::backoff, EffectState, LedgerError, RunRow};
 use uuid::Uuid;
 
 use super::common::{lerr, LResult};
 use crate::{
-    adapters::slack::SlackError,
+    adapters::{db::Pg, slack::SlackError},
     app::kek,
     mailers::Mail,
     middleware::{mailer, slack},
-    models::{
-        _entities::{connections, integrations},
-        integrations::open_token,
-        ledger_storage::PgStorage,
-    },
+    models::{_entities::connections, ledger_storage::PgStorage},
     services::{
-        deliveries::{clear_channel, mark_revoked, record, Row, FAILED, SENT, SUPPRESSED},
+        deliveries::{clear_channel, FAILED, SENT, SUPPRESSED},
+        integrations::open_token,
         mail_guard,
     },
 };
@@ -45,16 +44,18 @@ impl Out<'_> {
         status: &str,
         external_ref: Option<String>,
     ) -> LResult<()> {
-        let row = Row {
-            organisation_id: self.organisation_id,
+        let row = NewDelivery {
             connection_id: self.connection_id,
+            run_id: self.run.id,
+            key,
             kind: self.kind,
             channel,
             target,
             status,
             external_ref,
         };
-        record(&self.ctx.db, self.run.id, key, row)
+        Pg::new(&self.ctx.db)
+            .record(self.organisation_id, row)
             .await
             .map_err(lerr)
     }
@@ -98,7 +99,7 @@ impl Out<'_> {
     pub async fn slack(
         &self,
         key: &str,
-        i: &integrations::Model,
+        i: &Integration,
         c: &connections::Model,
         channel: &str,
         text: &str,
@@ -138,7 +139,10 @@ impl Out<'_> {
         };
         tracing::warn!(error_code = e.code(), "slack post failed");
         match e {
-            SlackError::Revoked => mark_revoked(db, i).await.map_err(lerr)?,
+            SlackError::Revoked => Pg::new(db)
+                .mark_revoked(i.organisation_id, i.id, Utc::now())
+                .await
+                .map_err(lerr)?,
             SlackError::ChannelGone => clear_channel(db, c, channel).await.map_err(lerr)?,
             _ => {}
         }

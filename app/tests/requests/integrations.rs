@@ -4,19 +4,17 @@ use std::sync::Arc;
 use axum_test::TestServer;
 use loco_rs::{app::AppContext, prelude::*};
 use opsagent_brain::{
+    actions::uow::Repos,
     adapters::{
         db::Pg,
         slack::{HttpSlack, SlackClient},
     },
     app::kek,
     mailers::CaptureMailer,
-    models::{
-        _entities::{
-            audit_events, email_suppressions, integrations, organisations, recipients, users,
-        },
-        integrations::open_token,
+    models::_entities::{
+        audit_events, email_suppressions, integrations, organisations, recipients, users,
     },
-    services::{mail_guard, recipients as recipient_service},
+    services::{integrations::open_token, mail_guard, recipients as recipient_service},
     settings::Settings,
 };
 use opsagent_core::org::{OrganisationsRepo, Role};
@@ -253,7 +251,12 @@ async fn callback_seals_token_and_redirects_and_state_is_single_use() {
         assert_eq!(row.config["team_name"], "Acme");
         assert_eq!(row.config["bot_user_id"], "U0BOT");
         assert_ne!(row.ciphertext, b"xoxb-secret-token".to_vec());
-        let plain = open_token(&ctx.db, kek(&ctx).unwrap().as_ref(), &row)
+        let sealed = Pg::new(&ctx.db)
+            .integrations()
+            .list(row.organisation_id)
+            .await
+            .unwrap();
+        let plain = open_token(&ctx.db, kek(&ctx).unwrap().as_ref(), &sealed[0])
             .await
             .unwrap();
         assert_eq!(plain.as_str(), "xoxb-secret-token");

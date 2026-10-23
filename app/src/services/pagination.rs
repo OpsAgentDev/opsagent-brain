@@ -1,7 +1,7 @@
 //! Keyset pagination shared by every list endpoint: `ORDER BY sort_key DESC, id DESC`, with an
 //! opaque cursor holding the last row's `(sort_key, id)`.
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
-use opsagent_core::repo::{Cursor, PageRequest};
+use opsagent_core::repo::{Cursor, PageOf, PageRequest};
 use sea_orm::{ConnectionTrait, EntityTrait, Select};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -60,19 +60,25 @@ where
     E: EntityTrait,
     C: ConnectionTrait,
 {
-    let after = p.cursor.as_deref().map(decode).transpose()?;
-    let req = PageRequest {
-        after,
+    Ok(Page::of(page(db, select, cols, key, request(p)?).await?))
+}
+
+/// The repository page `p` asks for.
+pub fn request(p: &PageParams) -> Result<PageRequest, ApiError> {
+    Ok(PageRequest {
+        after: p.cursor.as_deref().map(decode).transpose()?,
         limit: limit(p),
-    };
-    let got = page(db, select, cols, key, req).await?;
-    Ok(Page {
-        items: got.items,
-        next_cursor: got.next.as_ref().map(encode),
     })
 }
 
 impl<T> Page<T> {
+    pub fn of(got: PageOf<T>) -> Self {
+        Page {
+            items: got.items,
+            next_cursor: got.next.as_ref().map(encode),
+        }
+    }
+
     pub fn map<U>(self, f: impl FnMut(T) -> U) -> Page<U> {
         Page {
             items: self.items.into_iter().map(f).collect(),

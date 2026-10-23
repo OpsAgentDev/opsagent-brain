@@ -12,6 +12,7 @@ use opsagent_core::run::RunStatus;
 use opsagent_deliver::{
     model::{Weekly, WeeklyExtras},
     render_html, render_slack, render_text,
+    repo::{DeliveriesRepo, IntegrationsRepo, RecipientsRepo},
     route::Recipient,
     weekly::build_weekly,
 };
@@ -32,10 +33,7 @@ use crate::{
         ledger_storage::PgStorage,
     },
     services::{
-        deliveries::{
-            connection_snapshot, deliverable, finding_snapshots, live_connection, options, outcome,
-            owners, route, slack_integration, SENT, WEEKLY,
-        },
+        deliveries::{deliverable, live_connection, options, outcome, route, SENT, WEEKLY},
         recipients::unsubscribe_url,
     },
     settings::Settings,
@@ -115,13 +113,14 @@ async fn step(
         return Ok(outcome("skipped", "not_deliverable"));
     };
     let w = weekly(ctx, &c).await?;
-    let integration = slack_integration(&ctx.db, org).await.map_err(lerr)?;
+    let repo = Pg::new(&ctx.db);
+    let integration = repo.active_slack(org).await.map_err(lerr)?;
     let r = route(&ctx.db, &c, integration.is_some())
         .await
         .map_err(lerr)?;
     if chunk == EMAIL {
         let to = match r.recipients {
-            v if v.is_empty() => owners(&ctx.db, org).await.map_err(lerr)?,
+            v if v.is_empty() => repo.owners(org).await.map_err(lerr)?,
             v => v,
         };
         let s = Settings::get(ctx);
@@ -145,8 +144,11 @@ async fn step(
 /// The weekly for `c` over the last 7 days.
 async fn weekly(ctx: &AppContext, c: &connections::Model) -> LResult<Weekly> {
     let now = Utc::now();
-    let conn = connection_snapshot(&ctx.db, c).await.map_err(lerr)?;
-    let findings = finding_snapshots(&ctx.db, c, now - chrono::Duration::days(7))
+    let repo = Pg::new(&ctx.db);
+    let (org, id) = (c.organisation_id, c.id);
+    let conn = repo.connection_snapshot(org, id).await.map_err(lerr)?;
+    let findings = repo
+        .finding_snapshots(org, id, now - chrono::Duration::days(7))
         .await
         .map_err(lerr)?;
     // shortcut: spend, restore-test dates, untagged spend and write candidates are not stored
@@ -214,7 +216,7 @@ async fn summary(out: &Out<'_>) -> LResult<ChunkOutcome> {
         .unwrap_or_default();
     let subject = format!("OpsAgent weekly summary: {}", mail_safe_name(&name));
     let text = parts.join("\n----\n\n");
-    for o in owners(&ctx.db, org).await.map_err(lerr)? {
+    for o in Pg::new(&ctx.db).owners(org).await.map_err(lerr)? {
         let mail = Mail {
             to: o.email,
             subject: subject.clone(),

@@ -5,7 +5,7 @@ use axum::{
 };
 use chrono::{DateTime, FixedOffset};
 use loco_rs::app::AppContext;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use opsagent_deliver::repo::{RecipientRow, RecipientsRepo};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -13,9 +13,9 @@ use uuid::Uuid;
 
 use super::{OrgIdPath, OrgPath};
 use crate::{
+    adapters::db::Pg,
     api_error::{ApiError, ApiJson, ApiQuery, Problem},
     middleware::{mailer, org_scope::OrgScope},
-    models::_entities::recipients,
     services::{
         pagination::{self, Page, PageParams},
         recipients as service,
@@ -38,15 +38,15 @@ pub struct Recipient {
     pub created_at: DateTime<FixedOffset>,
 }
 
-fn view(r: recipients::Model) -> Recipient {
+fn view(r: RecipientRow) -> Recipient {
     Recipient {
         id: r.id,
         email: r.email,
         connection_id: r.connection_id,
         member_id: r.member_id,
         status: r.status,
-        unsubscribed_at: r.unsubscribed_at,
-        created_at: r.created_at,
+        unsubscribed_at: r.unsubscribed_at.map(|t| t.fixed_offset()),
+        created_at: r.created_at.fixed_offset(),
     }
 }
 
@@ -57,17 +57,10 @@ async fn list(
     scope: OrgScope,
     ApiQuery(p): ApiQuery<PageParams>,
 ) -> Result<Json<Page<Recipient>>, ApiError> {
-    use recipients::Column as C;
-    let q = recipients::Entity::find().filter(C::OrganisationId.eq(scope.organisation_id));
-    let page = pagination::fetch(
-        &ctx.db,
-        q,
-        (C::CreatedAt, C::Id),
-        |m| (m.created_at, m.id),
-        &p,
-    )
-    .await?;
-    Ok(Json(page.map(view)))
+    let got = Pg::new(&ctx.db)
+        .list(scope.organisation_id, pagination::request(&p)?)
+        .await?;
+    Ok(Json(Page::of(got).map(view)))
 }
 
 #[derive(Deserialize, ToSchema)]
