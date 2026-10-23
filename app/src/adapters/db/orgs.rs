@@ -9,7 +9,7 @@ use opsagent_core::{
 };
 use sea_orm::{
     prelude::DateTimeWithTimeZone, ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait,
-    QueryFilter, QuerySelect, Set, TryInsertResult,
+    QueryFilter, QuerySelect, Set, SqlErr, TryInsertResult,
 };
 use uuid::Uuid;
 
@@ -103,7 +103,8 @@ impl<C: Conn> OrganisationsRepo for Pg<C> {
             TryInsertResult::Inserted(1) => {}
             _ => return Err(RepoError::Conflict("slug")),
         }
-        self.get(id).await?.ok_or(RepoError::NotFound)
+        let gone = || RepoError::Storage("organisation missing after insert".into());
+        self.get(id).await?.ok_or_else(gone)
     }
 
     async fn get(&self, organisation_id: Uuid) -> RepoResult<Option<Organisation>> {
@@ -208,10 +209,14 @@ impl<C: Conn> OrganisationsRepo for Pg<C> {
         }
         .insert(self.db())
         .await
-        .map_err(db_err)?;
+        .map_err(|e| match e.sql_err() {
+            Some(SqlErr::UniqueConstraintViolation(_)) => RepoError::Conflict("member"),
+            _ => db_err(e),
+        })?;
+        let gone = || RepoError::Storage("member missing after insert".into());
         self.member_in(organisation_id, user_id)
             .await?
-            .ok_or(RepoError::NotFound)
+            .ok_or_else(gone)
     }
 
     async fn members(&self, organisation_id: Uuid) -> RepoResult<Vec<Member>> {

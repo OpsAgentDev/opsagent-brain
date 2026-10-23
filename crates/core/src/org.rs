@@ -83,7 +83,8 @@ pub trait OrganisationsRepo: Send + Sync {
     /// `Conflict("slug")` when the slug is taken; does not abort an enclosing transaction.
     async fn insert(&self, new: NewOrganisation) -> RepoResult<Organisation>;
     async fn get(&self, organisation_id: Uuid) -> RepoResult<Option<Organisation>>;
-    /// Holds the organisation row until the transaction ends (serialises owner changes).
+    /// Holds the organisation row until the transaction ends (serialises owner changes). A
+    /// no-op outside a transaction; `MemStore` ignores it, so race tests run on Pg only.
     async fn lock(&self, organisation_id: Uuid) -> RepoResult<()>;
     /// The live organisation `slug` and `user_id`'s membership of it.
     async fn membership(

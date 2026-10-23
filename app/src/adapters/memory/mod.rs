@@ -77,6 +77,8 @@ impl Repos for MemStore {
 #[async_trait]
 impl UnitOfWork for MemStore {
     async fn begin(&self) -> RepoResult<Box<dyn Tx>> {
+        // shortcut: single-threaded test support; concurrent transactions are not isolated and
+        // the last commit wins. Use Pg for race and lock tests.
         let snapshot = self.state().clone();
         Ok(Box::new(MemTx {
             parent: self.clone(),

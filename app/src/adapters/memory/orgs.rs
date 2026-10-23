@@ -41,7 +41,7 @@ impl MemState {
 impl OrganisationsRepo for MemStore {
     async fn insert(&self, new: NewOrganisation) -> RepoResult<Organisation> {
         let mut s = self.state();
-        if s.orgs.iter().any(|o| o.slug == new.slug || o.id == new.id) {
+        if s.orgs.iter().any(|o| o.slug == new.slug) {
             return Err(RepoError::Conflict("slug"));
         }
         let o = Organisation {

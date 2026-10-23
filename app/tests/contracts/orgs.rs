@@ -73,6 +73,15 @@ contract_suite! {
         assert!(matches!(gone, Err(RepoError::NotFound)));
     }
 
+    async fn duplicate_member_is_conflict(s) {
+        let u = user(s, "m@example.com").await;
+        let o = org(s, "acme").await;
+        s.orgs().add_member(o.id, u.id, Role::Member).await.unwrap();
+        let err = s.orgs().add_member(o.id, u.id, Role::Owner).await.unwrap_err();
+        assert!(matches!(err, RepoError::Conflict("member")), "{err:?}");
+        assert_eq!(s.orgs().members(o.id).await.unwrap().len(), 1);
+    }
+
     async fn owner_count_counts_only_owners(s) {
         let (a, b, c) = (user(s, "a@example.com").await, user(s, "b@example.com").await,
             user(s, "c@example.com").await);

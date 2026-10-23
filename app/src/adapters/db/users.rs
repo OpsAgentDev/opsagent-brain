@@ -17,11 +17,19 @@ use crate::models::{
 };
 
 fn user(m: users::Model) -> RepoResult<User> {
+    let github_id = m
+        .github_id
+        .as_deref()
+        .map(|g| {
+            g.parse()
+                .map_err(|_| RepoError::Storage("stored github_id is not valid".into()))
+        })
+        .transpose()?;
     Ok(User {
         id: m.id,
         email: email(&m.email)?,
         name: m.name,
-        github_id: m.github_id.as_deref().and_then(|g| g.parse().ok()),
+        github_id,
         created_at: utc(m.created_at),
     })
 }
