@@ -73,4 +73,16 @@ contract_suite! {
         r.suppress(None, "h3", Suppression::ConfirmBlocked).await.unwrap();
         assert_eq!(r.suppressed(b, "h3").await.unwrap(), [Suppression::Unsubscribed]);
     }
+
+    async fn ids_by_email_maps_lowercased_addresses_in_the_org(s) {
+        let o = org_id(s, "acme").await;
+        let a = s.recipients().insert(o, email("a@example.com", None)).await.unwrap();
+        let other = org_id(s, "other").await;
+        s.recipients().insert(other, email("b@example.com", None)).await.unwrap();
+        let ask = vec!["a@example.com".to_owned(), "b@example.com".to_owned()];
+        let got = s.recipients().ids_by_email(o, &ask).await.unwrap();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got.get("a@example.com"), Some(&a.id));
+        assert!(s.recipients().ids_by_email(o, &[]).await.unwrap().is_empty());
+    }
 }

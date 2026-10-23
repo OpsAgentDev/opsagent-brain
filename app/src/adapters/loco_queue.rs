@@ -5,10 +5,9 @@ use loco_rs::{app::AppContext, bgworker::BackgroundWorker};
 use opsagent_ledger::{JobKind, LedgerError, NewJob, Queue};
 
 use crate::workers::{
-    deliver_briefing::{DeliverBriefingArgs, DeliverBriefingWorker},
-    deliver_weekly::{DeliverWeeklyArgs, DeliverWeeklyWorker},
     full_scan::{FullScanArgs, FullScanWorker},
     verify::{VerifyArgs, VerifyWorker},
+    DeliverBriefingArgs, DeliverBriefingWorker, DeliverWeeklyArgs, DeliverWeeklyWorker,
 };
 
 pub struct LocoQueue(pub AppContext);

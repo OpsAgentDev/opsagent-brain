@@ -15,9 +15,9 @@ use crate::{adapters::redact::redact, models::enum_str};
 
 #[derive(Clone)]
 pub struct FindingRow {
-    finding: Finding,
+    pub(super) finding: Finding,
     /// Oldest first.
-    events: Vec<FindingEvent>,
+    pub(super) events: Vec<FindingEvent>,
     /// Oldest first.
     evidence: Vec<StoredEvidence>,
 }

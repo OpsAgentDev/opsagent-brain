@@ -28,8 +28,7 @@ use crate::{
         scheduler_tick::SchedulerTick,
     },
     workers::{
-        deliver_briefing::DeliverBriefingWorker, deliver_weekly::DeliverWeeklyWorker,
-        full_scan::FullScanWorker, verify::VerifyWorker,
+        full_scan::FullScanWorker, verify::VerifyWorker, DeliverBriefingWorker, DeliverWeeklyWorker,
     },
 };
 

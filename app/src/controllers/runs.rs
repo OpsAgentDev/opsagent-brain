@@ -83,7 +83,7 @@ async fn list(
     };
     let list = &actions(&ctx)?.runs.list_runs;
     let got = list
-        .run(scope.organisation_id, filter, page_request(&p)?)
+        .run(scope.organisation.id, filter, page_request(&p)?)
         .await?;
     Ok(Json(Page::of(got).map(summary)))
 }
@@ -99,7 +99,7 @@ async fn show(
     let r = actions(&ctx)?
         .runs
         .get_run
-        .run(scope.organisation_id, id)
+        .run(scope.organisation.id, id)
         .await?;
     Ok(Json(Run {
         attempts: r.attempts,
@@ -120,7 +120,9 @@ async fn scan(
 ) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
     let id = super::connections::parse_id(&id)?;
     let scan = &actions(&ctx)?.runs.request_manual_scan;
-    let out = scan.run(scope.organisation_id, scope.user_id, id).await?;
+    let out = scan
+        .run(scope.organisation.id, scope.member.user_id, id)
+        .await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(RunAccepted { run_id: out.run.id }),

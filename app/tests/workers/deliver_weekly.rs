@@ -6,11 +6,10 @@ use opsagent_brain::{
     adapters::db::Pg,
     app::actions,
     settings::Settings,
-    workers::deliver_weekly,
 };
 use opsagent_core::org::{OrganisationsRepo, Role};
 use opsagent_core::run::RunStatus;
-use opsagent_ledger::{harness, RunChunkedOptions};
+use opsagent_ledger::{harness, JobKind, RunChunkedOptions};
 use serde_json::json;
 use serial_test::serial;
 use uuid::Uuid;
@@ -46,8 +45,19 @@ async fn recipient(ctx: &AppContext, w: &World, email: &str, member_id: Option<U
 }
 
 async fn weekly(ctx: &AppContext, w: &World, conn: Option<Uuid>) -> (Uuid, RunStatus) {
-    let id = new_run(ctx, w.org, conn, deliver_weekly::JOB, Utc::now()).await;
-    let status = deliver_weekly::run(ctx, id, RunChunkedOptions::default())
+    let id = new_run(
+        ctx,
+        w.org,
+        conn,
+        JobKind::DeliverWeekly.as_str(),
+        Utc::now(),
+    )
+    .await;
+    let status = actions(ctx)
+        .unwrap()
+        .deliveries
+        .deliver_weekly
+        .run(id, RunChunkedOptions::default())
         .await
         .unwrap();
     (id, status)
@@ -63,7 +73,7 @@ async fn killed_after_the_email_and_resumed_sends_one_email_and_one_post() {
         slack_on(&ctx, &w, &slack).await;
         mock_post(&slack, json!({"ok": true, "ts": "9.9"}), 1).await;
         scan(&ctx, &w, Utc::now()).await;
-        let id = new_run(&ctx, w.org, Some(w.conn), deliver_weekly::JOB, Utc::now()).await;
+        let id = new_run(&ctx, w.org, Some(w.conn), JobKind::DeliverWeekly.as_str(), Utc::now()).await;
         // Killed after each chunk's checkpoint: after `email`, then after `slack`.
         let runs = harness::kill_after_each_checkpoint(|ks| {
             let ctx = ctx.clone();
@@ -72,7 +82,7 @@ async fn killed_after_the_email_and_resumed_sends_one_email_and_one_post() {
                     after_checkpoint: Some(ks),
                     ..Default::default()
                 };
-                deliver_weekly::run(&ctx, id, opts).await
+                actions(&ctx).unwrap().deliveries.deliver_weekly.run(id, opts).await
             }
         })
         .await
@@ -85,7 +95,7 @@ async fn killed_after_the_email_and_resumed_sends_one_email_and_one_post() {
             vec![id.into()],
         )
         .await;
-        let status = deliver_weekly::run(&ctx, id, RunChunkedOptions::default())
+        let status = actions(&ctx).unwrap().deliveries.deliver_weekly.run(id, RunChunkedOptions::default())
             .await
             .unwrap();
         assert_eq!(status, RunStatus::Done);

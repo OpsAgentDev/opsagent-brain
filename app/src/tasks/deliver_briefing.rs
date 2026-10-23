@@ -1,24 +1,14 @@
 //! `cargo loco task deliver:briefing connection:<id>`: delivers the briefing inline (local and
 //! e2e use).
-use crate::adapters::db::ledger_storage::PgStorage;
 use async_trait::async_trait;
 use loco_rs::{
     app::AppContext,
     task::{Task, TaskInfo, Vars},
     Error, Result,
 };
-use opsagent_core::run::RunKey;
-use opsagent_ledger::Storage;
-use sea_orm::EntityTrait;
 use uuid::Uuid;
 
-use crate::{
-    models::_entities::connections,
-    workers::{
-        common::err,
-        deliver_briefing::{self, JOB},
-    },
-};
+use crate::{app::actions, error::AppError, workers::common::err};
 
 pub struct DeliverBriefingNow;
 
@@ -33,26 +23,10 @@ impl Task for DeliverBriefingNow {
 
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let id: Uuid = vars.cli_arg("connection")?.parse().map_err(err)?;
-        // tenancy: operator task; the connection id names its organisation.
-        let c = connections::Entity::find_by_id(id)
-            .one(&ctx.db)
-            .await?
-            .ok_or_else(|| Error::string("connection not found"))?;
-        let run = PgStorage::new(ctx.db.clone())
-            .create_run(RunKey {
-                organisation_id: Some(c.organisation_id),
-                connection_id: Some(id),
-                job_type: JOB.into(),
-                scheduled_at: chrono::Utc::now(),
-            })
-            .await
-            .map_err(err)?
-            .run;
-        let opts = crate::services::deliveries::options(JOB);
-        let status = deliver_briefing::run(ctx, run.id, opts)
-            .await
-            .map_err(err)?;
-        tracing::info!(run_id = %run.id, status = ?status, "deliver_briefing finished");
-        Ok(())
+        match actions(ctx)?.deliveries.deliver_briefing_now.run(id).await {
+            Ok(_) => Ok(()),
+            Err(AppError::NotFound) => Err(Error::string("connection not found")),
+            Err(e) => Err(err(e)),
+        }
     }
 }

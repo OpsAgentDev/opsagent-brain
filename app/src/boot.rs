@@ -8,8 +8,8 @@ use opsagent_secrets::Kek;
 
 use crate::{
     actions::{
-        auth, connections, findings, integrations, members, orgs, recipients, resources, runs,
-        uow::UnitOfWork, Actions, RateLimiter,
+        auth, connections, deliveries, findings, integrations, members, orgs, recipients,
+        resources, runs, uow::UnitOfWork, Actions, RateLimiter,
     },
     adapters::slack::SlackClient,
     mailers::Mailer,
@@ -116,6 +116,7 @@ pub fn build_actions(d: &Deps) -> Actions {
         },
         recipients: recipients(d),
         integrations: integrations(d),
+        deliveries: deliveries(d),
     }
 }
 
@@ -166,5 +167,32 @@ fn integrations(d: &Deps) -> integrations::Integrations {
             d.kek.clone(),
             d.slack.clone(),
         ),
+    }
+}
+
+fn deliveries(d: &Deps) -> deliveries::Deliveries {
+    let kit = deliveries::Kit {
+        uow: d.uow.clone(),
+        redis: d.ledger_redis.clone(),
+        kek: d.kek.clone(),
+        mailer: d.mailer.clone(),
+        slack: d.slack.clone(),
+        // The guard keeps no state of its own (counters are the limiter's), so a second one
+        // decides exactly as the recipients' one.
+        guard: Arc::new(recipients::MailGuard::new(d.uow.clone(), d.limiter.clone())),
+        clock: d.clock.clone(),
+        settings: d.settings.clone(),
+    };
+    deliveries::Deliveries {
+        list_deliveries: deliveries::ListDeliveries::new(d.uow.clone()),
+        get_delivery: deliveries::GetDelivery::new(d.uow.clone()),
+        preview_briefing: deliveries::PreviewBriefing::new(
+            d.uow.clone(),
+            d.settings.web_base_url.clone(),
+            d.clock.clone(),
+        ),
+        deliver_briefing: deliveries::DeliverBriefing::new(kit.clone()),
+        deliver_weekly: deliveries::DeliverWeekly::new(kit.clone()),
+        deliver_briefing_now: deliveries::DeliverBriefingNow::new(kit),
     }
 }

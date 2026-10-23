@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use opsagent_core::{
@@ -199,5 +201,26 @@ impl RecipientsRepo for MemStore {
             })
             .map(|r| r.kind)
             .collect())
+    }
+
+    async fn ids_by_email(
+        &self,
+        organisation_id: Uuid,
+        emails: &[String],
+    ) -> RepoResult<HashMap<String, Uuid>> {
+        let s = self.state();
+        let mut rows: Vec<_> = s
+            .recipients
+            .iter()
+            .map(|r| &r.row)
+            .filter(|r| r.organisation_id == organisation_id)
+            .filter(|r| emails.contains(&r.email.to_lowercase()))
+            .collect();
+        rows.sort_by_key(|r| (r.created_at, r.id));
+        let mut map = HashMap::new();
+        for r in rows {
+            map.entry(r.email.to_lowercase()).or_insert(r.id);
+        }
+        Ok(map)
     }
 }

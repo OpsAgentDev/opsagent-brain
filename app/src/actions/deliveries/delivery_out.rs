@@ -1,28 +1,22 @@
-//! Shared by `deliver_briefing` and `deliver_weekly`: one email or one Slack post per run and
+//! Shared by `DeliverBriefing` and `DeliverWeekly`: one email or one Slack post per run and
 //! effect key (side-effect ledger), each with its `deliveries` row. Logs codes only: never
 //! message text, tokens or addresses (logging.md).
-use crate::adapters::db::ledger_storage::PgStorage;
-use chrono::Utc;
-use loco_rs::app::AppContext;
-use opsagent_deliver::repo::{DeliveriesRepo, Integration, IntegrationsRepo, NewDelivery};
+use opsagent_core::connection::{Connection, ConnectionPatch};
+use opsagent_deliver::repo::{Integration, NewDelivery, FAILED, SENT, SUPPRESSED};
 use opsagent_ledger::{effects::with_effect, retry::backoff, EffectState, LedgerError, RunRow};
 use uuid::Uuid;
 
-use super::common::{lerr, LResult};
+use super::Kit;
 use crate::{
-    actions::integrations::open_token,
-    adapters::{db::Pg, slack::SlackError},
-    app::{actions, kek},
+    actions::{integrations::open_token, uow::UnitOfWork},
+    adapters::slack::SlackError,
     mailers::Mail,
-    middleware::{mailer, slack},
-    models::_entities::connections,
-    services::deliveries::{clear_channel, FAILED, SENT, SUPPRESSED},
+    workers::common::{lerr, LResult},
 };
 
 /// The run delivering, and what its rows are about.
-pub(crate) struct Out<'a> {
-    pub ctx: &'a AppContext,
-    pub storage: &'a PgStorage,
+pub(super) struct Out<'a> {
+    pub kit: &'a Kit,
     pub run: &'a RunRow,
     pub organisation_id: Uuid,
     pub connection_id: Option<Uuid>,
@@ -52,14 +46,16 @@ impl Out<'_> {
             status,
             external_ref,
         };
-        Pg::new(&self.ctx.db)
+        self.kit
+            .uow
+            .deliveries()
             .record(self.organisation_id, row)
             .await
             .map_err(lerr)
     }
 
     /// Mails `mail` once for effect `key` (`Idempotency-Key` `{run_id}:{key}`); its row gets
-    /// `status`. A refusal by `mail_guard` sends nothing and writes the row `suppressed`.
+    /// `status`. A refusal by `MailGuard` sends nothing and writes the row `suppressed`.
     /// `member`: the address is a member or owner (`Recipient.member`).
     pub async fn email(
         &self,
@@ -69,8 +65,9 @@ impl Out<'_> {
         status: &str,
     ) -> LResult<()> {
         let to = mail.to.clone();
-        let guard = &actions(self.ctx).map_err(lerr)?.recipients.mail_guard;
-        if !guard
+        if !self
+            .kit
+            .guard
             .may_deliver(self.organisation_id, &to, member)
             .await
             .map_err(lerr)?
@@ -78,8 +75,9 @@ impl Out<'_> {
             return self.row(key, "email", &to, SUPPRESSED).await;
         }
         mail.idempotency_key = Some(format!("{}:{key}", self.run.id));
-        let mailer = mailer(self.ctx);
-        with_effect(self.storage, self.run.id, key, true, || async move {
+        let mailer = self.kit.mailer.clone();
+        let storage = self.kit.uow.ledger();
+        with_effect(storage, self.run.id, key, true, || async move {
             mailer.send(mail).await.map(|()| None).map_err(|_| {
                 tracing::warn!(error_code = "mail_failed", "delivery mail failed");
                 LedgerError::Job {
@@ -99,24 +97,23 @@ impl Out<'_> {
         &self,
         key: &str,
         i: &Integration,
-        c: &connections::Model,
+        c: &Connection,
         channel: &str,
         text: &str,
     ) -> LResult<Result<(), SlackError>> {
-        let db = &self.ctx.db;
-        let kek = kek(self.ctx).map_err(lerr)?;
-        let token = open_token(&Pg::new(db), kek.as_ref(), i)
+        let uow = &*self.kit.uow;
+        let token = open_token(uow, self.kit.kek.as_ref(), i)
             .await
             .map_err(|_| LedgerError::Job {
                 code: "token_unreadable".into(),
                 retry: false,
             })?;
-        let (client, msg_id) = (slack(self.ctx), format!("{}:{key}", self.run.id));
+        let (client, msg_id) = (&self.kit.slack, format!("{}:{key}", self.run.id));
         let mut failed = None;
         // shortcut: a crash between the post and the ledger record, or a retried lost response,
         // reposts, since Slack does not guarantee `client_msg_id` dedupe; accept until Slack
         // offers an idempotent post.
-        let res = with_effect(self.storage, self.run.id, key, true, || async {
+        let res = with_effect(uow.ledger(), self.run.id, key, true, || async {
             match client.post_message(&token, channel, text, &msg_id).await {
                 Ok(ts) => Ok(Some(ts)),
                 Err(e) => {
@@ -138,11 +135,12 @@ impl Out<'_> {
         };
         tracing::warn!(error_code = e.code(), "slack post failed");
         match e {
-            SlackError::Revoked => Pg::new(db)
-                .mark_revoked(i.organisation_id, i.id, Utc::now())
+            SlackError::Revoked => uow
+                .integrations()
+                .mark_revoked(i.organisation_id, i.id, self.kit.clock.now())
                 .await
                 .map_err(lerr)?,
-            SlackError::ChannelGone => clear_channel(db, c, channel).await.map_err(lerr)?,
+            SlackError::ChannelGone => clear_channel(uow, c, channel).await.map_err(lerr)?,
             _ => {}
         }
         self.row(key, "slack", channel, FAILED).await?;
@@ -159,8 +157,27 @@ impl Out<'_> {
     }
 }
 
+/// The channel was archived or deleted: clear it from the connection (if still set to it).
+async fn clear_channel(
+    uow: &dyn UnitOfWork,
+    c: &Connection,
+    channel: &str,
+) -> opsagent_core::repo::RepoResult<()> {
+    let tx = uow.begin().await?;
+    let (org, id) = (c.organisation_id, c.id);
+    let held = tx.connections().lock(org, id).await?;
+    if held.is_some_and(|h| h.slack_channel_id.as_deref() == Some(channel)) {
+        let patch = ConnectionPatch {
+            slack_channel_id: Some(None),
+            ..Default::default()
+        };
+        tx.connections().update(org, id, patch).await?;
+    }
+    tx.commit().await
+}
+
 /// Slack mrkdwn as plain mail text: `<url|label>` becomes `label: url`, entities unescaped.
-pub(crate) fn plain(mrkdwn: &str) -> String {
+pub(super) fn plain(mrkdwn: &str) -> String {
     let mut out = String::with_capacity(mrkdwn.len());
     let mut rest = mrkdwn;
     while let Some(open) = rest.find('<') {

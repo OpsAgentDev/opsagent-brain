@@ -16,9 +16,9 @@ use crate::workers::full_scan::JOB;
 
 #[derive(Clone)]
 pub(super) struct RunEntry {
-    row: RunRow,
+    pub(super) row: RunRow,
     started_at: Option<DateTime<Utc>>,
-    finished_at: Option<DateTime<Utc>>,
+    pub(super) finished_at: Option<DateTime<Utc>>,
     next_attempt_at: Option<DateTime<Utc>>,
 }
 

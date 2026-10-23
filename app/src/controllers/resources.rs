@@ -84,7 +84,7 @@ async fn list(
     let got = actions(&ctx)?
         .resources
         .list_resources
-        .run(scope.organisation_id, filter, page)
+        .run(scope.organisation.id, filter, page)
         .await?;
     Ok(Json(Page::of(got).map(summary)))
 }

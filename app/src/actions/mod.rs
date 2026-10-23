@@ -1,6 +1,7 @@
 //! Use cases over repository traits (engineering principles, Layers).
 pub mod auth;
 pub mod connections;
+pub mod deliveries;
 pub mod findings;
 pub mod integrations;
 pub mod members;
@@ -25,6 +26,7 @@ pub struct Actions {
     pub members: members::Members,
     pub recipients: recipients::Recipients,
     pub integrations: integrations::Integrations,
+    pub deliveries: deliveries::Deliveries,
 }
 
 /// Fixed-window counters shared by every rate limit.

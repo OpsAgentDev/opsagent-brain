@@ -184,7 +184,7 @@ async fn list(
     let got = actions(&ctx)?
         .findings
         .list_findings
-        .run(scope.organisation_id, filter, page)
+        .run(scope.organisation.id, filter, page)
         .await?;
     Ok(Json(Page::of(got).map(summary)))
 }
@@ -199,7 +199,7 @@ async fn show(
     let d = actions(&ctx)?
         .findings
         .get_finding
-        .run(scope.organisation_id, finding_id(&id)?)
+        .run(scope.organisation.id, finding_id(&id)?)
         .await?;
     Ok(Json(FindingDetail {
         finding: full(d.finding),
@@ -219,7 +219,7 @@ async fn act(
     let updated = actions(ctx)?
         .findings
         .change_finding_status
-        .run(scope.organisation_id, scope.user_id, id, action)
+        .run(scope.organisation.id, scope.member.user_id, id, action)
         .await?;
     Ok(Json(full(updated)))
 }
@@ -295,8 +295,8 @@ async fn report_explanation(
         .findings
         .report_explanation
         .run(
-            scope.organisation_id,
-            scope.user_id,
+            scope.organisation.id,
+            scope.member.user_id,
             finding_id(&id)?,
             &b.note,
         )
