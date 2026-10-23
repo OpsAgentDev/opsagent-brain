@@ -49,3 +49,29 @@ impl ScanNow {
         Ok(status)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use opsagent_connectors::{aws::AwsOutbound, Registry};
+    use opsagent_core::repo::SystemClock;
+    use opsagent_secrets::EnvKek;
+
+    use super::*;
+    use crate::adapters::memory::MemStore;
+
+    #[tokio::test]
+    async fn unknown_connection_is_not_found() {
+        let uow: Arc<dyn UnitOfWork> = Arc::new(MemStore::default());
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        // Never dialled: an unknown id ends before any run or lease exists.
+        let redis = opsagent_ledger::redis::Client::open("redis://localhost:1").unwrap();
+        let kek = Arc::new(EnvKek::new([7; 32], 1, None));
+        let connectors = Arc::new(Registry::new(AwsOutbound::default(), true));
+        let full_scan = FullScan::new(uow.clone(), redis, kek, connectors, clock.clone());
+        let err = ScanNow::new(uow, full_scan, clock)
+            .run(Uuid::new_v4())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound), "{err:?}");
+    }
+}

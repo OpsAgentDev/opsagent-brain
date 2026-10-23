@@ -256,7 +256,6 @@ pub trait DeliveriesRepo: Send + Sync {
     ) -> RepoResult<Vec<FindingSnapshot>>;
 }
 
-/// The first instant to schedule from, given the schedule's zone.
 /// A parked run whose retry (or interrupted enqueue) is due.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DueRun {
@@ -267,6 +266,7 @@ pub struct DueRun {
     pub organisation_deleted: bool,
 }
 
+/// The first instant to schedule from, given the schedule's zone.
 pub type SinceFn<'a> = &'a (dyn Fn(&str) -> Option<DateTime<Utc>> + Send + Sync);
 
 #[async_trait]

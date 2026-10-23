@@ -204,8 +204,8 @@ impl VerifyConnection {
             }
             Ok(false) => Ok(None),
             Err(RepoError::Conflict("account")) => {
+                // TODO(notify): email the owners of the organisation that holds the account.
                 drop(sp); // back to the savepoint
-                          // TODO(notify): email the owners of the organisation that holds the account.
                 let reason = Some("account_already_connected");
                 let cas = tx
                     .connections()

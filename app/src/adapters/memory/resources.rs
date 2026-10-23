@@ -196,7 +196,8 @@ impl ResourcesRepo for MemStore {
         Ok(out)
     }
 
-    /// Nothing reads call counts through the trait, so the fake keeps none.
+    // shortcut: the fake keeps no call counts, as nothing reads them through the trait; store
+    // them once a reader (a call-count view or test) exists.
     async fn replace_inventory_calls(
         &self,
         _run_id: Uuid,
