@@ -28,8 +28,8 @@ use crate::{
         scheduler_tick::SchedulerTick,
     },
     workers::{
-        common::redis_client, deliver_briefing::DeliverBriefingWorker,
-        deliver_weekly::DeliverWeeklyWorker, full_scan::FullScanWorker, verify::VerifyWorker,
+        common::redis_client, full_scan::FullScanWorker, verify::VerifyWorker,
+        DeliverBriefingWorker, DeliverWeeklyWorker,
     },
 };
 

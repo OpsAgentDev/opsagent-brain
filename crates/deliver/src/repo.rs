@@ -119,6 +119,13 @@ pub trait RecipientsRepo: Send + Sync {
         organisation_id: Uuid,
         email_hash: &str,
     ) -> RepoResult<Vec<Suppression>>;
+    /// Lowercased address to the id of its oldest recipient row in the organisation, for each
+    /// of `emails` (lowercased) that has one.
+    async fn ids_by_email(
+        &self,
+        organisation_id: Uuid,
+        emails: &[String],
+    ) -> RepoResult<std::collections::HashMap<String, Uuid>>;
 }
 
 pub const SLACK: &str = "slack";

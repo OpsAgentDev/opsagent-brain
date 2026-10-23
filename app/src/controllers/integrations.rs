@@ -47,7 +47,7 @@ async fn slack_start(
         .run(&state)?;
     // Overwrites any earlier state, so only the latest start can complete.
     session
-        .insert(SLACK_KEY, (state, scope.organisation_id))
+        .insert(SLACK_KEY, (state, scope.organisation.id))
         .await?;
     Ok(Json(SlackStart { authorize_url }))
 }
@@ -131,7 +131,7 @@ async fn slack_channels(
     scope: OrgScope,
 ) -> Result<Json<Vec<Channel>>, ApiError> {
     let channels = &actions(&ctx)?.integrations.list_slack_channels;
-    let chans = channels.run(scope.organisation_id).await?;
+    let chans = channels.run(scope.organisation.id).await?;
     Ok(Json(chans))
 }
 
@@ -154,7 +154,7 @@ async fn list(
     scope: OrgScope,
 ) -> Result<Json<Vec<Integration>>, ApiError> {
     let list = &actions(&ctx)?.integrations.list_integrations;
-    let rows = list.run(scope.organisation_id).await?;
+    let rows = list.run(scope.organisation.id).await?;
     Ok(Json(
         rows.into_iter()
             .map(|r| Integration {
@@ -178,7 +178,9 @@ async fn remove(
     scope.require_owner()?;
     let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
     let delete = &actions(&ctx)?.integrations.delete_integration;
-    delete.run(scope.organisation_id, scope.user_id, id).await?;
+    delete
+        .run(scope.organisation.id, scope.member.user_id, id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

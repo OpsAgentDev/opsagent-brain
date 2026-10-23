@@ -54,7 +54,7 @@ async fn list(
     ApiQuery(p): ApiQuery<PageParams>,
 ) -> Result<Json<Page<Recipient>>, ApiError> {
     let list = &actions(&ctx)?.recipients.list_recipients;
-    let got = list.run(scope.organisation_id, page_request(&p)?).await?;
+    let got = list.run(scope.organisation.id, page_request(&p)?).await?;
     Ok(Json(Page::of(got).map(view)))
 }
 
@@ -85,7 +85,7 @@ async fn create(
     };
     let create = &actions(&ctx)?.recipients.create_recipient;
     let row = create
-        .run(scope.organisation_id, scope.user_id, new)
+        .run(scope.organisation.id, scope.member.user_id, new)
         .await?;
     Ok((StatusCode::CREATED, Json(view(row))))
 }
@@ -100,7 +100,9 @@ async fn remove(
     scope.require_owner()?;
     let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
     let delete = &actions(&ctx)?.recipients.delete_recipient;
-    delete.run(scope.organisation_id, scope.user_id, id).await?;
+    delete
+        .run(scope.organisation.id, scope.member.user_id, id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

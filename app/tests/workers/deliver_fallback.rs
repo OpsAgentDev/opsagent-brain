@@ -1,9 +1,9 @@
 //! Briefing fallbacks (Plan 2 Task 10 fix round 1): the revoke notice comes from stored state,
 //! and a rate-limited post is retried on the ledger backoff before falling back.
 use chrono::{Duration, Utc};
-use opsagent_brain::workers::{deliver_briefing, deliver_weekly};
+use opsagent_brain::app::actions;
 use opsagent_core::run::RunStatus;
-use opsagent_ledger::RunChunkedOptions;
+use opsagent_ledger::{JobKind, RunChunkedOptions};
 use serde_json::json;
 use serial_test::serial;
 use wiremock::{matchers::path, Mock, MockServer, ResponseTemplate};
@@ -26,8 +26,19 @@ async fn revocation_found_by_the_weekly_still_gives_the_next_briefing_the_notice
         mock_post(&slack, json!({"ok": false, "error": "token_revoked"}), 1).await;
         first_scan(&ctx, &w).await;
 
-        let id = new_run(&ctx, w.org, Some(w.conn), deliver_weekly::JOB, Utc::now()).await;
-        deliver_weekly::run(&ctx, id, RunChunkedOptions::default())
+        let id = new_run(
+            &ctx,
+            w.org,
+            Some(w.conn),
+            JobKind::DeliverWeekly.as_str(),
+            Utc::now(),
+        )
+        .await;
+        actions(&ctx)
+            .unwrap()
+            .deliveries
+            .deliver_weekly
+            .run(id, RunChunkedOptions::default())
             .await
             .unwrap();
         let weekly_mails = mail.sent().len();
@@ -78,8 +89,19 @@ async fn rate_limited_post_parks_the_run_then_falls_back_once_retries_are_spent(
         mock_post(&slack, json!({"ok": false, "error": "ratelimited"}), 2).await;
         first_scan(&ctx, &w).await;
 
-        let id = new_run(&ctx, w.org, Some(w.conn), deliver_briefing::JOB, Utc::now()).await;
-        let status = deliver_briefing::run(&ctx, id, RunChunkedOptions::default())
+        let id = new_run(
+            &ctx,
+            w.org,
+            Some(w.conn),
+            JobKind::DeliverBriefing.as_str(),
+            Utc::now(),
+        )
+        .await;
+        let status = actions(&ctx)
+            .unwrap()
+            .deliveries
+            .deliver_briefing
+            .run(id, RunChunkedOptions::default())
             .await
             .unwrap();
         assert_eq!(
@@ -93,7 +115,11 @@ async fn rate_limited_post_parks_the_run_then_falls_back_once_retries_are_spent(
 
         // Retries spent: the next attempt falls back to email (no revoke notice).
         sql_attempts(&ctx, id, 99).await;
-        let status = deliver_briefing::run(&ctx, id, RunChunkedOptions::default())
+        let status = actions(&ctx)
+            .unwrap()
+            .deliveries
+            .deliver_briefing
+            .run(id, RunChunkedOptions::default())
             .await
             .unwrap();
         assert_eq!(status, RunStatus::Done);
@@ -121,8 +147,19 @@ async fn transient_5xx_parks_the_run_then_the_retry_delivers_to_slack_without_fa
         mock_post(&slack, json!({"ok": true, "ts": "1.2"}), 1).await;
         first_scan(&ctx, &w).await;
 
-        let id = new_run(&ctx, w.org, Some(w.conn), deliver_briefing::JOB, Utc::now()).await;
-        let status = deliver_briefing::run(&ctx, id, RunChunkedOptions::default())
+        let id = new_run(
+            &ctx,
+            w.org,
+            Some(w.conn),
+            JobKind::DeliverBriefing.as_str(),
+            Utc::now(),
+        )
+        .await;
+        let status = actions(&ctx)
+            .unwrap()
+            .deliveries
+            .deliver_briefing
+            .run(id, RunChunkedOptions::default())
             .await
             .unwrap();
         assert_eq!(status, RunStatus::Queued, "parked for retry, not fallback");
@@ -135,7 +172,11 @@ async fn transient_5xx_parks_the_run_then_the_retry_delivers_to_slack_without_fa
             vec![id.into()],
         )
         .await;
-        let status = deliver_briefing::run(&ctx, id, RunChunkedOptions::default())
+        let status = actions(&ctx)
+            .unwrap()
+            .deliveries
+            .deliver_briefing
+            .run(id, RunChunkedOptions::default())
             .await
             .unwrap();
         assert_eq!(status, RunStatus::Done);

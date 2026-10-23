@@ -1,8 +1,13 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use opsagent_core::repo::{PageOf, PageRequest, RepoError, RepoResult};
+use opsagent_core::{
+    connection::Posture,
+    finding::{FindingsRepo, Severity},
+    repo::{PageOf, PageRequest, RepoError, RepoResult},
+    run::RunStatus,
+};
 use opsagent_deliver::{
-    model::{ConnectionSnapshot, FindingSnapshot},
+    model::{ConnectionSnapshot, FindingSnapshot, FindingStatus, SeverityCounts},
     repo::{
         DeliveriesRepo, DeliveryFilter, DeliveryRow, NewDelivery, BRIEFING, FALLBACK_EMAIL,
         REVOKED, SENT, SLACK,
@@ -11,6 +16,7 @@ use opsagent_deliver::{
 use uuid::Uuid;
 
 use super::{page, MemStore};
+use crate::models::enum_of;
 
 fn sent(status: &str) -> bool {
     status == SENT || status == FALLBACK_EMAIL
@@ -121,24 +127,95 @@ impl DeliveriesRepo for MemStore {
         }))
     }
 
-    // shortcut: not modelled in MemStore (needs finding costs, run scans and the posture
-    // score); fails loudly so no fake-backed test passes on an empty snapshot. Model it before a
-    // MemStore action test reads snapshots (Task 12).
     async fn connection_snapshot(
         &self,
-        _organisation_id: Uuid,
-        _connection_id: Uuid,
+        organisation_id: Uuid,
+        connection_id: Uuid,
     ) -> RepoResult<ConnectionSnapshot> {
-        Err(RepoError::Storage("not modelled in MemStore".into()))
+        let score = Posture::from_rows(
+            &FindingsRepo::posture_rows(self, organisation_id, connection_id).await?,
+        )
+        .score;
+        let s = self.state();
+        let c = s
+            .connections
+            .iter()
+            .map(|(c, _)| c)
+            .find(|c| (c.organisation_id, c.id) == (organisation_id, connection_id))
+            .ok_or(RepoError::NotFound)?;
+        let mut counts = SeverityCounts::default();
+        for f in s.findings.iter().map(|r| &r.finding) {
+            if (f.organisation_id, f.connection_id) == (organisation_id, connection_id)
+                && matches!(f.status.as_str(), "open" | "flapping")
+            {
+                *count_of(&mut counts, f.severity) += 1;
+            }
+        }
+        let mut scans: Vec<_> = s
+            .runs
+            .iter()
+            .filter(|r| {
+                let k = &r.row.key;
+                (k.organisation_id, k.connection_id, k.job_type.as_str())
+                    == (Some(organisation_id), Some(connection_id), "full_scan")
+                    && matches!(r.row.status, RunStatus::Done | RunStatus::Partial)
+            })
+            .filter_map(|r| r.finished_at.map(|t| (t, r.row.status)))
+            .collect();
+        scans.sort_by_key(|(t, _)| *t);
+        Ok(ConnectionSnapshot {
+            id: c.id,
+            display_name: c.display_name.clone().unwrap_or_else(|| c.provider.clone()),
+            status: c.status,
+            status_reason: c.status_reason.clone(),
+            posture_score: Some(score),
+            prev_posture_score: None,
+            counts_by_severity: counts,
+            first_scan_at: scans.first().map(|(t, _)| *t),
+            last_scan_at: scans.last().map(|(t, _)| *t),
+            partial: scans
+                .last()
+                .is_some_and(|(_, st)| *st == RunStatus::Partial),
+        })
     }
 
-    // shortcut: not modelled in MemStore, as `connection_snapshot`.
     async fn finding_snapshots(
         &self,
-        _organisation_id: Uuid,
-        _connection_id: Uuid,
-        _since: DateTime<Utc>,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        since: DateTime<Utc>,
     ) -> RepoResult<Vec<FindingSnapshot>> {
-        Err(RepoError::Storage("not modelled in MemStore".into()))
+        let s = self.state();
+        let snaps = s.findings.iter().filter_map(|r| {
+            let f = &r.finding;
+            if (f.organisation_id, f.connection_id) != (organisation_id, connection_id) {
+                return None;
+            }
+            let status = enum_of::<FindingStatus>(&f.status)?;
+            let recent: Vec<_> = r.events.iter().filter(|e| e.at >= since).collect();
+            let live = matches!(status, FindingStatus::Open | FindingStatus::Flapping);
+            (live || !recent.is_empty()).then(|| FindingSnapshot {
+                id: f.id,
+                key: f.key.clone(),
+                severity: f.severity,
+                status,
+                title: f.title.clone(),
+                cost_monthly_usd: f.cost_monthly_usd.and_then(|d| f64::try_from(d).ok()),
+                first_seen_at: f.created_at,
+                last_seen_at: f.updated_at,
+                events_since: recent.iter().filter_map(|e| enum_of(&e.kind)).collect(),
+            })
+        });
+        Ok(snaps.collect())
+    }
+}
+
+fn count_of(c: &mut SeverityCounts, s: Severity) -> &mut u32 {
+    match s {
+        Severity::Critical => &mut c.critical,
+        Severity::High => &mut c.high,
+        Severity::Medium => &mut c.medium,
+        Severity::Low => &mut c.low,
+        Severity::Info => &mut c.info,
     }
 }

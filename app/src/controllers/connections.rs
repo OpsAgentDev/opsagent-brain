@@ -76,10 +76,10 @@ async fn create(
 ) -> Result<(StatusCode, Json<CreatedConnection>), ApiError> {
     scope.require_owner()?;
     let name = valid_name(&body.display_name).map_err(ApiError::invalid)?;
-    let org_id = scope.organisation_id;
+    let org_id = scope.organisation.id;
     let create = &actions(&ctx)?.connections.create_connection;
     let created = create
-        .run(org_id, scope.user_id, &body.provider, name)
+        .run(org_id, scope.member.user_id, &body.provider, name)
         .await?;
     let url = created
         .spec
@@ -103,7 +103,7 @@ async fn list(
     scope: OrgScope,
 ) -> Result<Json<Vec<Connection>>, ApiError> {
     let list = &actions(&ctx)?.connections.list_connections;
-    let rows = list.run(scope.organisation_id).await?;
+    let rows = list.run(scope.organisation.id).await?;
     Ok(Json(rows.iter().map(|c| view(c, None)).collect()))
 }
 
@@ -115,7 +115,7 @@ async fn show(
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Connection>, ApiError> {
     let get = &actions(&ctx)?.connections.get_connection;
-    let (c, last) = get.run(scope.organisation_id, parse_id(&id)?).await?;
+    let (c, last) = get.run(scope.organisation.id, parse_id(&id)?).await?;
     Ok(Json(view(&c, last.as_ref())))
 }
 
@@ -154,7 +154,7 @@ async fn update(
     };
     let update = &actions(&ctx)?.connections.update_connection;
     Ok(Json(view(
-        &update.run(scope.organisation_id, id, input).await?,
+        &update.run(scope.organisation.id, id, input).await?,
         None,
     )))
 }
@@ -178,9 +178,9 @@ async fn verify(
 ) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
     scope.require_owner()?;
     let verify = &actions(&ctx)?.connections.request_verify;
-    let (org_id, id) = (scope.organisation_id, parse_id(&id)?);
+    let (org_id, id) = (scope.organisation.id, parse_id(&id)?);
     let run_id = verify
-        .run(org_id, scope.user_id, id, &body.role_arn)
+        .run(org_id, scope.member.user_id, id, &body.role_arn)
         .await?;
     Ok((StatusCode::ACCEPTED, Json(RunAccepted { run_id })))
 }
@@ -200,10 +200,10 @@ async fn disconnect(
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Disconnected>, ApiError> {
     scope.require_owner()?;
-    let org_id = scope.organisation_id;
+    let org_id = scope.organisation.id;
     let disconnect = &actions(&ctx)?.connections.disconnect_connection;
     disconnect
-        .run(org_id, scope.user_id, parse_id(&id)?)
+        .run(org_id, scope.member.user_id, parse_id(&id)?)
         .await?;
     Ok(Json(Disconnected {
         status: "disconnected".into(),

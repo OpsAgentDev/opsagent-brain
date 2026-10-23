@@ -14,17 +14,11 @@ use crate::{
 pub struct OrgScope {
     pub organisation: Organisation,
     pub member: Member,
-    // shortcut: copies of `member.user_id` and `organisation.id` for controllers not yet on
-    // actions; remove them in Task 12, once the last `scope.organisation_id` caller is gone.
-    pub user_id: Uuid,
-    pub organisation_id: Uuid,
 }
 
 impl OrgScope {
     pub fn new(organisation: Organisation, member: Member) -> Self {
         Self {
-            user_id: member.user_id,
-            organisation_id: organisation.id,
             organisation,
             member,
         }

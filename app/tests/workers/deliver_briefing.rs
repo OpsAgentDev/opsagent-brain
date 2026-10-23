@@ -9,11 +9,10 @@ use opsagent_brain::{
     adapters::slack::{HttpSlack, Install, SlackClient},
     app::actions,
     models::_entities::{deliveries, integrations, runs, schedules},
-    workers::deliver_briefing,
 };
 use opsagent_core::run::{RunKey, RunStatus};
 use opsagent_deliver::schedule::next_after;
-use opsagent_ledger::{harness, RunChunkedOptions, Storage};
+use opsagent_ledger::{harness, JobKind, RunChunkedOptions, Storage};
 use sea_orm::ConnectionTrait;
 use serde_json::{json, Value};
 use serial_test::serial;
@@ -71,6 +70,8 @@ pub async fn slack_on(ctx: &AppContext, w: &World, server: &MockServer) {
     finish.save(w.org, w.owner, &install).await.unwrap();
     let c: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(server.uri()).unwrap());
     ctx.shared_store.insert(c);
+    // Actions hold the Slack client they were built with.
+    opsagent_brain::app::install_actions(ctx).unwrap();
     sql(
         ctx,
         "UPDATE connections SET slack_channel_id = $2 WHERE id = $1",
@@ -194,9 +195,25 @@ pub async fn new_run(
 }
 
 pub async fn brief(ctx: &AppContext, w: &World, at: DateTime<Utc>) -> (Uuid, RunStatus) {
-    let id = new_run(ctx, w.org, Some(w.conn), deliver_briefing::JOB, at).await;
+    let id = new_run(
+        ctx,
+        w.org,
+        Some(w.conn),
+        JobKind::DeliverBriefing.as_str(),
+        at,
+    )
+    .await;
     let opts = RunChunkedOptions::default();
-    (id, deliver_briefing::run(ctx, id, opts).await.unwrap())
+    (
+        id,
+        actions(ctx)
+            .unwrap()
+            .deliveries
+            .deliver_briefing
+            .run(id, opts)
+            .await
+            .unwrap(),
+    )
 }
 
 pub async fn rows(ctx: &AppContext, w: &World) -> Vec<deliveries::Model> {
@@ -415,7 +432,7 @@ async fn killed_and_resumed_briefing_posts_once() {
         slack_on(&ctx, &w, &slack).await;
         mock_post(&slack, json!({"ok": true, "ts": "1.3"}), 1).await;
         first_scan(&ctx, &w).await;
-        let id = new_run(&ctx, w.org, Some(w.conn), deliver_briefing::JOB, Utc::now()).await;
+        let id = new_run(&ctx, w.org, Some(w.conn), JobKind::DeliverBriefing.as_str(), Utc::now()).await;
         let runs = harness::kill_after_each_checkpoint(|ks| {
             let ctx = ctx.clone();
             async move {
@@ -423,7 +440,7 @@ async fn killed_and_resumed_briefing_posts_once() {
                     after_checkpoint: Some(ks),
                     ..Default::default()
                 };
-                deliver_briefing::run(&ctx, id, opts).await
+                actions(&ctx).unwrap().deliveries.deliver_briefing.run(id, opts).await
             }
         })
         .await
@@ -436,7 +453,7 @@ async fn killed_and_resumed_briefing_posts_once() {
             vec![id.into()],
         )
         .await;
-        let status = deliver_briefing::run(&ctx, id, RunChunkedOptions::default())
+        let status = actions(&ctx).unwrap().deliveries.deliver_briefing.run(id, RunChunkedOptions::default())
             .await
             .unwrap();
         assert_eq!(status, RunStatus::Done);

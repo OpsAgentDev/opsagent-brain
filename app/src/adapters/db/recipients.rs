@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use opsagent_core::repo::{PageOf, PageRequest, RepoError, RepoResult};
@@ -255,5 +257,31 @@ impl<C: Conn> RecipientsRepo for Pg<C> {
                 })
             })
             .collect()
+    }
+
+    async fn ids_by_email(
+        &self,
+        organisation_id: Uuid,
+        emails: &[String],
+    ) -> RepoResult<HashMap<String, Uuid>> {
+        let mut map = HashMap::new();
+        if emails.is_empty() {
+            return Ok(map);
+        }
+        let rows = self
+            .db()
+            .query_all_raw(stmt(
+                "SELECT DISTINCT ON (lower(email)) lower(email) AS email, id FROM recipients \
+                 WHERE organisation_id = $1 AND lower(email) = ANY($2) \
+                 ORDER BY lower(email), created_at, id",
+                vec![organisation_id.into(), emails.to_vec().into()],
+            ))
+            .await
+            .map_err(db_err)?;
+        for r in rows {
+            let email: String = r.try_get("", "email").map_err(db_err)?;
+            map.insert(email, r.try_get("", "id").map_err(db_err)?);
+        }
+        Ok(map)
     }
 }

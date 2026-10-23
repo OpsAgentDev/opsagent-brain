@@ -8,8 +8,8 @@ use opsagent_secrets::Kek;
 
 use crate::{
     actions::{
-        auth, connections, findings, integrations, members, orgs, recipients, resources, runs,
-        uow::UnitOfWork, Actions, ConnectorSource, RateLimiter,
+        auth, connections, deliveries, findings, integrations, members, orgs, recipients,
+        resources, runs, uow::UnitOfWork, Actions, ConnectorSource, RateLimiter,
     },
     adapters::slack::SlackClient,
     mailers::Mailer,
@@ -43,6 +43,8 @@ pub fn build_actions(d: &Deps) -> Actions {
         connectors.clone(),
         d.clock.clone(),
     );
+    // One guard for recipient confirms and delivery mail.
+    let guard = Arc::new(recipients::MailGuard::new(d.uow.clone(), d.limiter.clone()));
     Actions {
         auth: auth::Auth {
             request_magic_link: auth::RequestMagicLink::new(
@@ -126,13 +128,13 @@ pub fn build_actions(d: &Deps) -> Actions {
             scan_now: runs::ScanNow::new(d.uow.clone(), full_scan.clone(), d.clock.clone()),
             full_scan,
         },
-        recipients: recipients(d),
+        recipients: recipients(d, guard.clone()),
         integrations: integrations(d),
+        deliveries: deliveries(d, guard),
     }
 }
 
-fn recipients(d: &Deps) -> recipients::Recipients {
-    let guard = Arc::new(recipients::MailGuard::new(d.uow.clone(), d.limiter.clone()));
+fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipients {
     recipients::Recipients {
         list_recipients: recipients::ListRecipients::new(d.uow.clone()),
         create_recipient: recipients::CreateRecipient::new(
@@ -178,5 +180,30 @@ fn integrations(d: &Deps) -> integrations::Integrations {
             d.kek.clone(),
             d.slack.clone(),
         ),
+    }
+}
+
+fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Deliveries {
+    let kit = deliveries::Kit {
+        uow: d.uow.clone(),
+        redis: d.ledger_redis.clone(),
+        kek: d.kek.clone(),
+        mailer: d.mailer.clone(),
+        slack: d.slack.clone(),
+        guard,
+        clock: d.clock.clone(),
+        settings: d.settings.clone(),
+    };
+    deliveries::Deliveries {
+        list_deliveries: deliveries::ListDeliveries::new(d.uow.clone()),
+        get_delivery: deliveries::GetDelivery::new(d.uow.clone()),
+        preview_briefing: deliveries::PreviewBriefing::new(
+            d.uow.clone(),
+            d.settings.web_base_url.clone(),
+            d.clock.clone(),
+        ),
+        deliver_briefing: deliveries::DeliverBriefing::new(kit.clone()),
+        deliver_weekly: deliveries::DeliverWeekly::new(kit.clone()),
+        deliver_briefing_now: deliveries::DeliverBriefingNow::new(kit),
     }
 }

@@ -1,34 +1,24 @@
 //! Delivery history and the briefing preview. Recipient addresses and Slack tokens never leave
 //! the server: a row shows its channel kind and, for email, the recipient's id.
-use crate::adapters::db::ledger_storage::stmt;
-use std::collections::HashMap;
-
 use axum::{
     extract::{Path, State},
     Json,
 };
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, FixedOffset};
 use loco_rs::app::AppContext;
-use opsagent_deliver::{
-    model::Briefing,
-    render_text,
-    repo::{self, DeliveriesRepo, DeliveryRow},
-};
-use sea_orm::{ConnectionTrait, Statement, TryGetable};
+use opsagent_deliver::repo;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
-use super::{OrgIdPath, OrgPath};
+use super::{connections::parse_id, OrgIdPath, OrgPath};
 use crate::{
-    adapters::db::Pg,
+    actions::deliveries::DeliveryItem,
     api_error::{ApiError, ApiQuery, Problem},
+    app::actions,
     controllers::page::{page_request, Page, PageParams},
     middleware::org_scope::OrgScope,
-    models::{_entities::connections, find_in_org},
-    services::deliveries::{briefing, deliverable},
-    settings::Settings,
 };
 
 const KINDS: [&str; 4] = ["briefing", "weekly", "alert", "notice"];
@@ -63,41 +53,14 @@ fn bad(what: &str) -> ApiError {
     ApiError::invalid(format!("{what} is not valid"))
 }
 
-/// Email address (lowercased) to the id of its `recipients` row in this org (oldest wins). Owner
-/// fallback sends have no row, so they map to nothing.
-async fn recipient_ids(
-    ctx: &AppContext,
-    org: Uuid,
-    rows: &[DeliveryRow],
-) -> Result<HashMap<String, Uuid>, ApiError> {
-    let emails: Vec<String> = rows
-        .iter()
-        .filter(|d| d.channel == "email")
-        .map(|d| d.target.to_lowercase())
-        .collect();
-    if emails.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let q: Statement = stmt(
-        "SELECT DISTINCT ON (lower(email)) lower(email) AS email, id FROM recipients \
-         WHERE organisation_id = $1 AND lower(email) = ANY($2) \
-         ORDER BY lower(email), created_at, id",
-        vec![org.into(), emails.into()],
-    );
-    let mut map = HashMap::new();
-    for r in ctx.db.query_all_raw(q).await? {
-        let email = String::try_get(&r, "", "email").map_err(sea_orm::DbErr::from)?;
-        let id = Uuid::try_get(&r, "", "id").map_err(sea_orm::DbErr::from)?;
-        map.insert(email, id);
-    }
-    Ok(map)
-}
-
-fn view(d: DeliveryRow, ids: &HashMap<String, Uuid>) -> Delivery {
+fn view(
+    DeliveryItem {
+        row: d,
+        recipient_id,
+    }: DeliveryItem,
+) -> Delivery {
     Delivery {
-        recipient_id: (d.channel == "email")
-            .then(|| ids.get(&d.target.to_lowercase()).copied())
-            .flatten(),
+        recipient_id,
         id: d.id,
         connection_id: d.connection_id,
         kind: d.kind,
@@ -131,11 +94,11 @@ async fn list(
         connection_id: connection,
         kind: f.kind,
     };
-    let page = Pg::new(&ctx.db)
-        .list(scope.organisation_id, filter, page_request(&p)?)
+    let list = &actions(&ctx)?.deliveries.list_deliveries;
+    let page = list
+        .run(scope.organisation.id, filter, page_request(&p)?)
         .await?;
-    let ids = recipient_ids(&ctx, scope.organisation_id, &page.items).await?;
-    Ok(Json(Page::of(page).map(|d| view(d, &ids))))
+    Ok(Json(Page::of(page).map(view)))
 }
 
 #[utoipa::path(get, path = "/orgs/{org}/deliveries/{id}", tag = "deliveries", params(OrgIdPath),
@@ -145,13 +108,10 @@ async fn show(
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Delivery>, ApiError> {
-    let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
-    let d = Pg::new(&ctx.db)
-        .get(scope.organisation_id, id)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
-    let ids = recipient_ids(&ctx, scope.organisation_id, std::slice::from_ref(&d)).await?;
-    Ok(Json(view(d, &ids)))
+    let get = &actions(&ctx)?.deliveries.get_delivery;
+    Ok(Json(view(
+        get.run(scope.organisation.id, parse_id(&id)?).await?,
+    )))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -170,22 +130,11 @@ async fn preview(
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<BriefingPreview>, ApiError> {
-    let col = connections::Column::OrganisationId;
-    let c = find_in_org::<connections::Entity>(&ctx.db, col, scope.organisation_id, &id).await?;
-    let now = Utc::now();
-    let b = if deliverable(&c) {
-        briefing(&ctx.db, &c, now, now, &Settings::get(&ctx).web_base_url).await?
-    } else {
-        None
-    };
-    let kind = match &b {
-        Some(Briefing::FirstScan { .. }) => "first_scan",
-        Some(Briefing::Daily { .. }) => "daily",
-        None => "none",
-    };
+    let preview = &actions(&ctx)?.deliveries.preview_briefing;
+    let p = preview.run(scope.organisation.id, parse_id(&id)?).await?;
     Ok(Json(BriefingPreview {
-        text: b.as_ref().map(render_text).unwrap_or_default(),
-        kind: kind.into(),
+        text: p.text,
+        kind: p.kind.into(),
     }))
 }
 

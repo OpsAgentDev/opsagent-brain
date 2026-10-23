@@ -73,4 +73,28 @@ contract_suite! {
         r.suppress(None, "h3", Suppression::ConfirmBlocked).await.unwrap();
         assert_eq!(r.suppressed(b, "h3").await.unwrap(), [Suppression::Unsubscribed]);
     }
+
+    async fn ids_by_email_maps_lowercased_addresses_in_the_org(s) {
+        let o = org_id(s, "acme").await;
+        let a = s.recipients().insert(o, email("a@example.com", None)).await.unwrap();
+        let other = org_id(s, "other").await;
+        s.recipients().insert(other, email("b@example.com", None)).await.unwrap();
+        let ask = vec!["a@example.com".to_owned(), "b@example.com".to_owned()];
+        let got = s.recipients().ids_by_email(o, &ask).await.unwrap();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got.get("a@example.com"), Some(&a.id));
+        assert!(s.recipients().ids_by_email(o, &[]).await.unwrap().is_empty());
+    }
+
+    async fn ids_by_email_ignores_case_and_the_oldest_row_wins(s, seed) {
+        let o = org_id(s, "acme").await;
+        let conn = seed.connection(o).await;
+        let first = s.recipients().insert(o, email("A@Example.com", None)).await.unwrap();
+        let mut later = email("a@example.com", None);
+        later.connection_id = Some(conn);
+        let second = s.recipients().insert(o, later).await.unwrap();
+        assert_ne!(first.id, second.id);
+        let got = s.recipients().ids_by_email(o, &["a@example.com".to_owned()]).await.unwrap();
+        assert_eq!(got.get("a@example.com"), Some(&first.id), "{got:?}");
+    }
 }
