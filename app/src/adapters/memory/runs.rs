@@ -52,13 +52,6 @@ impl RunEntry {
     }
 }
 
-impl MemStore {
-    /// `Err(StaleFence)` unless `fence` is run `id`'s fence (no lock to hold in memory).
-    pub(super) fn check_fence(&self, id: Uuid, fence: u64) -> Result<()> {
-        self.state().run_mut(id)?.fenced(fence).map(|_| ())
-    }
-}
-
 impl MemState {
     /// Queued runs with a due `next_attempt_at`: `(id, organisation, job_type, marker)`.
     pub(super) fn parked_due(
@@ -177,6 +170,10 @@ impl Storage for MemStore {
 
     async fn load_run(&self, id: Uuid) -> Result<RunRow> {
         self.with_run(id, |r| Ok(r.row.clone()))
+    }
+
+    async fn hold_fence(&self, id: Uuid, fence: u64) -> Result<()> {
+        self.with_run(id, |r| r.fenced(fence).map(|_| ()))
     }
 
     async fn bump_fence(&self, id: Uuid) -> Result<u64> {

@@ -30,4 +30,24 @@ impl RateLimiter for MemRateLimiter {
         set.insert(member.into());
         Ok(set.len() as i64)
     }
+
+    async fn clear(&self, key: &str) -> AppResult<()> {
+        self.counts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(key);
+        self.sets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(key);
+        Ok(())
+    }
+
+    async fn forget(&self, key: &str, member: &str) -> AppResult<()> {
+        let mut sets = self.sets.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(set) = sets.get_mut(key) {
+            set.remove(member);
+        }
+        Ok(())
+    }
 }

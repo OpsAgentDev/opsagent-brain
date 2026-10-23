@@ -24,6 +24,18 @@ impl MemState {
     }
 }
 
+impl MemStore {
+    /// How many of the organisation's schedules are enabled.
+    pub fn enabled_schedules(&self, organisation_id: Uuid) -> usize {
+        let s = self.state();
+        let mine = s
+            .schedules
+            .iter()
+            .filter(|r| r.organisation_id == organisation_id);
+        mine.filter(|r| r.enabled).count()
+    }
+}
+
 /// Row locks are not modelled: MemStore is single-threaded test support, so `lock_due` only
 /// checks that the schedule is due. Lock behaviour is tested on Pg.
 #[async_trait]

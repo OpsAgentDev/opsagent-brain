@@ -1,9 +1,13 @@
 //! Runs: reading them, manual scans, handing runs to the queue, verify runs and the scheduler tick.
 pub(crate) mod classify;
 mod dispatch;
+mod finding_lifecycle;
+mod full_scan;
+mod full_scan_chunks;
 mod get_run;
 mod list_runs;
 mod request_manual_scan;
+mod scan_now;
 mod scheduler_tick;
 mod verify_connection;
 mod verify_outcome;
@@ -12,9 +16,12 @@ mod verify_verdict;
 use std::sync::Arc;
 
 pub use dispatch::RunDispatcher;
+pub use full_scan::FullScan;
+pub use full_scan_chunks::Chunk;
 pub use get_run::GetRun;
 pub use list_runs::ListRuns;
 pub use request_manual_scan::RequestManualScan;
+pub use scan_now::ScanNow;
 pub use scheduler_tick::{SchedulerTick, TickReport};
 pub use verify_connection::VerifyConnection;
 
@@ -26,6 +33,8 @@ pub struct Runs {
     pub get_run: GetRun,
     pub verify_connection: VerifyConnection,
     pub scheduler_tick: SchedulerTick,
+    pub full_scan: FullScan,
+    pub scan_now: ScanNow,
 }
 
 #[cfg(test)]

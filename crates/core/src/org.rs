@@ -29,7 +29,8 @@ impl Role {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// `Debug` leaves out the wrapped DEK, so key material cannot reach a log line.
+#[derive(Clone, PartialEq)]
 pub struct Organisation {
     pub id: Uuid,
     pub slug: String,
@@ -39,6 +40,20 @@ pub struct Organisation {
     pub wrapped_dek: Option<Vec<u8>>,
     pub created_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
+}
+
+impl std::fmt::Debug for Organisation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Organisation")
+            .field("id", &self.id)
+            .field("slug", &self.slug)
+            .field("name", &self.name)
+            .field("timezone", &self.timezone)
+            .field("kek_version", &self.kek_version)
+            .field("created_at", &self.created_at)
+            .field("deleted_at", &self.deleted_at)
+            .finish_non_exhaustive()
+    }
 }
 
 /// `id` is chosen by the caller: the DEK is wrapped bound to it before the row exists.
@@ -64,6 +79,7 @@ pub struct Member {
     pub organisation_id: Uuid,
     pub user_id: Uuid,
     pub email: Email,
+    pub name: Option<String>,
     pub role: Role,
     pub created_at: DateTime<Utc>,
 }

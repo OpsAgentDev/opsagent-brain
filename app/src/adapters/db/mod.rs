@@ -155,8 +155,4 @@ impl Tx for Pg<DatabaseTransaction> {
     async fn savepoint(&self) -> RepoResult<Box<dyn Tx>> {
         Ok(Box::new(Pg(self.0.begin().await.map_err(db_err)?)))
     }
-
-    async fn hold_fence(&self, run_id: uuid::Uuid, fence: u64) -> opsagent_ledger::Result<()> {
-        ledger_storage::hold_fence(&self.0, run_id, fence).await
-    }
 }

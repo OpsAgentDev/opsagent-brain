@@ -105,4 +105,7 @@ pub trait Storage: Send + Sync {
     /// (by `schedule_retry`) survives. Returns whether it was cleared.
     async fn clear_enqueue_marker(&self, id: Uuid, marker_at: DateTime<Utc>) -> Result<bool>;
     async fn schedule_retry(&self, id: Uuid, attempts: u32, next_at: DateTime<Utc>) -> Result<()>;
+    /// Inside a transaction: locks the run row while `fence` is current, so a stale worker's
+    /// domain writes cannot commit. `Err(StaleFence)` otherwise.
+    async fn hold_fence(&self, id: Uuid, fence: u64) -> Result<()>;
 }

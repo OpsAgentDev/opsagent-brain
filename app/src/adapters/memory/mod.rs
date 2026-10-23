@@ -39,6 +39,15 @@ use uuid::Uuid;
 
 pub use rate_limiter::MemRateLimiter;
 
+/// A clock stopped at its time.
+pub struct FixedClock(pub DateTime<Utc>);
+
+impl opsagent_core::repo::Clock for FixedClock {
+    fn now(&self) -> DateTime<Utc> {
+        self.0
+    }
+}
+
 use crate::actions::uow::{Repos, Tx, UnitOfWork};
 
 #[derive(Clone)]
@@ -230,10 +239,6 @@ impl Tx for MemTx {
 
     async fn savepoint(&self) -> RepoResult<Box<dyn Tx>> {
         self.work.begin().await
-    }
-
-    async fn hold_fence(&self, run_id: Uuid, fence: u64) -> opsagent_ledger::Result<()> {
-        self.work.check_fence(run_id, fence)
     }
 }
 

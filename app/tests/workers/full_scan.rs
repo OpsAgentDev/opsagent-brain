@@ -7,11 +7,10 @@ use std::{
 use async_trait::async_trait;
 use loco_rs::prelude::*;
 use opsagent_brain::{
+    actions::runs::{Chunk, FullScan},
     models::_entities::{
         connections, evidence, finding_events, findings, resource_history, resources, runs,
     },
-    services::inventory_upsert,
-    workers::full_scan,
 };
 use opsagent_checks::{Check, CheckCtx, MetricStore};
 use opsagent_connectors::{
@@ -170,19 +169,20 @@ fn api(code: &str) -> ConnectorError {
 pub const SECRET_ARN: &str = "arn:aws:iam::123456789012:role/CustomerSecretRole";
 
 /// Fixture connector with a faulty `rds`, counting inventory and simulate calls.
+#[derive(Clone)]
 struct Rigged {
     inner: FakeConnector,
     fault: Option<Fault>,
-    calls: AtomicUsize,
-    sims: AtomicUsize,
+    calls: std::sync::Arc<AtomicUsize>,
+    sims: std::sync::Arc<AtomicUsize>,
 }
 
 fn rigged(fault: Option<Fault>) -> Rigged {
     Rigged {
         inner: noisy(),
         fault,
-        calls: AtomicUsize::new(0),
-        sims: AtomicUsize::new(0),
+        calls: Default::default(),
+        sims: Default::default(),
     }
 }
 
@@ -355,11 +355,20 @@ async fn new_run(ctx: &AppContext, conn: Uuid, n: i64) -> Uuid {
         .id
 }
 
-pub async fn scan(ctx: &AppContext, conn: Uuid, n: i64, k: &dyn Connector) -> Uuid {
+/// A connector the action can own a copy of (copies share `Rigged`'s counters).
+pub trait Shared: Connector + Clone + 'static {}
+impl<T: Connector + Clone + 'static> Shared for T {}
+
+/// The full-scan action over a copy of `k`.
+pub fn full_scan(ctx: &AppContext, k: &impl Shared) -> FullScan {
+    let actions = opsagent_brain::app::actions(ctx).unwrap();
+    (actions.runs.full_scan.clone()).with_connector(std::sync::Arc::new(k.clone()))
+}
+
+pub async fn scan(ctx: &AppContext, conn: Uuid, n: i64, k: &impl Shared) -> Uuid {
     let run = new_run(ctx, conn, n).await;
-    full_scan::scan(ctx, run, k, RunChunkedOptions::default())
-        .await
-        .unwrap();
+    let fs = full_scan(ctx, k);
+    fs.run(run, RunChunkedOptions::default()).await.unwrap();
     run
 }
 
@@ -699,7 +708,7 @@ async fn kill_and_resume_after_every_chunk_matches_uninterrupted() {
                     after_checkpoint: Some(ks),
                     ..Default::default()
                 };
-                full_scan::scan(&ctx, rb, k, opts).await
+                full_scan(&ctx, k).run(rb, opts).await
             }
         })
         .await
@@ -774,20 +783,16 @@ async fn stale_fence_writes_are_rejected() {
             .await
             .unwrap()
             .unwrap();
-        let res = inventory_upsert::upsert_chunk(
-            &ctx.db,
-            inventory_upsert::Chunk {
-                run_id: run,
-                fence: old,
-                organisation_id: c.organisation_id,
-                connection_id: conn,
-                provider: "fake",
-                service: "ec2",
-                region: "local",
-            },
-            &inv,
-        )
-        .await;
+        let chunk = Chunk {
+            run_id: run,
+            fence: old,
+            organisation_id: c.organisation_id,
+            connection_id: conn,
+            provider: "fake",
+            service: "ec2",
+            region: "local",
+        };
+        let res = full_scan(&ctx, &k).store_chunk(chunk, &inv).await;
         assert!(matches!(res, Err(LedgerError::StaleFence)), "{res:?}");
         let n = resources::Entity::find()
             .filter(resources::Column::ConnectionId.eq(conn))
@@ -831,15 +836,11 @@ async fn panicking_check_is_isolated() {
     serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         let run = new_run(&ctx, conn, 0).await;
-        let st = full_scan::scan_with(
-            &ctx,
-            run,
-            &noisy(),
-            RunChunkedOptions::default(),
-            with_panics,
-        )
-        .await
-        .unwrap();
+        let st = full_scan(&ctx, &noisy())
+            .with_checks(with_panics)
+            .run(run, RunChunkedOptions::default())
+            .await
+            .unwrap();
         assert_eq!(st, RunStatus::Done);
         assert_eq!(all_findings(&ctx, conn).await.len(), expected().await.len());
         let r = run_row(&ctx, run).await;
@@ -859,15 +860,11 @@ async fn duplicate_draft_keys_merge_into_one_finding() {
         let conn = connection(&req, &ctx, "o@example.com").await;
         for n in 0..2 {
             let run = new_run(&ctx, conn, n).await;
-            let st = full_scan::scan_with(
-                &ctx,
-                run,
-                &noisy(),
-                RunChunkedOptions::default(),
-                with_twice,
-            )
-            .await
-            .unwrap();
+            let st = full_scan(&ctx, &noisy())
+                .with_checks(with_twice)
+                .run(run, RunChunkedOptions::default())
+                .await
+                .unwrap();
             assert_eq!(st, RunStatus::Done);
             let dups: Vec<_> = all_findings(&ctx, conn)
                 .await
@@ -902,7 +899,8 @@ async fn connector_error_ends_partial_and_redelivery_is_noop() {
             ("partial", Some("partial_inventory"))
         );
         let calls = k.calls.load(SeqCst);
-        let st = full_scan::scan(&ctx, run, &k, RunChunkedOptions::default())
+        let st = full_scan(&ctx, &k)
+            .run(run, RunChunkedOptions::default())
             .await
             .unwrap();
         assert_eq!(st, RunStatus::Partial);
@@ -927,7 +925,8 @@ async fn blocked_connection_is_skipped_without_inventory() {
         a.update(&ctx.db).await.unwrap();
         let k = rigged(None);
         let run = new_run(&ctx, conn, 0).await;
-        let st = full_scan::scan(&ctx, run, &k, RunChunkedOptions::default())
+        let st = full_scan(&ctx, &k)
+            .run(run, RunChunkedOptions::default())
             .await
             .unwrap();
         assert_eq!(st, RunStatus::Skipped);
@@ -1141,7 +1140,7 @@ async fn each_scan_run_writes_one_scan_started_audit_row() {
                     after_checkpoint: Some(ks),
                     ..Default::default()
                 };
-                full_scan::scan(&ctx, run, k, opts).await
+                full_scan(&ctx, k).run(run, opts).await
             }
         })
         .await

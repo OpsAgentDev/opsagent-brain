@@ -5,7 +5,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     repo::{PageOf, PageRequest, RepoError, RepoResult},
-    resource::{Resource, ResourceFilter, ResourceKind, ResourceRow, ResourcesRepo},
+    resource::{
+        CallCount, Provider, Resource, ResourceFilter, ResourceKind, ResourceRow, ResourcesRepo,
+    },
 };
 use sea_orm::{
     sea_query::{extension::postgres::PgExpr, Condition, Expr, LikeExpr},
@@ -151,6 +153,100 @@ impl<C: Conn> ResourcesRepo for Pg<C> {
             changed |= upsert(self.db(), (organisation_id, connection_id, run_id), r, now).await?;
         }
         Ok(changed)
+    }
+
+    async fn mark_unseen_gone(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<u64> {
+        let r = self
+            .db()
+            .execute_raw(stmt(
+                "UPDATE resources r SET gone_at = $3, updated_at = now() \
+                 WHERE r.organisation_id = $4 AND r.connection_id = $1 AND r.gone_at IS NULL AND NOT EXISTS \
+                 (SELECT 1 FROM resource_history h WHERE h.resource_id = r.id AND h.run_id = $2)",
+                vec![connection_id.into(), run_id.into(), now.into(), organisation_id.into()],
+            ))
+            .await
+            .map_err(db_err)?;
+        Ok(r.rows_affected())
+    }
+
+    async fn observed(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        provider: Provider,
+        account: &str,
+    ) -> RepoResult<Vec<Resource>> {
+        let rows = self
+            .db()
+            .query_all_raw(stmt(
+                "SELECT r.kind, r.identity, r.name, r.region, r.tags, h.attributes, h.observed_at \
+                 FROM resources r JOIN resource_history h ON h.resource_id = r.id AND h.run_id = $2 \
+                 WHERE r.organisation_id = $3 AND r.connection_id = $1 ORDER BY r.identity",
+                vec![connection_id.into(), run_id.into(), organisation_id.into()],
+            ))
+            .await
+            .map_err(db_err)?;
+        rows.iter()
+            .map(|r| {
+                let get = |c| r.try_get::<Option<String>>("", c).map_err(db_err);
+                let kind: String = r.try_get("", "kind").map_err(db_err)?;
+                let tags: serde_json::Value = r.try_get("", "tags").map_err(db_err)?;
+                Ok(Resource {
+                    provider,
+                    account: account.to_owned(),
+                    region: get("region")?.unwrap_or_default(),
+                    kind: enum_of(&kind)
+                        .ok_or_else(|| RepoError::Storage(format!("bad resource kind: {kind}")))?,
+                    identity: r.try_get("", "identity").map_err(db_err)?,
+                    name: get("name")?.unwrap_or_default(),
+                    tags: serde_json::from_value(tags).map_err(db_err)?,
+                    attributes: r.try_get("", "attributes").map_err(db_err)?,
+                    observed_at: r.try_get("", "observed_at").map_err(db_err)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn replace_inventory_calls(
+        &self,
+        run_id: Uuid,
+        provider: &str,
+        service: &str,
+        region: &str,
+        calls: &[CallCount],
+    ) -> RepoResult<()> {
+        let db = self.db();
+        db.execute_raw(stmt(
+            "DELETE FROM api_call_stats WHERE run_id = $1 AND action = 'inventory' AND service = $2 AND region = $3",
+            vec![run_id.into(), service.into(), region.into()],
+        ))
+        .await
+        .map_err(db_err)?;
+        for c in calls {
+            db.execute_raw(stmt(
+                "INSERT INTO api_call_stats (id, run_id, provider, service, action, region, outcome, count) \
+                 VALUES ($1, $2, $3, $4, 'inventory', $5, $6, $7)",
+                vec![
+                    Uuid::now_v7().into(),
+                    run_id.into(),
+                    provider.into(),
+                    c.service.clone().into(),
+                    c.region.clone().into(),
+                    c.outcome.into(),
+                    c.count.into(),
+                ],
+            ))
+            .await
+            .map_err(db_err)?;
+        }
+        Ok(())
     }
 }
 

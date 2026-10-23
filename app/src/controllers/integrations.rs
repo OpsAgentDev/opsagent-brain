@@ -6,8 +6,6 @@ use axum::{
 };
 use chrono::{DateTime, FixedOffset};
 use loco_rs::app::AppContext;
-use opsagent_core::org::Role;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tower_sessions::Session;
@@ -19,13 +17,8 @@ use super::{OrgIdPath, OrgPath};
 use crate::{
     adapters::slack::Channel,
     api_error::{ApiError, Problem},
-    app::kek,
-    middleware::{
-        org_scope::{AuthUser, OrgScope},
-        slack,
-    },
-    models::_entities::members,
-    services::integrations as service,
+    app::actions,
+    middleware::org_scope::{AuthUser, OrgScope},
     settings::Settings,
     tokens::new_token,
 };
@@ -48,7 +41,10 @@ async fn slack_start(
 ) -> Result<Json<SlackStart>, ApiError> {
     scope.require_owner()?;
     let state = new_token();
-    let authorize_url = service::slack_authorize_url(&Settings::get(&ctx), &state)?;
+    let authorize_url = actions(&ctx)?
+        .integrations
+        .start_slack_install
+        .run(&state)?;
     // Overwrites any earlier state, so only the latest start can complete.
     session
         .insert(SLACK_KEY, (state, scope.organisation_id))
@@ -94,13 +90,9 @@ async fn claim_state(
     let Some((_, org_id)) = stored.filter(|(s, _)| matches(s)) else {
         return Err(bad_state());
     };
-    let owner = members::Entity::find()
-        .filter(members::Column::OrganisationId.eq(org_id))
-        .filter(members::Column::UserId.eq(user_id))
-        .filter(members::Column::Role.eq(Role::Owner.as_str()))
-        .one(&ctx.db)
-        .await?;
-    owner.map(|_| org_id).ok_or_else(ApiError::forbidden)
+    let finish = &actions(ctx)?.integrations.finish_slack_install;
+    finish.ensure_owner(org_id, user_id).await?;
+    Ok(org_id)
 }
 
 #[utoipa::path(get, path = "/integrations/slack/callback", tag = "integrations", params(SlackCallback),
@@ -124,27 +116,9 @@ async fn slack_callback(
     let Some(code) = q.code else {
         return fail("missing_code");
     };
-    if s.slack_client_id.is_empty() || s.slack_client_secret.is_empty() {
-        return fail("slack_not_configured");
-    }
-    let redirect = service::slack_redirect_uri(&s);
-    let install = match slack(&ctx)
-        .oauth_access(&s.slack_client_id, &s.slack_client_secret, &code, &redirect)
-        .await
-    {
-        Ok(i) => i,
-        Err(e) => {
-            tracing::warn!(error_code = e.code(), "slack oauth exchange failed");
-            return fail(&urlencoding::encode(e.code()));
-        }
-    };
-    let kek = kek(&ctx)?;
-    // Any other failure is internal and already logged by `ApiError::internal`.
-    if let Err(e) = service::save_slack(&ctx.db, kek.as_ref(), org_id, user_id, &install).await {
-        return fail(match e.code() {
-            service::WORKSPACE_IN_USE => service::WORKSPACE_IN_USE,
-            _ => "internal",
-        });
+    let finish = &actions(&ctx)?.integrations.finish_slack_install;
+    if let Err(e) = finish.run(org_id, user_id, &code).await {
+        return fail(&e.redirect_code());
     }
     Ok(to_web(&s, "slack=connected"))
 }
@@ -156,11 +130,8 @@ async fn slack_channels(
     State(ctx): State<AppContext>,
     scope: OrgScope,
 ) -> Result<Json<Vec<Channel>>, ApiError> {
-    let kek = kek(&ctx)?;
-    let slack = slack(&ctx);
-    let chans =
-        service::slack_channels(&ctx.db, kek.as_ref(), slack.as_ref(), scope.organisation_id)
-            .await?;
+    let channels = &actions(&ctx)?.integrations.list_slack_channels;
+    let chans = channels.run(scope.organisation_id).await?;
     Ok(Json(chans))
 }
 
@@ -182,7 +153,8 @@ async fn list(
     State(ctx): State<AppContext>,
     scope: OrgScope,
 ) -> Result<Json<Vec<Integration>>, ApiError> {
-    let rows = service::list(&ctx.db, scope.organisation_id).await?;
+    let list = &actions(&ctx)?.integrations.list_integrations;
+    let rows = list.run(scope.organisation_id).await?;
     Ok(Json(
         rows.into_iter()
             .map(|r| Integration {
@@ -205,16 +177,8 @@ async fn remove(
 ) -> Result<StatusCode, ApiError> {
     scope.require_owner()?;
     let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
-    let (kek, slack) = (kek(&ctx)?, slack(&ctx));
-    service::delete(
-        &ctx.db,
-        kek.as_ref(),
-        slack.as_ref(),
-        scope.organisation_id,
-        scope.user_id,
-        id,
-    )
-    .await?;
+    let delete = &actions(&ctx)?.integrations.delete_integration;
+    delete.run(scope.organisation_id, scope.user_id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

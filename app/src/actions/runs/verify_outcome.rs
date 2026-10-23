@@ -31,7 +31,7 @@ impl VerifyConnection {
     /// A transaction holding the run's fence, with ledger writes on the same transaction.
     async fn fenced(&self, step: &Step<'_>) -> LResult<Box<dyn Tx>> {
         let tx = self.uow.begin().await.map_err(lerr)?;
-        tx.hold_fence(step.run.id, step.fence).await?;
+        tx.ledger().hold_fence(step.run.id, step.fence).await?;
         Ok(tx)
     }
 

@@ -3,7 +3,7 @@
 use loco_rs::{app::AppContext, config::QueueConfig, Error, Result};
 use opsagent_ledger::redis;
 
-pub(crate) use crate::actions::runs::classify::{classify, job_err, lerr, revoked, LResult};
+pub(crate) use crate::actions::runs::classify::{lerr, LResult};
 
 pub(crate) fn err(e: impl std::fmt::Display) -> Error {
     Error::string(&e.to_string())

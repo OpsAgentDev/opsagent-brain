@@ -20,6 +20,7 @@ impl MemState {
             organisation_id: m.organisation_id,
             user_id: m.user_id,
             email: u.email.clone(),
+            name: u.name.clone(),
             role: m.role,
             created_at: m.created_at,
         })

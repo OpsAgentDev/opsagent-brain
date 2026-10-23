@@ -5,7 +5,7 @@ use axum::{
 };
 use chrono::{DateTime, FixedOffset};
 use loco_rs::app::AppContext;
-use opsagent_deliver::repo::{RecipientRow, RecipientsRepo};
+use opsagent_deliver::repo::RecipientRow;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -13,13 +13,11 @@ use uuid::Uuid;
 
 use super::{OrgIdPath, OrgPath};
 use crate::{
-    adapters::db::Pg,
+    actions::recipients as action,
     api_error::{ApiError, ApiJson, ApiQuery, Problem},
+    app::actions,
     controllers::page::{page_request, Page, PageParams},
-    middleware::{mailer, org_scope::OrgScope, rate_limiter},
-    services::recipients as service,
-    settings::Settings,
-    workers::common::redis_client,
+    middleware::org_scope::OrgScope,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -55,9 +53,8 @@ async fn list(
     scope: OrgScope,
     ApiQuery(p): ApiQuery<PageParams>,
 ) -> Result<Json<Page<Recipient>>, ApiError> {
-    let got = Pg::new(&ctx.db)
-        .list(scope.organisation_id, page_request(&p)?)
-        .await?;
+    let list = &actions(&ctx)?.recipients.list_recipients;
+    let got = list.run(scope.organisation_id, page_request(&p)?).await?;
     Ok(Json(Page::of(got).map(view)))
 }
 
@@ -81,22 +78,15 @@ async fn create(
     ApiJson(body): ApiJson<NewRecipient>,
 ) -> Result<(StatusCode, Json<Recipient>), ApiError> {
     scope.require_owner()?;
-    let new = service::NewRecipient {
+    let new = action::NewRecipient {
         email: body.email,
         member_id: body.member_id,
         connection_id: body.connection_id,
     };
-    let web = Settings::get(&ctx).web_base_url;
-    let row = service::create(
-        &ctx.db,
-        rate_limiter(&ctx).as_ref(),
-        mailer(&ctx).as_ref(),
-        web.trim_end_matches('/'),
-        scope.organisation_id,
-        scope.user_id,
-        new,
-    )
-    .await?;
+    let create = &actions(&ctx)?.recipients.create_recipient;
+    let row = create
+        .run(scope.organisation_id, scope.user_id, new)
+        .await?;
     Ok((StatusCode::CREATED, Json(view(row))))
 }
 
@@ -109,7 +99,8 @@ async fn remove(
 ) -> Result<StatusCode, ApiError> {
     scope.require_owner()?;
     let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
-    service::delete(&ctx.db, scope.organisation_id, scope.user_id, id).await?;
+    let delete = &actions(&ctx)?.recipients.delete_recipient;
+    delete.run(scope.organisation_id, scope.user_id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -126,7 +117,8 @@ async fn confirm(
     State(ctx): State<AppContext>,
     ApiJson(body): ApiJson<ConfirmBody>,
 ) -> Result<StatusCode, ApiError> {
-    service::confirm(&ctx.db, &redis_client(&ctx)?, &body.token).await?;
+    let confirm = &actions(&ctx)?.recipients.confirm_recipient;
+    confirm.run(&body.token).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -144,8 +136,7 @@ async fn unsubscribe(
     State(ctx): State<AppContext>,
     Path(token): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let s = Settings::get(&ctx);
-    service::unsubscribe(&ctx.db, s.unsubscribe_key(), &token).await?;
+    actions(&ctx)?.recipients.unsubscribe.run(&token).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

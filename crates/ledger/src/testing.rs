@@ -54,6 +54,14 @@ impl Storage for MemoryStorage {
     async fn load_run(&self, id: Uuid) -> Result<RunRow> {
         self.with(id, |r| Ok(r.clone()))
     }
+    async fn hold_fence(&self, id: Uuid, fence: u64) -> Result<()> {
+        self.with(id, |r| {
+            if r.fence != fence {
+                return Err(LedgerError::StaleFence);
+            }
+            Ok(())
+        })
+    }
     async fn bump_fence(&self, id: Uuid) -> Result<u64> {
         self.with(id, |r| {
             r.fence += 1;

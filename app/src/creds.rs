@@ -29,9 +29,9 @@ fn json_err(e: serde_json::Error) -> RepoError {
     RepoError::Storage(format!("credentials json: {e}"))
 }
 
-/// An unwrapped org DEK and the KEK version that wrapped it.
+/// An unwrapped org DEK and the KEK version that wrapped it. The key never leaves this type.
 pub struct Dek {
-    pub key: Zeroizing<[u8; 32]>,
+    key: Zeroizing<[u8; 32]>,
     pub version: i32,
 }
 
@@ -57,9 +57,30 @@ impl Dek {
         Ok(Self { key, version })
     }
 
+    /// `plain` sealed under the DEK, bound to `aad`.
+    pub fn seal_bytes(&self, plain: &[u8], aad: &Aad) -> Sealed {
+        seal(&self.key, plain, aad)
+    }
+
+    /// The plaintext of `ciphertext` and its 12-byte `nonce`, sealed with `aad`.
+    pub fn open_bytes(
+        &self,
+        ciphertext: &[u8],
+        nonce: &[u8],
+        aad: &Aad,
+    ) -> RepoResult<Zeroizing<Vec<u8>>> {
+        let sealed = Sealed {
+            ciphertext: ciphertext.to_vec(),
+            nonce: nonce
+                .try_into()
+                .map_err(|_| RepoError::Storage("bad sealed nonce".into()))?,
+        };
+        open(&self.key, &sealed, aad).map_err(secrets_err)
+    }
+
     pub fn seal(&self, organisation_id: Uuid, c: &Creds) -> RepoResult<SealedCreds> {
         let plain = Zeroizing::new(serde_json::to_vec(c).map_err(json_err)?);
-        let s = seal(&self.key, &plain, &aad(organisation_id));
+        let s = self.seal_bytes(&plain, &aad(organisation_id));
         Ok(SealedCreds {
             ciphertext: s.ciphertext,
             nonce: s.nonce.to_vec(),
@@ -68,15 +89,7 @@ impl Dek {
     }
 
     pub fn open(&self, organisation_id: Uuid, s: &SealedCreds) -> RepoResult<Creds> {
-        let sealed = Sealed {
-            ciphertext: s.ciphertext.clone(),
-            nonce: s
-                .nonce
-                .as_slice()
-                .try_into()
-                .map_err(|_| RepoError::Storage("bad credential nonce".into()))?,
-        };
-        let plain = open(&self.key, &sealed, &aad(organisation_id)).map_err(secrets_err)?;
+        let plain = self.open_bytes(&s.ciphertext, &s.nonce, &aad(organisation_id))?;
         serde_json::from_slice(&plain).map_err(json_err)
     }
 }

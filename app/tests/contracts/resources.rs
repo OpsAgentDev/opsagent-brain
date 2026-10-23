@@ -54,6 +54,25 @@ fn all() -> PageRequest {
 }
 
 contract_suite! {
+    async fn observed_and_gone_follow_the_runs_history(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let (i1, b1) = (res("i-1", ResourceKind::Compute, 1), res("b-1", ResourceKind::Storage, 2));
+        let r1 = seed.run(org, conn).await;
+        s.resources().upsert_chunk(org, conn, r1, &[i1.clone(), b1], now()).await.unwrap();
+        let r2 = seed.run(org, conn).await;
+        s.resources().upsert_chunk(org, conn, r2, std::slice::from_ref(&i1), now()).await.unwrap();
+        let seen = s.resources().observed(org, conn, r2, Provider::Fake, "1").await.unwrap();
+        assert_eq!(seen, [i1]);
+        let (other, _) = world(s, seed).await;
+        assert!(s.resources().observed(other, conn, r2, Provider::Fake, "1").await.unwrap().is_empty());
+        assert_eq!(s.resources().mark_unseen_gone(other, conn, r2, now()).await.unwrap(), 0);
+        assert_eq!(s.resources().mark_unseen_gone(org, conn, r2, now()).await.unwrap(), 1);
+        assert_eq!(s.resources().mark_unseen_gone(org, conn, r2, now()).await.unwrap(), 0);
+        let rows = s.resources().list(org, ResourceFilter::default(), all()).await.unwrap().items;
+        let gone: Vec<_> = rows.iter().filter(|r| r.gone_at.is_some()).map(|r| r.identity.as_str()).collect();
+        assert_eq!(gone, ["b-1"]);
+    }
+
     async fn upsert_chunk_unchanged_returns_false(s, seed) {
         let (org, conn) = world(s, seed).await;
         let chunk = [res("i-1", ResourceKind::Compute, 1), res("b-1", ResourceKind::Storage, 2)];

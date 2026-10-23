@@ -346,4 +346,13 @@ impl<C: Conn> ConnectionsRepo for Pg<C> {
         }
         Ok(())
     }
+
+    async fn by_id_unscoped(&self, id: Uuid) -> RepoResult<Option<Connection>> {
+        // tenancy: operator tasks name a connection by id alone; the row names its organisation.
+        let row = connections::Entity::find_by_id(id)
+            .one(self.db())
+            .await
+            .map_err(db_err)?;
+        row.map(connection).transpose()
+    }
 }

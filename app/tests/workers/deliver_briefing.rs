@@ -7,9 +7,8 @@ use chrono::{DateTime, Duration, Utc};
 use loco_rs::{app::AppContext, prelude::*};
 use opsagent_brain::{
     adapters::slack::{HttpSlack, Install, SlackClient},
-    app::kek,
+    app::actions,
     models::_entities::{deliveries, integrations, runs, schedules},
-    services::integrations::save_slack,
     workers::deliver_briefing,
 };
 use opsagent_core::run::{RunKey, RunStatus};
@@ -68,10 +67,8 @@ pub async fn slack_on(ctx: &AppContext, w: &World, server: &MockServer) {
         bot_user_id: "U0BOT".into(),
         scope: "chat:write".into(),
     };
-    let k = kek(ctx).unwrap();
-    save_slack(&ctx.db, k.as_ref(), w.org, w.owner, &install)
-        .await
-        .unwrap();
+    let finish = &actions(ctx).unwrap().integrations.finish_slack_install;
+    finish.save(w.org, w.owner, &install).await.unwrap();
     let c: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(server.uri()).unwrap());
     ctx.shared_store.insert(c);
     sql(
@@ -379,7 +376,7 @@ async fn no_slack_route_is_an_email_fallback_and_only_unsubscribe_spares_the_own
         assert_eq!(mail.sent().len(), 1);
 
         // An owner address unsubscribed from another organisation's footer is still mailed.
-        let hash = opsagent_brain::services::mail_guard::email_hash("noslack@example.com");
+        let hash = opsagent_brain::actions::recipients::tokens::email_hash("noslack@example.com");
         sql(
             &ctx,
             "INSERT INTO email_suppressions (id, email_hash, reason) VALUES ($1, $2, 'unsubscribed')",

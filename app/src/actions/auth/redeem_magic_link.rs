@@ -47,13 +47,13 @@ pub(super) fn sign_in_entry(user_id: Uuid) -> AuditEntry {
 mod tests {
     use std::sync::Arc;
 
-    use chrono::{DateTime, Duration, Utc};
+    use chrono::{Duration, Utc};
     use opsagent_core::repo::SystemClock;
 
     use super::*;
     use crate::{
         actions::auth::{test_support::*, MagicLinkInput, RequestMagicLink},
-        adapters::memory::{MemRateLimiter, MemStore},
+        adapters::memory::{FixedClock, MemRateLimiter, MemStore},
         mailers::CaptureMailer,
     };
 
@@ -75,14 +75,6 @@ mod tests {
         assert!(matches!(unknown, AppError::Gone("link_invalid")));
         // Refusals record nothing.
         assert_one_sign_in(&store, user_id);
-    }
-
-    struct FixedClock(DateTime<Utc>);
-
-    impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
-            self.0
-        }
     }
 
     #[tokio::test]

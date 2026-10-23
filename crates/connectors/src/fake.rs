@@ -20,7 +20,7 @@ struct Fixture {
 
 /// Fixture-backed connector. `Default` has no fixture and serves only as the
 /// registry entry; it resolves the fixture from the credentials' account.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct FakeConnector {
     fixture: Option<Fixture>,
     blocked: bool,
