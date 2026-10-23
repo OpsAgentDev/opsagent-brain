@@ -4,17 +4,12 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::Utc;
 use loco_rs::{app::AppContext, controller::middleware::remote_ip::RemoteIP};
 use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
-use opsagent_core::{
-    audit::{AuditEntry, AuditLog},
-    user::{Email, UsersRepo},
-};
-use sea_orm::EntityTrait;
+use opsagent_core::user::Email;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use utoipa::{IntoParams, ToSchema};
@@ -22,14 +17,11 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use crate::{
-    adapters::db::Pg,
+    actions::auth::{GithubProfile, MagicLinkInput},
     api_error::{ApiError, ApiJson, Problem},
-    middleware::{csrf, mailer, org_scope::AuthUser, session::USER_KEY},
-    models::_entities::users,
-    services::sign_in,
+    app::actions,
+    middleware::{csrf, org_scope::AuthUser, session::USER_KEY},
     settings::Settings,
-    tokens::hash_token,
-    workers::common::redis_client,
 };
 
 const GH_KEY: &str = "github_oauth";
@@ -54,26 +46,18 @@ async fn request_link(
         RemoteIP::Forwarded(ip) => Some(ip),
         RemoteIP::Socket(_) | RemoteIP::None => None,
     };
-    sign_in::request_link(
-        &ctx.db,
-        &redis_client(&ctx)?,
-        mailer(&ctx).as_ref(),
-        &Settings::get(&ctx).web_base_url,
-        &body.email,
-        ip,
-    )
-    .await?;
+    let input = MagicLinkInput {
+        email: body.email,
+        client_ip: ip,
+    };
+    actions(&ctx)?.auth.request_magic_link.run(input).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
 /// Rotates the session id and binds the session to `user_id`.
-async fn start_session(ctx: &AppContext, session: &Session, user_id: Uuid) -> Result<(), ApiError> {
+async fn start_session(session: &Session, user_id: Uuid) -> Result<(), ApiError> {
     session.cycle_id().await?;
     session.insert(USER_KEY, user_id).await?;
-    let target = Some(("user", user_id.to_string()));
-    Pg::new(&ctx.db)
-        .record(AuditEntry::member(None, user_id, "auth.sign_in", target))
-        .await?;
     Ok(())
 }
 
@@ -119,11 +103,9 @@ async fn redeem_link(
 ) -> Result<Json<Redirect>, ApiError> {
     let web = Settings::get(&ctx).web_base_url;
     check_origin(&headers, &web)?;
-    let user_id = Pg::new(&ctx.db)
-        .consume_magic_link(&hash_token(&body.token), Utc::now())
-        .await?
-        .ok_or_else(|| ApiError::gone("link_invalid"))?;
-    start_session(&ctx, &session, user_id).await?;
+    let redeem = &actions(&ctx)?.auth.redeem_magic_link;
+    let user_id = redeem.run(&body.token).await?;
+    start_session(&session, user_id).await?;
     Ok(Json(Redirect {
         redirect: format!("{}/dashboard", web.trim_end_matches('/')),
     }))
@@ -283,10 +265,13 @@ async fn github_callback(
         .await
         .map_err(bad_gateway)?;
     let (gh, email) = github_identity(&http, token.access_token().secret()).await?;
-    let user = Pg::new(&ctx.db)
-        .find_or_create_github(gh.id, &email, gh.name.or(Some(gh.login)))
-        .await?;
-    start_session(&ctx, &session, user.id).await?;
+    let profile = GithubProfile {
+        github_id: gh.id,
+        email,
+        name: gh.name.or(Some(gh.login)),
+    };
+    let user_id = actions(&ctx)?.auth.sign_in_github.run(profile).await?;
+    start_session(&session, user_id).await?;
     let to = format!("{}/dashboard", s.web_base_url);
     Ok((StatusCode::FOUND, [(header::LOCATION, to)]).into_response())
 }
@@ -326,13 +311,10 @@ pub struct Me {
 #[utoipa::path(get, path = "/auth/me", tag = "auth",
     responses((status = 200, body = Me), (status = 401, body = Problem)))]
 async fn me(State(ctx): State<AppContext>, AuthUser(id): AuthUser) -> Result<Json<Me>, ApiError> {
-    let u = users::Entity::find_by_id(id)
-        .one(&ctx.db)
-        .await?
-        .ok_or_else(ApiError::unauthenticated)?;
+    let u = actions(&ctx)?.auth.current_user.run(id).await?;
     Ok(Json(Me {
         id: u.id,
-        email: u.email,
+        email: u.email.as_str().into(),
         name: u.name,
     }))
 }

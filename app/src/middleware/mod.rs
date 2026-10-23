@@ -18,9 +18,14 @@ use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
 use crate::{
-    adapters::slack::{HttpSlack, SlackClient},
+    actions::RateLimiter,
+    adapters::{
+        rate_limiter::RedisRateLimiter,
+        slack::{HttpSlack, SlackClient},
+    },
     mailers,
     settings::Settings,
+    workers::common::redis_client,
 };
 
 /// Installs the session layer and the CSRF guard (settings come from `install_adapters`).
@@ -62,7 +67,7 @@ fn cors_layer(web_base_url: &str) -> Result<CorsLayer> {
         ]))
 }
 
-/// Settings, the Slack client and the mailer, for every mode (server, workers, tasks): called
+/// Settings, the Slack client, the mailer and the rate limiter, for every mode (server, workers, tasks): called
 /// from `App::after_context`.
 pub fn install_adapters(ctx: &AppContext) -> Result<()> {
     let settings = Settings::load(ctx)?;
@@ -73,6 +78,8 @@ pub fn install_adapters(ctx: &AppContext) -> Result<()> {
     ctx.shared_store.insert(settings);
     let production = ctx.environment == Environment::Production;
     ctx.shared_store.insert(mailers::from_env(production)?);
+    let limiter: Arc<dyn RateLimiter> = Arc::new(RedisRateLimiter(redis_client(ctx)?));
+    ctx.shared_store.insert(limiter);
     Ok(())
 }
 
@@ -88,4 +95,11 @@ pub fn slack(ctx: &AppContext) -> Arc<dyn SlackClient> {
     ctx.shared_store
         .get::<Arc<dyn SlackClient>>()
         .expect("slack client not installed")
+}
+
+/// The rate limiter installed by `install_adapters`.
+pub fn rate_limiter(ctx: &AppContext) -> Arc<dyn RateLimiter> {
+    ctx.shared_store
+        .get::<Arc<dyn RateLimiter>>()
+        .expect("rate limiter not installed")
 }

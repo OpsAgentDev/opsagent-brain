@@ -6,6 +6,7 @@ mod deliveries;
 mod findings;
 mod integrations;
 mod orgs;
+mod rate_limiter;
 mod recipients;
 mod resources;
 mod runs;
@@ -35,6 +36,8 @@ use opsagent_deliver::repo::{
 };
 use opsagent_ledger::Storage;
 use uuid::Uuid;
+
+pub use rate_limiter::MemRateLimiter;
 
 use crate::actions::uow::{Repos, Tx, UnitOfWork};
 

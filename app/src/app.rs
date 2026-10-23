@@ -12,12 +12,17 @@ use loco_rs::{
 };
 use migration::Migrator;
 use opsagent_connectors::{aws::AwsOutbound, Registry};
+use opsagent_core::repo::SystemClock;
 use opsagent_secrets::{CachingKek, EnvKek, Kek};
 use std::{path::Path, sync::Arc, time::Duration};
 
 use crate::{
+    actions::Actions,
+    adapters::db::Pg,
+    boot::{build_actions, Deps},
     controllers,
     middleware::{self, AuthInitializer},
+    settings::Settings,
     tasks::{
         deliver_briefing::DeliverBriefingNow, openapi_dump::OpenapiDump, scan_now::ScanNow,
         scheduler_tick::SchedulerTick,
@@ -58,6 +63,30 @@ pub fn registry(ctx: &AppContext) -> Result<Registry> {
     ctx.shared_store
         .get::<Registry>()
         .ok_or_else(|| loco_rs::Error::string("connector registry not installed"))
+}
+
+/// Builds every action from the installed adapters and stores `Arc<Actions>`. Tests that
+/// replace an adapter in the shared store (the mailer) call it again.
+pub fn install_actions(ctx: &AppContext) -> Result<()> {
+    let deps = Deps {
+        uow: Arc::new(Pg::new(ctx.db.clone())),
+        limiter: middleware::rate_limiter(ctx),
+        kek: kek(ctx)?,
+        registry: registry(ctx)?,
+        mailer: middleware::mailer(ctx),
+        slack: middleware::slack(ctx),
+        clock: Arc::new(SystemClock),
+        settings: Settings::get(ctx),
+    };
+    ctx.shared_store.insert(Arc::new(build_actions(&deps)));
+    Ok(())
+}
+
+/// The actions, installed at boot.
+pub fn actions(ctx: &AppContext) -> Result<Arc<Actions>> {
+    ctx.shared_store
+        .get::<Arc<Actions>>()
+        .ok_or_else(|| loco_rs::Error::string("actions not installed"))
 }
 
 pub struct App;
@@ -101,6 +130,7 @@ impl Hooks for App {
         };
         ctx.shared_store.insert(Registry::new(outbound, fake));
         middleware::install_adapters(&ctx)?;
+        install_actions(&ctx)?;
         Ok(ctx)
     }
 

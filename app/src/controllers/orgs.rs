@@ -9,15 +9,15 @@ use uuid::Uuid;
 
 use super::OrgPath;
 use crate::{
+    actions::DAY_SECS,
     adapters::db::Pg,
     api_error::{ApiError, ApiJson, Problem},
     app::kek,
-    middleware::org_scope::{AuthUser, OrgScope},
-    services::{
-        orgs,
-        rate_limit::{hit, DAY_SECS},
+    middleware::{
+        org_scope::{AuthUser, OrgScope},
+        rate_limiter,
     },
-    workers::common::redis_client,
+    services::orgs,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -64,15 +64,10 @@ pub const ORGS_PER_USER_PER_DAY: i64 = 5;
 
 /// Counts one creation for `user_id`; 429 `rate_limited` past the daily cap. Fails closed.
 async fn limit_creation(ctx: &AppContext, user_id: Uuid) -> Result<(), ApiError> {
-    let redis = redis_client(ctx)?;
-    let mut c = redis
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(ApiError::internal)?;
     let key = format!("ratelimit:org_create:user:{user_id}");
-    let ok = hit(&mut c, &key, ORGS_PER_USER_PER_DAY, DAY_SECS)
-        .await
-        .map_err(ApiError::internal)?;
+    let ok = rate_limiter(ctx)
+        .hit(&key, ORGS_PER_USER_PER_DAY, DAY_SECS)
+        .await?;
     if ok {
         Ok(())
     } else {

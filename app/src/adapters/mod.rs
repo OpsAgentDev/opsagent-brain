@@ -3,4 +3,5 @@
 pub mod db;
 #[cfg(feature = "test-support")]
 pub mod memory;
+pub mod rate_limiter;
 pub mod slack;
