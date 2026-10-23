@@ -47,7 +47,8 @@ pub struct Connection {
     pub scan_time_local: Option<String>,
     pub briefing_time_local: Option<String>,
     pub api_rate_ceiling: Option<i32>,
-    /// Slack channel id for this connection's deliveries; null inherits the organisation's.
+    /// Slack channel id for this connection's deliveries; null posts nothing to Slack (there is
+    /// no organisation channel), so briefings go to the owners by email.
     pub slack_channel_id: Option<String>,
     pub first_connected_at: Option<DateTime<FixedOffset>>,
     pub billable_from: Option<DateTime<FixedOffset>>,

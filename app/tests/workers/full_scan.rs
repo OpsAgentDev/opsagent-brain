@@ -1162,10 +1162,10 @@ async fn simulate_error_is_coverage_unknown_and_run_is_done() {
         let conn = connection(&req, &ctx, "o@example.com").await;
         let k = rigged(Some(Fault::Simulate));
         let run = scan(&ctx, conn, 0, &k).await;
-        // Inventory is complete, so the run is `done`; the failed simulation is recorded as `iam`.
+        // Inventory is complete, so the run is `done`; the failed simulation makes it partial.
         let r = run_row(&ctx, run).await;
         assert_eq!((r.status.as_str(), r.partial_reason), ("done", None));
-        assert_eq!(r.checkpoint["stats"]["unavailable"], json!(["iam"]));
+        assert_eq!(r.checkpoint["stats"]["partial"], json!(true));
         assert_eq!(k.sims.load(SeqCst), 1);
         for plan in ["plan-nightly", "plan-weekly"] {
             assert_eq!(finding(&ctx, conn, plan).await.variant, "coverage_unknown");

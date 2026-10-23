@@ -119,8 +119,9 @@ impl Scan<'_> {
 
     /// Restore simulation for each distinct backup-plan role seen this run, stored in the
     /// checkpoint cursor so a resumed run does not repeat the calls. A failed call leaves its
-    /// role out and marks `iam` unavailable. The run is `partial` (but with no `partial_reason`,
-    /// so it still ends `done`): lifecycle must not resolve findings from checks it could not feed.
+    /// role out (its finding reads `coverage_unknown`). The run is `partial` (but with no
+    /// `partial_reason`, so it still ends `done`): lifecycle must not resolve findings from
+    /// checks it could not feed.
     async fn simulate(&self) -> LResult<ChunkOutcome> {
         let resources = seen(self.db, self.c, self.k, self.run_id).await?;
         let roles: BTreeSet<&str> = resources
@@ -149,15 +150,10 @@ impl Scan<'_> {
             }
         }
         let mut stats = json!({});
-        let mut down = BTreeSet::new();
         if failed_calls || over_cap {
             // Unsimulated roles (failed or past the cap) must not let lifecycle resolve their findings.
             stats["partial"] = json!(true);
         }
-        if failed_calls {
-            down.insert("iam".to_owned());
-        }
-        self.unavailable(&mut stats, down).await?;
         Ok(ChunkOutcome {
             stats,
             cursor: json!({ "simulations": sims }),

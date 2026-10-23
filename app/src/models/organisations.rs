@@ -30,14 +30,18 @@ pub fn slugify(name: &str) -> String {
     }
 }
 
+/// A text-direction override or isolate (spoofs how mail text reads).
+pub fn is_bidi(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 pub fn valid_name(raw: &str) -> Result<String, ApiError> {
     let n = raw.trim();
     if n.is_empty() || n.chars().count() > 100 {
         return Err(ApiError::invalid("name must be 1 to 100 characters"));
     }
     // Names reach mail subjects and bodies: no line breaks or text-direction overrides.
-    let bidi = |c: char| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
-    if n.chars().any(|c| c.is_ascii_control() || bidi(c)) {
+    if n.chars().any(|c| c.is_ascii_control() || is_bidi(c)) {
         return Err(ApiError::invalid(
             "name must not contain control characters",
         ));

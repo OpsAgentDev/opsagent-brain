@@ -112,16 +112,17 @@ pub struct HttpSlack {
 }
 
 impl HttpSlack {
-    pub fn new(base: impl Into<String>) -> Self {
+    /// Fails only if the TLS backend cannot initialise; never falls back to a client without
+    /// the timeout and redirect policy.
+    pub fn new(base: impl Into<String>) -> Result<Self, reqwest::Error> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap_or_default();
-        Self {
+            .build()?;
+        Ok(Self {
             base: base.into().trim_end_matches('/').to_owned(),
             http,
-        }
+        })
     }
 
     fn url(&self, method: &str) -> String {

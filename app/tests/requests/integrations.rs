@@ -32,7 +32,7 @@ fn use_slack(ctx: &AppContext, slack: &MockServer) {
     s.slack_client_id = "cid".into();
     s.slack_client_secret = "csecret".into();
     ctx.shared_store.insert(s);
-    let c: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(slack.uri()));
+    let c: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(slack.uri()).unwrap());
     ctx.shared_store.insert(c);
 }
 
@@ -483,7 +483,7 @@ async fn unsubscribe_link_is_stable_and_suppresses_the_address() {
             .await
             .unwrap()
             .unwrap();
-        let secret = Settings::get(&ctx).session_secret;
+        let secret = Settings::get(&ctx).unsubscribe_key().to_owned();
         // Two mails carry the same link, and both work (idempotent).
         let web = "http://localhost:3000";
         let first = recipient_service::unsubscribe_url(web, &secret, row.id);
@@ -957,9 +957,11 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
             .await
             .unwrap()
             .unwrap();
-        assert!(mail_guard::may_deliver(&ctx.db, z.id, "target@example.com")
-            .await
-            .unwrap());
+        assert!(
+            mail_guard::may_deliver(&ctx.db, z.id, "target@example.com", false)
+                .await
+                .unwrap()
+        );
         let redis = redis_of(&ctx);
         assert!(
             !mail_guard::may_send_confirm(&ctx.db, &redis, z.id, "target@example.com")
@@ -973,7 +975,7 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
             .await
             .unwrap()
             .unwrap();
-        let tok = recipient_service::unsubscribe_token(&Settings::get(&ctx).session_secret, r.id);
+        let tok = recipient_service::unsubscribe_token(Settings::get(&ctx).unsubscribe_key(), r.id);
         assert_eq!(
             req.post(&format!("/v1/unsubscribe/{tok}"))
                 .await
@@ -990,7 +992,7 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
             ("unsubscribed", None)
         );
         assert!(
-            !mail_guard::may_deliver(&ctx.db, z.id, "target@example.com")
+            !mail_guard::may_deliver(&ctx.db, z.id, "target@example.com", false)
                 .await
                 .unwrap()
         );
@@ -1045,7 +1047,7 @@ async fn six_owners_who_each_confirm_never_trip_confirm_blocked() {
             .unwrap()
             .unwrap();
         assert!(
-            mail_guard::may_deliver(&ctx.db, org.id, "target@example.com")
+            mail_guard::may_deliver(&ctx.db, org.id, "target@example.com", false)
                 .await
                 .unwrap()
         );

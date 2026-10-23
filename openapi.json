@@ -2622,7 +2622,7 @@
               "string",
               "null"
             ],
-            "description": "Slack channel id for this connection's deliveries; null inherits the organisation's."
+            "description": "Slack channel id for this connection's deliveries; null posts nothing to Slack (there is\nno organisation channel), so briefings go to the owners by email."
           },
           "status": {
             "type": "string",
@@ -3059,7 +3059,7 @@
           },
           "status": {
             "type": "string",
-            "description": "`active`, `revoked` or `failing`."
+            "description": "`active` or `revoked`."
           },
           "team_name": {
             "type": [

@@ -61,10 +61,17 @@ impl Out<'_> {
 
     /// Mails `mail` once for effect `key` (`Idempotency-Key` `{run_id}:{key}`); its row gets
     /// `status`. A refusal by `mail_guard` sends nothing and writes the row `suppressed`.
-    pub async fn email(&self, key: &str, mut mail: Mail, status: &str) -> LResult<()> {
+    /// `member`: the address is a member or owner (`Recipient.member`).
+    pub async fn email(
+        &self,
+        key: &str,
+        mut mail: Mail,
+        member: bool,
+        status: &str,
+    ) -> LResult<()> {
         let db = &self.ctx.db;
         let to = mail.to.clone();
-        if !mail_guard::may_deliver(db, self.organisation_id, &to)
+        if !mail_guard::may_deliver(db, self.organisation_id, &to, member)
             .await
             .map_err(lerr)?
         {

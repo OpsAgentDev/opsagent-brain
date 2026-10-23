@@ -126,7 +126,8 @@ async fn step(
         let s = Settings::get(ctx);
         for rc in &to {
             let mail = weekly_mail(&w, rc, &s);
-            out.email(&format!("weekly:{}", rc.id), mail, SENT).await?;
+            out.email(&format!("weekly:{}", rc.id), mail, rc.member, SENT)
+                .await?;
         }
         return Ok(outcome(EMAIL, "done"));
     }
@@ -163,7 +164,7 @@ async fn weekly(ctx: &AppContext, c: &connections::Model) -> LResult<Weekly> {
 fn weekly_mail(w: &Weekly, to: &Recipient, s: &Settings) -> Mail {
     let (mut text, mut html) = (render_text(w), render_html(w));
     if !to.member {
-        let url = unsubscribe_url(&s.web_base_url, &s.session_secret, to.id);
+        let url = unsubscribe_url(&s.web_base_url, s.unsubscribe_key(), to.id);
         text += &format!("\nUnsubscribe: {url}\n");
         let footer = format!("<p><a href=\"{url}\">Unsubscribe</a></p>\n</body>");
         html = html.replacen("</body>", &footer, 1);
@@ -219,7 +220,8 @@ async fn summary(out: &Out<'_>) -> LResult<ChunkOutcome> {
             text: text.clone(),
             ..Default::default()
         };
-        out.email(&format!("summary:{}", o.id), mail, SENT).await?;
+        out.email(&format!("summary:{}", o.id), mail, o.member, SENT)
+            .await?;
     }
     Ok(outcome(SUMMARY, "done"))
 }

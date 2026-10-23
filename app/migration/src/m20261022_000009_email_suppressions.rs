@@ -4,7 +4,8 @@ use sea_orm_migration::prelude::*;
 pub struct Migration;
 
 // Keyed by hex SHA-256 of the lowercased email. Three kinds of row:
-// - `unsubscribed`: global (organisation_id NULL), permanent; no mail from any organisation.
+// - `unsubscribed`: global (organisation_id NULL), permanent; no non-member mail from any
+//   organisation (members and owners still get their own organisation's mail).
 // - `ignored`: one organisation, 90 days; that organisation's confirm mails went unconfirmed.
 // - `confirm_blocked`: global, 90 days; blocks confirm mails only (never deliveries to
 //   recipients who confirmed), after unconfirmed mails from several distinct owning users.

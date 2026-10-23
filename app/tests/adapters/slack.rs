@@ -18,6 +18,7 @@ async fn post_error(template: ResponseTemplate) -> SlackError {
         .mount(&server)
         .await;
     HttpSlack::new(server.uri())
+        .unwrap()
         .post_message("xoxb-t", "C1", "hi", "run:key")
         .await
         .unwrap_err()
@@ -37,6 +38,7 @@ async fn post_message_sends_token_and_client_msg_id_and_returns_ts() {
         .mount(&server)
         .await;
     let ts = HttpSlack::new(server.uri())
+        .unwrap()
         .post_message("xoxb-t", "C1", "hi", "run:key")
         .await
         .unwrap();
@@ -99,6 +101,7 @@ async fn channels_follow_cursor_public_and_private_unarchived() {
         .mount(&server)
         .await;
     let chans = HttpSlack::new(server.uri())
+        .unwrap()
         .channels("xoxb-t")
         .await
         .unwrap();
@@ -124,6 +127,7 @@ async fn channels_stop_at_1000() {
         .mount(&server)
         .await;
     let got = HttpSlack::new(server.uri())
+        .unwrap()
         .channels("xoxb-t")
         .await
         .unwrap();
@@ -149,7 +153,7 @@ async fn oauth_access_returns_install_or_error_code() {
         .respond_with(ok(json!({"ok": false, "error": "invalid_code"})))
         .mount(&server)
         .await;
-    let slack = HttpSlack::new(server.uri());
+    let slack = HttpSlack::new(server.uri()).unwrap();
     let i = slack
         .oauth_access("cid", "secret", "good", "https://api.test/cb")
         .await
@@ -176,5 +180,9 @@ async fn revoke_calls_auth_revoke_with_the_token() {
         .expect(1)
         .mount(&server)
         .await;
-    HttpSlack::new(server.uri()).revoke("xoxb-t").await.unwrap();
+    HttpSlack::new(server.uri())
+        .unwrap()
+        .revoke("xoxb-t")
+        .await
+        .unwrap();
 }
