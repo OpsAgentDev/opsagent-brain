@@ -1,4 +1,5 @@
 use super::Mail;
+use crate::models::organisations::is_bidi;
 
 pub fn magic_link(to: &str, link: &str) -> Mail {
     Mail {
@@ -25,10 +26,9 @@ pub fn invite(to: &str, org_name: &str, link: &str) -> Mail {
 /// injection or spoofed line breaks), at most 60 characters.
 pub fn mail_safe_name(raw: &str) -> String {
     const MAX: usize = 60;
-    let bidi = |c: char| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
     let clean: String = raw
         .chars()
-        .map(|c| if c.is_control() || bidi(c) { ' ' } else { c })
+        .map(|c| if c.is_control() || is_bidi(c) { ' ' } else { c })
         .collect();
     let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
     if clean.chars().count() > MAX {
