@@ -15,7 +15,7 @@ use super::{OrgIdPath, OrgPath};
 use crate::{
     adapters::db::Pg,
     api_error::{ApiError, ApiJson, ApiQuery, Problem},
-    middleware::{mailer, org_scope::OrgScope},
+    middleware::{mailer, org_scope::OrgScope, rate_limiter},
     services::{
         pagination::{self, Page, PageParams},
         recipients as service,
@@ -91,7 +91,7 @@ async fn create(
     let web = Settings::get(&ctx).web_base_url;
     let row = service::create(
         &ctx.db,
-        &redis_client(&ctx)?,
+        rate_limiter(&ctx).as_ref(),
         mailer(&ctx).as_ref(),
         web.trim_end_matches('/'),
         scope.organisation_id,

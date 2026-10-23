@@ -19,7 +19,7 @@ use sha2::Sha256;
 use uuid::Uuid;
 
 use crate::{
-    actions::uow::Repos,
+    actions::{uow::Repos, RateLimiter},
     adapters::db::Pg,
     api_error::ApiError,
     mailers::{magic_link as mail, Mailer},
@@ -92,7 +92,7 @@ async fn member_email(
 /// to an email recipient. 409 `recipient_exists` for the same email and connection.
 pub async fn create(
     db: &DatabaseConnection,
-    redis: &redis::Client,
+    limiter: &dyn RateLimiter,
     mailer: &dyn Mailer,
     web_base_url: &str,
     organisation_id: Uuid,
@@ -156,7 +156,7 @@ pub async fn create(
             email: &email,
             token: &token,
         };
-        send_confirm(db, redis, mailer, web_base_url, to).await?;
+        send_confirm(db, limiter, mailer, web_base_url, to).await?;
     }
     Ok(row)
 }
@@ -170,12 +170,12 @@ struct Confirm<'a> {
 /// Mails the confirm link unless `mail_guard` refuses (answered as if sent either way).
 async fn send_confirm(
     db: &DatabaseConnection,
-    redis: &redis::Client,
+    limiter: &dyn RateLimiter,
     mailer: &dyn Mailer,
     web_base_url: &str,
     c: Confirm<'_>,
 ) -> Result<(), ApiError> {
-    if !mail_guard::may_send_confirm(db, redis, c.organisation_id, c.email).await? {
+    if !mail_guard::may_send_confirm(db, limiter, c.organisation_id, c.email).await? {
         return Ok(());
     }
     let org = Pg::new(db).orgs().get(c.organisation_id).await?;

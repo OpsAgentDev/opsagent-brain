@@ -12,7 +12,7 @@ use sea_orm::{DatabaseConnection, TransactionTrait};
 use uuid::Uuid;
 
 use crate::{
-    actions::uow::Repos, adapters::db::Pg, api_error::ApiError,
+    actions::uow::Repos, adapters::db::Pg, api_error::ApiError, error::AppError,
     services::connections as connections_service,
 };
 
@@ -46,7 +46,9 @@ pub async fn create(
     let org = match repo.insert(new.clone()).await {
         Err(RepoError::Conflict("slug")) => {
             new.slug = suffixed(&new.slug);
-            repo.insert(new).await?
+            // A second collision is not a client error (the route documents no 409): 500, as before.
+            let internal = |e: RepoError| AppError::Internal(e.to_string());
+            repo.insert(new).await.map_err(internal)?
         }
         other => other?,
     };

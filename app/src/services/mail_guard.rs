@@ -22,9 +22,10 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
+    actions::{RateLimiter, DAY_SECS},
     adapters::db::Pg,
     api_error::ApiError,
-    services::rate_limit::{distinct, hit, DAY_SECS},
+    error::AppResult,
 };
 
 /// Confirm mails per (organisation, address) per day.
@@ -106,12 +107,11 @@ enum Verdict {
 }
 
 async fn count(
-    redis: &redis::Client,
+    limiter: &dyn RateLimiter,
     organisation_id: Uuid,
     owner: Uuid,
     hash: &str,
-) -> redis::RedisResult<Verdict> {
-    let mut c = redis.get_multiplexed_async_connection().await?;
+) -> AppResult<Verdict> {
     let caps = [
         (
             format!("ratelimit:recipient_confirm:email:{organisation_id}:{hash}"),
@@ -127,38 +127,34 @@ async fn count(
         ),
     ];
     for (key, cap) in caps {
-        if !hit(&mut c, &key, cap, DAY_SECS).await? {
+        if !limiter.hit(&key, cap, DAY_SECS).await? {
             return Ok(Verdict::Capped);
         }
     }
-    if !hit(
-        &mut c,
-        &unconfirmed_key(organisation_id, hash),
-        UNCONFIRMED_CAP,
-        WINDOW_30D,
-    )
-    .await?
+    if !limiter
+        .hit(
+            &unconfirmed_key(organisation_id, hash),
+            UNCONFIRMED_CAP,
+            WINDOW_30D,
+        )
+        .await?
     {
         return Ok(Verdict::IgnoredByOrg);
     }
     // Counted across every organisation of this owner; only the address holder's confirm resets it.
-    if !hit(
-        &mut c,
-        &per_owner_key(owner, hash),
-        PER_OWNER_CAP,
-        WINDOW_30D,
-    )
-    .await?
+    if !limiter
+        .hit(&per_owner_key(owner, hash), PER_OWNER_CAP, WINDOW_30D)
+        .await?
     {
         return Ok(Verdict::Capped);
     }
-    let owners = distinct(
-        &mut c,
-        &unconfirmed_owners_key(hash),
-        &owner.to_string(),
-        WINDOW_30D,
-    )
-    .await?;
+    let owners = limiter
+        .distinct(
+            &unconfirmed_owners_key(hash),
+            &owner.to_string(),
+            WINDOW_30D,
+        )
+        .await?;
     Ok(if owners >= UNCONFIRMED_OWNERS_CAP {
         Verdict::Blocked
     } else {
@@ -170,7 +166,7 @@ async fn count(
 /// unconfirmed mails writes `ignored` (this organisation) or `confirm_blocked` (global).
 pub async fn may_send_confirm(
     db: &DatabaseConnection,
-    redis: &redis::Client,
+    limiter: &dyn RateLimiter,
     organisation_id: Uuid,
     email: &str,
 ) -> Result<bool, ApiError> {
@@ -185,7 +181,7 @@ pub async fn may_send_confirm(
     }
     let hash = email_hash(email);
     let owner = owner_of(&repo, organisation_id).await?;
-    match count(redis, organisation_id, owner, &hash).await {
+    match count(limiter, organisation_id, owner, &hash).await {
         Ok(Verdict::Send) => Ok(true),
         Ok(Verdict::Capped) => Ok(false),
         Ok(Verdict::IgnoredByOrg) => {

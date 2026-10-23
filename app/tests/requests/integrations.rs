@@ -969,12 +969,15 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
                 .await
                 .unwrap()
         );
-        let redis = redis_of(&ctx);
-        assert!(
-            !mail_guard::may_send_confirm(&ctx.db, &redis, z.id, "target@example.com")
-                .await
-                .unwrap()
-        );
+        let limiter = opsagent_brain::middleware::rate_limiter(&ctx);
+        assert!(!mail_guard::may_send_confirm(
+            &ctx.db,
+            limiter.as_ref(),
+            z.id,
+            "target@example.com"
+        )
+        .await
+        .unwrap());
         // An unsubscribe then replaces the block with a permanent global row.
         let r = recipients::Entity::find()
             .filter(recipients::Column::OrganisationId.eq(z.id))

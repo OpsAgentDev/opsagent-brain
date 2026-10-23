@@ -13,3 +13,10 @@ impl AuditLog for MemStore {
         Ok(())
     }
 }
+
+impl MemStore {
+    /// Every recorded entry, oldest first.
+    pub fn audit_entries(&self) -> Vec<AuditEntry> {
+        self.state().audit.clone()
+    }
+}

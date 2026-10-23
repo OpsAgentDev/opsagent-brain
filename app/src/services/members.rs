@@ -5,9 +5,10 @@ use chrono::{Duration, Utc};
 use opsagent_core::{
     audit::{AuditEntry, AuditLog},
     org::{Invite, Organisation, OrganisationsRepo, Role},
+    repo::RepoError,
     user::{Email, UsersRepo},
 };
-use sea_orm::{DatabaseConnection, TransactionTrait};
+use sea_orm::{DatabaseConnection, DatabaseTransaction, TransactionTrait};
 use uuid::Uuid;
 
 use crate::{
@@ -90,7 +91,7 @@ pub async fn accept(
     // An existing membership keeps its role.
     let role = match repo.membership(&org.slug, user_id).await? {
         Some((_, m)) => m.role,
-        None => repo.add_member(org.id, user_id, inv.role).await?.role,
+        None => join(&txn, &org, user_id, inv.role).await?,
     };
     let target = Some(("invite", inv.id.to_string()));
     repo.record(AuditEntry::member(
@@ -102,6 +103,30 @@ pub async fn accept(
     .await?;
     txn.commit().await?;
     Ok((org, role))
+}
+
+/// Adds the member under a savepoint: if a concurrent request (a double submit) added it first,
+/// the unique violation rolls back only the savepoint and the role already held is returned.
+async fn join(
+    txn: &DatabaseTransaction,
+    org: &Organisation,
+    user_id: Uuid,
+    role: Role,
+) -> Result<Role, ApiError> {
+    let savepoint = txn.begin().await?;
+    match Pg::new(&savepoint).add_member(org.id, user_id, role).await {
+        Ok(m) => {
+            savepoint.commit().await?;
+            Ok(m.role)
+        }
+        Err(RepoError::Conflict("member")) => {
+            savepoint.rollback().await?;
+            let held = Pg::new(txn).membership(&org.slug, user_id).await?;
+            let missing = || RepoError::Storage("member missing after conflict".into());
+            Ok(held.ok_or_else(missing)?.1.role)
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Removes member `member_id` for owner `actor`; `last_owner` if it would leave no owner.

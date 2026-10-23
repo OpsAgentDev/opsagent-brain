@@ -1,2 +1,24 @@
 //! Use cases over repository traits (engineering principles, Layers).
+pub mod auth;
 pub mod uow;
+
+use async_trait::async_trait;
+
+use crate::error::AppResult;
+
+/// Every action, built once by `boot::build_actions`.
+pub struct Actions {
+    pub auth: auth::Auth,
+}
+
+/// Fixed-window counters shared by every rate limit.
+#[async_trait]
+pub trait RateLimiter: Send + Sync {
+    /// Counts one hit on `key`; `true` while the window's count is within `cap`.
+    async fn hit(&self, key: &str, cap: i64, window_secs: i64) -> AppResult<bool>;
+    /// Adds `member` to the window's set at `key`; how many distinct members it holds.
+    async fn distinct(&self, key: &str, member: &str, window_secs: i64) -> AppResult<i64>;
+}
+
+pub const HOUR_SECS: i64 = 3600;
+pub const DAY_SECS: i64 = 86_400;

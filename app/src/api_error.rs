@@ -120,12 +120,10 @@ internal_from!(
     opsagent_ledger::LedgerError
 );
 
+/// Through `AppError`, so a repository error maps in one place.
 impl From<opsagent_core::repo::RepoError> for ApiError {
     fn from(e: opsagent_core::repo::RepoError) -> Self {
-        match e {
-            opsagent_core::repo::RepoError::NotFound => Self::not_found(),
-            e => Self::internal(e),
-        }
+        crate::error::AppError::from(e).into()
     }
 }
 
