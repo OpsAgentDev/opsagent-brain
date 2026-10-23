@@ -2,7 +2,9 @@
 //! `commit` writes the snapshot back, so a dropped transaction leaves nothing behind.
 mod audit;
 mod connections;
+mod findings;
 mod orgs;
+mod resources;
 mod runs;
 mod users;
 
@@ -16,8 +18,10 @@ use chrono::{DateTime, Utc};
 use opsagent_core::{
     audit::{AuditEntry, AuditLog},
     connection::{Connection, ConnectionsRepo, SealedCreds},
+    finding::FindingsRepo,
     org::{Invite, Organisation, OrganisationsRepo, Role},
-    repo::RepoResult,
+    repo::{Cursor, PageOf, PageRequest, RepoResult},
+    resource::ResourcesRepo,
     run::RunsRepo,
     user::{User, UsersRepo},
 };
@@ -62,6 +66,8 @@ pub struct MemState {
     runs: Vec<runs::RunEntry>,
     /// `None`: started, `Some(external_ref)`: done.
     effects: HashMap<(Uuid, String), Option<Option<String>>>,
+    findings: Vec<findings::FindingRow>,
+    resources: Vec<resources::ResourceMem>,
 }
 
 #[derive(Clone, Default)]
@@ -91,6 +97,12 @@ impl Repos for MemStore {
         self
     }
     fn ledger(&self) -> &dyn Storage {
+        self
+    }
+    fn findings(&self) -> &dyn FindingsRepo {
+        self
+    }
+    fn resources(&self) -> &dyn ResourcesRepo {
         self
     }
 }
@@ -132,6 +144,12 @@ impl Repos for MemTx {
     fn ledger(&self) -> &dyn Storage {
         &self.work
     }
+    fn findings(&self) -> &dyn FindingsRepo {
+        &self.work
+    }
+    fn resources(&self) -> &dyn ResourcesRepo {
+        &self.work
+    }
 }
 
 #[async_trait]
@@ -141,4 +159,17 @@ impl Tx for MemTx {
         *self.parent.state() = done;
         Ok(())
     }
+}
+
+/// One page of `rows` (already tenant-filtered), newest first by `key`, as `db::page` does.
+fn page<T>(mut rows: Vec<T>, key: fn(&T) -> Cursor, p: PageRequest) -> PageOf<T> {
+    rows.sort_by_key(|r| std::cmp::Reverse(key(r)));
+    let mut items: Vec<T> = rows
+        .into_iter()
+        .filter(|r| p.after.is_none_or(|a| key(r) < a))
+        .collect();
+    let more = items.len() as u64 > p.limit;
+    items.truncate(p.limit as usize);
+    let next = more.then(|| items.last().map(key)).flatten();
+    PageOf { items, next }
 }

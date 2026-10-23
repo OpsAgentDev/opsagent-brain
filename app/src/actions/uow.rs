@@ -2,8 +2,8 @@
 //! transaction.
 use async_trait::async_trait;
 use opsagent_core::{
-    audit::AuditLog, connection::ConnectionsRepo, org::OrganisationsRepo, repo::RepoResult,
-    run::RunsRepo, user::UsersRepo,
+    audit::AuditLog, connection::ConnectionsRepo, finding::FindingsRepo, org::OrganisationsRepo,
+    repo::RepoResult, resource::ResourcesRepo, run::RunsRepo, user::UsersRepo,
 };
 use opsagent_ledger::Storage;
 
@@ -16,6 +16,8 @@ pub trait Repos: Send + Sync {
     fn runs(&self) -> &dyn RunsRepo;
     /// Runs, write side: creation, fences, checkpoints, effects.
     fn ledger(&self) -> &dyn Storage;
+    fn findings(&self) -> &dyn FindingsRepo;
+    fn resources(&self) -> &dyn ResourcesRepo;
 }
 
 /// Writes through a `Tx` are discarded unless it is committed.

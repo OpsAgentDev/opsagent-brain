@@ -2,9 +2,11 @@
 //! borrowed handle to either.
 mod audit;
 mod connections;
+mod findings;
 pub mod ledger_storage;
 mod orgs;
 mod page;
+mod resources;
 mod runs;
 mod users;
 
@@ -15,8 +17,10 @@ use chrono::{DateTime, Utc};
 use opsagent_core::{
     audit::AuditLog,
     connection::ConnectionsRepo,
+    finding::FindingsRepo,
     org::{OrganisationsRepo, Role},
     repo::{RepoError, RepoResult},
+    resource::ResourcesRepo,
     run::RunsRepo,
     user::{Email, UsersRepo},
 };
@@ -108,6 +112,12 @@ impl<C: Conn> Repos for Pg<C> {
         self
     }
     fn ledger(&self) -> &dyn Storage {
+        self
+    }
+    fn findings(&self) -> &dyn FindingsRepo {
+        self
+    }
+    fn resources(&self) -> &dyn ResourcesRepo {
         self
     }
 }

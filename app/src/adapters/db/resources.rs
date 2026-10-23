@@ -1,0 +1,135 @@
+//! `ResourcesRepo` on SeaORM: inventory rows and their per-run history.
+use std::collections::BTreeMap;
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use opsagent_core::{
+    repo::{PageOf, PageRequest, RepoError, RepoResult},
+    resource::{Resource, ResourceFilter, ResourceKind, ResourceRow, ResourcesRepo},
+};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryTrait};
+use serde_json::json;
+use uuid::Uuid;
+
+use super::{db_err, page, utc, Conn, Pg};
+use crate::{
+    adapters::db::ledger_storage::stmt,
+    models::{_entities::resources, enum_of},
+};
+
+fn row(m: resources::Model) -> RepoResult<ResourceRow> {
+    let kind: ResourceKind = enum_of(&m.kind)
+        .ok_or_else(|| RepoError::Storage(format!("unknown resource kind {:?}", m.kind)))?;
+    let tags: BTreeMap<String, String> = serde_json::from_value(m.tags)
+        .map_err(|_| RepoError::Storage("stored tags are not a string map".into()))?;
+    Ok(ResourceRow {
+        id: m.id,
+        connection_id: m.connection_id,
+        kind,
+        identity: m.identity,
+        name: m.name,
+        region: m.region,
+        tags,
+        first_seen_at: utc(m.first_seen_at),
+        last_seen_at: utc(m.last_seen_at),
+        gone_at: m.gone_at.map(utc),
+    })
+}
+
+/// Upserts one resource and its history row for `run_id`; true when it is new, came back, or
+/// changed. `prev` reads the row as it was before this statement.
+async fn upsert(
+    db: &impl ConnectionTrait,
+    (organisation_id, connection_id, run_id): (Uuid, Uuid, Uuid),
+    r: &Resource,
+    now: DateTime<Utc>,
+) -> RepoResult<bool> {
+    let row = db
+        .query_one_raw(stmt(
+            "WITH prev AS (SELECT kind, name, region, tags, attributes, gone_at FROM resources \
+             WHERE organisation_id = $2 AND connection_id = $3 AND identity = $5) \
+             INSERT INTO resources (id, organisation_id, connection_id, kind, identity, name, region, tags, attributes, \
+             first_seen_at, last_seen_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10) \
+             ON CONFLICT (connection_id, identity) DO UPDATE SET kind = EXCLUDED.kind, name = EXCLUDED.name, \
+             region = EXCLUDED.region, tags = EXCLUDED.tags, attributes = EXCLUDED.attributes, \
+             last_seen_at = $10, gone_at = NULL, updated_at = $10 \
+             RETURNING id, NOT EXISTS (SELECT 1 FROM prev WHERE prev.kind = $4 \
+             AND prev.name IS NOT DISTINCT FROM $6 AND prev.region IS NOT DISTINCT FROM $7 \
+             AND prev.tags = $8 AND prev.attributes = $9 AND prev.gone_at IS NULL) AS changed",
+            vec![
+                Uuid::now_v7().into(),
+                organisation_id.into(),
+                connection_id.into(),
+                r.kind.to_string().into(),
+                r.identity.clone().into(),
+                r.name.clone().into(),
+                r.region.clone().into(),
+                json!(r.tags).into(),
+                r.attributes.clone().into(),
+                now.into(),
+            ],
+        ))
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| RepoError::Storage("upsert returned no row".into()))?;
+    let id: Uuid = row.try_get("", "id").map_err(db_err)?;
+    db.execute_raw(stmt(
+        "INSERT INTO resource_history (id, resource_id, run_id, attributes, observed_at) \
+         SELECT $1, $2, $3, $4, $5 WHERE NOT EXISTS \
+         (SELECT 1 FROM resource_history WHERE resource_id = $2 AND run_id = $3)",
+        vec![
+            Uuid::now_v7().into(),
+            id.into(),
+            run_id.into(),
+            r.attributes.clone().into(),
+            r.observed_at.into(),
+        ],
+    ))
+    .await
+    .map_err(db_err)?;
+    row.try_get("", "changed").map_err(db_err)
+}
+
+#[async_trait]
+impl<C: Conn> ResourcesRepo for Pg<C> {
+    async fn list(
+        &self,
+        organisation_id: Uuid,
+        f: ResourceFilter,
+        p: PageRequest,
+    ) -> RepoResult<PageOf<ResourceRow>> {
+        use resources::Column as R;
+        let q = resources::Entity::find()
+            .filter(R::OrganisationId.eq(organisation_id))
+            .apply_if(f.connection_id, |q, v| q.filter(R::ConnectionId.eq(v)))
+            .apply_if(f.kind, |q, v| q.filter(R::Kind.eq(v.to_string())));
+        let rows = page(
+            self.db(),
+            q,
+            (R::CreatedAt, R::Id),
+            |m| (m.created_at, m.id),
+            p,
+        )
+        .await?;
+        let items = rows.items.into_iter().map(row).collect::<RepoResult<_>>()?;
+        Ok(PageOf {
+            items,
+            next: rows.next,
+        })
+    }
+
+    async fn upsert_chunk(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        resources: &[Resource],
+        now: DateTime<Utc>,
+    ) -> RepoResult<bool> {
+        let mut changed = false;
+        for r in resources {
+            changed |= upsert(self.db(), (organisation_id, connection_id, run_id), r, now).await?;
+        }
+        Ok(changed)
+    }
+}
