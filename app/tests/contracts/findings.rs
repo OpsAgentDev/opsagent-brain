@@ -7,6 +7,7 @@ use opsagent_core::{
     },
     org::NewOrganisation,
     repo::{PageRequest, RepoError},
+    resource::{Provider, Resource, ResourceKind},
 };
 use uuid::Uuid;
 
@@ -232,6 +233,28 @@ contract_suite! {
         s.findings().resolve_unseen(org, conn, r2, &[], t(1)).await.unwrap();
         let f = s.findings().get(org, id).await.unwrap().unwrap();
         assert_eq!(f.resolved_reason.as_deref(), Some("check_passed"));
+    }
+
+    async fn resolve_unseen_of_a_gone_resource_says_resource_gone(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let run = scan(s, seed, org, conn, &[draft(conn, "no_mfa", "u", Severity::High)]).await;
+        let resource = Resource {
+            provider: Provider::Fake,
+            account: "1".into(),
+            region: "eu-west-1".into(),
+            kind: ResourceKind::Identity,
+            identity: "u".into(),
+            name: "u".into(),
+            tags: Default::default(),
+            attributes: serde_json::json!({}),
+            observed_at: t(0),
+        };
+        s.resources().upsert_chunk(org, conn, run, &[resource], t(0)).await.unwrap();
+        seed.resource_gone(org, "u").await;
+        let r2 = scan(s, seed, org, conn, &[]).await;
+        assert_eq!(s.findings().resolve_unseen(org, conn, r2, &[], t(1)).await.unwrap(), 1);
+        let f = s.findings().list(org, FindingFilter::default(), all()).await.unwrap().items.remove(0);
+        assert_eq!((f.status.as_str(), f.resolved_reason.as_deref()), ("resolved", Some("resource_gone")));
     }
 
     async fn posture_rows_counts_open_only(s, seed) {

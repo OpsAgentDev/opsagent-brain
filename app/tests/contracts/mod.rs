@@ -47,6 +47,8 @@ pub async fn org_id(s: &dyn Repos, slug: &str) -> Uuid {
 pub trait Seed: Sync {
     async fn connection(&self, organisation_id: Uuid) -> Uuid;
     async fn run(&self, organisation_id: Uuid, connection_id: Uuid) -> Uuid;
+    /// Marks the resource gone, as the full-scan worker does after a complete inventory.
+    async fn resource_gone(&self, organisation_id: Uuid, identity: &str);
 }
 
 /// Seeds the lane database over its own connection (the app pool has one connection).
@@ -87,6 +89,16 @@ impl Seed for PgSeed {
             .unwrap();
         id
     }
+
+    async fn resource_gone(&self, organisation_id: Uuid, identity: &str) {
+        self.raw()
+            .execute_unprepared(&format!(
+                "UPDATE resources SET gone_at = now() WHERE organisation_id = '{organisation_id}' \
+                 AND identity = '{identity}'"
+            ))
+            .await
+            .unwrap();
+    }
 }
 
 #[async_trait]
@@ -97,6 +109,10 @@ impl Seed for MemStore {
 
     async fn run(&self, _: Uuid, _: Uuid) -> Uuid {
         Uuid::now_v7()
+    }
+
+    async fn resource_gone(&self, organisation_id: Uuid, identity: &str) {
+        self.mark_resource_gone(organisation_id, identity, chrono::Utc::now());
     }
 }
 

@@ -11,7 +11,7 @@ use sea_orm::prelude::Decimal;
 use uuid::Uuid;
 
 use super::{page, MemStore};
-use crate::{actions::findings::redact::redact, models::enum_str};
+use crate::{adapters::redact::redact, models::enum_str};
 
 #[derive(Clone)]
 pub struct FindingRow {

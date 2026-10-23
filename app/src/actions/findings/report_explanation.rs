@@ -5,12 +5,14 @@ use uuid::Uuid;
 
 use crate::{
     actions::uow::UnitOfWork,
+    adapters::redact::redact,
     error::{AppError, AppResult},
 };
 
 const NOTE_MAX: usize = 2000;
 
-/// Records a customer report that an explanation is wrong: an audit row with the note as typed.
+/// Records a customer report that an explanation is wrong: an audit row with the note,
+/// redacted (audit metadata carries no secrets).
 pub struct ReportExplanation {
     uow: Arc<dyn UnitOfWork>,
 }
@@ -39,6 +41,7 @@ impl ReportExplanation {
                 "note is required (at most {NOTE_MAX} characters)"
             )));
         }
+        let (note, _) = redact(note);
         // One write: no transaction needed.
         self.uow
             .audit()
@@ -68,12 +71,12 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn report_explanation_stores_note_as_typed() {
+    async fn report_explanation_redacts_before_storing() {
         let store = MemStore::default();
         let (org, actor) = (Uuid::new_v4(), Uuid::new_v4());
         let (id, _) = seeded(&store, org, "x").await;
         let report = ReportExplanation::new(Arc::new(store.clone()));
-        let note = " wrong: owner is ops@example.com ";
+        let note = " wrong: Authorization: Bearer abc.def from ops@example.com ";
         report.run(org, actor, id, note).await.unwrap();
         let entries = store.audit_entries();
         assert_eq!(entries.len(), 1);
@@ -81,8 +84,8 @@ mod tests {
         assert_eq!(e.action, "finding.report_explanation");
         assert_eq!(e.target, Some(("finding", id.to_string())));
         assert_eq!(
-            e.meta["note"], "wrong: owner is ops@example.com",
-            "trimmed only"
+            e.meta["note"],
+            "wrong: Authorization: Bearer [redacted:token] from [redacted:email]"
         );
     }
 

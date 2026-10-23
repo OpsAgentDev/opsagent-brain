@@ -3,7 +3,6 @@
 mod change_finding_status;
 mod get_finding;
 mod list_findings;
-pub mod redact;
 mod report_explanation;
 
 pub use change_finding_status::{

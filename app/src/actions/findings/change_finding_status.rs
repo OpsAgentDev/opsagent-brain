@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snooze_writes_status_event_and_audit_in_one_tx() {
+    async fn snooze_writes_status_event_and_audit() {
         let store = MemStore::default();
         let (org, actor) = (Uuid::new_v4(), Uuid::new_v4());
         let (id, _) = seeded(&store, org, "x").await;

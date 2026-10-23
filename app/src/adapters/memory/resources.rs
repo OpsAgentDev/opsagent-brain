@@ -28,6 +28,17 @@ fn matches(r: &ResourceRow, q: &str) -> bool {
     has(&r.identity) || r.name.as_deref().is_some_and(has)
 }
 
+impl MemStore {
+    /// Marks a resource missing from a complete inventory (the full-scan worker does it in SQL).
+    pub fn mark_resource_gone(&self, organisation_id: Uuid, identity: &str, at: DateTime<Utc>) {
+        for r in self.state().resources.iter_mut() {
+            if r.organisation_id == organisation_id && r.row.identity == identity {
+                r.row.gone_at = Some(at);
+            }
+        }
+    }
+}
+
 impl MemState {
     /// Identities of the connection's resources missing from a complete inventory.
     pub(super) fn gone_identities(
