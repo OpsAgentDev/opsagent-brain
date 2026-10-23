@@ -187,6 +187,9 @@ mod tests {
         async fn commit(self: Box<Self>) -> RepoResult<()> {
             self.0.commit().await
         }
+        fn queue(&self) -> &dyn opsagent_ledger::Queue {
+            self.0.queue()
+        }
         async fn savepoint(&self) -> RepoResult<Box<dyn Tx>> {
             Ok(Box::new(WithBrokenSchedules(self.0.savepoint().await?)))
         }

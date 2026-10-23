@@ -34,7 +34,7 @@ use opsagent_deliver::repo::{
     DeliveriesRepo, DeliveryRow, Integration, IntegrationsRepo, RecipientRow, RecipientsRepo,
     SchedulesRepo, Suppression,
 };
-use opsagent_ledger::Storage;
+use opsagent_ledger::{NewJob, Queue, Storage};
 use uuid::Uuid;
 
 pub use rate_limiter::MemRateLimiter;
@@ -121,6 +121,8 @@ pub struct MemState {
     schedules: Vec<ScheduleRow>,
     /// `(connection_id, verification)`, in record order.
     verifications: Vec<(Uuid, Verification)>,
+    /// Enqueued jobs, one per run.
+    jobs: Vec<NewJob>,
 }
 
 #[derive(Clone, Default)]
@@ -237,8 +239,31 @@ impl Tx for MemTx {
         Ok(())
     }
 
+    fn queue(&self) -> &dyn Queue {
+        &self.work
+    }
+
     async fn savepoint(&self) -> RepoResult<Box<dyn Tx>> {
         self.work.begin().await
+    }
+}
+
+/// shortcut: records jobs only, nothing drains them; enough for actions that enqueue in a `Tx`.
+#[async_trait]
+impl Queue for MemStore {
+    async fn enqueue(&self, job: NewJob) -> opsagent_ledger::Result<()> {
+        let mut s = self.state();
+        if !s.jobs.iter().any(|j| j.run_id == job.run_id) {
+            s.jobs.push(job);
+        }
+        Ok(())
+    }
+}
+
+impl MemStore {
+    /// Committed jobs, in enqueue order.
+    pub fn jobs(&self) -> Vec<NewJob> {
+        self.state().jobs.clone()
     }
 }
 
