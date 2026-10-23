@@ -10,6 +10,21 @@ pub struct AppState(pub(crate) Arc<Inner>);
 pub struct Inner {
     pub deps: Deps,
     pub actions: Arc<Actions>,
+    #[cfg(feature = "test-support")]
+    pub swaps: crate::adapters::test_doubles::Swaps,
+}
+
+#[cfg(feature = "test-support")]
+impl AppState {
+    /// Swaps the mailer every action sends through.
+    pub fn set_mailer(&self, m: Arc<dyn crate::mailers::Mailer>) {
+        self.swaps.mailer.set(m);
+    }
+
+    /// Swaps the Slack client every action calls.
+    pub fn set_slack(&self, s: Arc<dyn crate::adapters::slack::SlackClient>) {
+        self.swaps.slack.set(s);
+    }
 }
 
 impl Deref for AppState {

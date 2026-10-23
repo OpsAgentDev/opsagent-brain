@@ -1,7 +1,6 @@
 //! Briefing fallbacks (Plan 2 Task 10 fix round 1): the revoke notice comes from stored state,
 //! and a rate-limited post is retried on the ledger backoff before falling back.
 use chrono::{Duration, Utc};
-use opsagent_brain::app::actions;
 use opsagent_core::run::RunStatus;
 use opsagent_ledger::{JobKind, RunChunkedOptions};
 use serde_json::json;
@@ -187,10 +186,7 @@ async fn transient_5xx_parks_the_run_then_the_retry_delivers_to_slack_without_fa
     .await;
 }
 
-async fn runs_row(
-    ctx: &loco_rs::app::AppContext,
-    id: uuid::Uuid,
-) -> opsagent_brain::models::_entities::runs::Model {
+async fn runs_row(ctx: &TestApp, id: uuid::Uuid) -> opsagent_brain::models::_entities::runs::Model {
     use sea_orm::EntityTrait;
     opsagent_brain::models::_entities::runs::Entity::find_by_id(id)
         .one(&ctx.db)
@@ -200,7 +196,7 @@ async fn runs_row(
 }
 
 /// Spends the run's retries and makes it due now.
-async fn sql_attempts(ctx: &loco_rs::app::AppContext, id: uuid::Uuid, attempts: i32) {
+async fn sql_attempts(ctx: &TestApp, id: uuid::Uuid, attempts: i32) {
     super::deliver_briefing::sql(
         ctx,
         "UPDATE runs SET attempts = $2, next_attempt_at = NULL, status = 'queued' WHERE id = $1",

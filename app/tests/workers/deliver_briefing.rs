@@ -4,16 +4,15 @@ use opsagent_brain::adapters::db::ledger_storage::{stmt, PgStorage};
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
-use loco_rs::{app::AppContext, prelude::*};
 use opsagent_brain::{
     adapters::slack::{HttpSlack, Install, SlackClient},
-    app::actions,
     models::_entities::{deliveries, integrations, runs, schedules},
 };
 use opsagent_core::run::{RunKey, RunStatus};
 use opsagent_deliver::schedule::next_after;
 use opsagent_ledger::{harness, JobKind, RunChunkedOptions, Storage};
 use sea_orm::ConnectionTrait;
+use sea_orm::{entity::prelude::*, QueryOrder};
 use serde_json::{json, Value};
 use serial_test::serial;
 use uuid::Uuid;
@@ -33,11 +32,11 @@ pub struct World {
     pub owner: Uuid,
 }
 
-pub async fn sql(ctx: &AppContext, q: &str, v: Vec<sea_orm::Value>) {
+pub async fn sql(ctx: &TestApp, q: &str, v: Vec<sea_orm::Value>) {
     ctx.db.execute_raw(stmt(q, v)).await.unwrap();
 }
 
-pub async fn world(req: &axum_test::TestServer, ctx: &AppContext, email: &str) -> World {
+pub async fn world(req: &axum_test::TestServer, ctx: &TestApp, email: &str) -> World {
     let (_, _, conn) = connected(req, ctx, email, "clean").await;
     let row = ctx
         .db
@@ -58,7 +57,7 @@ pub async fn world(req: &axum_test::TestServer, ctx: &AppContext, email: &str) -
 
 /// An active Slack install for the organisation, the app pointed at `server`, and the
 /// connection routed to `CHANNEL`.
-pub async fn slack_on(ctx: &AppContext, w: &World, server: &MockServer) {
+pub async fn slack_on(ctx: &TestApp, w: &World, server: &MockServer) {
     let install = Install {
         access_token: "xoxb-secret-token".into(),
         team_id: format!("T{}", w.org.simple()),
@@ -69,8 +68,7 @@ pub async fn slack_on(ctx: &AppContext, w: &World, server: &MockServer) {
     let finish = &actions(ctx).unwrap().integrations.finish_slack_install;
     finish.save(w.org, w.owner, &install).await.unwrap();
     let c: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(server.uri()).unwrap());
-    // Actions hold the Slack client they were built with.
-    opsagent_brain::app::replace_deps(ctx, |d| d.slack = c).unwrap();
+    ctx.set_slack(c);
     sql(
         ctx,
         "UPDATE connections SET slack_channel_id = $2 WHERE id = $1",
@@ -100,7 +98,7 @@ pub async fn posted(server: &MockServer) -> Vec<String> {
 }
 
 /// A finished full scan.
-pub async fn scan(ctx: &AppContext, w: &World, finished: DateTime<Utc>) -> Uuid {
+pub async fn scan(ctx: &TestApp, w: &World, finished: DateTime<Utc>) -> Uuid {
     let id = Uuid::new_v4();
     sql(
         ctx,
@@ -114,7 +112,7 @@ pub async fn scan(ctx: &AppContext, w: &World, finished: DateTime<Utc>) -> Uuid 
 
 /// An open finding of `severity` opened by `run` at `at`.
 pub async fn finding(
-    ctx: &AppContext,
+    ctx: &TestApp,
     w: &World,
     run: Uuid,
     severity: &str,
@@ -149,7 +147,7 @@ pub async fn finding(
 }
 
 /// A briefing already delivered at `at`.
-async fn briefed(ctx: &AppContext, w: &World, at: DateTime<Utc>) {
+async fn briefed(ctx: &TestApp, w: &World, at: DateTime<Utc>) {
     sql(
         ctx,
         "INSERT INTO deliveries (id, organisation_id, connection_id, kind, channel, target, \
@@ -164,7 +162,7 @@ async fn briefed(ctx: &AppContext, w: &World, at: DateTime<Utc>) {
     .await;
 }
 
-pub async fn backdate(ctx: &AppContext, w: &World, at: DateTime<Utc>) {
+pub async fn backdate(ctx: &TestApp, w: &World, at: DateTime<Utc>) {
     sql(
         ctx,
         "UPDATE connections SET created_at = $2 WHERE id = $1",
@@ -174,7 +172,7 @@ pub async fn backdate(ctx: &AppContext, w: &World, at: DateTime<Utc>) {
 }
 
 pub async fn new_run(
-    ctx: &AppContext,
+    ctx: &TestApp,
     org: Uuid,
     conn: Option<Uuid>,
     job: &str,
@@ -193,7 +191,7 @@ pub async fn new_run(
         .id
 }
 
-pub async fn brief(ctx: &AppContext, w: &World, at: DateTime<Utc>) -> (Uuid, RunStatus) {
+pub async fn brief(ctx: &TestApp, w: &World, at: DateTime<Utc>) -> (Uuid, RunStatus) {
     let id = new_run(
         ctx,
         w.org,
@@ -215,7 +213,7 @@ pub async fn brief(ctx: &AppContext, w: &World, at: DateTime<Utc>) -> (Uuid, Run
     )
 }
 
-pub async fn rows(ctx: &AppContext, w: &World) -> Vec<deliveries::Model> {
+pub async fn rows(ctx: &TestApp, w: &World) -> Vec<deliveries::Model> {
     deliveries::Entity::find()
         .filter(deliveries::Column::OrganisationId.eq(w.org))
         .order_by_asc(deliveries::Column::Channel)
@@ -224,7 +222,7 @@ pub async fn rows(ctx: &AppContext, w: &World) -> Vec<deliveries::Model> {
         .unwrap()
 }
 
-pub async fn stats(ctx: &AppContext, run: Uuid) -> Value {
+pub async fn stats(ctx: &TestApp, run: Uuid) -> Value {
     let r = runs::Entity::find_by_id(run)
         .one(&ctx.db)
         .await
@@ -234,7 +232,7 @@ pub async fn stats(ctx: &AppContext, run: Uuid) -> Value {
 }
 
 /// The connection's first scan finished an hour ago with two criticals.
-pub async fn first_scan(ctx: &AppContext, w: &World) {
+pub async fn first_scan(ctx: &TestApp, w: &World) {
     let now = Utc::now();
     backdate(ctx, w, now - Duration::hours(2)).await;
     let run = scan(ctx, w, now - Duration::hours(1)).await;

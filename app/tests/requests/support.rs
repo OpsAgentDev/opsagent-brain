@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use axum_test::TestServer;
-use loco_rs::{app::AppContext, testing::prelude::*};
 use opsagent_brain::{
-    app::App,
+    actions::Actions,
+    error::AppResult,
     mailers::{CaptureMailer, Mailer},
+    state::AppState,
 };
 use serde_json::{json, Value};
 
@@ -20,56 +21,15 @@ pub fn test_env() {
     std::env::set_var("OPSAGENT_AWS_OUTBOUND_ROLE_ARN", OUTBOUND_ARN);
 }
 
-/// Boots the app with `test_env` and a cookie-saving client, then runs `callback`.
-pub async fn serve<F, Fut>(callback: F)
-where
-    F: FnOnce(TestServer, AppContext) -> Fut,
-    Fut: std::future::Future<Output = ()>,
-{
-    test_env();
-    let boot = boot_test::<App>().await.unwrap();
-    let ctx = boot.app_context.clone();
-    let server = TestServer::new_with_config(current_router(ctx.clone()), cookie_config()).unwrap();
-    callback(server, ctx).await;
-}
+pub use crate::support::{serve, serve_with, TestApp};
 
-/// shortcut: the router holds the `AppState` it was built with, but `replace_deps` swaps the
-/// state after boot, so each request is served by `boot::router` over the current state
-/// (rebuilt only when it changed). Task 15's `TestApp` passes doubles to boot and drops this.
-fn current_router(ctx: AppContext) -> axum::Router {
-    use tower::ServiceExt;
-    type Built = Option<(Arc<opsagent_brain::actions::Actions>, axum::Router)>;
-    let built: Arc<std::sync::Mutex<Built>> = Arc::default();
-    axum::Router::new().fallback(move |req: axum::extract::Request| {
-        let (ctx, built) = (ctx.clone(), built.clone());
-        async move {
-            let state = opsagent_brain::app::state(&ctx).unwrap();
-            let router = {
-                let mut b = built.lock().unwrap();
-                match &*b {
-                    Some((a, r)) if Arc::ptr_eq(a, &state.actions) => r.clone(),
-                    _ => {
-                        let r = opsagent_brain::boot::router(state.clone()).unwrap();
-                        *b = Some((state.actions.clone(), r.clone()));
-                        r
-                    }
-                }
-            };
-            router.oneshot(req).await.unwrap()
-        }
-    })
-}
-
-/// The Redis the app's queue (and the magic-link limiter) uses.
-pub fn redis_of(ctx: &AppContext) -> opsagent_ledger::redis::Client {
-    let Some(loco_rs::config::QueueConfig::Redis(cfg)) = &ctx.config.queue else {
-        panic!("tests need the redis queue config");
-    };
-    opsagent_ledger::redis::Client::open(cfg.uri.as_str()).unwrap()
+/// The Redis the app's limiter and leases use.
+pub fn redis_of(ctx: &TestApp) -> opsagent_ledger::redis::Client {
+    ctx.redis()
 }
 
 /// Captures mail and resets the mail limiters, whose counters outlive a test (hours to days).
-pub fn prepare(ctx: &AppContext) -> Arc<CaptureMailer> {
+pub fn prepare(ctx: &TestApp) -> Arc<CaptureMailer> {
     let mut c = redis_of(ctx).get_connection().unwrap();
     let mut keys: Vec<String> = Vec::new();
     for pattern in [
@@ -91,13 +51,8 @@ pub fn prepare(ctx: &AppContext) -> Arc<CaptureMailer> {
     }
     let mail = Arc::new(CaptureMailer::default());
     let dynamic: Arc<dyn Mailer> = mail.clone();
-    // Actions hold the mailer they were built with.
-    opsagent_brain::app::replace_deps(ctx, |d| d.mailer = dynamic).unwrap();
+    ctx.set_mailer(dynamic);
     mail
-}
-
-pub fn cookie_config() -> RequestConfig {
-    RequestConfigBuilder::new().save_cookies(true).build()
 }
 
 /// Last captured URL (the link in the mail body).
@@ -214,7 +169,7 @@ pub async fn fake_connection(
 /// and marks it connected. Returns `(csrf, org slug, connection id)`.
 pub async fn connected(
     req: &TestServer,
-    ctx: &AppContext,
+    ctx: &TestApp,
     email: &str,
     account: &str,
 ) -> (String, String, uuid::Uuid) {
@@ -242,13 +197,27 @@ pub fn without_instance(res: &axum_test::TestResponse) -> String {
     v.to_string()
 }
 
-/// The shell's router over the booted state with `f` applied to its config.
-pub fn router_with(
-    ctx: &loco_rs::app::AppContext,
-    f: impl FnOnce(&mut opsagent_brain::config::Config),
-) -> axum_test::TestServer {
-    let mut deps = opsagent_brain::app::state(ctx).unwrap().deps.clone();
-    f(&mut deps.config);
-    let router = opsagent_brain::boot::router(opsagent_brain::boot::assemble(deps)).unwrap();
-    axum_test::TestServer::new(router).unwrap()
+/// The booted state (what `app::state` read from Loco's shared store).
+pub fn state(ctx: &TestApp) -> AppResult<AppState> {
+    Ok(ctx.state.clone())
+}
+
+/// The actions, built once at boot.
+pub fn actions(ctx: &TestApp) -> AppResult<Arc<Actions>> {
+    Ok(ctx.state.actions.clone())
+}
+
+/// The process KEK (with the DEK cache).
+pub fn kek(ctx: &TestApp) -> AppResult<Arc<dyn opsagent_secrets::Kek>> {
+    Ok(ctx.state.kek.clone())
+}
+
+/// Runs one `kind` job for `run_id` as its worker does (what `XWorker::build(ctx).perform`
+/// did under Loco).
+pub async fn perform(
+    ctx: &TestApp,
+    kind: opsagent_ledger::JobKind,
+    run_id: uuid::Uuid,
+) -> loco_rs::Result<()> {
+    opsagent_brain::workers::perform(&ctx.state.actions, kind, run_id).await
 }

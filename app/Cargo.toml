@@ -11,7 +11,8 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 sea-orm = { version = "2.0", default-features = false, features = ["macros", "with-uuid", "with-chrono", "with-json", "with-rust_decimal"] }
 tracing = "0.1"
-tokio = { version = "1.45", default-features = false, features = ["rt-multi-thread", "sync"] }
+tokio = { version = "1.45", default-features = false, features = ["rt-multi-thread", "sync", "signal", "net", "macros"] }
+clap = { version = "4", features = ["derive"] }
 async-trait = "0.1"
 axum = "0.8"
 redis = { version = "1", default-features = false, features = ["aio", "tokio-comp"] }
@@ -55,7 +56,6 @@ path = "src/bin/main.rs"
 test-support = []
 
 [dev-dependencies]
-loco-rs = { workspace = true, features = ["testing"] }
 opsagent-brain = { path = ".", features = ["test-support"] }
 opsagent-ledger = { path = "../crates/ledger", features = ["test-support"] }
 serial_test = "3.1.1"

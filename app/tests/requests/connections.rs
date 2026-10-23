@@ -1,4 +1,3 @@
-use loco_rs::prelude::*;
 use opsagent_brain::{
     actions::uow::Repos,
     adapters::db::Pg,
@@ -7,6 +6,7 @@ use opsagent_brain::{
     },
 };
 use opsagent_core::connection::ConnectionStatus as S;
+use sea_orm::{entity::prelude::*, Set};
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -23,7 +23,7 @@ fn query_param(url: &str, name: &str) -> String {
     urlencoding::decode(v).unwrap().into_owned()
 }
 
-async fn row(ctx: &AppContext, id: &str) -> connections::Model {
+async fn row(ctx: &TestApp, id: &str) -> connections::Model {
     connections::Entity::find_by_id(id.parse::<uuid::Uuid>().unwrap())
         .one(&ctx.db)
         .await
@@ -31,7 +31,7 @@ async fn row(ctx: &AppContext, id: &str) -> connections::Model {
         .unwrap()
 }
 
-async fn audits(ctx: &AppContext, action: &str) -> u64 {
+async fn audits(ctx: &TestApp, action: &str) -> u64 {
     audit_events::Entity::find()
         .filter(audit_events::Column::Action.eq(action))
         .count(&ctx.db)
@@ -297,7 +297,7 @@ async fn changing_the_role_of_a_live_connection_needs_a_reconnect() {
                 res.json::<Value>()["code"],
                 "role_change_requires_reconnect"
             );
-            let kek = opsagent_brain::app::kek(&ctx).unwrap();
+            let kek = kek(&ctx).unwrap();
             let org_id = row(&ctx, id).await.organisation_id;
             let conn_id = id.parse().unwrap();
             let creds =

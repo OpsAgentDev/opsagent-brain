@@ -1,5 +1,5 @@
-use loco_rs::prelude::*;
 use opsagent_brain::models::_entities::{audit_events, connections, organisations, schedules};
+use sea_orm::entity::prelude::*;
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -197,7 +197,7 @@ async fn accept_racing_a_concurrent_join_returns_the_existing_role() {
             .unwrap()
             .unwrap();
         // The other request: its membership row is inserted but not yet committed.
-        let other = Database::connect(ctx.config.database.uri.clone())
+        let other = Database::connect(ctx.state.config.database_url.clone())
             .await
             .unwrap();
         let held = other.begin().await.unwrap();
@@ -230,13 +230,9 @@ async fn accept_racing_a_concurrent_join_returns_the_existing_role() {
 #[tokio::test]
 #[serial]
 async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
-    use opsagent_brain::{
-        adapters::db::ledger_storage::PgStorage,
-        models::_entities::runs,
-        workers::verify::{VerifyArgs, VerifyWorker},
-    };
+    use opsagent_brain::{adapters::db::ledger_storage::PgStorage, models::_entities::runs};
     use opsagent_core::run::RunKey;
-    use opsagent_ledger::Storage;
+    use opsagent_ledger::{JobKind, Storage};
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
@@ -256,7 +252,7 @@ async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
             (c.status.as_str(), c.status_reason.as_deref()),
             ("disconnected", Some("organisation_deleted"))
         );
-        let enabled = |ctx: AppContext| async move {
+        let enabled = |ctx: TestApp| async move {
             schedules::Entity::find()
                 .filter(schedules::Column::ConnectionId.eq(conn_id))
                 .filter(schedules::Column::Enabled.eq(true))
@@ -282,10 +278,7 @@ async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
             .execute_unprepared("TRUNCATE runs CASCADE")
             .await
             .unwrap();
-        let tick = &opsagent_brain::app::actions(&ctx)
-            .unwrap()
-            .runs
-            .scheduler_tick;
+        let tick = &actions(&ctx).unwrap().runs.scheduler_tick;
         assert_eq!(tick.run(now).await.unwrap().unwrap(), Default::default());
         assert_eq!(runs::Entity::find().count(&ctx.db).await.unwrap(), 0);
 
@@ -300,10 +293,7 @@ async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
             .await
             .unwrap()
             .run;
-        VerifyWorker::build(&ctx)
-            .perform(VerifyArgs { run_id: run.id })
-            .await
-            .unwrap();
+        perform(&ctx, JobKind::Verify, run.id).await.unwrap();
         let r = runs::Entity::find_by_id(run.id)
             .one(&ctx.db)
             .await

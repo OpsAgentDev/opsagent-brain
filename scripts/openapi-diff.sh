@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fails when the committed openapi.json differs from the document generated from the code.
-# Regenerate with: (cd app && cargo loco task openapi:dump)   [or cargo run -- task openapi:dump]
+# Regenerate with: (cd app && cargo run -- task openapi:dump)
 # OPENAPI_GENERATED / OPENAPI_COMMITTED override the two files (the test suite uses them).
 set -euo pipefail
 cd "$(dirname "$0")/.."

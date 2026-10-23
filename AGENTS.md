@@ -29,7 +29,7 @@ docker compose --profile brain up -d && scripts/smoke.sh http://localhost:3000
 - `app/` Loco shell: controllers (parse and respond), services (rules and transactions), models (SeaORM), workers, tasks, mailers.
 - `crates/` Loco-free domain: `core`, `secrets`, `ledger`, `connectors`, `checks`. Never depend on `loco-rs` or `sea-orm` here.
 - `templates/aws/` the customer-facing read-only role template, versioned with a checksum.
-- `openapi.json` generated (`cargo loco task openapi:dump`), committed, diffed in CI.
+- `openapi.json` generated (`cargo run -- task openapi:dump`), committed, diffed in CI.
 
 ## Rules (summary; the binding text is in ArchBoss `docs/tech-spec/engineering-principles.md`)
 Ports and adapters, SOLID, DRY, YAGNI, explicit errors, functions ~50 lines, files ~400 lines, contract tests per trait, idempotent workers, tenant-scoped queries, no HTML served, no secrets in logs or audit metadata. The founder's commit-msg hook strips `Co-Authored-By`; do not bypass hooks.

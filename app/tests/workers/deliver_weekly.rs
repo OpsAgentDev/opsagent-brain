@@ -1,10 +1,8 @@
 //! `deliver_weekly` (Plan 2 Task 10): idempotent effects, owner summary, unsubscribe footer.
 use chrono::Utc;
-use loco_rs::app::AppContext;
 use opsagent_brain::{
     actions::recipients::tokens::{email_hash, unsubscribe_token, unsubscribe_url},
     adapters::db::Pg,
-    app::actions,
 };
 use opsagent_core::org::{OrganisationsRepo, Role};
 use opsagent_core::run::RunStatus;
@@ -19,7 +17,7 @@ use super::deliver_briefing::{
 };
 use crate::requests::support::*;
 
-async fn user(ctx: &AppContext, email: &str) -> Uuid {
+async fn user(ctx: &TestApp, email: &str) -> Uuid {
     let id = Uuid::new_v4();
     sql(
         ctx,
@@ -31,7 +29,7 @@ async fn user(ctx: &AppContext, email: &str) -> Uuid {
 }
 
 /// An active organisation-level recipient; `member_id` set makes it a member recipient.
-async fn recipient(ctx: &AppContext, w: &World, email: &str, member_id: Option<Uuid>) -> Uuid {
+async fn recipient(ctx: &TestApp, w: &World, email: &str, member_id: Option<Uuid>) -> Uuid {
     let id = Uuid::new_v4();
     sql(
         ctx,
@@ -43,7 +41,7 @@ async fn recipient(ctx: &AppContext, w: &World, email: &str, member_id: Option<U
     id
 }
 
-async fn weekly(ctx: &AppContext, w: &World, conn: Option<Uuid>) -> (Uuid, RunStatus) {
+async fn weekly(ctx: &TestApp, w: &World, conn: Option<Uuid>) -> (Uuid, RunStatus) {
     let id = new_run(
         ctx,
         w.org,
@@ -192,7 +190,7 @@ async fn non_member_mail_has_the_unsubscribe_link_and_members_do_not() {
         let sent = mail.sent();
         let to: Vec<_> = sent.iter().map(|m| m.to.as_str()).collect();
         assert_eq!(to, ["dev@example.com", "client@example.com"]);
-        let s = opsagent_brain::app::state(&ctx).unwrap().config.clone();
+        let s = state(&ctx).unwrap().config.clone();
         let url = unsubscribe_url(&s.web_base_url, s.unsubscribe_key(), outside);
         assert!(sent[1].text.contains(&url), "{}", sent[1].text);
         assert!(sent[1].html.as_deref().unwrap().contains(&url));
@@ -234,7 +232,7 @@ async fn member_mail_ignores_an_unsubscribe_from_another_organisation() {
             vec![in_a.into(), a.into()],
         )
         .await;
-        let s = opsagent_brain::app::state(&ctx).unwrap().config.clone();
+        let s = state(&ctx).unwrap().config.clone();
         let token = unsubscribe_token(s.unsubscribe_key(), in_a);
         let unsubscribe = &actions(&ctx).unwrap().recipients.unsubscribe;
         unsubscribe.run(&token).await.unwrap();
