@@ -5,7 +5,6 @@ use axum::{
 };
 use chrono::{DateTime, FixedOffset};
 use loco_rs::app::AppContext;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -13,15 +12,9 @@ use uuid::Uuid;
 
 use super::{OrgIdPath, OrgPath};
 use crate::{
-    api_error::ApiJson,
-    api_error::{ApiError, Problem},
-    middleware::{
-        mailer,
-        org_scope::{AuthUser, OrgScope},
-    },
-    models::_entities::{members, users},
-    services::members as service,
-    settings::Settings,
+    api_error::{ApiError, ApiJson, Problem},
+    app::actions,
+    middleware::org_scope::{AuthUser, OrgScope},
 };
 
 #[derive(Serialize, ToSchema)]
@@ -39,21 +32,15 @@ async fn list(
     State(ctx): State<AppContext>,
     scope: OrgScope,
 ) -> Result<Json<Vec<Member>>, ApiError> {
-    let rows = members::Entity::find()
-        .filter(members::Column::OrganisationId.eq(scope.organisation_id))
-        .find_also_related(users::Entity)
-        .all(&ctx.db)
-        .await?;
+    let rows = actions(&ctx)?.members.list_members.run(&scope).await?;
     Ok(Json(
         rows.into_iter()
-            .filter_map(|(m, u)| {
-                u.map(|u| Member {
-                    id: m.id,
-                    user_id: u.id,
-                    email: u.email,
-                    name: u.name,
-                    role: m.role,
-                })
+            .map(|m| Member {
+                id: m.id,
+                user_id: m.user_id,
+                email: m.email.as_str().into(),
+                name: m.name,
+                role: m.role.as_str().into(),
             })
             .collect(),
     ))
@@ -83,18 +70,9 @@ async fn invite(
     scope: OrgScope,
     ApiJson(body): ApiJson<NewInvite>,
 ) -> Result<(StatusCode, Json<Invite>), ApiError> {
-    scope.require_owner()?;
-    let web = Settings::get(&ctx).web_base_url;
-    let row = service::invite(
-        &ctx.db,
-        mailer(&ctx).as_ref(),
-        &web,
-        scope.organisation_id,
-        scope.user_id,
-        &body.email,
-        body.role,
-    )
-    .await?;
+    let invite = &actions(&ctx)?.members.invite_member;
+    let actor = scope.member.user_id;
+    let row = invite.run(&scope, actor, &body.email, &body.role).await?;
     Ok((
         StatusCode::CREATED,
         Json(Invite {
@@ -130,7 +108,11 @@ async fn accept(
     AuthUser(user_id): AuthUser,
     Path(token): Path<String>,
 ) -> Result<Json<Membership>, ApiError> {
-    let (org, role) = service::accept(&ctx.db, user_id, &token).await?;
+    let (org, role) = actions(&ctx)?
+        .members
+        .accept_invite
+        .run(user_id, &token)
+        .await?;
     Ok(Json(Membership {
         id: org.id,
         name: org.name,
@@ -147,8 +129,9 @@ async fn remove(
     scope: OrgScope,
     Path((_, member_id)): Path<(String, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
-    scope.require_owner()?;
-    service::remove(&ctx.db, scope.organisation_id, scope.user_id, member_id).await?;
+    let actor = scope.member.user_id;
+    let remove = &actions(&ctx)?.members.remove_member;
+    remove.run(&scope, actor, member_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

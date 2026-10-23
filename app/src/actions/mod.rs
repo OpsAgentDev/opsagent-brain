@@ -2,6 +2,8 @@
 pub mod auth;
 pub mod connections;
 pub mod findings;
+pub mod members;
+pub mod orgs;
 pub mod resources;
 pub mod runs;
 pub mod uow;
@@ -17,6 +19,8 @@ pub struct Actions {
     pub resources: resources::Resources,
     pub connections: connections::Connections,
     pub runs: runs::Runs,
+    pub orgs: orgs::Orgs,
+    pub members: members::Members,
 }
 
 /// Fixed-window counters shared by every rate limit.
