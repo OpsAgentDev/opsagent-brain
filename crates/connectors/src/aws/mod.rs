@@ -3,14 +3,16 @@
 pub mod client;
 pub mod cost;
 pub mod inventory;
+pub mod metrics;
 pub mod policy_diff;
+pub mod simulate;
 pub mod verify;
 
 pub use client::AwsOutbound;
 
 use crate::{
     CallContext, Capability, Connector, ConnectorError, CostRow, Credentials, InventoryResult,
-    MetricPoint, MetricQuery, Result, Scope, TerraformState, VerifyOutcome,
+    MetricPoint, MetricQuery, Result, Scope, SimulationResult, TerraformState, VerifyOutcome,
 };
 use async_trait::async_trait;
 use aws_config::SdkConfig;
@@ -94,9 +96,11 @@ impl Connector for AwsConnector {
         [
             Inventory,
             CostDaily,
+            Metrics,
             IamReport,
             PublicAccess,
             Backups,
+            Certificates,
             Logging,
             Gpu,
         ]
@@ -129,9 +133,30 @@ impl Connector for AwsConnector {
         cost::cost_daily(&ce, days, chrono::Utc::now().date_naive()).await
     }
 
-    async fn metrics(&self, _creds: &Credentials, _q: MetricQuery) -> Result<Vec<MetricPoint>> {
-        Err(ConnectorError::Provider(
-            "aws metrics: not implemented".into(),
-        ))
+    /// `q.resource_identity` is an EC2 instance ARN; the call runs in the ARN's region.
+    async fn metrics(&self, creds: &Credentials, q: MetricQuery) -> Result<Vec<MetricPoint>> {
+        let (arn, ext, _, ctx) = aws_role(creds)?;
+        let (region, id) = metrics::instance_from_arn(&q.resource_identity)?;
+        let session = self.session(arn, ext, ctx, metrics::METRIC_ACTIONS).await?;
+        let session = session
+            .to_builder()
+            .region(aws_config::Region::new(region.to_owned()))
+            .build();
+        let cw = aws_sdk_cloudwatch::Client::new(&session);
+        metrics::metric_points(&cw, id, &q.metric, q.hours, chrono::Utc::now()).await
+    }
+
+    async fn simulate_restore(
+        &self,
+        creds: &Credentials,
+        role_arn: &str,
+    ) -> Result<SimulationResult> {
+        let (arn, ext, _, ctx) = aws_role(creds)?;
+        let own = client::parse_role_arn(arn)?.account;
+        let session = self
+            .session(arn, ext, ctx, simulate::SIMULATE_ACTIONS)
+            .await?;
+        let iam = aws_sdk_iam::Client::new(&session);
+        simulate::simulate_restore(&iam, role_arn, &own).await
     }
 }

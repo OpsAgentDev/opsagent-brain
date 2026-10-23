@@ -28,6 +28,8 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     Organisations,
+    #[sea_orm(has_many = "super::recipients::Entity")]
+    Recipients,
     #[sea_orm(
         belongs_to = "super::users::Entity",
         from = "Column::UserId",
@@ -41,6 +43,12 @@ pub enum Relation {
 impl Related<super::organisations::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Organisations.def()
+    }
+}
+
+impl Related<super::recipients::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Recipients.def()
     }
 }
 

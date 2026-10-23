@@ -1,43 +1,47 @@
 //! Magic-link requests, capped per address and per client IP. The caller always answers 202,
 //! so a capped request looks exactly like a sent one (no enumeration).
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 
-use chrono::{Duration, Utc};
-use opsagent_ledger::redis::{self, AsyncCommands};
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter};
+use opsagent_ledger::redis;
+use sea_orm::DatabaseConnection;
+use sha2::{Digest, Sha256};
 
 use crate::{
     api_error::ApiError,
     mailers::{magic_link as mail, Mailer},
-    models::{_entities::magic_links as links, magic_links, users as user_model},
+    models::{magic_links, users as user_model},
+    services::rate_limit::{hit, HOUR_SECS},
 };
 
 /// Links per address per hour.
-pub const PER_EMAIL: u64 = 5;
-/// Requests per client IP per hour.
+pub const PER_EMAIL: i64 = 5;
+/// Requests per client IP (IPv6: per /64) per hour.
 pub const PER_IP: i64 = 30;
-const WINDOW_SECS: i64 = 3600;
 
-/// Counts this request against `ip`; `false` once the hour's cap is passed. Redis trouble
-/// counts as over the cap: no mail is sent rather than an unlimited one.
-async fn ip_allowed(redis: &redis::Client, ip: IpAddr) -> bool {
-    let key = format!("ratelimit:magic_link:ip:{ip}");
-    let counted: redis::RedisResult<i64> = async {
-        let mut c = redis.get_multiplexed_async_connection().await?;
-        let n: i64 = c.incr(&key, 1).await?;
-        if n == 1 {
-            let _: bool = c.expire(&key, WINDOW_SECS).await?;
-        }
-        Ok(n)
+/// The IP cap's bucket: an IPv6 client owns at least a /64, so the /64 is one client.
+fn ip_bucket(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from(u128::from(v6) & (u128::MAX << 64))),
+        v4 => v4,
     }
-    .await;
-    match counted {
-        Ok(n) => n <= PER_IP,
-        Err(e) => {
-            tracing::error!(error = %e, "magic link rate limit unavailable, not sending");
-            false
+}
+
+/// Counts this request against `ip` (when known), then against the normalised `email`.
+/// `false` once either hour's cap is passed.
+pub async fn rate_limit(
+    redis: &redis::Client,
+    email: &str,
+    ip: Option<IpAddr>,
+) -> redis::RedisResult<bool> {
+    let mut c = redis.get_multiplexed_async_connection().await?;
+    if let Some(ip) = ip {
+        let key = format!("ratelimit:magic_link:ip:{}", ip_bucket(ip));
+        if !hit(&mut c, &key, PER_IP, HOUR_SECS).await? {
+            return Ok(false);
         }
     }
+    let key = format!("ratelimit:magic_link:email:{:x}", Sha256::digest(email));
+    hit(&mut c, &key, PER_EMAIL, HOUR_SECS).await
 }
 
 /// Sends a sign-in link to `raw_email` unless the address is invalid or either cap is passed.
@@ -50,21 +54,17 @@ pub async fn request_link(
     raw_email: &str,
     ip: Option<IpAddr>,
 ) -> Result<(), ApiError> {
-    if let Some(ip) = ip {
-        if !ip_allowed(redis, ip).await {
-            return Ok(());
-        }
-    }
     let Some(email) = user_model::normalize_email(raw_email) else {
         return Ok(());
     };
-    let recent = links::Entity::find()
-        .filter(links::Column::Email.eq(&email))
-        .filter(links::Column::CreatedAt.gt(Utc::now() - Duration::seconds(WINDOW_SECS)))
-        .count(db)
-        .await?;
-    if recent >= PER_EMAIL {
-        return Ok(());
+    match rate_limit(redis, &email, ip).await {
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
+        // Fail closed: no mail rather than an unlimited one.
+        Err(e) => {
+            tracing::warn!(error = %e, "magic link rate limit unavailable, not sending");
+            return Ok(());
+        }
     }
     let user = user_model::find_or_create_by_email(db, &email).await?;
     let token = magic_links::issue(db, user.id, &email).await?;
@@ -77,4 +77,19 @@ pub async fn request_link(
         tracing::error!(error = %e, "magic link mail failed");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipv6_buckets_by_64_and_ipv4_as_is() {
+        let b = |s: &str| ip_bucket(s.parse().unwrap()).to_string();
+        assert_eq!(b("2001:db8:1:2:3:4:5:6"), "2001:db8:1:2::");
+        assert_eq!(b("2001:db8:1:2:ffff::1"), "2001:db8:1:2::");
+        assert_eq!(b("203.0.113.7"), "203.0.113.7");
+        // IPv4-mapped IPv6 is the IPv4 client, not the shared `::` bucket.
+        assert_eq!(b("::ffff:203.0.113.7"), "203.0.113.7");
+    }
 }

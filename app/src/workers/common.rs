@@ -54,23 +54,15 @@ const TRANSIENT_CODES: &[&str] = &[
     "InternalServiceError",
 ];
 
-/// Stable error code (never the message) and whether a retry can help.
+/// Stable error code (never the message) and whether a retry can help: throttling, 5xx and
+/// network (an `Api` error without a code) only.
 pub(crate) fn classify(e: &ConnectorError) -> (String, bool) {
-    use ConnectorError as C;
-    match e {
-        C::Api {
-            code: Some(code), ..
-        } => (code.clone(), TRANSIENT_CODES.contains(&code.as_str())),
-        // No code: the request never got an answer (timeout, connection reset).
-        C::Api { code: None, .. } => ("network".into(), true),
-        C::Provider(_) => ("provider_error".into(), false),
-        C::NotFound => ("not_found".into(), false),
-        C::InvalidCredentials(_) => ("invalid_credentials".into(), false),
-        C::Auth(_) => ("auth".into(), false),
-        C::Template(_) => ("template".into(), false),
-        C::Fixture(_) => ("fixture".into(), false),
-        C::Unknown(_) => ("unknown_connector".into(), false),
-    }
+    let transient = match e {
+        ConnectorError::Api { code: Some(c), .. } => TRANSIENT_CODES.contains(&c.as_str()),
+        ConnectorError::Api { code: None, .. } => true,
+        _ => false,
+    };
+    (e.code().to_owned(), transient)
 }
 
 #[cfg(test)]
@@ -98,6 +90,53 @@ mod tests {
         assert_eq!(
             classify(&ConnectorError::NotFound),
             ("not_found".into(), false)
+        );
+    }
+
+    /// Provider error text can name the customer's role and account (logging.md), so a
+    /// `tracing` field must carry the error's code, never its Display. Line-based grep:
+    /// flags a Display-formatted `error` field on a line that mentions a connector, provider
+    /// or AWS error, and any such field in the connectors crate.
+    /// shortcut: misses a provider error bound to a neutral name on another line; upgrade to
+    /// a clippy lint if one slips through review.
+    #[test]
+    fn no_provider_error_is_logged_by_display() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut files = Vec::new();
+        walk(&root.join("app/src"), &mut files);
+        for c in std::fs::read_dir(root.join("crates")).unwrap().flatten() {
+            if c.path().join("src").is_dir() {
+                walk(&c.path().join("src"), &mut files);
+            }
+        }
+        let needle = concat!("error", " = %");
+        let mut hits = Vec::new();
+        for f in &files {
+            let in_connectors = f.components().any(|c| c.as_os_str() == "connectors");
+            for (i, line) in std::fs::read_to_string(f).unwrap().lines().enumerate() {
+                let l = line.to_lowercase();
+                let provider = ["connectorerror", "provider", "aws"]
+                    .iter()
+                    .any(|w| l.contains(w));
+                if line.contains(needle) && (provider || in_connectors) {
+                    hits.push(format!("{}:{}: {}", f.display(), i + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "log error_code, not the error:\n{}",
+            hits.join("\n")
         );
     }
 }

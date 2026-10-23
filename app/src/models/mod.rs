@@ -1,6 +1,7 @@
 pub mod _entities;
 pub mod audit;
 pub mod connections;
+pub mod integrations;
 pub mod ledger_storage;
 pub mod magic_links;
 pub mod members;

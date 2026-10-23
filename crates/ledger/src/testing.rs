@@ -85,6 +85,21 @@ impl Storage for MemoryStorage {
             Ok(())
         })
     }
+    async fn skip_run(&self, id: Uuid, reason: &str) -> Result<bool> {
+        let skipped = self.with(id, |r| {
+            let queued = r.status == RunStatus::Queued;
+            if queued {
+                r.status = RunStatus::Skipped;
+                r.partial_reason = Some(reason.into());
+                r.fence += 1;
+            }
+            Ok(queued)
+        })?;
+        if skipped {
+            self.0.lock().unwrap().next_attempt.remove(&id);
+        }
+        Ok(skipped)
+    }
     async fn effect_begin(&self, run_id: Uuid, key: &str) -> Result<EffectState> {
         let mut g = self.0.lock().unwrap();
         Ok(match g.effects.get(&(run_id, key.to_string())) {

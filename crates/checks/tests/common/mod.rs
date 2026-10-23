@@ -1,9 +1,12 @@
 #![allow(dead_code)]
 use chrono::{DateTime, Utc};
 use opsagent_checks::{Check, CheckCtx, MetricStore};
-use opsagent_connectors::{fake::FakeConnector, Connector, CostRow, Credentials, Scope};
+use opsagent_connectors::{
+    fake::FakeConnector, Connector, CostRow, Credentials, Scope, SimulationResult,
+};
 use opsagent_core::finding::{FindingDraft, Severity};
 use opsagent_core::resource::Resource;
+use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
 pub async fn load(account: &str) -> (Vec<Resource>, Vec<CostRow>) {
@@ -15,17 +18,50 @@ pub async fn load(account: &str) -> (Vec<Resource>, Vec<CostRow>) {
     (inv.resources, c.cost_daily(&creds, 30).await.unwrap())
 }
 
+/// Owned defaults for every `CheckCtx` field; new context fields only need adding here.
+pub struct CtxParts {
+    pub metrics: MetricStore,
+    pub simulations: HashMap<String, SimulationResult>,
+    pub unavailable: BTreeSet<String>,
+    pub now: DateTime<Utc>,
+}
+
+impl Default for CtxParts {
+    fn default() -> Self {
+        Self {
+            metrics: MetricStore::default(),
+            simulations: HashMap::new(),
+            unavailable: BTreeSet::new(),
+            now: "2026-10-01T12:00:00Z".parse().unwrap(),
+        }
+    }
+}
+
+impl CtxParts {
+    pub fn ctx<'a>(&'a self, resources: &'a [Resource], cost: &'a [CostRow]) -> CheckCtx<'a> {
+        CheckCtx {
+            connection_id: Uuid::nil(),
+            resources,
+            cost,
+            metrics: &self.metrics,
+            simulations: &self.simulations,
+            now: self.now,
+            unavailable: &self.unavailable,
+        }
+    }
+}
+
 pub fn run(check: &dyn Check, resources: &[Resource], cost: &[CostRow]) -> Vec<FindingDraft> {
-    let metrics = MetricStore::default();
-    let now: DateTime<Utc> = "2026-10-01T00:00:00Z".parse().unwrap();
-    let ctx = CheckCtx {
-        connection_id: Uuid::nil(),
-        resources,
-        cost,
-        metrics: &metrics,
-        now,
-    };
-    let out = check.run(&ctx);
+    run_with(&CtxParts::default(), check, resources, cost)
+}
+
+pub fn run_with(
+    parts: &CtxParts,
+    check: &dyn Check,
+    resources: &[Resource],
+    cost: &[CostRow],
+) -> Vec<FindingDraft> {
+    let out = check.run(&parts.ctx(resources, cost));
     for d in &out {
         assert!(!d.evidence.is_empty(), "{:?}", d.key);
         assert!(!d.next_step.is_empty(), "{:?}", d.key);

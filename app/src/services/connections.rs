@@ -96,10 +96,18 @@ pub async fn create(
     Ok(Created { id, creds, spec })
 }
 
-fn role_error(e: ConnectorError) -> ApiError {
+fn role_error(e: ConnectorError, service: &str) -> ApiError {
     match e {
         ConnectorError::InvalidCredentials(m) => ApiError::invalid(m),
-        e => ApiError::internal(e),
+        e => {
+            // The code only: provider text can name the customer's role and account.
+            tracing::error!(error_code = %e.code(), service, "reported role check failed");
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "Internal error.",
+            )
+        }
     }
 }
 
@@ -169,7 +177,7 @@ async fn with_reported_role(
     from: S,
     raw: &str,
 ) -> Result<Creds, ApiError> {
-    let role = registry::reported_role(&c.provider, raw).map_err(role_error)?;
+    let role = registry::reported_role(&c.provider, raw).map_err(|e| role_error(e, &c.provider))?;
     let mut creds = load_creds(db, kek, c).await?;
     if role.is_some() && role != creds.role_arn && matches!(from, S::Connected | S::Degraded) {
         return Err(ApiError::new(
@@ -231,10 +239,13 @@ pub struct Patch {
     pub scan_time_local: Option<NaiveTime>,
     pub briefing_time_local: Option<NaiveTime>,
     pub api_rate_ceiling: Option<i32>,
+    /// `Some(None)` clears the channel.
+    pub slack_channel_id: Option<Option<String>>,
 }
 
 /// Applies `p`. A new scan time rewrites the nightly `full_scan` schedule, effective from the
-/// next local day so today's scan neither repeats nor moves (PRD 7.3).
+/// next local day so today's scan neither repeats nor moves (PRD 7.3). A new briefing time
+/// rewrites `deliver_briefing`, effective from its next occurrence.
 pub async fn update(
     db: &DatabaseConnection,
     c: connections::Model,
@@ -257,6 +268,9 @@ pub async fn update(
     if let Some(r) = p.api_rate_ceiling {
         a.api_rate_ceiling = Set(Some(r));
     }
+    if let Some(ch) = p.slack_channel_id {
+        a.slack_channel_id = Set(ch);
+    }
     a.updated_at = Set(now());
     let txn = db.begin().await?;
     let updated = a.update(&txn).await?;
@@ -271,6 +285,16 @@ pub async fn update(
             &schedules::daily_at(t),
             from,
         )
+        .await?;
+    }
+    if let Some(t) = p.briefing_time_local {
+        // From now: a later time today still briefs today; an already-sent briefing makes the
+        // next one "nothing changed" unless something did.
+        let now = Utc::now();
+        let cron = schedules::daily_at(t);
+        schedules::set_cron(&txn, org_id, conn_id, "deliver_briefing", &cron, |_| {
+            Some(now)
+        })
         .await?;
     }
     txn.commit().await?;

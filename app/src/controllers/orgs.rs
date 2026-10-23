@@ -17,7 +17,11 @@ use crate::{
         now,
         organisations::{valid_name, valid_timezone},
     },
-    services::orgs,
+    services::{
+        orgs,
+        rate_limit::{hit, DAY_SECS},
+    },
+    workers::common::redis_client,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -49,8 +53,34 @@ pub struct NewOrg {
     pub timezone: Option<String>,
 }
 
+/// Organisations a user may create per day (each gets a DEK, and owners can send mail).
+pub const ORGS_PER_USER_PER_DAY: i64 = 5;
+
+/// Counts one creation for `user_id`; 429 `rate_limited` past the daily cap. Fails closed.
+async fn limit_creation(ctx: &AppContext, user_id: Uuid) -> Result<(), ApiError> {
+    let redis = redis_client(ctx)?;
+    let mut c = redis
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(ApiError::internal)?;
+    let key = format!("ratelimit:org_create:user:{user_id}");
+    let ok = hit(&mut c, &key, ORGS_PER_USER_PER_DAY, DAY_SECS)
+        .await
+        .map_err(ApiError::internal)?;
+    if ok {
+        Ok(())
+    } else {
+        // shortcut: Retry-After is the window length, an upper bound; read the key TTL if exactness matters.
+        Err(ApiError::rate_limited(
+            "At most 5 organisations can be created per day.",
+            DAY_SECS.unsigned_abs(),
+        ))
+    }
+}
+
 #[utoipa::path(post, path = "/orgs", tag = "orgs", request_body = NewOrg,
-    responses((status = 201, body = Org), (status = 401, body = Problem), (status = 422, body = Problem)))]
+    responses((status = 201, body = Org), (status = 401, body = Problem), (status = 422, body = Problem),
+        (status = 429, body = Problem)))]
 async fn create_org(
     State(ctx): State<AppContext>,
     AuthUser(user_id): AuthUser,
@@ -58,6 +88,7 @@ async fn create_org(
 ) -> Result<(StatusCode, Json<Org>), ApiError> {
     let name = valid_name(&body.name)?;
     let tz = valid_timezone(body.timezone.as_deref().unwrap_or("UTC"))?;
+    limit_creation(&ctx, user_id).await?;
     let org = orgs::create(&ctx.db, kek(&ctx)?.as_ref(), user_id, &name, &tz).await?;
     Ok((StatusCode::CREATED, Json(view(&org, "owner"))))
 }

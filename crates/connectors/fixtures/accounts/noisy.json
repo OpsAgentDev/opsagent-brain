@@ -33,7 +33,8 @@
         "instance_type": "p3.2xlarge",
         "accelerated": true,
         "cpu_avg_7d": 1.0,
-        "monthly_cost_usd": 900.0
+        "monthly_cost_usd": 900.0,
+        "gpu_util_24h": 2.0
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -99,7 +100,10 @@
         "service": "ebs",
         "attached": true,
         "size_gb": 100,
-        "monthly_cost_usd": 10.0
+        "monthly_cost_usd": 10.0,
+        "in_backup_plan": true,
+        "backup_last_job_status": "COMPLETED",
+        "backup_last_job_at": "2026-09-27T00:00:00Z"
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -195,7 +199,10 @@
       "attributes": {
         "service": "rds",
         "publicly_accessible": false,
-        "backup_retention_days": 7
+        "backup_retention_days": 7,
+        "in_backup_plan": true,
+        "backup_last_job_status": "FAILED",
+        "backup_last_job_at": "2026-09-27T00:00:00Z"
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -275,7 +282,8 @@
       "tags": {},
       "attributes": {
         "service": "cloudtrail",
-        "logging": true
+        "logging": true,
+        "bucket_writable": false
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -290,6 +298,252 @@
       "attributes": {
         "service": "guardduty",
         "enabled": true
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "database",
+      "identity": "db-short",
+      "name": "db-short",
+      "tags": {},
+      "attributes": {
+        "service": "rds",
+        "publicly_accessible": false,
+        "backup_retention_days": 1,
+        "in_backup_plan": true,
+        "backup_last_job_status": "COMPLETED",
+        "backup_last_job_at": "2026-09-30T00:00:00Z"
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "database",
+      "identity": "db-orphan",
+      "name": "db-orphan",
+      "tags": {},
+      "attributes": {
+        "service": "rds",
+        "publicly_accessible": false,
+        "backup_retention_days": 7,
+        "in_backup_plan": false,
+        "backup_last_job_status": null,
+        "backup_last_job_at": null
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "storage",
+      "identity": "plan-nightly",
+      "name": "plan-nightly",
+      "tags": {},
+      "attributes": {
+        "service": "backup",
+        "plan": true,
+        "selections": [
+          "db-short"
+        ],
+        "last_job_status": "COMPLETED",
+        "last_job_at": "2026-09-30T00:00:00Z",
+        "iam_role_arns": [
+          "arn:aws:iam::000000000000:role/backup"
+        ],
+        "resource_jobs": {
+          "db-short": {
+            "status": "COMPLETED",
+            "at": "2026-09-30T00:00:00Z"
+          }
+        }
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "storage",
+      "identity": "plan-weekly",
+      "name": "plan-weekly",
+      "tags": {},
+      "attributes": {
+        "service": "backup",
+        "plan": true,
+        "selections": [
+          "db-main",
+          "vol-used"
+        ],
+        "last_job_status": "FAILED",
+        "last_job_at": "2026-09-27T00:00:00Z",
+        "iam_role_arns": [
+          "arn:aws:iam::000000000000:role/backup"
+        ],
+        "resource_jobs": {
+          "db-main": {
+            "status": "FAILED",
+            "at": "2026-09-27T00:00:00Z"
+          },
+          "vol-used": {
+            "status": "COMPLETED",
+            "at": "2026-09-27T00:00:00Z"
+          }
+        }
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "storage",
+      "identity": "vault-default",
+      "name": "vault-default",
+      "tags": {},
+      "attributes": {
+        "service": "backup",
+        "vault": true,
+        "cross_account": false
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "certificate",
+      "identity": "cert-expiring",
+      "name": "cert-expiring",
+      "tags": {},
+      "attributes": {
+        "service": "acm",
+        "not_after": "2026-10-06T00:00:00Z",
+        "renewal_status": "PENDING",
+        "in_use_by": [
+          "elb-idle"
+        ],
+        "managed": true
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "certificate",
+      "identity": "cert-renewal-failed",
+      "name": "cert-renewal-failed",
+      "tags": {},
+      "attributes": {
+        "service": "acm",
+        "not_after": "2026-11-10T00:00:00Z",
+        "renewal_status": "FAILED",
+        "in_use_by": [
+          "elb-idle"
+        ],
+        "managed": true
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "certificate",
+      "identity": "cert-unattached",
+      "name": "cert-unattached",
+      "tags": {},
+      "attributes": {
+        "service": "acm",
+        "not_after": "2027-04-19T00:00:00Z",
+        "renewal_status": "SUCCESS",
+        "in_use_by": [],
+        "managed": true
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "certificate",
+      "identity": "endpoint:api.noisy.example:443",
+      "name": "endpoint:api.noisy.example:443",
+      "tags": {},
+      "attributes": {
+        "service": "acm",
+        "endpoint": "api.noisy.example:443",
+        "presented_serial": "0a:01",
+        "expected_serial": "0b:02"
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "log",
+      "identity": "/app/noisy",
+      "name": "/app/noisy",
+      "tags": {},
+      "attributes": {
+        "service": "logs",
+        "retention_days": null,
+        "stored_bytes": 50000000000
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local-2",
+      "kind": "log",
+      "identity": "guardduty-2",
+      "name": "guardduty-2",
+      "tags": {},
+      "attributes": {
+        "service": "guardduty",
+        "enabled": false
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "job",
+      "identity": "job-stuck",
+      "name": "job-stuck",
+      "tags": {},
+      "attributes": {
+        "service": "sagemaker",
+        "job": true,
+        "status": "InProgress",
+        "started_at": "2026-09-29T18:00:00Z",
+        "median_runtime_s": 21600
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "job",
+      "identity": "job-new",
+      "name": "job-new",
+      "tags": {},
+      "attributes": {
+        "service": "sagemaker",
+        "job": true,
+        "status": "InProgress",
+        "started_at": "2026-09-29T18:00:00Z",
+        "median_runtime_s": null
       },
       "observed_at": "2026-10-01T00:00:00Z"
     }
@@ -446,12 +700,36 @@
       "amount_usd": 100.0
     }
   ],
-  "metrics": {},
+  "metrics": {
+    "i-gpu": {
+      "gpu_util_avg": [
+        {
+          "at": "2026-09-30T00:00:00Z",
+          "value": 2.0
+        },
+        {
+          "at": "2026-09-30T12:00:00Z",
+          "value": 2.0
+        }
+      ]
+    }
+  },
   "verify": {
     "assume_with_ok": true,
     "assume_without_denied": true,
     "account_matches": true,
     "extra_grants": [],
     "missing_grants": []
+  },
+  "simulate_restore": {
+    "allowed": [
+      "backup:StartRestoreJob",
+      "kms:Decrypt",
+      "rds:RestoreDBInstanceFromDBSnapshot",
+      "ec2:RunInstances"
+    ],
+    "denied": [
+      "kms:CreateGrant"
+    ]
   }
 }

@@ -4,7 +4,7 @@ use opsagent_brain::{
     models::ledger_storage::{stmt, PgStorage},
     tasks::scheduler_tick::{tick, Report},
 };
-use opsagent_core::run::RunKey;
+use opsagent_core::run::{RunKey, RunStatus};
 use opsagent_ledger::Storage;
 use sea_orm::{ConnectionTrait, Database};
 use serial_test::serial;
@@ -39,7 +39,7 @@ async fn schedule(ctx: &AppContext, cron: &str, tz: &str, due: DateTime<Utc>) {
     ctx.db
         .execute_raw(stmt(
             "INSERT INTO schedules (id, job_type, cron_local, timezone, next_due_at) \
-             VALUES ($1, 'deliver_briefing', $2, $3, $4)",
+             VALUES ($1, 'no_worker', $2, $3, $4)",
             vec![Uuid::new_v4().into(), cron.into(), tz.into(), due.into()],
         ))
         .await
@@ -67,7 +67,7 @@ async fn due_schedule_yields_one_run_after_two_ticks() {
         reset(&ctx).await;
         let now = at("2026-10-22T08:00:30Z");
         schedule(&ctx, "0 8 * * *", "UTC", at("2026-10-22T08:00:00Z")).await;
-        run_tick(&ctx, now).await; // deliver_briefing has no worker: run row only
+        run_tick(&ctx, now).await; // no_worker has no worker: run row only
         assert_eq!(count(&ctx, "SELECT count(*) n FROM runs").await, 1);
         assert_eq!(run_tick(&ctx, now).await, Report::default());
         // next_due_at forced back into the past: the run exists, so no second enqueue.
@@ -221,13 +221,60 @@ async fn connecting_creates_default_schedules_once() {
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
         assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
+        // full_scan, verify, deliver_briefing, deliver_weekly; plus the organisation's summary.
         let q = format!("SELECT count(*) n FROM schedules WHERE connection_id = '{id}'");
-        assert_eq!(count(&ctx, &q).await, 2);
+        let org_q = "SELECT count(*) n FROM schedules WHERE connection_id IS NULL";
+        assert_eq!(count(&ctx, &q).await, 4);
+        assert_eq!(count(&ctx, org_q).await, 1);
         assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
-        assert_eq!(count(&ctx, &q).await, 2);
-        // No briefing schedule until its worker exists (Plan 2).
-        let q = "SELECT count(*) n FROM schedules WHERE job_type = 'deliver_briefing'";
-        assert_eq!(count(&ctx, q).await, 0);
+        assert_eq!(count(&ctx, &q).await, 4);
+        assert_eq!(count(&ctx, org_q).await, 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn tick_gives_connected_connections_without_delivery_schedules_their_defaults_once() {
+    serve(|req, ctx| async move {
+        reset(&ctx).await;
+        // Connected before delivery schedules existed: only its scan schedule is there.
+        let (_, _, id) = connected(&req, &ctx, "old@example.com", "clean").await;
+        conn_schedule(
+            &ctx,
+            &id.to_string(),
+            "full_scan",
+            Utc::now() + Duration::days(1),
+        )
+        .await;
+        let pending = Uuid::new_v4();
+        ctx.db
+            .execute_raw(stmt(
+                "INSERT INTO connections (id, organisation_id, provider, status) \
+                 SELECT $1, organisation_id, 'aws', 'pending' FROM connections WHERE id = $2",
+                vec![pending.into(), id.into()],
+            ))
+            .await
+            .unwrap();
+        let q = format!("SELECT count(*) n FROM schedules WHERE connection_id = '{id}'");
+        let jobs = format!(
+            "SELECT count(*) n FROM schedules WHERE connection_id = '{id}' \
+             AND job_type IN ('deliver_briefing','deliver_weekly')"
+        );
+        let org_q = "SELECT count(*) n FROM schedules WHERE connection_id IS NULL";
+        let pending_q =
+            format!("SELECT count(*) n FROM schedules WHERE connection_id = '{pending}'");
+        for _ in 0..2 {
+            run_tick(&ctx, Utc::now()).await;
+            assert_eq!(count(&ctx, &q).await, 4);
+            assert_eq!(count(&ctx, &jobs).await, 2);
+            assert_eq!(count(&ctx, org_q).await, 1);
+            assert_eq!(
+                count(&ctx, &pending_q).await,
+                0,
+                "not verified: no schedules"
+            );
+        }
     })
     .await;
 }
@@ -267,16 +314,26 @@ async fn due_full_scan_enqueues_the_real_worker_once() {
         assert_eq!(count(&ctx, q).await, 1);
 
         // Same slot again (next_due_at forced back): the run exists, so nothing is enqueued.
+        // (The tick also backfilled the connection's delivery schedules, not yet due.)
+        let scan_only = "UPDATE schedules SET next_due_at = $1 WHERE job_type = 'full_scan'";
         ctx.db
-            .execute_raw(stmt(
-                "UPDATE schedules SET next_due_at = $1",
-                vec![due.into()],
-            ))
+            .execute_raw(stmt(scan_only, vec![due.into()]))
             .await
             .unwrap();
         assert_eq!(run_tick(&ctx, now).await, Report::default());
         assert_eq!(count(&ctx, "SELECT count(*) n FROM runs").await, 1);
-        assert_eq!(next_due(&ctx).await, at("2026-10-23T02:00:00Z"));
+        let next: DateTime<Utc> = ctx
+            .db
+            .query_one_raw(stmt(
+                "SELECT next_due_at FROM schedules WHERE job_type = 'full_scan'",
+                vec![],
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get("", "next_due_at")
+            .unwrap();
+        assert_eq!(next, at("2026-10-23T02:00:00Z"));
     })
     .await;
 }
@@ -384,6 +441,64 @@ async fn api_run_whose_enqueue_failed_is_sent_by_the_next_tick() {
             out.run.id
         );
         assert_eq!(count(&ctx, &q).await, 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn retry_for_a_deleted_org_is_skipped_not_enqueued() {
+    serve(|req, ctx| async move {
+        reset(&ctx).await;
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "gone@example.com").await;
+        let org = create_org(&req, &t, "Gone").await;
+        let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
+        let now = at("2026-10-22T10:00:00Z");
+        let storage = PgStorage::new(ctx.db.clone());
+        let run = storage
+            .create_run(RunKey {
+                organisation_id: Some(org_id),
+                connection_id: None,
+                job_type: "full_scan".into(),
+                scheduled_at: now - Duration::hours(2),
+            })
+            .await
+            .unwrap()
+            .run;
+        storage
+            .schedule_retry(run.id, 1, now - Duration::minutes(1))
+            .await
+            .unwrap();
+        ctx.db
+            .execute_raw(stmt(
+                "UPDATE organisations SET deleted_at = now() WHERE id = $1",
+                vec![org_id.into()],
+            ))
+            .await
+            .unwrap();
+        // A worker took the lease but has not written `running` yet.
+        let redis = redis_of(&ctx);
+        let lease = opsagent_ledger::lease::acquire(
+            &storage,
+            &redis,
+            run.id,
+            "slow-worker",
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(run_tick(&ctx, now).await, Report::default());
+        let row = storage.load_run(run.id).await.unwrap();
+        assert_eq!(row.status, RunStatus::Skipped);
+        assert_eq!(row.partial_reason.as_deref(), Some("org_deleted"));
+        // The skip bumped the fence: the worker cannot revive the run.
+        let res = storage
+            .set_status(run.id, lease.fence, RunStatus::Running, None)
+            .await;
+        assert!(matches!(res, Err(opsagent_ledger::LedgerError::StaleFence)));
+        opsagent_ledger::lease::release(&redis, &lease).await;
     })
     .await;
 }

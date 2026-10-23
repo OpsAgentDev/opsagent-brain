@@ -39,6 +39,7 @@ async fn killed_after_each_checkpoint_resumes_with_effects_once() {
                 .await?;
                 Ok(ChunkOutcome {
                     stats: json!({ c.clone(): 1 }),
+                    cursor: json!({ c.clone(): 2 }),
                 })
             })
             .await
@@ -51,6 +52,7 @@ async fn killed_after_each_checkpoint_resumes_with_effects_once() {
     let row = s.load_run(run.id).await.unwrap();
     assert_eq!(row.status, RunStatus::Done);
     assert_eq!(row.checkpoint.stats, json!({"c0":1,"c1":1,"c2":1}));
+    assert_eq!(row.checkpoint.cursor, json!({"c0":2,"c1":2,"c2":2}));
 }
 
 #[tokio::test]
@@ -77,7 +79,7 @@ async fn lease_lost_returns_partial() {
                     .await
                     .unwrap()
                     .unwrap();
-                Ok(ChunkOutcome { stats: json!({}) })
+                Ok(ChunkOutcome::default())
             }
         },
     )
@@ -102,7 +104,7 @@ async fn time_cap_returns_partial() {
         o,
         |_c, _l| async {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            Ok(ChunkOutcome { stats: json!({}) })
+            Ok(ChunkOutcome::default())
         },
     )
     .await
@@ -132,7 +134,7 @@ async fn kill_between_effect_done_and_checkpoint_runs_effect_once() {
                 if !killed.swap(true, SeqCst) {
                     return Err(opsagent_ledger::LedgerError::Killed); // effect done, no checkpoint
                 }
-                Ok(ChunkOutcome { stats: json!({}) })
+                Ok(ChunkOutcome::default())
             }
         })
     };
@@ -164,7 +166,7 @@ async fn dropping_run_chunked_stops_heartbeat() {
     o.heartbeat_every = Duration::from_millis(40);
     let fut = run_chunked(&s, &r, run.id, vec!["a".into()], o, |_c, _l| async {
         tokio::time::sleep(Duration::from_secs(30)).await;
-        Ok(ChunkOutcome { stats: json!({}) })
+        Ok(ChunkOutcome::default())
     });
     let _ = tokio::time::timeout(Duration::from_millis(300), fut).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -174,10 +176,16 @@ async fn dropping_run_chunked_stops_heartbeat() {
         .is_some());
 }
 
-/// Delegates to MemoryStorage but a newer holder bumps the fence right after the run is loaded.
-struct Usurped(MemoryStorage);
+/// Delegates to MemoryStorage with one injected fault.
+enum Fault {
+    /// A newer holder bumps the fence right after the run is loaded.
+    Usurp,
+    /// Every checkpoint write fails with a storage error.
+    Checkpoint,
+}
+struct Faulty(MemoryStorage, Fault);
 #[async_trait::async_trait]
-impl Storage for Usurped {
+impl Storage for Faulty {
     async fn create_run(
         &self,
         k: opsagent_core::run::RunKey,
@@ -186,7 +194,9 @@ impl Storage for Usurped {
     }
     async fn load_run(&self, id: uuid::Uuid) -> opsagent_ledger::Result<opsagent_ledger::RunRow> {
         let row = self.0.load_run(id).await?;
-        self.0.bump_fence(id).await?;
+        if let Fault::Usurp = self.1 {
+            self.0.bump_fence(id).await?;
+        }
         Ok(row)
     }
     async fn bump_fence(&self, id: uuid::Uuid) -> opsagent_ledger::Result<u64> {
@@ -198,6 +208,9 @@ impl Storage for Usurped {
         f: u64,
         cp: &opsagent_ledger::Checkpoint,
     ) -> opsagent_ledger::Result<()> {
+        if let Fault::Checkpoint = self.1 {
+            return Err(opsagent_ledger::LedgerError::Storage("disk full".into()));
+        }
         self.0.write_checkpoint(id, f, cp).await
     }
     async fn set_status(
@@ -208,6 +221,9 @@ impl Storage for Usurped {
         r: Option<String>,
     ) -> opsagent_ledger::Result<()> {
         self.0.set_status(id, f, s, r).await
+    }
+    async fn skip_run(&self, id: uuid::Uuid, r: &str) -> opsagent_ledger::Result<bool> {
+        self.0.skip_run(id, r).await
     }
     async fn effect_begin(
         &self,
@@ -250,7 +266,10 @@ impl Storage for Usurped {
 
 #[tokio::test]
 async fn stale_fence_on_initial_running_returns_partial() {
-    let (r, s) = (common::redis(), Usurped(MemoryStorage::default()));
+    let (r, s) = (
+        common::redis(),
+        Faulty(MemoryStorage::default(), Fault::Usurp),
+    );
     let run = s.create_run(common::key()).await.unwrap().run;
     let ran = AtomicU32::new(0);
     let st = run_chunked(
@@ -261,7 +280,7 @@ async fn stale_fence_on_initial_running_returns_partial() {
         opts("w"),
         |_c, _l| async {
             ran.fetch_add(1, SeqCst);
-            Ok(ChunkOutcome { stats: json!({}) })
+            Ok(ChunkOutcome::default())
         },
     )
     .await;
@@ -288,7 +307,10 @@ async fn partial_reason_in_stats_ends_partial_even_after_resume() {
                 } else {
                     json!({})
                 };
-                Ok(ChunkOutcome { stats })
+                Ok(ChunkOutcome {
+                    stats,
+                    ..Default::default()
+                })
             })
             .await
         }
@@ -316,7 +338,7 @@ async fn failing_chunk_ends_the_run_failed_or_queued_for_retry() {
                     retry,
                 });
             }
-            Ok(ChunkOutcome { stats: json!({}) })
+            Ok(ChunkOutcome::default())
         })
         .await
         .unwrap();
@@ -329,4 +351,27 @@ async fn failing_chunk_ends_the_run_failed_or_queued_for_retry() {
         // The finished chunk stays checkpointed for the retry.
         assert!(row.checkpoint.chunks_done.contains("a"));
     }
+}
+
+#[tokio::test]
+async fn storage_error_on_checkpoint_ends_the_run_failed() {
+    let (r, s) = (
+        common::redis(),
+        Faulty(MemoryStorage::default(), Fault::Checkpoint),
+    );
+    let run = s.create_run(common::key()).await.unwrap().run;
+    let st = run_chunked(
+        &s,
+        &r,
+        run.id,
+        vec!["a".into()],
+        opts("w"),
+        |_c, _l| async { Ok(ChunkOutcome::default()) },
+    )
+    .await
+    .unwrap();
+    assert_eq!(st, RunStatus::Failed);
+    let row = s.0.load_run(run.id).await.unwrap();
+    assert_eq!(row.status, RunStatus::Failed);
+    assert_eq!(row.partial_reason.as_deref(), Some("storage_error"));
 }

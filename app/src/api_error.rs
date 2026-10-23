@@ -39,6 +39,10 @@ impl ApiError {
             retry_after_secs: None,
         }
     }
+    /// The stable machine-readable code.
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
     pub fn unauthenticated() -> Self {
         Self::new(
             StatusCode::UNAUTHORIZED,

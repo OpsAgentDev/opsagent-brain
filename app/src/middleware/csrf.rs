@@ -29,8 +29,12 @@ pub fn token(secret: &str, session_id: &str) -> String {
 /// Safe methods are exempt, which covers health and the OAuth callback (both GET).
 pub async fn guard(State(ctx): State<AppContext>, req: Request, next: Next) -> Response {
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    // Anonymous by design; protected by its own Origin check (controllers/auth.rs).
-    let exempt = req.uri().path() == "/v1/auth/magic-link/redeem";
+    // Anonymous by design: redeem has its own Origin check (controllers/auth.rs); recipient
+    // confirm and unsubscribe are authorised by their single-use token alone.
+    let path = req.uri().path();
+    let exempt = path == "/v1/auth/magic-link/redeem"
+        || path == "/v1/recipients/confirm"
+        || path.starts_with("/v1/unsubscribe/");
     if !safe && !exempt {
         if let Some(session) = req.extensions().get::<Session>() {
             let signed_in = matches!(session.get::<Uuid>(USER_KEY).await, Ok(Some(_)));

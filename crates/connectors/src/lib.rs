@@ -39,6 +39,24 @@ pub enum ConnectorError {
 }
 pub type Result<T> = std::result::Result<T, ConnectorError>;
 
+impl ConnectorError {
+    /// Stable code for logs and run reasons; never the provider's message.
+    pub fn code(&self) -> &str {
+        match self {
+            Self::Api { code: Some(c), .. } => c,
+            // No code: the request never got an answer (timeout, connection reset).
+            Self::Api { code: None, .. } => "network",
+            Self::Provider(_) => "provider_error",
+            Self::NotFound => "not_found",
+            Self::InvalidCredentials(_) => "invalid_credentials",
+            Self::Auth(_) => "auth",
+            Self::Template(_) => "template",
+            Self::Fixture(_) => "fixture",
+            Self::Unknown(_) => "unknown_connector",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
@@ -132,6 +150,16 @@ pub struct MetricPoint {
     pub value: f64,
 }
 
+/// `iam:SimulatePrincipalPolicy` outcome for the restore actions, one list per decision.
+/// `unknown` holds actions the simulation could not decide (see `Connector::simulate_restore`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimulationResult {
+    pub allowed: Vec<String>,
+    pub denied: Vec<String>,
+    #[serde(default)]
+    pub unknown: Vec<String>,
+}
+
 #[async_trait]
 pub trait Connector: Send + Sync {
     fn provider(&self) -> Provider;
@@ -140,4 +168,19 @@ pub trait Connector: Send + Sync {
     async fn inventory(&self, creds: &Credentials, scope: &Scope) -> Result<InventoryResult>;
     async fn cost_daily(&self, creds: &Credentials, days: u32) -> Result<Vec<CostRow>>;
     async fn metrics(&self, creds: &Credentials, q: MetricQuery) -> Result<Vec<MetricPoint>>;
+    /// Whether `role_arn` may run a restore (backup, KMS grant and decrypt, RDS, EC2).
+    /// Contract, per action: an explicit deny is `denied` whatever the context; an action whose
+    /// own evaluation lacks context values is `unknown`; otherwise its decision (an implicit
+    /// deny is `denied`). A role that does not exist or is in another account makes every
+    /// action `unknown` (Ok). AccessDenied on OpsAgent's own simulate call is
+    /// `Err(ConnectorError::Api { code: "AccessDenied" })`, as are other provider failures.
+    async fn simulate_restore(
+        &self,
+        _creds: &Credentials,
+        _role_arn: &str,
+    ) -> Result<SimulationResult> {
+        Err(ConnectorError::Provider(
+            "simulate_restore: not supported".into(),
+        ))
+    }
 }

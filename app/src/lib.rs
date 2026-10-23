@@ -1,3 +1,4 @@
+pub mod adapters;
 pub mod api_error;
 pub mod app;
 pub mod controllers;

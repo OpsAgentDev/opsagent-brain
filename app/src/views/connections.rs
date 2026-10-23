@@ -47,6 +47,9 @@ pub struct Connection {
     pub scan_time_local: Option<String>,
     pub briefing_time_local: Option<String>,
     pub api_rate_ceiling: Option<i32>,
+    /// Slack channel id for this connection's deliveries; null posts nothing to Slack (there is
+    /// no organisation channel), so briefings go to the owners by email.
+    pub slack_channel_id: Option<String>,
     pub first_connected_at: Option<DateTime<FixedOffset>>,
     pub billable_from: Option<DateTime<FixedOffset>>,
     pub created_at: DateTime<FixedOffset>,
@@ -65,6 +68,7 @@ pub fn view(c: &connections::Model, last: Option<&connection_verifications::Mode
         scan_time_local: hhmm(c.scan_time_local),
         briefing_time_local: hhmm(c.briefing_time_local),
         api_rate_ceiling: c.api_rate_ceiling,
+        slack_channel_id: c.slack_channel_id.clone(),
         first_connected_at: c.first_connected_at,
         billable_from: c.billable_from,
         created_at: c.created_at,

@@ -5,7 +5,7 @@ use loco_rs::{
     bgworker::{BackgroundWorker, Queue},
     boot::{create_app, BootResult, StartMode},
     config::Config,
-    controller::AppRoutes,
+    controller::{middleware::MiddlewareLayer, AppRoutes},
     environment::Environment,
     task::Tasks,
     Result,
@@ -17,9 +17,15 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use crate::{
     controllers,
-    middleware::AuthInitializer,
-    tasks::{openapi_dump::OpenapiDump, scan_now::ScanNow, scheduler_tick::SchedulerTick},
-    workers::{full_scan::FullScanWorker, verify::VerifyWorker},
+    middleware::{self, AuthInitializer},
+    tasks::{
+        deliver_briefing::DeliverBriefingNow, openapi_dump::OpenapiDump, scan_now::ScanNow,
+        scheduler_tick::SchedulerTick,
+    },
+    workers::{
+        deliver_briefing::DeliverBriefingWorker, deliver_weekly::DeliverWeeklyWorker,
+        full_scan::FullScanWorker, verify::VerifyWorker,
+    },
 };
 
 /// security.md: unwrapped DEKs stay in memory for at most 10 minutes.
@@ -94,6 +100,7 @@ impl Hooks for App {
             ..Default::default()
         };
         ctx.shared_store.insert(Registry::new(outbound, fake));
+        middleware::install_adapters(&ctx)?;
         Ok(ctx)
     }
 
@@ -107,18 +114,25 @@ impl Hooks for App {
         Ok(controllers::openapi::routes())
     }
 
+    fn middlewares(ctx: &AppContext) -> Vec<Box<dyn MiddlewareLayer>> {
+        middleware::request_span::stack(ctx)
+    }
+
     fn routes(_ctx: &AppContext) -> AppRoutes {
         AppRoutes::with_default_routes().add_route(controllers::health::routes())
     }
 
     async fn connect_workers(ctx: &AppContext, queue: &Queue) -> Result<()> {
         queue.register(VerifyWorker::build(ctx)).await?;
-        queue.register(FullScanWorker::build(ctx)).await
+        queue.register(FullScanWorker::build(ctx)).await?;
+        queue.register(DeliverBriefingWorker::build(ctx)).await?;
+        queue.register(DeliverWeeklyWorker::build(ctx)).await
     }
 
     fn register_tasks(tasks: &mut Tasks) {
         tasks.register(OpenapiDump);
         tasks.register(ScanNow);
+        tasks.register(DeliverBriefingNow);
         tasks.register(SchedulerTick);
     }
 

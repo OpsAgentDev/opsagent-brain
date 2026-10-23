@@ -1,6 +1,6 @@
 #[cfg(feature = "test-support")]
 use crate::harness::KillSwitch;
-use crate::retry::settle;
+use crate::retry::{fail_on_storage_error, settle};
 use crate::storage::{Checkpoint, LedgerError, Result, Storage};
 use opsagent_core::run::RunStatus;
 use redis::{aio::MultiplexedConnection, Client, Script};
@@ -141,8 +141,12 @@ pub async fn unclaim(redis: &Client, key: &str, owner: &str) {
 }
 
 /// `stats` merge into the checkpoint by key; a `partial_reason` string there ends the run `Partial`.
+/// `cursor` (an object, or null for none) merges into the checkpoint cursor by key: state a
+/// resumed run reads back instead of redoing calls.
+#[derive(Debug, Default)]
 pub struct ChunkOutcome {
     pub stats: serde_json::Value,
+    pub cursor: serde_json::Value,
 }
 
 pub struct RunChunkedOptions {
@@ -211,6 +215,7 @@ where
         })
     });
     let res = drive(storage, run_id, &chunks, &opts, &lease, &lost, &f).await;
+    let res = fail_on_storage_error(storage, run_id, lease.fence, res).await;
     release(redis, &lease).await;
     res
 }
@@ -247,6 +252,14 @@ fn merge(cp: &mut Checkpoint, chunk: &str, out: &ChunkOutcome) {
     cp.chunks_done.insert(chunk.to_owned());
     if let (Some(dst), Some(src)) = (cp.stats.as_object_mut(), out.stats.as_object()) {
         dst.extend(src.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    if let Some(src) = out.cursor.as_object() {
+        if !cp.cursor.is_object() {
+            cp.cursor = serde_json::json!({});
+        }
+        if let Some(dst) = cp.cursor.as_object_mut() {
+            dst.extend(src.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
     }
 }
 

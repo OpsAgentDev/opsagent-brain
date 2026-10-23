@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 opsagent-core = { path = "../core" }
 async-trait = "0.1"
+tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -24,13 +25,24 @@ aws-sdk-elasticloadbalancingv2 = { version = "1.131.0", default-features = false
 aws-sdk-cloudtrail = { version = "1.127.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-guardduty = { version = "1.151.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-costexplorer = { version = "1.135.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-backup = { version = "1.129.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-acm = { version = "1.122.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-cloudwatchlogs = { version = "1.159.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-cloudwatch = { version = "1.137.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-sagemaker = { version = "1.244.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 urlencoding = "2"
 serde_norway = "0.9"
 
 [dev-dependencies]
+aws-sdk-backup = { version = "1.129.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
+aws-sdk-acm = { version = "1.122.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
+aws-sdk-cloudwatchlogs = { version = "1.159.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
+aws-sdk-cloudwatch = { version = "1.137.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
+aws-sdk-sagemaker = { version = "1.244.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
 aws-sdk-costexplorer = { version = "1.135.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
 aws-sdk-ec2 = { version = "1.270.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
 aws-sdk-iam = { version = "1.130.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
+aws-sdk-cloudtrail = { version = "1.127.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
 aws-sdk-sts = { version = "1.121.0", default-features = false, features = ["default-https-client", "rt-tokio", "test-util"] }
 aws-smithy-http-client = { version = "1.5.1", features = ["test-util"] }
 aws-smithy-mocks = "0.3.0"

@@ -10,7 +10,7 @@ use opsagent_connectors::{registry as providers, CallContext, Connector, Credent
 use opsagent_core::{connection::ConnectionStatus as S, run::RunStatus};
 use opsagent_ledger::{
     lease::{self, claim, unclaim},
-    retry::settle,
+    retry::{fail_on_storage_error, settle},
     run_chunked, LedgerError, RunChunkedOptions, RunRow, Storage,
 };
 use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
@@ -32,6 +32,7 @@ use crate::{
 };
 
 pub const JOB: &str = "full_scan";
+const SIMULATE: &str = "simulate";
 const FINALIZE: &str = "finalize";
 const TIME_CAP: Duration = Duration::from_secs(6 * 3600);
 
@@ -254,7 +255,7 @@ async fn call_credentials(
     providers::credentials(&c.provider, &creds, context).map_err(|e| job_err(&e))
 }
 
-/// The chunk list (`service@region`, then `finalize`) from an unscoped inventory call.
+/// The chunk list (`service@region`, then `simulate` and `finalize`) from an unscoped inventory call.
 /// shortcut: re-run on every (re)start, which doubles the AWS calls; upgrade to a declared
 /// connector scope when the AWS connector exposes one.
 async fn discover(k: &dyn Connector, cr: &Credentials) -> std::result::Result<Vec<String>, End> {
@@ -278,7 +279,7 @@ async fn discover(k: &dyn Connector, cr: &Credentials) -> std::result::Result<Ve
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    chunks.push(FINALIZE.into());
+    chunks.extend([SIMULATE.into(), FINALIZE.into()]);
     Ok(chunks)
 }
 
@@ -301,6 +302,7 @@ async fn end(
             .map(|()| status),
         End::Failed(e) => settle(storage, run.id, run.attempts, l.fence, &e).await,
     };
+    let res = fail_on_storage_error(storage, run.id, l.fence, res).await;
     lease::release(&redis, &l).await;
     res
 }

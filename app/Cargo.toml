@@ -20,19 +20,22 @@ tower-sessions = "0.15"
 time = "0.3"
 hmac = "0.12"
 sha2 = "0.10"
+hkdf = "0.12"
+subtle = "2"
 base64 = "0.22"
 rand = "0.8"
 oauth2 = { version = "5", default-features = false, features = ["reqwest", "rustls-tls"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 chrono = "0.4"
 chrono-tz = "0.10"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 regex = "1"
 opsagent-checks = { path = "../crates/checks" }
 opsagent-secrets = { path = "../crates/secrets" }
 opsagent-core = { path = "../crates/core" }
 opsagent-ledger = { path = "../crates/ledger" }
 opsagent-connectors = { path = "../crates/connectors" }
+opsagent-deliver = { path = "../crates/deliver" }
 urlencoding = "2"
 zeroize = "1"
 cron = "0.17.0"
@@ -56,6 +59,7 @@ opsagent-ledger = { path = "../crates/ledger", features = ["test-support"] }
 serial_test = "3.1.1"
 tracing-subscriber = "0.3"
 axum-test = "17"
+wiremock = "0.6"
 
 [lints]
 workspace = true

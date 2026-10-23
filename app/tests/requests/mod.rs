@@ -1,7 +1,10 @@
 mod auth;
 mod connections;
+mod deliveries;
 mod findings;
 mod health;
+mod integrations;
+mod logging;
 mod openapi;
 mod orgs;
 mod resources;

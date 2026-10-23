@@ -7,28 +7,53 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 pub async fn cloudtrails(ct: &aws_sdk_cloudtrail::Client, t: &Target<'_>) -> Result<Vec<Resource>> {
-    // Shadow trails excluded so a multi-region trail is reported once, in its home region.
+    // Shadow trails included so organization trails (owned by another account) show up;
+    // a multi-region trail repeats per region, so dedupe by ARN.
     let trails = ct
         .describe_trails()
-        .include_shadow_trails(false)
+        .include_shadow_trails(true)
         .send()
         .await
         .map_err(provider_err)?;
     let mut out = vec![];
+    let mut seen = std::collections::HashSet::new();
     for tr in trails.trail_list() {
         let arn = tr.trail_arn().unwrap_or_default();
-        let status = ct
-            .get_trail_status()
-            .name(arn)
-            .send()
-            .await
-            .map_err(provider_err)?;
+        if !seen.insert(arn) {
+            continue;
+        }
+        let org = tr.is_organization_trail().unwrap_or(false);
+        let mut attrs = json!({"service": "cloudtrail", "is_organization": org});
+        // A refused status call (e.g. an organization trail of another account) leaves
+        // `logging` and `bucket_writable` absent rather than failing the read.
+        match ct.get_trail_status().name(arn).send().await {
+            Ok(status) => {
+                attrs["logging"] = status.is_logging().unwrap_or(false).into();
+                // A delivery error means the trail cannot write to its bucket.
+                attrs["bucket_writable"] = status
+                    .latest_delivery_error()
+                    .is_none_or(str::is_empty)
+                    .into();
+            }
+            Err(e) => {
+                let e = provider_err(e);
+                // Only a foreign organization trail may be unreadable; any other failure
+                // makes the whole service unavailable so the check never guesses.
+                let foreign = org && arn.split(':').nth(4).is_some_and(|a| a != t.account);
+                let tolerated = matches!(&e, crate::ConnectorError::Api { code: Some(c), .. }
+                    if matches!(c.as_str(), "AccessDeniedException" | "AccessDenied" | "TrailNotFoundException"));
+                if !(foreign && tolerated) {
+                    return Err(e);
+                }
+                tracing::debug!("foreign organization trail status unavailable");
+            }
+        }
         out.push(t.resource(
             ResourceKind::Log,
             arn.to_owned(),
             tr.name().unwrap_or_default(),
             BTreeMap::new(),
-            json!({"service": "cloudtrail", "logging": status.is_logging().unwrap_or(false)}),
+            attrs,
         ));
     }
     Ok(out)

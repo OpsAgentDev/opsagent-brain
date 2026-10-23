@@ -83,6 +83,14 @@ pub trait Storage: Send + Sync {
         status: RunStatus,
         partial_reason: Option<String>,
     ) -> Result<()>;
+    /// Ends the run `Failed` with `reason` at `fence`: the error left nothing to retry.
+    async fn fail_run(&self, id: Uuid, fence: u64, reason: &str) -> Result<()> {
+        self.set_status(id, fence, RunStatus::Failed, Some(reason.into()))
+            .await
+    }
+    /// Ends a still-`queued` run `Skipped` with `reason` and bumps its fence, so a worker that
+    /// already holds the lease gets `StaleFence` on its next write. `false`: not queued.
+    async fn skip_run(&self, id: Uuid, reason: &str) -> Result<bool>;
     async fn effect_begin(&self, run_id: Uuid, key: &str) -> Result<EffectState>;
     async fn effect_done(
         &self,

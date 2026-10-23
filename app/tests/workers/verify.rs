@@ -72,6 +72,13 @@ async fn second_org_racing_to_same_account_ends_blocked() {
             Some("account_already_connected")
         );
         assert!(b.billable_from.is_none());
+        // Blocked is not connected: no default schedules.
+        let n = schedules::Entity::find()
+            .filter(schedules::Column::ConnectionId.eq(idb))
+            .count(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
         assert_eq!(conn(&ctx, ida.parse().unwrap()).await.status, "connected");
     })
     .await;
@@ -246,6 +253,39 @@ async fn first_connect_queues_one_first_scan() {
     .await;
 }
 
+/// The customer deletes the stack: three denials over more than an hour revoke it (minutes 0-3).
+async fn revoke(ctx: &AppContext, id: Uuid) {
+    set_fixture(ctx, id, "denied").await;
+    for n in 0..3 {
+        run_worker(ctx, id, n).await;
+    }
+    set(ctx, id, |a| {
+        a.verify_denied_first_at = Set(Some((Utc::now() - Duration::hours(2)).into()))
+    })
+    .await;
+    run_worker(ctx, id, 3).await;
+    assert_eq!(conn(ctx, id).await.status, "revoked");
+}
+
+#[tokio::test]
+#[serial]
+async fn revoked_connection_recovering_degraded_goes_back_to_weekly_verify() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
+        assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
+        let id: Uuid = id.parse().unwrap();
+        revoke(&ctx, id).await;
+        assert_eq!(verify_cron(&ctx, id).await, "0 4 * * *");
+
+        set_fixture(&ctx, id, "degraded").await;
+        run_worker(&ctx, id, 4).await;
+        assert_eq!(conn(&ctx, id).await.status, "degraded");
+        assert_eq!(verify_cron(&ctx, id).await, "0 3 * * 1");
+    })
+    .await;
+}
+
 #[tokio::test]
 #[serial]
 async fn revoked_connection_is_rechecked_daily_and_recovers() {
@@ -256,17 +296,7 @@ async fn revoked_connection_is_rechecked_daily_and_recovers() {
         let id: Uuid = id.parse().unwrap();
         assert_eq!(verify_cron(&ctx, id).await, "0 3 * * 1");
 
-        // The customer deletes the stack: three denials over more than an hour revoke it.
-        set_fixture(&ctx, id, "denied").await;
-        for n in 0..3 {
-            run_worker(&ctx, id, n).await;
-        }
-        set(&ctx, id, |a| {
-            a.verify_denied_first_at = Set(Some((Utc::now() - Duration::hours(2)).into()))
-        })
-        .await;
-        run_worker(&ctx, id, 3).await;
-        assert_eq!(conn(&ctx, id).await.status, "revoked");
+        revoke(&ctx, id).await;
         assert_eq!(verify_cron(&ctx, id).await, "0 4 * * *");
 
         // A daily check while the role is still gone: stays revoked, no retry parked.
