@@ -129,7 +129,8 @@ fn config() -> AppResult<Config> {
 async fn state() -> AppResult<AppState> {
     let c = config()?;
     let queue = Arc::new(LocoQueue::connect(c.env).await?);
-    boot::boot(c, queue).await
+    // shortcut: the worker modes still run under Loco; Task 18 boots them with `worker: true`.
+    boot::boot(c, queue, false).await
 }
 
 /// The API until SIGTERM or Ctrl-C; in-flight requests finish first.

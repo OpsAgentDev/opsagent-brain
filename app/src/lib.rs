@@ -8,6 +8,7 @@ pub mod config;
 pub mod controllers;
 pub mod creds;
 pub mod error;
+pub mod jobs;
 pub mod logging;
 pub mod mailers;
 pub mod middleware;

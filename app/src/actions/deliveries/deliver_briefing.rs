@@ -24,6 +24,7 @@ use crate::{
 
 const CHUNK: &str = "deliver";
 
+#[derive(Clone)]
 pub struct DeliverBriefing {
     kit: Kit,
 }
