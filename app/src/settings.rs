@@ -70,7 +70,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::Settings;
-    use crate::services::recipients::unsubscribe_token;
+    use crate::actions::recipients::tokens::unsubscribe_token;
 
     fn settings(unsubscribe: &str) -> Settings {
         serde_json::from_value(serde_json::json!({

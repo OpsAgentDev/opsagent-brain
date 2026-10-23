@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::OrgPath;
 use crate::{
-    actions::DAY_SECS,
+    actions::{recipients::mail_guard::ORGS_PER_USER_PER_DAY, DAY_SECS},
     adapters::db::Pg,
     api_error::{ApiError, ApiJson, Problem},
     app::kek,
@@ -58,9 +58,6 @@ pub struct NewOrg {
     /// IANA zone; default `UTC`.
     pub timezone: Option<String>,
 }
-
-/// Organisations a user may create per day (each gets a DEK, and owners can send mail).
-pub const ORGS_PER_USER_PER_DAY: i64 = 5;
 
 /// Counts one creation for `user_id`; 429 `rate_limited` past the daily cap. Fails closed.
 async fn limit_creation(ctx: &AppContext, user_id: Uuid) -> Result<(), ApiError> {

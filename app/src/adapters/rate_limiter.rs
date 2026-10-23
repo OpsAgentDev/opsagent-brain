@@ -63,4 +63,23 @@ impl RateLimiter for RedisRateLimiter {
             .await
             .map_err(unavailable)
     }
+
+    async fn clear(&self, key: &str) -> AppResult<()> {
+        let mut c = self.conn().await?;
+        redis::cmd("DEL")
+            .arg(key)
+            .query_async(&mut c)
+            .await
+            .map_err(unavailable)
+    }
+
+    async fn forget(&self, key: &str, member: &str) -> AppResult<()> {
+        let mut c = self.conn().await?;
+        redis::cmd("SREM")
+            .arg(key)
+            .arg(member)
+            .query_async(&mut c)
+            .await
+            .map_err(unavailable)
+    }
 }

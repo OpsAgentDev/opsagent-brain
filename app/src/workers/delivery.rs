@@ -10,16 +10,13 @@ use uuid::Uuid;
 
 use super::common::{lerr, LResult};
 use crate::{
+    actions::integrations::open_token,
     adapters::{db::Pg, slack::SlackError},
-    app::kek,
+    app::{actions, kek},
     mailers::Mail,
     middleware::{mailer, slack},
     models::_entities::connections,
-    services::{
-        deliveries::{clear_channel, FAILED, SENT, SUPPRESSED},
-        integrations::open_token,
-        mail_guard,
-    },
+    services::deliveries::{clear_channel, FAILED, SENT, SUPPRESSED},
 };
 
 /// The run delivering, and what its rows are about.
@@ -71,9 +68,10 @@ impl Out<'_> {
         member: bool,
         status: &str,
     ) -> LResult<()> {
-        let db = &self.ctx.db;
         let to = mail.to.clone();
-        if !mail_guard::may_deliver(db, self.organisation_id, &to, member)
+        let guard = &actions(self.ctx).map_err(lerr)?.recipients.mail_guard;
+        if !guard
+            .may_deliver(self.organisation_id, &to, member)
             .await
             .map_err(lerr)?
         {
@@ -107,7 +105,7 @@ impl Out<'_> {
     ) -> LResult<Result<(), SlackError>> {
         let db = &self.ctx.db;
         let kek = kek(self.ctx).map_err(lerr)?;
-        let token = open_token(db, kek.as_ref(), i)
+        let token = open_token(&Pg::new(db), kek.as_ref(), i)
             .await
             .map_err(|_| LedgerError::Job {
                 code: "token_unreadable".into(),

@@ -27,13 +27,11 @@ use super::{
     delivery::Out,
 };
 use crate::{
+    actions::recipients::tokens::unsubscribe_url,
     adapters::db::Pg,
     mailers::{magic_link::mail_safe_name, Mail},
     models::_entities::{connections, organisations as orgs},
-    services::{
-        deliveries::{deliverable, live_connection, options, outcome, route, SENT, WEEKLY},
-        recipients::unsubscribe_url,
-    },
+    services::deliveries::{deliverable, live_connection, options, outcome, route, SENT, WEEKLY},
     settings::Settings,
 };
 
