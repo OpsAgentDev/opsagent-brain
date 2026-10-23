@@ -66,7 +66,9 @@ fn cors_layer(web_base_url: &str) -> Result<CorsLayer> {
 /// from `App::after_context`.
 pub fn install_adapters(ctx: &AppContext) -> Result<()> {
     let settings = Settings::load(ctx)?;
-    let slack: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(&settings.slack_api_base_url));
+    let slack = HttpSlack::new(&settings.slack_api_base_url)
+        .map_err(|_| loco_rs::Error::string("slack: HTTP client could not be built"))?;
+    let slack: Arc<dyn SlackClient> = Arc::new(slack);
     ctx.shared_store.insert(slack);
     ctx.shared_store.insert(settings);
     let production = ctx.environment == Environment::Production;

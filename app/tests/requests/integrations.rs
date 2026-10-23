@@ -32,7 +32,7 @@ fn use_slack(ctx: &AppContext, slack: &MockServer) {
     s.slack_client_id = "cid".into();
     s.slack_client_secret = "csecret".into();
     ctx.shared_store.insert(s);
-    let c: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(slack.uri()));
+    let c: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(slack.uri()).unwrap());
     ctx.shared_store.insert(c);
 }
 

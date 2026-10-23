@@ -74,7 +74,7 @@ pub async fn slack_on(ctx: &AppContext, w: &World, server: &MockServer) {
     save_slack(&ctx.db, k.as_ref(), w.org, w.owner, &install)
         .await
         .unwrap();
-    let c: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(server.uri()));
+    let c: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(server.uri()).unwrap());
     ctx.shared_store.insert(c);
     sql(
         ctx,
