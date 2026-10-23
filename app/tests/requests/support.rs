@@ -197,17 +197,6 @@ pub fn without_instance(res: &axum_test::TestResponse) -> String {
     v.to_string()
 }
 
-/// The shell's router over the booted state with `f` applied to its config.
-pub fn router_with(
-    ctx: &TestApp,
-    f: impl FnOnce(&mut opsagent_brain::config::Config),
-) -> axum_test::TestServer {
-    let mut deps = ctx.state.deps.clone();
-    f(&mut deps.config);
-    let router = opsagent_brain::boot::router(opsagent_brain::boot::assemble(deps)).unwrap();
-    axum_test::TestServer::new(router).unwrap()
-}
-
 /// The booted state (what `app::state` read from Loco's shared store).
 pub fn state(ctx: &TestApp) -> AppResult<AppState> {
     Ok(ctx.state.clone())

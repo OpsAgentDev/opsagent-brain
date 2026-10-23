@@ -1,5 +1,5 @@
 //! The `opsagent-brain` command line: `start`, `scheduler`, `task <name> [k:v…]`, `db`.
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, process::ExitCode, sync::Arc};
 
 use chrono::Utc;
 use clap::{Parser, Subcommand};
@@ -81,6 +81,27 @@ impl TaskVars {
     }
 }
 
+/// Installs the process subscriber before any command runs. With a config that does not
+/// parse, a default subscriber, so the config error itself is still logged.
+pub fn install_tracing() {
+    match Config::from_env() {
+        Ok(c) => init_tracing(&c),
+        Err(_) => drop(tracing_subscriber::fmt().try_init()),
+    }
+    config::warn_if_loco_env();
+}
+
+/// Runs `cli`; a failure is logged as one `tracing` error and exits 1.
+pub async fn main(cli: Cli) -> ExitCode {
+    match run(cli).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!(error = %e, "command failed");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 pub async fn run(cli: Cli) -> Result<(), AppError> {
     match cli.cmd {
         Cmd::Start {
@@ -100,12 +121,8 @@ fn internal(e: impl std::fmt::Display) -> AppError {
     AppError::Internal(e.to_string())
 }
 
-/// `Config::from_env` and the process subscriber.
 fn config() -> AppResult<Config> {
-    let c = Config::from_env().map_err(internal)?;
-    init_tracing(&c);
-    config::warn_if_loco_env();
-    Ok(c)
+    Config::from_env().map_err(internal)
 }
 
 /// The state over the Loco queue the workers drain (until Task 18).
@@ -263,10 +280,35 @@ mod tests {
         assert!(parse(&["db", "nope"]).is_err());
     }
 
+    #[derive(Clone, Default)]
+    struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn unknown_task_name_exits_non_zero() {
-        let cli = parse(&["task", "nope:now"]).unwrap();
-        assert!(matches!(run(cli).await, Err(AppError::Invalid(_))));
+        let buf = Buf::default();
+        let sub = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer({
+                let b = buf.clone();
+                move || b.clone()
+            })
+            .finish();
+        let _g = tracing::subscriber::set_default(sub);
+        let code = main(parse(&["task", "nope:now"]).unwrap()).await;
+        assert_eq!(code, std::process::ExitCode::FAILURE);
+        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(out.contains("ERROR"), "{out}");
+        assert!(out.contains("command failed"), "{out}");
+        assert!(out.contains("unknown task `nope:now`"), "{out}");
     }
 
     #[tokio::test]

@@ -62,23 +62,25 @@ async fn cors_preflight_web_origin_only() {
 #[tokio::test]
 #[serial]
 async fn cors_headers_on_timeout_and_panic() {
-    serve(|_req, ctx| async move {
-        let srv = router_with(&ctx, |c| c.request_timeout_secs = 1);
-        for (path, status) in [("/_test/slow", 504), ("/_test/panic", 500)] {
-            let res = srv.get(path).add_header("Origin", WEB_ORIGIN).await;
-            assert_eq!(res.status_code(), status, "{path}");
-            assert_eq!(
-                res.header("access-control-allow-origin"),
-                WEB_ORIGIN,
-                "{path}"
-            );
-            assert_eq!(
-                res.header("access-control-allow-credentials"),
-                "true",
-                "{path}"
-            );
-        }
-    })
+    serve_with(
+        |c| c.request_timeout_secs = 1,
+        |srv, _ctx| async move {
+            for (path, status) in [("/_test/slow", 504), ("/_test/panic", 500)] {
+                let res = srv.get(path).add_header("Origin", WEB_ORIGIN).await;
+                assert_eq!(res.status_code(), status, "{path}");
+                assert_eq!(
+                    res.header("access-control-allow-origin"),
+                    WEB_ORIGIN,
+                    "{path}"
+                );
+                assert_eq!(
+                    res.header("access-control-allow-credentials"),
+                    "true",
+                    "{path}"
+                );
+            }
+        },
+    )
     .await;
 }
 
@@ -150,7 +152,7 @@ fn assert_secure_headers(res: &axum_test::TestResponse) {
 #[tokio::test]
 #[serial]
 async fn secure_headers_present_and_hsts_only_in_production() {
-    serve(|req, ctx| async move {
+    serve(|req, _ctx| async move {
         let preflight = req
             .method(axum::http::Method::OPTIONS, "/v1/orgs")
             .add_header("Origin", WEB_ORIGIN)
@@ -165,7 +167,12 @@ async fn secure_headers_present_and_hsts_only_in_production() {
             assert_secure_headers(&res);
             assert!(res.maybe_header("strict-transport-security").is_none());
         }
-        let prod = router_with(&ctx, |c| c.env = opsagent_brain::config::AppEnv::Production);
+    })
+    .await;
+    let production = |c: &mut opsagent_brain::config::Config| {
+        c.env = opsagent_brain::config::AppEnv::Production;
+    };
+    serve_with(production, |prod, _ctx| async move {
         let res = prod.get("/healthz").await;
         assert_secure_headers(&res);
         assert_eq!(
@@ -194,23 +201,25 @@ async fn powered_by_and_etag_absent() {
 #[tokio::test]
 #[serial]
 async fn slow_handler_is_504() {
-    serve(|_req, ctx| async move {
-        // The 30 s production default is pinned in config.rs; one second keeps the test short.
-        let srv = router_with(&ctx, |c| c.request_timeout_secs = 1);
-        let res = srv
-            .get("/_test/slow")
-            .add_header("x-request-id", "slow-1")
-            .await;
-        assert_eq!(res.status_code(), 504);
-        assert_eq!(res.header("content-type"), "application/problem+json");
-        assert_eq!(res.json::<Value>()["code"], "timeout");
-        assert_eq!(res.header("x-request-id"), "slow-1");
-        assert_secure_headers(&res);
+    // The 30 s production default is pinned in config.rs; one second keeps the test short.
+    serve_with(
+        |c| c.request_timeout_secs = 1,
+        |srv, _ctx| async move {
+            let res = srv
+                .get("/_test/slow")
+                .add_header("x-request-id", "slow-1")
+                .await;
+            assert_eq!(res.status_code(), 504);
+            assert_eq!(res.header("content-type"), "application/problem+json");
+            assert_eq!(res.json::<Value>()["code"], "timeout");
+            assert_eq!(res.header("x-request-id"), "slow-1");
+            assert_secure_headers(&res);
 
-        let res = srv.get("/_test/panic").await;
-        assert_eq!(res.status_code(), 500);
-        assert_eq!(res.json::<Value>()["code"], "internal");
-        assert_secure_headers(&res);
-    })
+            let res = srv.get("/_test/panic").await;
+            assert_eq!(res.status_code(), 500);
+            assert_eq!(res.json::<Value>()["code"], "internal");
+            assert_secure_headers(&res);
+        },
+    )
     .await;
 }

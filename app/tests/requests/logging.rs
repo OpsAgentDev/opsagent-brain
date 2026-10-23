@@ -60,14 +60,16 @@ async fn timeout_response_is_logged_with_request_id() {
         })
         .finish();
     let _g = tracing::subscriber::set_default(sub);
-    serve(|_req, ctx| async move {
-        let srv = router_with(&ctx, |c| c.request_timeout_secs = 1);
-        let res = srv
-            .get("/_test/slow")
-            .add_header("x-request-id", "slow-log-1")
-            .await;
-        assert_eq!(res.status_code(), 504);
-    })
+    serve_with(
+        |c| c.request_timeout_secs = 1,
+        |srv, _ctx| async move {
+            let res = srv
+                .get("/_test/slow")
+                .add_header("x-request-id", "slow-log-1")
+                .await;
+            assert_eq!(res.status_code(), 504);
+        },
+    )
     .await;
     let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
     let line = out
