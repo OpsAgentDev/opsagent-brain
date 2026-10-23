@@ -43,7 +43,10 @@ mod tests {
     use opsagent_core::user::Email;
 
     use super::*;
-    use crate::{actions::uow::Repos, adapters::memory::MemStore};
+    use crate::{
+        actions::{auth::test_support::assert_one_sign_in, uow::Repos},
+        adapters::memory::MemStore,
+    };
 
     #[tokio::test]
     async fn github_sign_in_links_existing_email() {
@@ -57,6 +60,7 @@ mod tests {
             name: Some("Dev".into()),
         };
         assert_eq!(action.run(profile()).await.unwrap(), existing.id);
+        assert_one_sign_in(&store, existing.id);
         // The second sign-in matches on the GitHub id.
         assert_eq!(action.run(profile()).await.unwrap(), existing.id);
         let user = store.users().get(existing.id).await.unwrap().unwrap();

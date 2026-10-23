@@ -40,6 +40,18 @@ pub(crate) mod test_support {
         )
     }
 
+    /// Exactly one `auth.sign_in` entry, by and about `user_id`.
+    pub fn assert_one_sign_in(store: &MemStore, user_id: uuid::Uuid) {
+        let entries: Vec<_> = store
+            .audit_entries()
+            .into_iter()
+            .filter(|e| e.action == "auth.sign_in")
+            .collect();
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].actor, Some(user_id));
+        assert_eq!(entries[0].target, Some(("user", user_id.to_string())));
+    }
+
     /// The token in the last mailed link.
     pub fn last_token(mail: &CaptureMailer) -> String {
         let m = mail.sent().pop().expect("no mail sent");

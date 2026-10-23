@@ -78,7 +78,7 @@ pub fn install_adapters(ctx: &AppContext) -> Result<()> {
     ctx.shared_store.insert(settings);
     let production = ctx.environment == Environment::Production;
     ctx.shared_store.insert(mailers::from_env(production)?);
-    let limiter: Arc<dyn RateLimiter> = Arc::new(RedisRateLimiter(redis_client(ctx)?));
+    let limiter: Arc<dyn RateLimiter> = Arc::new(RedisRateLimiter::new(redis_client(ctx)?));
     ctx.shared_store.insert(limiter);
     Ok(())
 }
