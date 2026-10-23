@@ -8,8 +8,8 @@ use opsagent_secrets::Kek;
 
 use crate::{
     actions::{
-        auth, connections, findings, members, orgs, resources, runs, uow::UnitOfWork, Actions,
-        RateLimiter,
+        auth, connections, findings, integrations, members, orgs, recipients, resources, runs,
+        uow::UnitOfWork, Actions, RateLimiter,
     },
     adapters::slack::SlackClient,
     mailers::Mailer,
@@ -114,5 +114,57 @@ pub fn build_actions(d: &Deps) -> Actions {
             scan_now: runs::ScanNow::new(d.uow.clone(), full_scan.clone(), d.clock.clone()),
             full_scan,
         },
+        recipients: recipients(d),
+        integrations: integrations(d),
+    }
+}
+
+fn recipients(d: &Deps) -> recipients::Recipients {
+    let guard = Arc::new(recipients::MailGuard::new(d.uow.clone(), d.limiter.clone()));
+    recipients::Recipients {
+        list_recipients: recipients::ListRecipients::new(d.uow.clone()),
+        create_recipient: recipients::CreateRecipient::new(
+            d.uow.clone(),
+            guard.clone(),
+            d.mailer.clone(),
+            &d.settings.web_base_url,
+            d.clock.clone(),
+        ),
+        delete_recipient: recipients::DeleteRecipient::new(d.uow.clone()),
+        confirm_recipient: recipients::ConfirmRecipient::new(
+            d.uow.clone(),
+            guard.clone(),
+            d.clock.clone(),
+        ),
+        unsubscribe: recipients::Unsubscribe::new(
+            d.uow.clone(),
+            d.settings.unsubscribe_key(),
+            d.clock.clone(),
+        ),
+        mail_guard: guard,
+    }
+}
+
+fn integrations(d: &Deps) -> integrations::Integrations {
+    integrations::Integrations {
+        start_slack_install: integrations::StartSlackInstall::new(d.settings.clone()),
+        finish_slack_install: integrations::FinishSlackInstall::new(
+            d.uow.clone(),
+            d.kek.clone(),
+            d.slack.clone(),
+            d.settings.clone(),
+        ),
+        list_slack_channels: integrations::ListSlackChannels::new(
+            d.uow.clone(),
+            d.kek.clone(),
+            d.slack.clone(),
+            d.clock.clone(),
+        ),
+        list_integrations: integrations::ListIntegrations::new(d.uow.clone()),
+        delete_integration: integrations::DeleteIntegration::new(
+            d.uow.clone(),
+            d.kek.clone(),
+            d.slack.clone(),
+        ),
     }
 }

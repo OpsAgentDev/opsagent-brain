@@ -2,11 +2,9 @@
 use chrono::Utc;
 use loco_rs::app::AppContext;
 use opsagent_brain::{
+    actions::recipients::tokens::{email_hash, unsubscribe_token, unsubscribe_url},
     adapters::db::Pg,
-    services::{
-        mail_guard::email_hash,
-        recipients::{unsubscribe, unsubscribe_token, unsubscribe_url},
-    },
+    app::actions,
     settings::Settings,
     workers::deliver_weekly,
 };
@@ -229,9 +227,8 @@ async fn member_mail_ignores_an_unsubscribe_from_another_organisation() {
         .await;
         let s = Settings::get(&ctx);
         let token = unsubscribe_token(s.unsubscribe_key(), in_a);
-        unsubscribe(&ctx.db, s.unsubscribe_key(), &token)
-            .await
-            .unwrap();
+        let unsubscribe = &actions(&ctx).unwrap().recipients.unsubscribe;
+        unsubscribe.run(&token).await.unwrap();
         let u = user(&ctx, "dev@example.com").await;
         let m = Pg::new(&ctx.db)
             .add_member(w.org, u, Role::Member)

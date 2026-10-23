@@ -5,16 +5,20 @@ use axum_test::TestServer;
 use loco_rs::{app::AppContext, prelude::*};
 use opsagent_brain::{
     actions::uow::Repos,
+    actions::{
+        integrations::open_token,
+        recipients::tokens::{self as recipient_service, email_hash},
+    },
     adapters::{
         db::Pg,
         slack::{HttpSlack, SlackClient},
     },
+    app::actions,
     app::kek,
     mailers::CaptureMailer,
     models::_entities::{
         audit_events, email_suppressions, integrations, organisations, recipients, users,
     },
-    services::{integrations::open_token, mail_guard, recipients as recipient_service},
     settings::Settings,
 };
 use opsagent_core::org::{OrganisationsRepo, Role};
@@ -35,6 +39,8 @@ fn use_slack(ctx: &AppContext, slack: &MockServer) {
     ctx.shared_store.insert(s);
     let c: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(slack.uri()).unwrap());
     ctx.shared_store.insert(c);
+    // Actions hold the adapters they were built with.
+    opsagent_brain::app::install_actions(ctx).unwrap();
 }
 
 async fn start(req: &TestServer, csrf: &str, org: &str) -> axum_test::TestResponse {
@@ -92,6 +98,10 @@ async fn installed(
     let state = state_of(&start(req, &t, &org).await);
     assert_eq!(callback(req, "good", &state).await.status_code(), 302);
     (t, org)
+}
+
+fn guard(ctx: &AppContext) -> Arc<opsagent_brain::actions::recipients::MailGuard> {
+    actions(ctx).unwrap().recipients.mail_guard.clone()
 }
 
 async fn audits(ctx: &AppContext, action: &str) -> u64 {
@@ -256,7 +266,7 @@ async fn callback_seals_token_and_redirects_and_state_is_single_use() {
             .list(row.organisation_id)
             .await
             .unwrap();
-        let plain = open_token(&ctx.db, kek(&ctx).unwrap().as_ref(), &sealed[0])
+        let plain = open_token(&Pg::new(&ctx.db), kek(&ctx).unwrap().as_ref(), &sealed[0])
             .await
             .unwrap();
         assert_eq!(plain.as_str(), "xoxb-secret-token");
@@ -530,7 +540,7 @@ async fn unsubscribe_link_is_stable_and_suppresses_the_address() {
             .unwrap();
         assert!(row.unsubscribed_at.is_some());
         assert_eq!(audits(&ctx, "recipient.unsubscribe").await, 1);
-        let s = suppression(mail_guard::email_hash("EXT@example.com"))
+        let s = suppression(email_hash("EXT@example.com"))
             .one(&ctx.db)
             .await
             .unwrap()
@@ -620,7 +630,7 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
         .await;
         assert_eq!(res.status_code(), 201);
         assert_eq!(mails_to(&mail, "quiet@example.com"), 2);
-        let s = suppression(mail_guard::email_hash("quiet@example.com"))
+        let s = suppression(email_hash("quiet@example.com"))
             .one(&ctx.db)
             .await
             .unwrap()
@@ -655,7 +665,7 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
             }
         }
         assert_eq!(mails_to(&mail, "busy@example.com"), 3);
-        assert!(suppression(mail_guard::email_hash("busy@example.com"))
+        assert!(suppression(email_hash("busy@example.com"))
             .one(&ctx.db)
             .await
             .unwrap()
@@ -964,20 +974,14 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
             .await
             .unwrap()
             .unwrap();
-        assert!(
-            mail_guard::may_deliver(&ctx.db, z.id, "target@example.com", false)
-                .await
-                .unwrap()
-        );
-        let limiter = opsagent_brain::middleware::rate_limiter(&ctx);
-        assert!(!mail_guard::may_send_confirm(
-            &ctx.db,
-            limiter.as_ref(),
-            z.id,
-            "target@example.com"
-        )
-        .await
-        .unwrap());
+        assert!(guard(&ctx)
+            .may_deliver(z.id, "target@example.com", false)
+            .await
+            .unwrap());
+        assert!(!guard(&ctx)
+            .may_send_confirm(z.id, "target@example.com")
+            .await
+            .unwrap());
         // An unsubscribe then replaces the block with a permanent global row.
         let r = recipients::Entity::find()
             .filter(recipients::Column::OrganisationId.eq(z.id))
@@ -1001,11 +1005,10 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
             (row.reason.as_str(), row.expires_at),
             ("unsubscribed", None)
         );
-        assert!(
-            !mail_guard::may_deliver(&ctx.db, z.id, "target@example.com", false)
-                .await
-                .unwrap()
-        );
+        assert!(!guard(&ctx)
+            .may_deliver(z.id, "target@example.com", false)
+            .await
+            .unwrap());
     })
     .await;
 }
@@ -1056,11 +1059,10 @@ async fn six_owners_who_each_confirm_never_trip_confirm_blocked() {
             .await
             .unwrap()
             .unwrap();
-        assert!(
-            mail_guard::may_deliver(&ctx.db, org.id, "target@example.com", false)
-                .await
-                .unwrap()
-        );
+        assert!(guard(&ctx)
+            .may_deliver(org.id, "target@example.com", false)
+            .await
+            .unwrap());
     })
     .await;
 }
