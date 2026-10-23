@@ -6,7 +6,7 @@ use opsagent_core::repo::Clock;
 use opsagent_secrets::Kek;
 
 use crate::{
-    actions::{auth, uow::UnitOfWork, Actions, RateLimiter},
+    actions::{auth, findings, resources, uow::UnitOfWork, Actions, RateLimiter},
     adapters::slack::SlackClient,
     mailers::Mailer,
     settings::Settings,
@@ -37,6 +37,18 @@ pub fn build_actions(d: &Deps) -> Actions {
             redeem_magic_link: auth::RedeemMagicLink::new(d.uow.clone(), d.clock.clone()),
             sign_in_github: auth::SignInGithub::new(d.uow.clone()),
             current_user: auth::CurrentUser::new(d.uow.clone()),
+        },
+        findings: findings::Findings {
+            list_findings: findings::ListFindings::new(d.uow.clone()),
+            get_finding: findings::GetFinding::new(d.uow.clone()),
+            change_finding_status: findings::ChangeFindingStatus::new(
+                d.uow.clone(),
+                d.clock.clone(),
+            ),
+            report_explanation: findings::ReportExplanation::new(d.uow.clone()),
+        },
+        resources: resources::Resources {
+            list_resources: resources::ListResources::new(d.uow.clone()),
         },
     }
 }

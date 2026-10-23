@@ -1,21 +1,19 @@
 use axum::{extract::State, Json};
 use chrono::{DateTime, FixedOffset};
 use loco_rs::app::AppContext;
-use sea_orm::{
-    sea_query::{extension::postgres::PgExpr, Condition, Expr, LikeExpr},
-    ColumnTrait, EntityTrait, QueryFilter, QueryTrait,
-};
+use opsagent_core::resource::{self as core, ResourceKind, ResourceRow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
+use super::page::{page_request, Page, PageParams};
 use crate::{
     api_error::{ApiError, ApiQuery, Problem},
+    app::actions,
     middleware::org_scope::OrgScope,
-    models::_entities::resources,
-    services::pagination::{self, Page, PageParams},
+    models::{enum_of, enum_str},
 };
 
 #[derive(Serialize, ToSchema)]
@@ -34,18 +32,18 @@ pub struct ResourceSummary {
     pub gone_at: Option<DateTime<FixedOffset>>,
 }
 
-fn summary(r: resources::Model) -> ResourceSummary {
+fn summary(r: ResourceRow) -> ResourceSummary {
     ResourceSummary {
         id: r.id,
         connection_id: r.connection_id,
-        kind: r.kind,
+        kind: enum_str(r.kind),
         identity: r.identity,
         name: r.name,
         region: r.region,
-        tags: r.tags,
-        first_seen_at: r.first_seen_at,
-        last_seen_at: r.last_seen_at,
-        gone_at: r.gone_at,
+        tags: serde_json::json!(r.tags),
+        first_seen_at: r.first_seen_at.fixed_offset(),
+        last_seen_at: r.last_seen_at.fixed_offset(),
+        gone_at: r.gone_at.map(|t| t.fixed_offset()),
     }
 }
 
@@ -58,16 +56,6 @@ pub struct ResourceFilter {
     pub q: Option<String>,
 }
 
-/// `%q%` with LIKE wildcards in `q` taken literally (backslash is Postgres's default escape;
-/// an explicit `ESCAPE` renders as invalid SQL in sea-query 1.0).
-fn contains(q: &str) -> LikeExpr {
-    let escaped = q
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    LikeExpr::new(format!("%{escaped}%"))
-}
-
 #[utoipa::path(get, path = "/orgs/{org}/resources", tag = "resources",
     params(super::OrgPath, ResourceFilter, PageParams),
     responses((status = 200, body = Page<ResourceSummary>), (status = 404, body = Problem), (status = 422, body = Problem)))]
@@ -77,46 +65,30 @@ async fn list(
     ApiQuery(f): ApiQuery<ResourceFilter>,
     ApiQuery(p): ApiQuery<PageParams>,
 ) -> Result<Json<Page<ResourceSummary>>, ApiError> {
-    use resources::Column as C;
-    let q = resources::Entity::find()
-        .filter(C::OrganisationId.eq(scope.organisation_id))
-        .apply_if(f.connection, |q, v| q.filter(C::ConnectionId.eq(v)))
-        .apply_if(f.kind, |q, v| q.filter(C::Kind.eq(v)))
-        .apply_if(f.q, |q, v| {
-            q.filter(
-                Condition::any()
-                    .add(Expr::col(C::Name).ilike(contains(&v)))
-                    .add(Expr::col(C::Identity).ilike(contains(&v))),
-            )
-        });
-    let page = pagination::fetch(
-        &ctx.db,
-        q,
-        (C::CreatedAt, C::Id),
-        |m| (m.created_at, m.id),
-        &p,
-    )
-    .await?;
-    Ok(Json(page.map(summary)))
+    let page = page_request(&p)?;
+    // An unknown kind matches nothing, as when it was compared as stored text.
+    let kind = match f.kind.as_deref().map(enum_of::<ResourceKind>) {
+        Some(None) => {
+            return Ok(Json(Page {
+                items: vec![],
+                next_cursor: None,
+            }))
+        }
+        k => k.flatten(),
+    };
+    let filter = core::ResourceFilter {
+        connection_id: f.connection,
+        kind,
+        q: f.q,
+    };
+    let got = actions(&ctx)?
+        .resources
+        .list_resources
+        .run(scope.organisation_id, filter, page)
+        .await?;
+    Ok(Json(Page::of(got).map(summary)))
 }
 
 pub fn api() -> OpenApiRouter<AppContext> {
     OpenApiRouter::new().routes(routes!(list))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sea_orm::{DbBackend, QuerySelect};
-
-    #[test]
-    fn q_wildcards_are_escaped() {
-        // tenancy: SQL rendering only, never executed.
-        let sql = resources::Entity::find()
-            .select_only()
-            .filter(Expr::col(resources::Column::Name).ilike(contains("a%_\\'")))
-            .build(DbBackend::Postgres)
-            .to_string();
-        assert!(str::contains(&sql, r"ILIKE E'%a\\%\\_\\\\\'%'"), "{sql}");
-    }
 }

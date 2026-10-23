@@ -5,30 +5,25 @@ use axum::{
 };
 use chrono::{DateTime, FixedOffset, Utc};
 use loco_rs::app::AppContext;
-use sea_orm::{
-    prelude::Decimal, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, QueryTrait,
-};
+use opsagent_core::finding::{self as core, Severity, StoredEvidence};
+use sea_orm::prelude::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
-use super::OrgIdPath;
-use crate::{
-    api_error::{ApiError, ApiJson, ApiQuery, Problem},
-    middleware::org_scope::OrgScope,
-    models::{
-        _entities::{evidence, finding_events, findings},
-        find_in_org,
-    },
-    services::{
-        finding_actions::{self, Action},
-        pagination::{self, Page, PageParams},
-    },
+use super::{
+    page::{page_request, Page, PageParams},
+    OrgIdPath,
 };
-
-const EVENTS_SHOWN: u64 = 20;
+use crate::{
+    actions::findings::FindingAction,
+    api_error::{ApiError, ApiJson, ApiQuery, Problem},
+    app::actions,
+    middleware::org_scope::OrgScope,
+    models::{enum_of, enum_str},
+};
 
 #[derive(Serialize, ToSchema)]
 pub struct FindingSummary {
@@ -94,35 +89,60 @@ pub struct FindingDetail {
     pub explanation: Option<Value>,
 }
 
-fn summary(f: findings::Model) -> FindingSummary {
+fn summary(f: core::Finding) -> FindingSummary {
     FindingSummary {
         id: f.id,
         connection_id: f.connection_id,
-        check_id: f.check_id,
-        resource_identity: f.resource_identity,
-        variant: f.variant,
-        severity: f.severity,
+        check_id: f.key.check_id,
+        resource_identity: f.key.resource_identity,
+        variant: f.key.variant,
+        severity: enum_str(f.severity),
         status: f.status,
         title: f.title,
         cost_monthly_usd: f.cost_monthly_usd,
-        created_at: f.created_at,
-        updated_at: f.updated_at,
+        created_at: f.created_at.fixed_offset(),
+        updated_at: f.updated_at.fixed_offset(),
     }
 }
 
-fn full(f: findings::Model) -> Finding {
+fn full(f: core::Finding) -> Finding {
     Finding {
         summary: f.summary.clone(),
         next_step: f.next_step.clone(),
         accepted_reason: f.accepted_reason.clone(),
-        accepted_until: f.accepted_until,
-        snoozed_until: f.snoozed_until,
-        resolved_at: f.resolved_at,
+        accepted_until: f.accepted_until.map(|t| t.fixed_offset()),
+        snoozed_until: f.snoozed_until.map(|t| t.fixed_offset()),
+        resolved_at: f.resolved_at.map(|t| t.fixed_offset()),
         resolved_reason: f.resolved_reason.clone(),
         first_seen_run_id: f.first_seen_run_id,
         last_seen_run_id: f.last_seen_run_id,
         finding: summary(f),
     }
+}
+
+fn evidence_item(e: StoredEvidence) -> EvidenceItem {
+    EvidenceItem {
+        source: e.source,
+        excerpt: e.excerpt,
+        redacted: e.redacted,
+        run_id: e.run_id,
+        created_at: e.created_at.fixed_offset(),
+    }
+}
+
+fn event(e: core::FindingEvent) -> FindingEvent {
+    FindingEvent {
+        event_type: e.kind,
+        from_severity: e.from_severity.map(enum_str),
+        to_severity: e.to_severity.map(enum_str),
+        run_id: e.run_id,
+        created_at: e.at.fixed_offset(),
+    }
+}
+
+/// A malformed id is the same 404 as an unknown one or another org's.
+fn finding_id(id: &str) -> Result<Uuid, ApiError> {
+    id.parse().map_err(|_| ApiError::not_found())
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -144,28 +164,29 @@ async fn list(
     ApiQuery(f): ApiQuery<FindingFilter>,
     ApiQuery(p): ApiQuery<PageParams>,
 ) -> Result<Json<Page<FindingSummary>>, ApiError> {
-    use findings::Column as C;
-    let q = findings::Entity::find()
-        .filter(C::OrganisationId.eq(scope.organisation_id))
-        .apply_if(f.connection, |q, v| q.filter(C::ConnectionId.eq(v)))
-        .apply_if(f.status, |q, v| q.filter(C::Status.eq(v)))
-        .apply_if(f.severity, |q, v| q.filter(C::Severity.eq(v)))
-        .apply_if(f.check, |q, v| q.filter(C::CheckId.eq(v)));
-    let page = pagination::fetch(
-        &ctx.db,
-        q,
-        (C::CreatedAt, C::Id),
-        |m| (m.created_at, m.id),
-        &p,
-    )
-    .await?;
-    Ok(Json(page.map(summary)))
-}
-
-/// Org-filtered: another org's finding is the same 404 as an unknown id.
-async fn find(ctx: &AppContext, scope: &OrgScope, id: &str) -> Result<findings::Model, ApiError> {
-    let org = findings::Column::OrganisationId;
-    find_in_org::<findings::Entity>(&ctx.db, org, scope.organisation_id, id).await
+    let page = page_request(&p)?;
+    // An unknown severity matches nothing, as when it was compared as stored text.
+    let severity = match f.severity.as_deref().map(enum_of::<Severity>) {
+        Some(None) => {
+            return Ok(Json(Page {
+                items: vec![],
+                next_cursor: None,
+            }))
+        }
+        s => s.flatten(),
+    };
+    let filter = core::FindingFilter {
+        connection_id: f.connection,
+        status: f.status,
+        severity,
+        check_id: f.check,
+    };
+    let got = actions(&ctx)?
+        .findings
+        .list_findings
+        .run(scope.organisation_id, filter, page)
+        .await?;
+    Ok(Json(Page::of(got).map(summary)))
 }
 
 #[utoipa::path(get, path = "/orgs/{org}/findings/{id}", tag = "findings", params(OrgIdPath),
@@ -175,42 +196,15 @@ async fn show(
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<FindingDetail>, ApiError> {
-    let f = find(&ctx, &scope, &id).await?;
-    let evidence = evidence::Entity::find()
-        .filter(evidence::Column::FindingId.eq(f.id))
-        .filter(evidence::Column::ExpiresAt.gt(Utc::now()))
-        .order_by_desc(evidence::Column::CreatedAt)
-        .all(&ctx.db)
-        .await?
-        .into_iter()
-        .map(|e| EvidenceItem {
-            source: e.source,
-            excerpt: e.excerpt,
-            redacted: e.redacted,
-            run_id: e.run_id,
-            created_at: e.created_at,
-        })
-        .collect();
-    let events = finding_events::Entity::find()
-        .filter(finding_events::Column::FindingId.eq(f.id))
-        .order_by_desc(finding_events::Column::CreatedAt)
-        .order_by_desc(finding_events::Column::Id)
-        .limit(EVENTS_SHOWN)
-        .all(&ctx.db)
-        .await?
-        .into_iter()
-        .map(|e| FindingEvent {
-            event_type: e.event_type,
-            from_severity: e.from_severity,
-            to_severity: e.to_severity,
-            run_id: e.run_id,
-            created_at: e.created_at,
-        })
-        .collect();
+    let d = actions(&ctx)?
+        .findings
+        .get_finding
+        .run(scope.organisation_id, finding_id(&id)?)
+        .await?;
     Ok(Json(FindingDetail {
-        finding: full(f),
-        evidence,
-        events,
+        finding: full(d.finding),
+        evidence: d.evidence.into_iter().map(evidence_item).collect(),
+        events: d.events.into_iter().map(event).collect(),
         explanation: None,
     }))
 }
@@ -219,10 +213,14 @@ async fn act(
     ctx: &AppContext,
     scope: &OrgScope,
     id: &str,
-    action: Action,
+    action: FindingAction,
 ) -> Result<Json<Finding>, ApiError> {
-    let f = find(ctx, scope, id).await?;
-    let updated = finding_actions::apply(&ctx.db, &f, scope.user_id, action, Utc::now()).await?;
+    let id = finding_id(id)?;
+    let updated = actions(ctx)?
+        .findings
+        .change_finding_status
+        .run(scope.organisation_id, scope.user_id, id, action)
+        .await?;
     Ok(Json(full(updated)))
 }
 
@@ -243,7 +241,7 @@ async fn accept(
     Path((_, id)): Path<(String, String)>,
     ApiJson(b): ApiJson<AcceptBody>,
 ) -> Result<Json<Finding>, ApiError> {
-    let action = Action::Accept {
+    let action = FindingAction::Accept {
         reason: b.reason,
         until: b.until,
     };
@@ -265,7 +263,7 @@ async fn snooze(
     Path((_, id)): Path<(String, String)>,
     ApiJson(b): ApiJson<SnoozeBody>,
 ) -> Result<Json<Finding>, ApiError> {
-    act(&ctx, &scope, &id, Action::Snooze { until: b.until }).await
+    act(&ctx, &scope, &id, FindingAction::Snooze { until: b.until }).await
 }
 
 #[utoipa::path(post, path = "/orgs/{org}/findings/{id}/reopen", tag = "findings", params(OrgIdPath),
@@ -275,7 +273,7 @@ async fn reopen(
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Finding>, ApiError> {
-    act(&ctx, &scope, &id, Action::Reopen).await
+    act(&ctx, &scope, &id, FindingAction::Reopen).await
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -293,8 +291,16 @@ async fn report_explanation(
     Path((_, id)): Path<(String, String)>,
     ApiJson(b): ApiJson<ExplanationReport>,
 ) -> Result<StatusCode, ApiError> {
-    let f = find(&ctx, &scope, &id).await?;
-    finding_actions::report_explanation(&ctx.db, &f, scope.user_id, &b.note).await?;
+    actions(&ctx)?
+        .findings
+        .report_explanation
+        .run(
+            scope.organisation_id,
+            scope.user_id,
+            finding_id(&id)?,
+            &b.note,
+        )
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

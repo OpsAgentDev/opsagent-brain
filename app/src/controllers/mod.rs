@@ -7,6 +7,7 @@ pub mod integrations;
 pub mod members;
 pub mod openapi;
 pub mod orgs;
+pub mod page;
 pub mod recipients;
 pub mod resources;
 pub mod runs;

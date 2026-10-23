@@ -1,6 +1,7 @@
 //! Findings: the dedup key, drafts checks emit, stored findings and their repository.
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -83,14 +84,30 @@ pub struct Finding {
     pub severity: Severity,
     pub status: String,
     pub title: String,
+    pub summary: Option<String>,
+    pub next_step: Option<String>,
+    pub cost_monthly_usd: Option<Decimal>,
     pub accepted_reason: Option<String>,
     pub accepted_until: Option<DateTime<Utc>>,
     pub snoozed_until: Option<DateTime<Utc>>,
     pub first_seen_run_id: Option<Uuid>,
     pub last_seen_run_id: Option<Uuid>,
     pub resolved_at: Option<DateTime<Utc>>,
+    /// `resource_gone` or `check_passed` once resolved.
+    pub resolved_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Evidence as stored for one run: redacted before storage, kept until it expires.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredEvidence {
+    pub source: String,
+    pub excerpt: String,
+    /// Whether redaction replaced anything.
+    pub redacted: bool,
+    pub run_id: Uuid,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -147,7 +164,11 @@ pub trait FindingsRepo: Send + Sync {
         finding_id: Uuid,
     ) -> RepoResult<Vec<FindingEvent>>;
     /// Unexpired evidence, newest first.
-    async fn evidence(&self, organisation_id: Uuid, finding_id: Uuid) -> RepoResult<Vec<Evidence>>;
+    async fn evidence(
+        &self,
+        organisation_id: Uuid,
+        finding_id: Uuid,
+    ) -> RepoResult<Vec<StoredEvidence>>;
     /// `NotFound` for an unknown id, `Conflict("finding_state_changed")` when the status moved.
     async fn change_status(
         &self,

@@ -15,11 +15,9 @@ use super::{OrgIdPath, OrgPath};
 use crate::{
     adapters::db::Pg,
     api_error::{ApiError, ApiJson, ApiQuery, Problem},
+    controllers::page::{page_request, Page, PageParams},
     middleware::{mailer, org_scope::OrgScope, rate_limiter},
-    services::{
-        pagination::{self, Page, PageParams},
-        recipients as service,
-    },
+    services::recipients as service,
     settings::Settings,
     workers::common::redis_client,
 };
@@ -58,7 +56,7 @@ async fn list(
     ApiQuery(p): ApiQuery<PageParams>,
 ) -> Result<Json<Page<Recipient>>, ApiError> {
     let got = Pg::new(&ctx.db)
-        .list(scope.organisation_id, pagination::request(&p)?)
+        .list(scope.organisation_id, page_request(&p)?)
         .await?;
     Ok(Json(Page::of(got).map(view)))
 }

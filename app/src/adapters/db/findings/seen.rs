@@ -16,8 +16,8 @@ use super::{exec, Target};
 use crate::{
     adapters::db::db_err,
     adapters::db::ledger_storage::stmt,
+    adapters::redact::redact,
     models::{_entities::findings, enum_of, enum_str},
-    services::redact::redact,
 };
 
 const FLAP_WINDOW: Duration = Duration::hours(24);

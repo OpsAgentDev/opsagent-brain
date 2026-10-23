@@ -7,6 +7,7 @@ use opsagent_core::{
     },
     org::NewOrganisation,
     repo::{PageRequest, RepoError},
+    resource::{Provider, Resource, ResourceKind},
 };
 use uuid::Uuid;
 
@@ -211,6 +212,49 @@ contract_suite! {
         let e = s.findings().change_status(other, id, snooze(id, "open")).await.unwrap_err();
         assert!(matches!(e, RepoError::NotFound), "{e:?}");
         assert_eq!(s.findings().get(org, id).await.unwrap().unwrap().status, "open");
+    }
+
+    async fn view_fields_and_stored_evidence_round_trip(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let mut d = draft(conn, "no_mfa", "u", Severity::High);
+        d.cost_monthly_usd = Some(12.34);
+        d.evidence[0].excerpt = "Authorization: Bearer abc.def".into();
+        let run = scan(s, seed, org, conn, &[d]).await;
+        let id = s.findings().list(org, FindingFilter::default(), all()).await.unwrap().items[0].id;
+        let f = s.findings().get(org, id).await.unwrap().unwrap();
+        assert_eq!((f.summary.as_deref(), f.next_step.as_deref()), (Some("s"), Some("n")));
+        assert_eq!(f.cost_monthly_usd.map(|c| c.to_string()).as_deref(), Some("12.34"));
+        assert_eq!(f.resolved_reason, None);
+        let ev = s.findings().evidence(org, id).await.unwrap();
+        assert_eq!((ev[0].run_id, ev[0].redacted), (run, true));
+        assert_eq!(ev[0].excerpt, "Authorization: Bearer [redacted:token]");
+        assert_eq!(ev[0].source, "src");
+        let r2 = scan(s, seed, org, conn, &[]).await;
+        s.findings().resolve_unseen(org, conn, r2, &[], t(1)).await.unwrap();
+        let f = s.findings().get(org, id).await.unwrap().unwrap();
+        assert_eq!(f.resolved_reason.as_deref(), Some("check_passed"));
+    }
+
+    async fn resolve_unseen_of_a_gone_resource_says_resource_gone(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let run = scan(s, seed, org, conn, &[draft(conn, "no_mfa", "u", Severity::High)]).await;
+        let resource = Resource {
+            provider: Provider::Fake,
+            account: "1".into(),
+            region: "eu-west-1".into(),
+            kind: ResourceKind::Identity,
+            identity: "u".into(),
+            name: "u".into(),
+            tags: Default::default(),
+            attributes: serde_json::json!({}),
+            observed_at: t(0),
+        };
+        s.resources().upsert_chunk(org, conn, run, &[resource], t(0)).await.unwrap();
+        seed.resource_gone(org, "u").await;
+        let r2 = scan(s, seed, org, conn, &[]).await;
+        assert_eq!(s.findings().resolve_unseen(org, conn, r2, &[], t(1)).await.unwrap(), 1);
+        let f = s.findings().list(org, FindingFilter::default(), all()).await.unwrap().items.remove(0);
+        assert_eq!((f.status.as_str(), f.resolved_reason.as_deref()), ("resolved", Some("resource_gone")));
     }
 
     async fn posture_rows_counts_open_only(s, seed) {
