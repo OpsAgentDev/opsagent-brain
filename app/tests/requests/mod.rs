@@ -9,4 +9,5 @@ mod openapi;
 mod orgs;
 mod resources;
 mod runs;
+mod shell_parity;
 pub mod support;
