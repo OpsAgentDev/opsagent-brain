@@ -119,4 +119,42 @@ pub trait ResourcesRepo: Send + Sync {
         resources: &[Resource],
         now: DateTime<Utc>,
     ) -> RepoResult<bool>;
+    /// Marks the connection's resources without a history row for `run_id` gone at `now`
+    /// (after a complete inventory); returns how many.
+    async fn mark_unseen_gone(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<u64>;
+    /// The resources observed in `run_id` as the checks see them (attributes as of the run),
+    /// ordered by identity. Provider and account are not stored per row; the caller names them.
+    async fn observed(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        provider: Provider,
+        account: &str,
+    ) -> RepoResult<Vec<Resource>>;
+    /// Replaces the run's inventory call counts recorded for the chunk `service@region` with
+    /// `calls` (a re-run chunk restates its counts). tenancy: call stats belong to the run.
+    async fn replace_inventory_calls(
+        &self,
+        run_id: Uuid,
+        provider: &str,
+        service: &str,
+        region: &str,
+        calls: &[CallCount],
+    ) -> RepoResult<()>;
+}
+
+/// Inventory calls of one chunk by service, region and outcome (`ok` or `error`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallCount {
+    pub service: String,
+    pub region: String,
+    pub outcome: &'static str,
+    pub count: i64,
 }

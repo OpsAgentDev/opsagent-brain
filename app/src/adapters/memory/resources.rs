@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     repo::{Cursor, PageOf, PageRequest, RepoResult},
-    resource::{Resource, ResourceFilter, ResourceRow, ResourcesRepo},
+    resource::{CallCount, Provider, Resource, ResourceFilter, ResourceRow, ResourcesRepo},
 };
 use uuid::Uuid;
 
@@ -138,5 +138,73 @@ impl ResourcesRepo for MemStore {
             }
         }
         Ok(changed)
+    }
+
+    async fn mark_unseen_gone(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<u64> {
+        let mut n = 0;
+        for r in self.state().resources.iter_mut() {
+            if r.organisation_id == organisation_id
+                && r.row.connection_id == connection_id
+                && r.row.gone_at.is_none()
+                && !r.history.contains(&run_id)
+            {
+                r.row.gone_at = Some(now);
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
+    // shortcut: the fake keeps the latest attributes only, so it answers for the latest run;
+    // keep history attributes per run if a test reads an older run.
+    async fn observed(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        provider: Provider,
+        account: &str,
+    ) -> RepoResult<Vec<Resource>> {
+        let mut out: Vec<Resource> = self
+            .state()
+            .resources
+            .iter()
+            .filter(|r| {
+                r.organisation_id == organisation_id
+                    && r.row.connection_id == connection_id
+                    && r.history.contains(&run_id)
+            })
+            .map(|r| Resource {
+                provider,
+                account: account.to_owned(),
+                region: r.row.region.clone().unwrap_or_default(),
+                kind: r.row.kind,
+                identity: r.row.identity.clone(),
+                name: r.row.name.clone().unwrap_or_default(),
+                tags: r.row.tags.clone(),
+                attributes: r.attributes.clone(),
+                observed_at: r.row.last_seen_at,
+            })
+            .collect();
+        out.sort_by(|a, b| a.identity.cmp(&b.identity));
+        Ok(out)
+    }
+
+    /// Nothing reads call counts through the trait, so the fake keeps none.
+    async fn replace_inventory_calls(
+        &self,
+        _run_id: Uuid,
+        _provider: &str,
+        _service: &str,
+        _region: &str,
+        _calls: &[CallCount],
+    ) -> RepoResult<()> {
+        Ok(())
     }
 }

@@ -1,12 +1,13 @@
-//! The lifecycle of findings seen in a run (PRD 7.4): open, seen, escalate, resolve, reopen,
-//! flap. Re-applying the same run is a no-op: findings already stamped with the run are skipped
-//! and events are unique per (run, finding, type). Moved unchanged from
-//! `services::finding_lifecycle`.
+//! Persisting the lifecycle of findings seen in a run (PRD 7.4): open, seen, escalate, resolve,
+//! reopen, flap; the transition rules are `opsagent_core::lifecycle`. Re-applying the same run
+//! is a no-op: findings already stamped with the run are skipped and events are unique per
+//! (run, finding, type).
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
 use opsagent_core::{
     finding::{dedupe, FindingDraft, Severity},
+    lifecycle::{Next, RecentEvents, SeenFinding, FLAP_SPAN},
     repo::RepoResult,
 };
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
@@ -20,12 +21,7 @@ use crate::{
     models::{_entities::findings, enum_of, enum_str},
 };
 
-const FLAP_WINDOW: Duration = Duration::hours(24);
-const FLAP_SPAN: Duration = Duration::days(7);
-const FLAP_TIMES: i32 = 3;
 const EVIDENCE_TTL: Duration = Duration::days(90);
-/// Consecutive seen runs after which a flapping finding counts as stable again.
-const STABLE_RUNS: i32 = 7;
 
 type Key = (String, String, String);
 
@@ -108,68 +104,30 @@ async fn insert(
     Ok(id)
 }
 
-/// A seen finding's next state: status, events to write, flap counter, stable-run counter.
-struct Next {
-    status: String,
-    events: Vec<&'static str>,
-    flap_count: i32,
-    stable: i32,
-}
-
-/// The lifecycle rules for a finding seen again in this run (PRD 7.4).
+/// The stored state as the PRD 7.4 rules read it, plus the recent events they need.
 async fn next_state(
     db: &impl ConnectionTrait,
     f: &findings::Model,
     now: DateTime<Utc>,
 ) -> RepoResult<Next> {
-    let expired = |until: Option<sea_orm::prelude::DateTimeWithTimeZone>| {
-        until.is_some_and(|u| u.with_timezone(&Utc) <= now)
+    let utc = |t: Option<sea_orm::prelude::DateTimeWithTimeZone>| t.map(|t| t.with_timezone(&Utc));
+    let seen = SeenFinding {
+        status: &f.status,
+        flap_count: f.flap_count,
+        stable_runs: f.stable_runs,
+        accepted_until: utc(f.accepted_until),
+        snoozed_until: utc(f.snoozed_until),
+        resolved_at: utc(f.resolved_at),
     };
-    let next = |status: &str, events: Vec<&'static str>, flap_count| Next {
-        status: status.into(),
-        events,
-        flap_count,
-        stable: f.stable_runs + 1,
+    let recent = if seen.reappears() {
+        RecentEvents {
+            flapping: count_events(db, f.id, "flapping", now).await?,
+            reopened: count_events(db, f.id, "reopened", now).await?,
+        }
+    } else {
+        RecentEvents::default()
     };
-    Ok(match f.status.as_str() {
-        "open" => next("open", vec!["seen"], f.flap_count),
-        "flapping" if f.stable_runs + 1 >= STABLE_RUNS => next("open", vec!["reopened"], 0),
-        // Reported once when it started flapping; afterwards only counters move.
-        "flapping" => next("flapping", vec![], f.flap_count),
-        "accepted" if expired(f.accepted_until) => next("open", vec!["reopened"], f.flap_count),
-        "snoozed" if expired(f.snoozed_until) => next("open", vec!["reopened"], f.flap_count),
-        "accepted" | "snoozed" => next(&f.status, vec![], f.flap_count),
-        _ => reappeared(db, f, now).await?,
-    })
-}
-
-/// A resolved finding is back: reopened, or flapping once it came back quickly too often.
-async fn reappeared(
-    db: &impl ConnectionTrait,
-    f: &findings::Model,
-    now: DateTime<Utc>,
-) -> RepoResult<Next> {
-    let quick = f
-        .resolved_at
-        .is_some_and(|r| now - r.with_timezone(&Utc) <= FLAP_WINDOW);
-    let flap_count = f.flap_count + i32::from(quick);
-    let (status, events) =
-        if flap_count >= FLAP_TIMES && count_events(db, f.id, "flapping", now).await? > 0 {
-            ("flapping", vec![])
-        } else if quick
-            && flap_count >= FLAP_TIMES
-            && count_events(db, f.id, "reopened", now).await? + 1 >= i64::from(FLAP_TIMES)
-        {
-            ("flapping", vec!["reopened", "flapping"])
-        } else {
-            ("open", vec!["reopened"])
-        };
-    Ok(Next {
-        status: status.into(),
-        events,
-        flap_count,
-        stable: 1,
-    })
+    Ok(seen.next(recent, now))
 }
 
 async fn seen_again(

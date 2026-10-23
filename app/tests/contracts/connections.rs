@@ -83,6 +83,13 @@ contract_suite! {
         assert_eq!(repo.load_creds(o, c.id).await.unwrap(), sealed(1));
     }
 
+    async fn by_id_unscoped_finds_the_connection_of_any_org(s) {
+        let c = connection(s, org(s).await, "Prod").await;
+        let repo = s.connections();
+        assert_eq!(repo.by_id_unscoped(c.id).await.unwrap(), Some(c));
+        assert!(repo.by_id_unscoped(Uuid::new_v4()).await.unwrap().is_none());
+    }
+
     async fn update_patches_given_fields_and_list_is_oldest_first(s) {
         let o = org(s).await;
         let (a, b) = (connection(s, o, "A").await, connection(s, o, "B").await);

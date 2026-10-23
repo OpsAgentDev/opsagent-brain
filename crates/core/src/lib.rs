@@ -2,6 +2,7 @@
 pub mod audit;
 pub mod connection;
 pub mod finding;
+pub mod lifecycle;
 pub mod org;
 pub mod repo;
 pub mod resource;

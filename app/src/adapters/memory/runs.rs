@@ -155,6 +155,10 @@ impl Storage for MemStore {
         self.with_run(id, |r| Ok(r.row.clone()))
     }
 
+    async fn hold_fence(&self, id: Uuid, fence: u64) -> Result<()> {
+        self.with_run(id, |r| r.fenced(fence).map(|_| ()))
+    }
+
     async fn bump_fence(&self, id: Uuid) -> Result<u64> {
         self.with_run(id, |r| {
             r.row.fence += 1;

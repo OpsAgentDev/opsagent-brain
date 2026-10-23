@@ -59,4 +59,11 @@ impl AuditEntry {
 #[async_trait]
 pub trait AuditLog: Send + Sync {
     async fn record(&self, e: AuditEntry) -> RepoResult<()>;
+    /// Whether the organisation already has an `action` entry whose metadata names `run_id`.
+    async fn recorded_for_run(
+        &self,
+        organisation_id: Uuid,
+        action: &str,
+        run_id: Uuid,
+    ) -> RepoResult<bool>;
 }

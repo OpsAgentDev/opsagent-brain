@@ -3,10 +3,10 @@ use opsagent_core::{
     audit::{AuditEntry, AuditLog},
     repo::RepoResult,
 };
-use sea_orm::{ActiveModelTrait, Set};
+use sea_orm::{ActiveModelTrait, ConnectionTrait, Set};
 use uuid::Uuid;
 
-use super::{db_err, Conn, Pg};
+use super::{db_err, ledger_storage::stmt, Conn, Pg};
 use crate::models::{_entities::audit_events, now};
 
 #[async_trait]
@@ -34,5 +34,27 @@ impl<C: Conn> AuditLog for Pg<C> {
         .await
         .map(|_| ())
         .map_err(db_err)
+    }
+
+    async fn recorded_for_run(
+        &self,
+        organisation_id: Uuid,
+        action: &str,
+        run_id: Uuid,
+    ) -> RepoResult<bool> {
+        let row = self
+            .db()
+            .query_one_raw(stmt(
+                "SELECT 1 FROM audit_events WHERE organisation_id = $1 \
+                 AND action = $2 AND metadata->>'run_id' = $3",
+                vec![
+                    organisation_id.into(),
+                    action.into(),
+                    run_id.to_string().into(),
+                ],
+            ))
+            .await
+            .map_err(db_err)?;
+        Ok(row.is_some())
     }
 }

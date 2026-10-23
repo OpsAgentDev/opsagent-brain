@@ -202,6 +202,9 @@ impl Storage for Faulty {
     async fn bump_fence(&self, id: uuid::Uuid) -> opsagent_ledger::Result<u64> {
         self.0.bump_fence(id).await
     }
+    async fn hold_fence(&self, id: uuid::Uuid, f: u64) -> opsagent_ledger::Result<()> {
+        self.0.hold_fence(id, f).await
+    }
     async fn write_checkpoint(
         &self,
         id: uuid::Uuid,

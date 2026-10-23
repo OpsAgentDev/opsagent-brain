@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use opsagent_connectors::Registry;
 use opsagent_core::repo::Clock;
-use opsagent_ledger::Queue;
+use opsagent_ledger::{redis, Queue};
 use opsagent_secrets::Kek;
 
 use crate::{
@@ -27,10 +27,19 @@ pub struct Deps {
     pub clock: Arc<dyn Clock>,
     pub settings: Settings,
     pub queue: Arc<dyn Queue>,
+    /// Leases and per-connection claims (`opsagent_ledger::lease`).
+    pub ledger_redis: redis::Client,
 }
 
 pub fn build_actions(d: &Deps) -> Actions {
     let dispatcher = Arc::new(runs::RunDispatcher::new(d.uow.clone(), d.queue.clone()));
+    let full_scan = runs::FullScan::new(
+        d.uow.clone(),
+        d.ledger_redis.clone(),
+        d.kek.clone(),
+        d.registry.clone(),
+        d.clock.clone(),
+    );
     Actions {
         auth: auth::Auth {
             request_magic_link: auth::RequestMagicLink::new(
@@ -102,6 +111,8 @@ pub fn build_actions(d: &Deps) -> Actions {
             list_runs: runs::ListRuns::new(d.uow.clone()),
             get_run: runs::GetRun::new(d.uow.clone()),
             dispatcher,
+            scan_now: runs::ScanNow::new(d.uow.clone(), full_scan.clone(), d.clock.clone()),
+            full_scan,
         },
     }
 }

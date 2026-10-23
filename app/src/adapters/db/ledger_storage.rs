@@ -123,6 +123,10 @@ impl<C: Conn> Storage for Pg<C> {
             .ok_or(LedgerError::NotFound)?)
     }
 
+    async fn hold_fence(&self, id: Uuid, fence: u64) -> Result<()> {
+        hold_fence(self.db(), id, fence).await
+    }
+
     async fn bump_fence(&self, id: Uuid) -> Result<u64> {
         let r = self
             .one(

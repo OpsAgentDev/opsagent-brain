@@ -143,4 +143,12 @@ impl ConnectionsRepo for MemStore {
         self.state().connection_mut(organisation_id, id)?.1 = creds;
         Ok(())
     }
+
+    async fn by_id_unscoped(&self, id: Uuid) -> RepoResult<Option<Connection>> {
+        let s = self.state();
+        Ok(s.connections
+            .iter()
+            .find(|(c, _)| c.id == id)
+            .map(|(c, _)| c.clone()))
+    }
 }

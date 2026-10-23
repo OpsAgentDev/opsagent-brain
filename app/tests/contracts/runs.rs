@@ -33,6 +33,31 @@ fn page(limit: u64) -> PageRequest {
 }
 
 contract_suite! {
+    async fn hold_fence_only_at_the_current_fence(s) {
+        let o = org(s).await;
+        let c = connection(s, o, "Prod").await;
+        let id = run(s, key(o, c.id, "full_scan", t0())).await;
+        let fence = s.ledger().bump_fence(id).await.unwrap();
+        s.ledger().hold_fence(id, fence).await.unwrap();
+        let err = s.ledger().hold_fence(id, fence - 1).await.unwrap_err();
+        assert!(matches!(err, opsagent_ledger::LedgerError::StaleFence), "{err:?}");
+    }
+
+    async fn audit_recorded_for_run_matches_org_action_and_run(s) {
+        use opsagent_core::audit::AuditEntry;
+        let (o, other) = (org(s).await, org(s).await);
+        let run_id = Uuid::new_v4();
+        let action = "connection.scan_started";
+        assert!(!s.audit().recorded_for_run(o, action, run_id).await.unwrap());
+        let e = AuditEntry::system(o, action, ("connection", "c".into()), "success")
+            .with_meta(serde_json::json!({ "run_id": run_id }));
+        s.audit().record(e).await.unwrap();
+        assert!(s.audit().recorded_for_run(o, action, run_id).await.unwrap());
+        assert!(!s.audit().recorded_for_run(other, action, run_id).await.unwrap());
+        assert!(!s.audit().recorded_for_run(o, "other", run_id).await.unwrap());
+        assert!(!s.audit().recorded_for_run(o, action, Uuid::new_v4()).await.unwrap());
+    }
+
     async fn list_pages_newest_first_with_cursor(s) {
         let o = org(s).await;
         let c = connection(s, o, "Prod").await.id;

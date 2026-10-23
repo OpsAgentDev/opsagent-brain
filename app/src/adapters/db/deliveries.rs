@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    connection::ConnectionStatus,
-    finding::{FindingKey, Severity},
+    connection::{ConnectionStatus, Posture},
+    finding::{FindingKey, FindingsRepo, Severity},
     repo::{PageOf, PageRequest, RepoError, RepoResult},
 };
 use opsagent_deliver::{
@@ -49,27 +49,22 @@ fn get<T: sea_orm::TryGetable>(r: &QueryResult, col: &str) -> RepoResult<T> {
 }
 
 impl<C: Conn> Pg<C> {
-    // shortcut: posture formula duplicated from services::posture; Task 9 replaces both with
-    // Posture::from_rows.
-    /// Open-finding counts by severity (open and flapping) and the posture score (checks.md:
-    /// `max(0, 100 - sum of weight(open))`, flapping excluded).
+    /// Open-finding counts by severity (open and flapping) and the posture score
+    /// (`Posture::from_rows`, flapping excluded).
     async fn counts_and_score(&self, org: Uuid, id: Uuid) -> RepoResult<(SeverityCounts, f64)> {
         let rows = self
             .db()
             .query_all_raw(stmt(
-                "SELECT severity, count(*) AS n, count(*) FILTER (WHERE status = 'open') AS open \
-                 FROM findings WHERE organisation_id = $1 AND connection_id = $2 \
-                 AND status IN ('open','flapping') GROUP BY severity",
+                "SELECT severity, count(*) AS n FROM findings WHERE organisation_id = $1 \
+                 AND connection_id = $2 AND status IN ('open','flapping') GROUP BY severity",
                 vec![org.into(), id.into()],
             ))
             .await
             .map_err(db_err)?;
-        let (mut counts, mut sum) = (SeverityCounts::default(), 0f32);
+        let mut counts = SeverityCounts::default();
         for r in rows {
             let n = u32::try_from(get::<i64>(&r, "n")?).unwrap_or(u32::MAX);
-            let severity = enum_of::<Severity>(&get::<String>(&r, "severity")?);
-            sum += severity.map_or(0.0, Severity::weight) * get::<i64>(&r, "open")? as f32;
-            match severity {
+            match enum_of::<Severity>(&get::<String>(&r, "severity")?) {
                 Some(Severity::Critical) => counts.critical = n,
                 Some(Severity::High) => counts.high = n,
                 Some(Severity::Medium) => counts.medium = n,
@@ -78,7 +73,8 @@ impl<C: Conn> Pg<C> {
                 None => {}
             }
         }
-        Ok((counts, f64::from((100.0 - sum).max(0.0))))
+        let score = Posture::from_rows(&self.posture_rows(org, id).await?).score;
+        Ok((counts, score))
     }
 }
 
