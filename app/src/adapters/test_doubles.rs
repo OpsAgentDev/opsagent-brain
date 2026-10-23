@@ -1,14 +1,11 @@
-//! Test-support adapters: swappable mailer and Slack cells, and a queue that runs each job
-//! inline as it is enqueued (what Loco's `ForegroundBlocking` mode did for tests).
-use std::sync::{Arc, OnceLock, RwLock, Weak};
+//! Test-support adapters: swappable mailer and Slack cells.
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use opsagent_ledger::{LedgerError, NewJob, Queue};
 
 use crate::{
     adapters::slack::{Channel, Install, SlackClient, SlackError},
     mailers::{Mail, Mailer},
-    state::{AppState, Inner},
 };
 
 /// An adapter the test swaps after boot; actions hold the cell, so they see the swap.
@@ -73,27 +70,4 @@ impl SlackClient for Swappable<dyn SlackClient> {
 pub struct Swaps {
     pub mailer: Arc<Swappable<dyn Mailer>>,
     pub slack: Arc<Swappable<dyn SlackClient>>,
-}
-
-/// Runs each job inline on the state it is bound to, returning the job's error as the
-/// enqueue error. Holds the state weakly: a strong reference would be a cycle
-/// (state -> actions -> dispatcher -> queue -> state) and leak every test's pools.
-#[derive(Default)]
-pub struct InlineQueue(OnceLock<Weak<Inner>>);
-
-impl InlineQueue {
-    pub fn bind(&self, state: &AppState) {
-        let _ = self.0.set(Arc::downgrade(&state.0));
-    }
-}
-
-#[async_trait]
-impl Queue for InlineQueue {
-    async fn enqueue(&self, job: NewJob) -> opsagent_ledger::Result<()> {
-        let state = self.0.get().and_then(Weak::upgrade);
-        let state = state.ok_or_else(|| LedgerError::Storage("queue not bound".into()))?;
-        crate::workers::perform(&state.actions, job.kind, job.run_id)
-            .await
-            .map_err(|e| LedgerError::Storage(e.to_string()))
-    }
 }

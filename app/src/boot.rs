@@ -17,12 +17,16 @@ use crate::{
     },
     adapters::{
         db::Pg,
+        pg_queue::PgQueue,
         rate_limiter::RedisRateLimiter,
         slack::{HttpSlack, SlackClient},
     },
     config::{Config, ConnectorMode},
     controllers,
     error::{AppError, AppResult},
+    jobs::{
+        DeliverBriefingJob, DeliverWeeklyJob, FullScanJob, JobHandler, VerifyJob, WorkerRunner,
+    },
     mailers::{self, Mailer},
     middleware,
     state::{AppState, Inner},
@@ -322,6 +326,27 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
         deliver_weekly: deliveries::DeliverWeekly::new(kit.clone()),
         deliver_briefing_now: deliveries::DeliverBriefingNow::new(kit),
     }
+}
+
+/// The job runner with the four job handlers, the only registry of job kinds, on its own pool
+/// of `WORKER_CONCURRENCY + 1` connections (one per job in flight, one to poll).
+pub async fn worker(state: &AppState) -> AppResult<WorkerRunner> {
+    let c = &state.config;
+    let max = u32::try_from(c.worker_concurrency + 1).map_err(internal)?;
+    let pool = connect(c, 0, max, false).await?;
+    let (runs, deliveries) = (&state.actions.runs, &state.actions.deliveries);
+    let handlers: Vec<Arc<dyn JobHandler>> = vec![
+        Arc::new(VerifyJob(Arc::new(runs.verify_connection.clone()))),
+        Arc::new(FullScanJob(Arc::new(runs.full_scan.clone()))),
+        Arc::new(DeliverBriefingJob(Arc::new(
+            deliveries.deliver_briefing.clone(),
+        ))),
+        Arc::new(DeliverWeeklyJob(Arc::new(
+            deliveries.deliver_weekly.clone(),
+        ))),
+    ];
+    let source = Arc::new(PgQueue(pool));
+    Ok(WorkerRunner::new(source, handlers, c, state.clock.clone()))
 }
 
 /// Health, `/v1` and `/openapi.json` on the shell's middleware stack (`middleware::stack`).

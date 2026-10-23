@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::Result;
 
 /// A job type with a worker; the strings are the stored `runs.job_type` values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
     Verify,

@@ -8,11 +8,12 @@ use axum_test::TestServer;
 use migration::{Migrator, MigratorTrait};
 use opsagent_brain::{
     adapters::{
+        pg_queue::PgQueue,
         slack::{Channel, Install, SlackClient, SlackError},
-        test_doubles::InlineQueue,
     },
     boot,
     config::{AppEnv, Config},
+    jobs::WorkerRunner,
     mailers::{CaptureMailer, Mailer},
     state::AppState,
 };
@@ -23,6 +24,7 @@ pub struct TestApp {
     pub state: AppState,
     pub db: DatabaseConnection,
     router: Router,
+    worker: Arc<WorkerRunner>,
 }
 
 /// The test config: the process environment with `APP_ENV=test`.
@@ -83,17 +85,34 @@ impl TestApp {
         // The doubles replace every env-dependent adapter (the production mailer needs
         // RESEND_API_KEY), so adapters build as `test`; the env applies to the config only.
         let env = std::mem::replace(&mut config.env, AppEnv::Test);
-        let queue = Arc::new(InlineQueue::default());
-        let mut deps = boot::deps(config, db.clone(), queue.clone())
-            .await
-            .expect("deps");
+        let queue = Arc::new(PgQueue(db.clone()));
+        let mut deps = boot::deps(config, db.clone(), queue).await.expect("deps");
         deps.config.env = env;
         deps.mailer = Arc::new(CaptureMailer::default());
         deps.slack = Arc::new(NoSlack);
         let state = boot::assemble(deps);
-        queue.bind(&state);
-        let router = boot::router(state.clone()).expect("router");
-        Self { state, db, router }
+        let worker = Arc::new(boot::worker(&state).await.expect("worker"));
+        let mut router = boot::router(state.clone()).expect("router");
+        if env == AppEnv::Test {
+            // Each request is followed by a drain, so a test sees the jobs it caused as done.
+            let w = worker.clone();
+            router = router.layer(axum::middleware::from_fn(
+                move |req: axum::extract::Request, next: axum::middleware::Next| {
+                    let w = w.clone();
+                    async move {
+                        let res = next.run(req).await;
+                        w.drain().await.expect("drain jobs");
+                        res
+                    }
+                },
+            ));
+        }
+        Self {
+            state,
+            db,
+            router,
+            worker,
+        }
     }
 
     /// A client of the app's router that keeps cookies. A method, not a field: `serve` hands
@@ -118,9 +137,15 @@ impl TestApp {
         self.state.redis.clone()
     }
 
-    /// shortcut: a no-op, because `InlineQueue` runs each job as it is enqueued; Task 17
-    /// drains the Postgres queue here.
-    pub async fn drain_jobs(&self) {}
+    /// Runs every due job (and the jobs they enqueue) on the app's `WorkerRunner`.
+    pub async fn drain_jobs(&self) -> usize {
+        self.worker.drain().await.expect("drain jobs")
+    }
+
+    /// The app's runner, for tests that build their own (`WorkerRunner::new`) next to it.
+    pub fn worker(&self) -> &WorkerRunner {
+        &self.worker
+    }
 }
 
 /// Boots a `TestApp` and runs `f` with a cookie-saving client of it.

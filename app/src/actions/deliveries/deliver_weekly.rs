@@ -29,6 +29,7 @@ const EMAIL: &str = "email";
 const SLACK: &str = "slack";
 const SUMMARY: &str = "summary";
 
+#[derive(Clone)]
 pub struct DeliverWeekly {
     kit: Kit,
 }

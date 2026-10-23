@@ -96,7 +96,10 @@ async fn tick(
     now: DateTime<Utc>,
 ) -> opsagent_brain::error::AppResult<Option<Report>> {
     let actions = actions(ctx).unwrap();
-    actions.runs.scheduler_tick.run(now).await
+    let report = actions.runs.scheduler_tick.run(now).await;
+    // A worker picks up what the tick enqueued.
+    ctx.drain_jobs().await;
+    report
 }
 
 async fn run_tick(ctx: &TestApp, now: DateTime<Utc>) -> Report {
@@ -232,7 +235,7 @@ async fn queued_run_with_due_next_attempt_is_reenqueued_once() {
             .schedule_retry(run.run.id, 1, now - Duration::minutes(1))
             .await
             .unwrap();
-        // Exactly one real enqueue (the inline worker finishes the run), then nothing is due.
+        // Exactly one real enqueue (the drained worker finishes the run), then nothing is due.
         assert_eq!(run_tick(&ctx, now).await.retries_run, 1);
         assert_eq!(run_tick(&ctx, now).await, Report::default());
         let q = "SELECT count(*) n FROM runs WHERE next_attempt_at IS NULL AND status = 'done'";
@@ -350,7 +353,7 @@ async fn due_full_scan_enqueues_the_real_worker_once() {
         let now = at("2026-10-22T02:00:30Z");
         conn_schedule(&ctx, &id, "full_scan", due).await;
 
-        // Foreground worker mode: the enqueue runs the worker inline.
+        // The tick's drain runs the worker.
         assert_eq!(run_tick(&ctx, now).await.schedules_run, 1);
         let q = "SELECT count(*) n FROM runs WHERE job_type = 'full_scan' AND status = 'done' \
                  AND next_attempt_at IS NULL";
@@ -435,7 +438,7 @@ async fn worker_retry_written_during_inline_enqueue_survives_the_marker_clear() 
         let now = Utc::now();
         conn_schedule(&ctx, &id, "verify", now - Duration::minutes(1)).await;
 
-        // Foreground mode: the worker runs inside the enqueue, before the marker is cleared.
+        // The worker now runs after the marker is cleared (the tick's drain); its retry time stays.
         assert_eq!(run_tick(&ctx, now).await.schedules_run, 1);
         let r = ctx
             .db

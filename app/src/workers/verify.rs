@@ -1,10 +1,13 @@
 //! `verify` job: hands the run to `VerifyConnection` (PRD 7.2).
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use loco_rs::{app::AppContext, bgworker::BackgroundWorker, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use opsagent_ledger::JobKind;
+use super::common::err;
+use crate::jobs::{JobHandler, VerifyJob};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyArgs {
@@ -23,6 +26,7 @@ impl BackgroundWorker<VerifyArgs> for VerifyWorker {
 
     async fn perform(&self, args: VerifyArgs) -> Result<()> {
         let actions = crate::app::actions(&self.ctx)?;
-        super::perform(&actions, JobKind::Verify, args.run_id).await
+        let job = VerifyJob(Arc::new(actions.runs.verify_connection.clone()));
+        job.handle(args.run_id).await.map_err(err)
     }
 }

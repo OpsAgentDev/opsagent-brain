@@ -212,12 +212,21 @@ pub fn kek(ctx: &TestApp) -> AppResult<Arc<dyn opsagent_secrets::Kek>> {
     Ok(ctx.state.kek.clone())
 }
 
-/// Runs one `kind` job for `run_id` as its worker does (what `XWorker::build(ctx).perform`
-/// did under Loco).
+/// Enqueues one `kind` job for `run_id` and drains the queue, as a worker would run it.
 pub async fn perform(
     ctx: &TestApp,
     kind: opsagent_ledger::JobKind,
     run_id: uuid::Uuid,
-) -> loco_rs::Result<()> {
-    opsagent_brain::workers::perform(&ctx.state.actions, kind, run_id).await
+) -> AppResult<usize> {
+    use opsagent_ledger::{NewJob, Queue};
+    let run_at = chrono::Utc::now();
+    let job = NewJob {
+        kind,
+        run_id,
+        run_at,
+    };
+    opsagent_brain::adapters::pg_queue::PgQueue(ctx.db.clone())
+        .enqueue(job)
+        .await?;
+    Ok(ctx.drain_jobs().await)
 }
