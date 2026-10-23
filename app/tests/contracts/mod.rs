@@ -3,7 +3,9 @@
 use loco_rs::testing::prelude::boot_test;
 use opsagent_brain::{adapters::db::Pg, app::App};
 
+mod connections;
 mod orgs;
+mod runs;
 mod users;
 
 /// A fresh, migrated lane database (`boot_test` recreates the schema).

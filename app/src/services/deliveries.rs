@@ -1,6 +1,7 @@
 //! Delivery reads and writes: the snapshots the `deliver` crate builds documents from, routes,
 //! owners, and `deliveries` rows. Rows are keyed by (run, effect key), so a resumed run
 //! rewrites its own rows instead of adding more.
+use crate::adapters::db::ledger_storage::stmt;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -25,13 +26,11 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
-    adapters::db::Pg,
+    adapters::db::{status_of, Pg},
     models::{
         _entities::{connections, integrations},
-        connections::status_of,
         enum_of,
         integrations::{ACTIVE, SLACK},
-        ledger_storage::stmt,
     },
     services::posture::posture,
     workers::common::{lerr, LResult},

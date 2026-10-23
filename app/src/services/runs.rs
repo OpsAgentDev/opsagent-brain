@@ -5,11 +5,10 @@ use chrono::{DateTime, Utc};
 use loco_rs::{app::AppContext, bgworker::BackgroundWorker, Result};
 use opsagent_core::run::RunKey;
 use opsagent_ledger::{CreateRunOutcome, Storage};
-use sea_orm::ConnectionTrait;
 use uuid::Uuid;
 
 use crate::{
-    models::ledger_storage::PgStorage,
+    adapters::db::{Conn, Pg},
     workers::{
         common::err,
         deliver_briefing::{DeliverBriefingArgs, DeliverBriefingWorker},
@@ -40,12 +39,12 @@ async fn send(ctx: &AppContext, job_type: &str, run_id: Uuid) -> Result<bool> {
 
 /// Creates the run on `db` (pass a transaction to commit it with other writes); a new run
 /// gets the outbox marker `now`. Returns `db` back.
-pub async fn create_marked<C: ConnectionTrait + Send + Sync>(
+pub async fn create_marked<C: Conn>(
     db: C,
     key: RunKey,
     now: DateTime<Utc>,
 ) -> Result<(C, CreateRunOutcome)> {
-    let storage = PgStorage::new(db);
+    let storage = Pg::new(db);
     let out = mark_new(&storage, key, now).await?;
     Ok((storage.into_inner(), out))
 }
@@ -76,7 +75,7 @@ pub async fn dispatch(
     marker: DateTime<Utc>,
 ) -> Result<bool> {
     let sent = send(ctx, job_type, run_id).await?;
-    PgStorage::new(ctx.db.clone())
+    Pg::new(&ctx.db)
         .clear_enqueue_marker(run_id, marker)
         .await
         .map_err(err)?;

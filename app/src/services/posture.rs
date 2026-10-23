@@ -1,4 +1,5 @@
 //! Posture score of a connection (checks.md).
+use crate::adapters::db::ledger_storage::{db_err, stmt};
 use std::collections::BTreeMap;
 
 use opsagent_core::finding::Severity;
@@ -6,11 +7,7 @@ use opsagent_ledger::Result;
 use sea_orm::{ConnectionTrait, Value};
 use serde_json::{json, Value as Json};
 
-use crate::models::{
-    _entities::connections,
-    enum_of, enum_str,
-    ledger_storage::{db_err, stmt},
-};
+use crate::models::{_entities::connections, enum_of, enum_str};
 
 /// Posture score per checks.md: `max(0, 100 − Σ weight(open))`; accepted, snoozed and flapping
 /// are excluded by counting `open` only.

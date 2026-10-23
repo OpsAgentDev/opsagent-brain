@@ -5,7 +5,7 @@ use axum::{
 };
 use chrono::{DateTime, FixedOffset, Utc};
 use loco_rs::app::AppContext;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryTrait};
+use opsagent_core::run;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::{IntoParams, ToSchema};
@@ -14,12 +14,11 @@ use uuid::Uuid;
 
 use super::{OrgIdPath, RunAccepted};
 use crate::{
+    actions::uow::Repos,
+    adapters::db::Pg,
     api_error::{ApiError, ApiQuery, Problem},
     middleware::org_scope::OrgScope,
-    models::{
-        _entities::{connections, runs},
-        find_in_org,
-    },
+    models::enum_str,
     services::{
         manual_scan,
         pagination::{self, Page, PageParams},
@@ -50,15 +49,15 @@ pub struct Run {
     pub stats: Option<Value>,
 }
 
-fn summary(r: runs::Model) -> RunSummary {
+fn summary(r: run::Run) -> RunSummary {
     RunSummary {
         id: r.id,
         connection_id: r.connection_id,
         job_type: r.job_type,
-        status: r.status,
-        scheduled_at: r.scheduled_at,
-        started_at: r.started_at,
-        finished_at: r.finished_at,
+        status: enum_str(r.status),
+        scheduled_at: r.scheduled_at.fixed_offset(),
+        started_at: r.started_at.map(|t| t.fixed_offset()),
+        finished_at: r.finished_at.map(|t| t.fixed_offset()),
         partial_reason: r.partial_reason,
     }
 }
@@ -82,20 +81,16 @@ async fn list(
     ApiQuery(f): ApiQuery<RunFilter>,
     ApiQuery(p): ApiQuery<PageParams>,
 ) -> Result<Json<Page<RunSummary>>, ApiError> {
-    use runs::Column as C;
-    let q = runs::Entity::find()
-        .filter(C::OrganisationId.eq(scope.organisation_id))
-        .apply_if(f.connection, |q, v| q.filter(C::ConnectionId.eq(v)))
-        .apply_if(f.job_type, |q, v| q.filter(C::JobType.eq(v)));
-    let page = pagination::fetch(
-        &ctx.db,
-        q,
-        (C::ScheduledAt, C::Id),
-        |m| (m.scheduled_at, m.id),
-        &p,
-    )
-    .await?;
-    Ok(Json(page.map(summary)))
+    let filter = run::RunFilter {
+        connection_id: f.connection,
+        job_type: f.job_type,
+    };
+    let repo = Pg::new(&ctx.db);
+    let got = repo
+        .runs()
+        .list(scope.organisation_id, filter, pagination::request(&p)?)
+        .await?;
+    Ok(Json(Page::of(got).map(summary)))
 }
 
 #[utoipa::path(get, path = "/orgs/{org}/runs/{id}", tag = "runs", params(OrgIdPath),
@@ -105,11 +100,13 @@ async fn show(
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Run>, ApiError> {
-    let org = runs::Column::OrganisationId;
-    let r = find_in_org::<runs::Entity>(&ctx.db, org, scope.organisation_id, &id).await?;
+    let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
+    let repo = Pg::new(&ctx.db);
+    let r = repo.runs().get(scope.organisation_id, id).await?;
+    let r = r.ok_or_else(ApiError::not_found)?;
     Ok(Json(Run {
         attempts: r.attempts,
-        stats: r.checkpoint.get("stats").cloned(),
+        stats: Some(r.stats.clone()),
         run: summary(r),
     }))
 }
@@ -124,8 +121,7 @@ async fn scan(
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
-    let org = connections::Column::OrganisationId;
-    let c = find_in_org::<connections::Entity>(&ctx.db, org, scope.organisation_id, &id).await?;
+    let c = super::connections::find(&ctx, &scope, &id).await?;
     let out = manual_scan::request(&ctx, &c, scope.user_id, Utc::now()).await?;
     Ok((
         StatusCode::ACCEPTED,

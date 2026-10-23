@@ -1,4 +1,5 @@
 //! The chunks of one full scan: `service@region` inventory, `simulate`, then `finalize`.
+use crate::adapters::db::ledger_storage::{db_err, hold_fence, stmt, PgStorage};
 use std::{
     collections::{BTreeSet, HashMap},
     panic::{catch_unwind, AssertUnwindSafe},
@@ -15,11 +16,7 @@ use uuid::Uuid;
 
 use super::{FINALIZE, SIMULATE};
 use crate::{
-    models::{
-        _entities::connections,
-        enum_of,
-        ledger_storage::{db_err, hold_fence, stmt, PgStorage},
-    },
+    models::{_entities::connections, enum_of},
     services::{
         finding_lifecycle,
         inventory_upsert::{self, exec, Chunk},

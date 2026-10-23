@@ -1,7 +1,7 @@
 //! Keyset pagination shared by every list endpoint: `ORDER BY sort_key DESC, id DESC`, with an
 //! opaque cursor holding the last row's `(sort_key, id)`.
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
-use opsagent_core::repo::{Cursor, PageRequest};
+use opsagent_core::repo::{Cursor, PageOf, PageRequest};
 use sea_orm::{ConnectionTrait, EntityTrait, Select};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -47,6 +47,15 @@ fn limit(p: &PageParams) -> u64 {
     p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
 }
 
+/// The repository page request for `p`; an invalid cursor is a 422.
+pub fn request(p: &PageParams) -> Result<PageRequest, ApiError> {
+    let after = p.cursor.as_deref().map(decode).transpose()?;
+    Ok(PageRequest {
+        after,
+        limit: limit(p),
+    })
+}
+
 /// One page of `select` (already tenant-filtered), newest `sort` first; `key` reads a row's
 /// `(sort, id)` for the next cursor.
 pub async fn fetch<E, C>(
@@ -60,19 +69,17 @@ where
     E: EntityTrait,
     C: ConnectionTrait,
 {
-    let after = p.cursor.as_deref().map(decode).transpose()?;
-    let req = PageRequest {
-        after,
-        limit: limit(p),
-    };
-    let got = page(db, select, cols, key, req).await?;
-    Ok(Page {
-        items: got.items,
-        next_cursor: got.next.as_ref().map(encode),
-    })
+    Ok(Page::of(page(db, select, cols, key, request(p)?).await?))
 }
 
 impl<T> Page<T> {
+    pub fn of(got: PageOf<T>) -> Self {
+        Page {
+            items: got.items,
+            next_cursor: got.next.as_ref().map(encode),
+        }
+    }
+
     pub fn map<U>(self, f: impl FnMut(T) -> U) -> Page<U> {
         Page {
             items: self.items.into_iter().map(f).collect(),

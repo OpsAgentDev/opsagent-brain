@@ -173,7 +173,8 @@ async fn invites_owner_only_and_bound_to_email() {
 #[serial]
 async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
     use opsagent_brain::{
-        models::{_entities::runs, ledger_storage::PgStorage},
+        adapters::db::ledger_storage::PgStorage,
+        models::_entities::runs,
         tasks::scheduler_tick::tick,
         workers::verify::{VerifyArgs, VerifyWorker},
     };

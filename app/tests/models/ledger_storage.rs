@@ -1,6 +1,6 @@
 use chrono::{TimeZone, Utc};
 use loco_rs::testing::prelude::boot_test;
-use opsagent_brain::{app::App, models::ledger_storage::PgStorage};
+use opsagent_brain::{adapters::db::ledger_storage::PgStorage, app::App};
 use opsagent_core::run::{RunKey, RunStatus};
 use opsagent_ledger::{
     redis, run_chunked, Checkpoint, ChunkOutcome, EffectState, LedgerError, RunChunkedOptions,

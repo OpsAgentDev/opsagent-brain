@@ -1,6 +1,7 @@
 //! Finding lifecycle per `full_scan` (PRD 7.4): open, seen, escalate, resolve, reopen, flap.
 //! Re-applying the same run is a no-op: findings already stamped with the run are skipped and
 //! events are unique per (run, finding, type).
+use crate::adapters::db::ledger_storage::{db_err, stmt};
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
@@ -13,7 +14,6 @@ use super::{inventory_upsert::exec, redact::redact};
 use crate::models::{
     _entities::{connections, findings},
     enum_of, enum_str,
-    ledger_storage::{db_err, stmt},
 };
 
 const FLAP_WINDOW: Duration = Duration::hours(24);

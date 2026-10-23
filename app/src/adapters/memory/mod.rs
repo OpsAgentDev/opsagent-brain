@@ -1,19 +1,27 @@
 //! In-memory fakes of every repository, for tests. `begin` snapshots the whole state and
 //! `commit` writes the snapshot back, so a dropped transaction leaves nothing behind.
 mod audit;
+mod connections;
 mod orgs;
+mod runs;
 mod users;
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     audit::{AuditEntry, AuditLog},
+    connection::{Connection, ConnectionsRepo, SealedCreds},
     org::{Invite, Organisation, OrganisationsRepo, Role},
     repo::RepoResult,
+    run::RunsRepo,
     user::{User, UsersRepo},
 };
+use opsagent_ledger::Storage;
 use uuid::Uuid;
 
 use crate::actions::uow::{Repos, Tx, UnitOfWork};
@@ -50,6 +58,10 @@ pub struct MemState {
     users: Vec<User>,
     magic_links: Vec<MagicLinkRow>,
     audit: Vec<AuditEntry>,
+    connections: Vec<(Connection, SealedCreds)>,
+    runs: Vec<runs::RunEntry>,
+    /// `None`: started, `Some(external_ref)`: done.
+    effects: HashMap<(Uuid, String), Option<Option<String>>>,
 }
 
 #[derive(Clone, Default)]
@@ -70,6 +82,15 @@ impl Repos for MemStore {
         self
     }
     fn audit(&self) -> &dyn AuditLog {
+        self
+    }
+    fn connections(&self) -> &dyn ConnectionsRepo {
+        self
+    }
+    fn runs(&self) -> &dyn RunsRepo {
+        self
+    }
+    fn ledger(&self) -> &dyn Storage {
         self
     }
 }
@@ -100,6 +121,15 @@ impl Repos for MemTx {
         &self.work
     }
     fn audit(&self) -> &dyn AuditLog {
+        &self.work
+    }
+    fn connections(&self) -> &dyn ConnectionsRepo {
+        &self.work
+    }
+    fn runs(&self) -> &dyn RunsRepo {
+        &self.work
+    }
+    fn ledger(&self) -> &dyn Storage {
         &self.work
     }
 }
