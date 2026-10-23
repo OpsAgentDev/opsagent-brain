@@ -103,7 +103,10 @@ async fn list_filters_validates_and_hides_addresses() {
             .iter()
             .find(|d| d["id"] == id.to_string())
             .unwrap();
-        assert!(mail["recipient_id"].is_string(), "owner resolved to an id");
+        assert!(
+            mail["recipient_id"].is_null(),
+            "owner fallback has no recipient row"
+        );
 
         let weekly: Value = req
             .get(&format!("{base}?kind=weekly&connection={conn}"))
@@ -112,7 +115,7 @@ async fn list_filters_validates_and_hides_addresses() {
         assert_eq!(weekly["items"].as_array().unwrap().len(), 1);
         for q in ["kind=bogus", "connection=nope"] {
             let res = req.get(&format!("{base}?{q}")).await;
-            assert_eq!(res.status_code(), 400, "{q}");
+            assert_eq!(res.status_code(), 422, "{q}");
             assert_eq!(res.json::<Value>()["code"], "validation");
         }
         let one = req.get(&format!("{base}/{id}")).await;
@@ -146,6 +149,134 @@ async fn other_orgs_delivery_and_connection_are_404() {
             .add_header("X-CSRF-Token", &t)
             .await;
         assert_eq!(res.status_code(), 404);
+    })
+    .await;
+}
+
+async fn recipient(ctx: &AppContext, conn: Uuid, email: &str, age_secs: i64) -> Uuid {
+    let id = Uuid::new_v4();
+    ctx.db
+        .execute_raw(stmt(
+            "INSERT INTO recipients (id, organisation_id, email, status, created_at) \
+             VALUES ($1, $2, $3, 'active', now() - make_interval(secs => $4))",
+            vec![
+                id.into(),
+                org_id(ctx, conn).await.into(),
+                email.into(),
+                (age_secs as f64).into(),
+            ],
+        ))
+        .await
+        .unwrap();
+    id
+}
+
+#[tokio::test]
+#[serial]
+async fn recipient_id_comes_from_recipients_only_oldest_first() {
+    serve(|req, ctx| async move {
+        let (_, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
+        let _newer = recipient(&ctx, conn, "Dup@Example.com", 10).await;
+        let oldest = recipient(&ctx, conn, "dup@example.com", 100).await;
+        let hit = deliver(&ctx, conn, "briefing", "email", "dup@example.com").await;
+        let unknown = deliver(&ctx, conn, "briefing", "email", "nobody@example.com").await;
+        let slack = deliver(&ctx, conn, "briefing", "slack", "C0").await;
+
+        for (id, want) in [
+            (hit, Value::String(oldest.to_string())),
+            (unknown, Value::Null),
+            (slack, Value::Null),
+        ] {
+            let d: Value = req
+                .get(&format!("/v1/orgs/{org}/deliveries/{id}"))
+                .await
+                .json();
+            assert_eq!(d["recipient_id"], want, "{d}");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn pagination_follows_cursor_across_ties_without_gaps() {
+    serve(|req, ctx| async move {
+        let (_, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
+        let mut want = vec![];
+        for _ in 0..3 {
+            want.push(
+                deliver(&ctx, conn, "briefing", "slack", "C0")
+                    .await
+                    .to_string(),
+            );
+        }
+        // Identical created_at: only the id tie-break orders the rows.
+        ctx.db
+            .execute_raw(stmt(
+                "UPDATE deliveries SET created_at = '2026-01-01T00:00:00Z'",
+                vec![],
+            ))
+            .await
+            .unwrap();
+        let mut got = vec![];
+        let mut url = format!("/v1/orgs/{org}/deliveries?limit=1");
+        for _ in 0..5 {
+            let page: Value = req.get(&url).await.json();
+            got.extend(
+                page["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|d| d["id"].as_str().unwrap().to_string()),
+            );
+            match page["next_cursor"].as_str() {
+                Some(c) => url = format!("/v1/orgs/{org}/deliveries?limit=1&cursor={c}"),
+                None => break,
+            }
+        }
+        assert_eq!(got.len(), 3, "{got:?}");
+        got.sort();
+        want.sort();
+        assert_eq!(got, want);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn member_can_list_and_preview_and_unconnected_previews_none() {
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, slug, conn) = fake_connection(&req, &mail, "o@example.com", "Team", "noisy").await;
+        let conn: Uuid = conn.parse().unwrap();
+        deliver(&ctx, conn, "briefing", "slack", "C0").await;
+        let res = req
+            .post(&format!("/v1/orgs/{slug}/invites"))
+            .add_header("X-CSRF-Token", &t)
+            .json(&serde_json::json!({"email": "mate@example.com", "role": "member"}))
+            .await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        let accept = format!("/v1/invites/{}/accept", token_of(&last_link(&mail)));
+        req.clear_cookies();
+        let tm = sign_in(&req, &mail, "mate@example.com").await;
+        let res = req.post(&accept).add_header("X-CSRF-Token", &tm).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+
+        let list: Value = req.get(&format!("/v1/orgs/{slug}/deliveries")).await.json();
+        assert_eq!(list["items"].as_array().unwrap().len(), 1);
+        // Connection is not "connected", so nothing is deliverable.
+        let res = req
+            .post(&format!(
+                "/v1/orgs/{slug}/connections/{conn}/briefing/preview"
+            ))
+            .add_header("X-CSRF-Token", &tm)
+            .await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        let p: Value = res.json();
+        assert_eq!(
+            (p["kind"].as_str(), p["text"].as_str()),
+            (Some("none"), Some(""))
+        );
     })
     .await;
 }

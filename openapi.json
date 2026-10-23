@@ -1128,15 +1128,6 @@
               }
             }
           },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
           "404": {
             "content": {
               "application/json": {

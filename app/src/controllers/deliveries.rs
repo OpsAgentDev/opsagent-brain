@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
     Json,
 };
 use chrono::{DateTime, FixedOffset, Utc};
@@ -63,14 +62,11 @@ pub struct DeliveryFilter {
 }
 
 fn bad(what: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::BAD_REQUEST,
-        "validation",
-        format!("{what} is not valid"),
-    )
+    ApiError::invalid(format!("{what} is not valid"))
 }
 
-/// Email address (lowercased) to the id of the recipient or owner it belongs to, in this org.
+/// Email address (lowercased) to the id of its `recipients` row in this org (oldest wins). Owner
+/// fallback sends have no row, so they map to nothing.
 async fn recipient_ids(
     ctx: &AppContext,
     org: Uuid,
@@ -85,17 +81,16 @@ async fn recipient_ids(
         return Ok(HashMap::new());
     }
     let q: Statement = stmt(
-        "SELECT lower(email) AS email, id FROM recipients WHERE organisation_id = $1 \
-         AND lower(email) = ANY($2) UNION ALL \
-         SELECT lower(u.email), u.id FROM members m JOIN users u ON u.id = m.user_id \
-         WHERE m.organisation_id = $1 AND lower(u.email) = ANY($2)",
+        "SELECT DISTINCT ON (lower(email)) lower(email) AS email, id FROM recipients \
+         WHERE organisation_id = $1 AND lower(email) = ANY($2) \
+         ORDER BY lower(email), created_at, id",
         vec![org.into(), emails.into()],
     );
     let mut map = HashMap::new();
     for r in ctx.db.query_all_raw(q).await? {
         let email = String::try_get(&r, "", "email").map_err(sea_orm::DbErr::from)?;
         let id = Uuid::try_get(&r, "", "id").map_err(sea_orm::DbErr::from)?;
-        map.entry(email).or_insert(id);
+        map.insert(email, id);
     }
     Ok(map)
 }
@@ -118,7 +113,7 @@ fn view(d: deliveries::Model, ids: &HashMap<String, Uuid>) -> Delivery {
 
 #[utoipa::path(get, path = "/orgs/{org}/deliveries", tag = "deliveries",
     params(OrgPath, DeliveryFilter, PageParams),
-    responses((status = 200, body = Page<Delivery>), (status = 400, body = Problem), (status = 404, body = Problem), (status = 422, body = Problem)))]
+    responses((status = 200, body = Page<Delivery>), (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn list(
     State(ctx): State<AppContext>,
     scope: OrgScope,
