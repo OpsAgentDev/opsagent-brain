@@ -4,7 +4,6 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, FixedOffset};
-use loco_rs::app::AppContext;
 use opsagent_core::run;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,10 +14,10 @@ use uuid::Uuid;
 use super::{OrgIdPath, RunAccepted};
 use crate::{
     api_error::{ApiError, ApiQuery, Problem},
-    app::actions,
     controllers::page::{page_request, Page, PageParams},
     middleware::org_scope::OrgScope,
     models::enum_str,
+    state::AppState,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -72,7 +71,7 @@ pub struct RunFilter {
     params(super::OrgPath, RunFilter, PageParams),
     responses((status = 200, body = Page<RunSummary>), (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn list(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiQuery(f): ApiQuery<RunFilter>,
     ApiQuery(p): ApiQuery<PageParams>,
@@ -81,7 +80,7 @@ async fn list(
         connection_id: f.connection,
         job_type: f.job_type,
     };
-    let list = &actions(&ctx)?.runs.list_runs;
+    let list = &app.actions.runs.list_runs;
     let got = list
         .run(scope.organisation.id, filter, page_request(&p)?)
         .await?;
@@ -91,12 +90,13 @@ async fn list(
 #[utoipa::path(get, path = "/orgs/{org}/runs/{id}", tag = "runs", params(OrgIdPath),
     responses((status = 200, body = Run), (status = 404, body = Problem)))]
 async fn show(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Run>, ApiError> {
-    let id = super::connections::parse_id(&id)?;
-    let r = actions(&ctx)?
+    let id = super::parse_id(&id)?;
+    let r = app
+        .actions
         .runs
         .get_run
         .run(scope.organisation.id, id)
@@ -114,12 +114,12 @@ async fn show(
         (status = 429, body = Problem, description = "A scan ran within the last hour; see `Retry-After`.",
             headers(("Retry-After" = u64, description = "Seconds until a scan is allowed")))))]
 async fn scan(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
-    let id = super::connections::parse_id(&id)?;
-    let scan = &actions(&ctx)?.runs.request_manual_scan;
+    let id = super::parse_id(&id)?;
+    let scan = &app.actions.runs.request_manual_scan;
     let out = scan
         .run(scope.organisation.id, scope.member.user_id, id)
         .await?;
@@ -129,7 +129,7 @@ async fn scan(
     ))
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list))
         .routes(routes!(show))

@@ -5,20 +5,19 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, FixedOffset};
-use loco_rs::app::AppContext;
 use opsagent_deliver::repo;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
-use super::{connections::parse_id, OrgIdPath, OrgPath};
+use super::{parse_id, OrgIdPath, OrgPath};
 use crate::{
     actions::deliveries::DeliveryItem,
     api_error::{ApiError, ApiQuery, Problem},
-    app::actions,
     controllers::page::{page_request, Page, PageParams},
     middleware::org_scope::OrgScope,
+    state::AppState,
 };
 
 const KINDS: [&str; 4] = ["briefing", "weekly", "alert", "notice"];
@@ -76,7 +75,7 @@ fn view(
     params(OrgPath, DeliveryFilter, PageParams),
     responses((status = 200, body = Page<Delivery>), (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn list(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiQuery(f): ApiQuery<DeliveryFilter>,
     ApiQuery(p): ApiQuery<PageParams>,
@@ -94,7 +93,7 @@ async fn list(
         connection_id: connection,
         kind: f.kind,
     };
-    let list = &actions(&ctx)?.deliveries.list_deliveries;
+    let list = &app.actions.deliveries.list_deliveries;
     let page = list
         .run(scope.organisation.id, filter, page_request(&p)?)
         .await?;
@@ -104,11 +103,11 @@ async fn list(
 #[utoipa::path(get, path = "/orgs/{org}/deliveries/{id}", tag = "deliveries", params(OrgIdPath),
     responses((status = 200, body = Delivery), (status = 404, body = Problem)))]
 async fn show(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Delivery>, ApiError> {
-    let get = &actions(&ctx)?.deliveries.get_delivery;
+    let get = &app.actions.deliveries.get_delivery;
     Ok(Json(view(
         get.run(scope.organisation.id, parse_id(&id)?).await?,
     )))
@@ -126,11 +125,11 @@ pub struct BriefingPreview {
     params(OrgIdPath),
     responses((status = 200, body = BriefingPreview), (status = 404, body = Problem)))]
 async fn preview(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<BriefingPreview>, ApiError> {
-    let preview = &actions(&ctx)?.deliveries.preview_briefing;
+    let preview = &app.actions.deliveries.preview_briefing;
     let p = preview.run(scope.organisation.id, parse_id(&id)?).await?;
     Ok(Json(BriefingPreview {
         text: p.text,
@@ -138,7 +137,7 @@ async fn preview(
     }))
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list))
         .routes(routes!(show))

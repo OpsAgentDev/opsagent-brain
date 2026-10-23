@@ -1,6 +1,5 @@
 use axum::{extract::State, Json};
 use chrono::{DateTime, FixedOffset};
-use loco_rs::app::AppContext;
 use opsagent_core::resource::{self as core, ResourceKind, ResourceRow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,9 +10,9 @@ use uuid::Uuid;
 use super::page::{page_request, Page, PageParams};
 use crate::{
     api_error::{ApiError, ApiQuery, Problem},
-    app::actions,
     middleware::org_scope::OrgScope,
     models::{enum_of, enum_str},
+    state::AppState,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -60,7 +59,7 @@ pub struct ResourceFilter {
     params(super::OrgPath, ResourceFilter, PageParams),
     responses((status = 200, body = Page<ResourceSummary>), (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn list(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiQuery(f): ApiQuery<ResourceFilter>,
     ApiQuery(p): ApiQuery<PageParams>,
@@ -81,7 +80,8 @@ async fn list(
         kind,
         q: f.q,
     };
-    let got = actions(&ctx)?
+    let got = app
+        .actions
         .resources
         .list_resources
         .run(scope.organisation.id, filter, page)
@@ -89,6 +89,6 @@ async fn list(
     Ok(Json(Page::of(got).map(summary)))
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new().routes(routes!(list))
 }

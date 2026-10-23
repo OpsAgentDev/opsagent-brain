@@ -64,7 +64,7 @@ mod tests {
     use super::*;
     use crate::{
         actions::{
-            integrations::{test_support::*, FinishSlackInstall},
+            integrations::{test_support::*, Callback, FinishSlackInstall, InstallError},
             recipients::test_support::{kek, member, org},
         },
         adapters::memory::MemStore,
@@ -91,8 +91,11 @@ mod tests {
         let slack = FakeSlack::new(&store, o);
         let (uow, kek) = (Arc::new(store.clone()), Arc::new(kek()));
         let finish = FinishSlackInstall::new(uow.clone(), kek.clone(), slack.clone(), settings());
-        finish.ensure_owner(o, owner).await.unwrap();
-        finish.run(o, owner, "good").await.unwrap();
+        let callback = Callback {
+            code: Some("good".into()),
+            error: None,
+        };
+        finish.run(o, owner, callback).await.unwrap();
         let id = store.list(o).await.unwrap()[0].id;
         let delete = DeleteIntegration::new(uow, kek, slack.clone());
         let err = delete.run(o, owner, Uuid::new_v4()).await.unwrap_err();
@@ -121,8 +124,15 @@ mod tests {
         let slack = FakeSlack::new(&store, o);
         let (uow, kek) = (Arc::new(store.clone()), Arc::new(kek()));
         let finish = FinishSlackInstall::new(uow, kek.clone(), slack, settings());
-        let err = finish.ensure_owner(o, m).await.unwrap_err();
-        assert!(matches!(err, AppError::Forbidden), "{err:?}");
+        let callback = Callback {
+            code: Some("good".into()),
+            error: None,
+        };
+        let err = finish.run(o, m, callback).await.unwrap_err();
+        assert!(
+            matches!(err, InstallError::App(AppError::Forbidden)),
+            "{err:?}"
+        );
         finish.save(o, m, &install("T1")).await.unwrap();
         let row = &store.list(o).await.unwrap()[0];
         assert_ne!(row.ciphertext, b"xoxb-secret-token".to_vec());

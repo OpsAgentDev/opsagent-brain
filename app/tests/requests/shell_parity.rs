@@ -116,3 +116,90 @@ async fn default_loco_routes_status() {
     })
     .await;
 }
+
+// Ruled changes (2026-10-23): asserted on the axum shell only.
+
+/// The shell's router over the booted state with `f` applied to its config.
+fn router_with(
+    ctx: &loco_rs::app::AppContext,
+    f: impl FnOnce(&mut opsagent_brain::config::Config),
+) -> axum_test::TestServer {
+    let mut deps = opsagent_brain::app::state(ctx).unwrap().deps.clone();
+    f(&mut deps.config);
+    let router = opsagent_brain::boot::router(opsagent_brain::boot::assemble(deps)).unwrap();
+    axum_test::TestServer::new(router).unwrap()
+}
+
+fn assert_secure_headers(res: &axum_test::TestResponse) {
+    assert_eq!(res.header("x-content-type-options"), "nosniff");
+    assert_eq!(res.header("x-frame-options"), "DENY");
+    assert_eq!(res.header("referrer-policy"), "no-referrer");
+}
+
+#[tokio::test]
+#[serial]
+async fn secure_headers_present_and_hsts_only_in_production() {
+    serve(|req, ctx| async move {
+        let preflight = req
+            .method(axum::http::Method::OPTIONS, "/v1/orgs")
+            .add_header("Origin", WEB_ORIGIN)
+            .add_header("Access-Control-Request-Method", "POST")
+            .await;
+        for res in [
+            req.get("/healthz").await,
+            req.get("/no/such/route").await,
+            req.get("/v1/auth/me").await,
+            preflight,
+        ] {
+            assert_secure_headers(&res);
+            assert!(res.maybe_header("strict-transport-security").is_none());
+        }
+        let prod = router_with(&ctx, |c| c.env = opsagent_brain::config::AppEnv::Production);
+        let res = prod.get("/healthz").await;
+        assert_secure_headers(&res);
+        assert_eq!(
+            res.header("strict-transport-security"),
+            "max-age=31536000; includeSubDomains"
+        );
+        // Unmatched routes stay 404 in production (Loco's dev fallback page is gone).
+        assert_eq!(prod.get("/no/such/route").await.status_code(), 404);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn powered_by_and_etag_absent() {
+    serve(|req, _ctx| async move {
+        for path in ["/healthz", "/_ping", "/no/such/route"] {
+            let res = req.get(path).await;
+            assert!(res.maybe_header("x-powered-by").is_none(), "{path}");
+            assert!(res.maybe_header("etag").is_none(), "{path}");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn slow_handler_is_504() {
+    serve(|_req, ctx| async move {
+        // The 30 s production default is pinned in config.rs; one second keeps the test short.
+        let srv = router_with(&ctx, |c| c.request_timeout_secs = 1);
+        let res = srv
+            .get("/_test/slow")
+            .add_header("x-request-id", "slow-1")
+            .await;
+        assert_eq!(res.status_code(), 504);
+        assert_eq!(res.header("content-type"), "application/problem+json");
+        assert_eq!(res.json::<Value>()["code"], "timeout");
+        assert_eq!(res.header("x-request-id"), "slow-1");
+        assert_secure_headers(&res);
+
+        let res = srv.get("/_test/panic").await;
+        assert_eq!(res.status_code(), 500);
+        assert_eq!(res.json::<Value>()["code"], "internal");
+        assert_secure_headers(&res);
+    })
+    .await;
+}

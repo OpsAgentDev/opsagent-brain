@@ -1,13 +1,20 @@
 use std::{fmt::Display, future::Future, time::Duration};
 
-use axum::http::StatusCode;
-use loco_rs::{config::QueueConfig, prelude::*};
+use axum::{extract::State, http::StatusCode, routing::get, Json, Router};
+use serde_json::{json, Value};
 use tokio::time::timeout;
+
+use crate::state::AppState;
 
 const DEP_TIMEOUT: Duration = Duration::from_secs(2);
 
-async fn healthz() -> Result<Response> {
-    format::json(serde_json::json!({"status": "ok"}))
+async fn healthz() -> Json<Value> {
+    Json(json!({"status": "ok"}))
+}
+
+/// Loco's `/_ping` and `/_health`, kept because they answered before the switch.
+async fn loco_ok() -> Json<Value> {
+    Json(json!({"ok": true}))
 }
 
 /// Runs one dependency check under a timeout; logs the cause on failure.
@@ -25,31 +32,42 @@ async fn check<T, E: Display>(what: &str, fut: impl Future<Output = Result<T, E>
     }
 }
 
-async fn redis_ok(ctx: &AppContext) -> bool {
-    let Some(QueueConfig::Redis(cfg)) = &ctx.config.queue else {
-        tracing::warn!("readiness: redis queue is not configured");
-        return false;
-    };
-    check("redis", async {
-        let client = redis::Client::open(cfg.uri.as_str())?;
-        let mut conn = client.get_multiplexed_async_connection().await?;
-        redis::cmd("PING").query_async::<String>(&mut conn).await
-    })
-    .await
+async fn ready(app: &AppState) -> bool {
+    check("postgres", app.db.ping()).await
+        && check("redis", async {
+            let mut conn = app.redis.get_multiplexed_async_connection().await?;
+            opsagent_ledger::redis::cmd("PING")
+                .query_async::<String>(&mut conn)
+                .await
+        })
+        .await
 }
 
-async fn readyz(State(ctx): State<AppContext>) -> Result<Response> {
-    let ok = check("postgres", ctx.db.ping()).await && redis_ok(&ctx).await;
-    let (code, status) = if ok {
-        (StatusCode::OK, "ok")
+fn status(ok: bool) -> StatusCode {
+    if ok {
+        StatusCode::OK
     } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
-    };
-    Ok((code, axum::Json(serde_json::json!({"status": status}))).into_response())
+        StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
-pub fn routes() -> Routes {
-    Routes::new()
-        .add("/healthz", get(healthz))
-        .add("/readyz", get(readyz))
+async fn readyz(State(app): State<AppState>) -> (StatusCode, Json<Value>) {
+    let ok = ready(&app).await;
+    let body = json!({"status": if ok { "ok" } else { "unavailable" }});
+    (status(ok), Json(body))
+}
+
+/// Loco's `/_readiness` shape (`{"ok": bool}`) over the same checks as `/readyz`.
+async fn loco_readiness(State(app): State<AppState>) -> (StatusCode, Json<Value>) {
+    let ok = ready(&app).await;
+    (status(ok), Json(json!({"ok": ok})))
+}
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        .route("/_ping", get(loco_ok))
+        .route("/_health", get(loco_ok))
+        .route("/_readiness", get(loco_readiness))
 }

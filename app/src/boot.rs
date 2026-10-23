@@ -8,6 +8,8 @@ use opsagent_ledger::{redis, Queue};
 use opsagent_secrets::{CachingKek, EnvKek, Kek};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 
+use axum::Router;
+
 use crate::{
     actions::{
         auth, connections, deliveries, findings, integrations, members, orgs, recipients,
@@ -19,8 +21,10 @@ use crate::{
         slack::{HttpSlack, SlackClient},
     },
     config::{Config, ConnectorMode},
+    controllers,
     error::{AppError, AppResult},
     mailers::{self, Mailer},
+    middleware,
     state::{AppState, Inner},
 };
 
@@ -293,4 +297,12 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
         deliver_weekly: deliveries::DeliverWeekly::new(kit.clone()),
         deliver_briefing_now: deliveries::DeliverBriefingNow::new(kit),
     }
+}
+
+/// Health, `/v1` and `/openapi.json` on the shell's middleware stack (`middleware::stack`).
+pub fn router(state: AppState) -> AppResult<Router> {
+    let routes = controllers::health::routes().merge(controllers::openapi::routes());
+    #[cfg(feature = "test-support")]
+    let routes = routes.merge(controllers::test_routes::routes());
+    middleware::stack(routes.with_state(state.clone()), &state)
 }

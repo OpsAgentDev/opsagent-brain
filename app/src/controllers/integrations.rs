@@ -5,7 +5,6 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, FixedOffset};
-use loco_rs::app::AppContext;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tower_sessions::Session;
@@ -15,11 +14,13 @@ use uuid::Uuid;
 
 use super::{OrgIdPath, OrgPath};
 use crate::{
+    actions::integrations::{Callback, InstallError},
     adapters::slack::Channel,
     api_error::{ApiError, Problem},
-    app::{actions, state},
     config::Config,
+    error::AppError,
     middleware::org_scope::{AuthUser, OrgScope},
+    state::AppState,
     tokens::new_token,
 };
 
@@ -35,16 +36,13 @@ pub struct SlackStart {
     responses((status = 200, body = SlackStart), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 503, body = Problem)))]
 async fn slack_start(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     session: Session,
 ) -> Result<Json<SlackStart>, ApiError> {
     scope.require_owner()?;
     let state = new_token();
-    let authorize_url = actions(&ctx)?
-        .integrations
-        .start_slack_install
-        .run(&state)?;
+    let authorize_url = app.actions.integrations.start_slack_install.run(&state)?;
     // Overwrites any earlier state, so only the latest start can complete.
     session
         .insert(SLACK_KEY, (state, scope.organisation.id))
@@ -77,21 +75,14 @@ fn bad_state() -> ApiError {
     )
 }
 
-/// The organisation the session's pending install was started for, if `state` matches it
-/// and the user still owns that organisation. The stored state is consumed either way.
-async fn claim_state(
-    ctx: &AppContext,
-    session: &Session,
-    user_id: Uuid,
-    state: Option<&str>,
-) -> Result<Uuid, ApiError> {
+/// The organisation the session's pending install was started for, if `state` matches it.
+/// The stored state is consumed either way; ownership is the action's first check.
+async fn claim_state(session: &Session, state: Option<&str>) -> Result<Uuid, ApiError> {
     let stored = session.remove::<(String, Uuid)>(SLACK_KEY).await?;
     let matches = |s: &str| state.is_some_and(|q| bool::from(s.as_bytes().ct_eq(q.as_bytes())));
     let Some((_, org_id)) = stored.filter(|(s, _)| matches(s)) else {
         return Err(bad_state());
     };
-    let finish = &actions(ctx)?.integrations.finish_slack_install;
-    finish.ensure_owner(org_id, user_id).await?;
     Ok(org_id)
 }
 
@@ -99,38 +90,39 @@ async fn claim_state(
     responses((status = 302, description = "To `WEB_BASE_URL/settings/delivery?slack=connected`, or `?slack=error&code=<code>` (`signed_out` without a session)"),
         (status = 403, body = Problem)))]
 async fn slack_callback(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     session: Session,
     user: Result<AuthUser, ApiError>,
     Query(q): Query<SlackCallback>,
 ) -> Result<Response, ApiError> {
-    let s = state(&ctx)?.config.clone();
+    let s = app.config.clone();
     let Ok(AuthUser(user_id)) = user else {
         return Ok(to_web(&s, "slack=error&code=signed_out"));
     };
-    let org_id = claim_state(&ctx, &session, user_id, q.state.as_deref()).await?;
-    let fail = |code: &str| Ok(to_web(&s, &format!("slack=error&code={code}")));
-    if q.error.is_some() {
-        return fail("access_denied");
-    }
-    let Some(code) = q.code else {
-        return fail("missing_code");
+    let org_id = claim_state(&session, q.state.as_deref()).await?;
+    let callback = Callback {
+        code: q.code,
+        error: q.error,
     };
-    let finish = &actions(&ctx)?.integrations.finish_slack_install;
-    if let Err(e) = finish.run(org_id, user_id, &code).await {
-        return fail(&e.redirect_code());
+    let finish = &app.actions.integrations.finish_slack_install;
+    match finish.run(org_id, user_id, callback).await {
+        Ok(()) => Ok(to_web(&s, "slack=connected")),
+        Err(InstallError::App(AppError::Forbidden)) => Err(AppError::Forbidden.into()),
+        Err(e) => Ok(to_web(
+            &s,
+            &format!("slack=error&code={}", e.redirect_code()),
+        )),
     }
-    Ok(to_web(&s, "slack=connected"))
 }
 
 #[utoipa::path(get, path = "/orgs/{org}/integrations/slack/channels", tag = "integrations", params(OrgPath),
     responses((status = 200, body = Vec<Channel>), (status = 404, body = Problem), (status = 429, body = Problem),
         (status = 502, body = Problem), (status = 503, body = Problem)))]
 async fn slack_channels(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
 ) -> Result<Json<Vec<Channel>>, ApiError> {
-    let channels = &actions(&ctx)?.integrations.list_slack_channels;
+    let channels = &app.actions.integrations.list_slack_channels;
     let chans = channels.run(scope.organisation.id).await?;
     Ok(Json(chans))
 }
@@ -150,10 +142,10 @@ pub struct Integration {
 #[utoipa::path(get, path = "/orgs/{org}/integrations", tag = "integrations", params(OrgPath),
     responses((status = 200, body = Vec<Integration>), (status = 404, body = Problem)))]
 async fn list(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
 ) -> Result<Json<Vec<Integration>>, ApiError> {
-    let list = &actions(&ctx)?.integrations.list_integrations;
+    let list = &app.actions.integrations.list_integrations;
     let rows = list.run(scope.organisation.id).await?;
     Ok(Json(
         rows.into_iter()
@@ -171,20 +163,20 @@ async fn list(
 #[utoipa::path(delete, path = "/orgs/{org}/integrations/{id}", tag = "integrations", params(OrgIdPath),
     responses((status = 204), (status = 403, body = Problem), (status = 404, body = Problem)))]
 async fn remove(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     scope.require_owner()?;
     let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
-    let delete = &actions(&ctx)?.integrations.delete_integration;
+    let delete = &app.actions.integrations.delete_integration;
     delete
         .run(scope.organisation.id, scope.member.user_id, id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(slack_start))
         .routes(routes!(slack_callback))

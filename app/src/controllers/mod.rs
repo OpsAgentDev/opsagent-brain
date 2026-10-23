@@ -11,6 +11,8 @@ pub mod page;
 pub mod recipients;
 pub mod resources;
 pub mod runs;
+#[cfg(feature = "test-support")]
+pub mod test_routes;
 
 use serde::Serialize;
 use utoipa::{IntoParams, ToSchema};
@@ -37,4 +39,10 @@ pub struct OrgIdPath {
 #[derive(Serialize, ToSchema)]
 pub struct RunAccepted {
     pub run_id: Uuid,
+}
+
+/// A malformed id is the same 404 as an unknown id or another org's.
+pub(crate) fn parse_id(id: &str) -> Result<Uuid, crate::api_error::ApiError> {
+    id.parse()
+        .map_err(|_| crate::api_error::ApiError::not_found())
 }

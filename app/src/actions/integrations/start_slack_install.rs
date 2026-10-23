@@ -1,10 +1,8 @@
-use axum::http::StatusCode;
-
-use super::{configured, redirect_uri, SLACK_NOT_CONFIGURED};
+use super::{configured, not_configured, redirect_uri};
 use crate::{
     adapters::slack::{AUTHORIZE_URL, BOT_SCOPES},
     config::Config,
-    error::{AppError, AppResult},
+    error::AppResult,
 };
 
 /// The Slack consent URL carrying `state`; 503 `slack_not_configured` without client
@@ -21,11 +19,7 @@ impl StartSlackInstall {
     pub fn run(&self, state: &str) -> AppResult<String> {
         let s = &self.settings;
         if !configured(s) {
-            return Err(AppError::Refused {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                code: SLACK_NOT_CONFIGURED,
-                detail: "Slack is not configured.".into(),
-            });
+            return Err(not_configured());
         }
         let e = |v: &str| urlencoding::encode(v).into_owned();
         Ok(format!(

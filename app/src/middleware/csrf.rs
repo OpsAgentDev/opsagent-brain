@@ -6,13 +6,12 @@ use axum::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use hmac::{Hmac, Mac};
-use loco_rs::app::AppContext;
 use sha2::Sha256;
 use tower_sessions::Session;
 use uuid::Uuid;
 
 use super::session::USER_KEY;
-use crate::{api_error::ApiError, app::state};
+use crate::{api_error::ApiError, state::AppState};
 
 fn mac(secret: &str, session_id: &str) -> Hmac<Sha256> {
     let mut m = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("hmac accepts any key");
@@ -27,7 +26,7 @@ pub fn token(secret: &str, session_id: &str) -> String {
 /// Mutating requests on a signed-in session must carry the matching `X-CSRF-Token`.
 /// Anonymous requests (magic-link request, GitHub start) have no session to ride on.
 /// Safe methods are exempt, which covers health and the OAuth callback (both GET).
-pub async fn guard(State(ctx): State<AppContext>, req: Request, next: Next) -> Response {
+pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Response {
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     // Anonymous by design: redeem has its own Origin check (controllers/auth.rs); recipient
     // confirm and unsubscribe are authorised by their single-use token alone.
@@ -39,11 +38,7 @@ pub async fn guard(State(ctx): State<AppContext>, req: Request, next: Next) -> R
         if let Some(session) = req.extensions().get::<Session>() {
             let signed_in = matches!(session.get::<Uuid>(USER_KEY).await, Ok(Some(_)));
             if signed_in {
-                let state = match state(&ctx) {
-                    Ok(s) => s,
-                    Err(e) => return ApiError::internal(e).into_response(),
-                };
-                let secret = &state.config.session_secret;
+                let secret = &app.config.session_secret;
                 let sid = session.id().map(|i| i.to_string()).unwrap_or_default();
                 let ok = req
                     .headers()

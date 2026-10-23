@@ -4,7 +4,6 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use loco_rs::{app::AppContext, controller::middleware::remote_ip::RemoteIP};
 use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
@@ -18,9 +17,10 @@ use uuid::Uuid;
 
 use crate::{
     actions::auth::{GithubProfile, MagicLinkInput},
+    adapters::client_ip::ClientIp,
     api_error::{ApiError, ApiJson, Problem},
-    app::{actions, state},
     middleware::{csrf, org_scope::AuthUser, session::USER_KEY},
+    state::AppState,
 };
 
 const GH_KEY: &str = "github_oauth";
@@ -36,20 +36,16 @@ pub struct MagicLinkRequest {
 #[utoipa::path(post, path = "/auth/magic-link", tag = "auth", request_body = MagicLinkRequest,
     responses((status = 202, description = "Sent if the address is valid and under the rate limit")))]
 async fn request_link(
-    State(ctx): State<AppContext>,
-    ip: RemoteIP,
+    State(app): State<AppState>,
+    ClientIp(ip): ClientIp,
     ApiJson(body): ApiJson<MagicLinkRequest>,
 ) -> Result<StatusCode, ApiError> {
     // Only a proxy-reported address is a client; without one (local runs) there is no IP cap.
-    let ip = match ip {
-        RemoteIP::Forwarded(ip) => Some(ip),
-        RemoteIP::Socket(_) | RemoteIP::None => None,
-    };
     let input = MagicLinkInput {
         email: body.email,
         client_ip: ip,
     };
-    actions(&ctx)?.auth.request_magic_link.run(input).await?;
+    app.actions.auth.request_magic_link.run(input).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -95,14 +91,14 @@ fn check_origin(headers: &HeaderMap, web_base_url: &str) -> Result<(), ApiError>
     responses((status = 200, body = Redirect, description = "Session cookie set"),
         (status = 403, body = Problem), (status = 410, body = Problem)))]
 async fn redeem_link(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     session: Session,
     headers: HeaderMap,
     ApiJson(body): ApiJson<RedeemRequest>,
 ) -> Result<Json<Redirect>, ApiError> {
-    let web = state(&ctx)?.config.web_base_url.clone();
+    let web = app.config.web_base_url.clone();
     check_origin(&headers, &web)?;
-    let redeem = &actions(&ctx)?.auth.redeem_magic_link;
+    let redeem = &app.actions.auth.redeem_magic_link;
     let user_id = redeem.run(&body.token).await?;
     start_session(&session, user_id).await?;
     Ok(Json(Redirect {
@@ -149,10 +145,10 @@ pub struct AuthorizeUrl {
 #[utoipa::path(post, path = "/auth/sign-in/github/start", tag = "auth",
     responses((status = 200, body = AuthorizeUrl), (status = 503, body = Problem)))]
 async fn github_start(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     session: Session,
 ) -> Result<Json<AuthorizeUrl>, ApiError> {
-    let s = state(&ctx)?.config.clone();
+    let s = app.config.clone();
     let client = github_client!(s);
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
     let (url, state) = client
@@ -239,11 +235,11 @@ async fn github_identity(
     responses((status = 302, description = "Session cookie set; redirects to the web dashboard"),
         (status = 400, body = Problem), (status = 502, body = Problem)))]
 async fn github_callback(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     session: Session,
     Query(q): Query<CallbackQuery>,
 ) -> Result<Response, ApiError> {
-    let s = state(&ctx)?.config.clone();
+    let s = app.config.clone();
     let client = github_client!(s);
     let stored = session.remove::<(String, String)>(GH_KEY).await?;
     let Some((_, verifier)) = stored.filter(|(st, _)| *st == q.state) else {
@@ -269,7 +265,7 @@ async fn github_callback(
         email,
         name: gh.name.or(Some(gh.login)),
     };
-    let user_id = actions(&ctx)?.auth.sign_in_github.run(profile).await?;
+    let user_id = app.actions.auth.sign_in_github.run(profile).await?;
     start_session(&session, user_id).await?;
     let to = format!("{}/dashboard", s.web_base_url);
     Ok((StatusCode::FOUND, [(header::LOCATION, to)]).into_response())
@@ -284,13 +280,13 @@ pub struct Csrf {
 #[utoipa::path(get, path = "/auth/csrf", tag = "auth",
     responses((status = 200, body = Csrf), (status = 401, body = Problem)))]
 async fn csrf_token(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     session: Session,
     _user: AuthUser,
 ) -> Result<Json<Csrf>, ApiError> {
     let sid = session.id().ok_or_else(ApiError::unauthenticated)?;
     Ok(Json(Csrf {
-        token: csrf::token(&state(&ctx)?.config.session_secret, &sid.to_string()),
+        token: csrf::token(&app.config.session_secret, &sid.to_string()),
     }))
 }
 
@@ -309,8 +305,8 @@ pub struct Me {
 
 #[utoipa::path(get, path = "/auth/me", tag = "auth",
     responses((status = 200, body = Me), (status = 401, body = Problem)))]
-async fn me(State(ctx): State<AppContext>, AuthUser(id): AuthUser) -> Result<Json<Me>, ApiError> {
-    let u = actions(&ctx)?.auth.current_user.run(id).await?;
+async fn me(State(app): State<AppState>, AuthUser(id): AuthUser) -> Result<Json<Me>, ApiError> {
+    let u = app.actions.auth.current_user.run(id).await?;
     Ok(Json(Me {
         id: u.id,
         email: u.email.as_str().into(),
@@ -318,7 +314,7 @@ async fn me(State(ctx): State<AppContext>, AuthUser(id): AuthUser) -> Result<Jso
     }))
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(request_link))
         .routes(routes!(redeem_link))

@@ -3,7 +3,6 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use loco_rs::app::AppContext;
 use opsagent_connectors::aws::client::short_id;
 use opsagent_core::org::valid_name;
 use serde::{Deserialize, Serialize};
@@ -11,23 +10,18 @@ use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
-use super::{OrgIdPath, OrgPath, RunAccepted};
+use super::{parse_id, OrgIdPath, OrgPath, RunAccepted};
 use crate::{
     actions::connections::{PatchInput, TEMPLATE_VERSION},
     api_error::{ApiError, ApiJson, Problem},
-    app::{actions, state},
     config::Config,
     middleware::org_scope::OrgScope,
+    state::AppState,
     views::connections::{view, Connection},
 };
 
 fn stack_name(organisation_id: Uuid) -> String {
     format!("OpsAgent-Read-{}", short_id(&organisation_id))
-}
-
-/// A malformed id is the same 404 as an unknown id or another org's.
-pub(super) fn parse_id(id: &str) -> Result<Uuid, ApiError> {
-    id.parse().map_err(|_| ApiError::not_found())
 }
 
 fn quick_create_url(
@@ -75,18 +69,17 @@ pub struct CreatedConnection {
     responses((status = 201, body = CreatedConnection), (status = 403, body = Problem),
         (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn create(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiJson(body): ApiJson<NewConnection>,
 ) -> Result<(StatusCode, Json<CreatedConnection>), ApiError> {
     scope.require_owner()?;
     let name = valid_name(&body.display_name).map_err(ApiError::invalid)?;
     let org_id = scope.organisation.id;
-    let create = &actions(&ctx)?.connections.create_connection;
+    let create = &app.actions.connections.create_connection;
     let created = create
         .run(org_id, scope.member.user_id, &body.provider, name)
         .await?;
-    let app = state(&ctx)?;
     let url = created
         .spec
         .uses_template
@@ -105,10 +98,10 @@ async fn create(
 #[utoipa::path(get, path = "/orgs/{org}/connections", tag = "connections", params(OrgPath),
     responses((status = 200, body = Vec<Connection>), (status = 404, body = Problem)))]
 async fn list(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
 ) -> Result<Json<Vec<Connection>>, ApiError> {
-    let list = &actions(&ctx)?.connections.list_connections;
+    let list = &app.actions.connections.list_connections;
     let rows = list.run(scope.organisation.id).await?;
     Ok(Json(rows.iter().map(|c| view(c, None)).collect()))
 }
@@ -116,11 +109,11 @@ async fn list(
 #[utoipa::path(get, path = "/orgs/{org}/connections/{id}", tag = "connections", params(OrgIdPath),
     responses((status = 200, body = Connection), (status = 404, body = Problem)))]
 async fn show(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Connection>, ApiError> {
-    let get = &actions(&ctx)?.connections.get_connection;
+    let get = &app.actions.connections.get_connection;
     let (c, last) = get.run(scope.organisation.id, parse_id(&id)?).await?;
     Ok(Json(view(&c, last.as_ref())))
 }
@@ -144,7 +137,7 @@ pub struct ConnectionPatch {
     responses((status = 200, body = Connection), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 409, body = Problem), (status = 422, body = Problem)))]
 async fn update(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
     ApiJson(body): ApiJson<ConnectionPatch>,
@@ -158,7 +151,7 @@ async fn update(
         api_rate_ceiling: body.api_rate_ceiling,
         slack_channel_id: body.slack_channel_id,
     };
-    let update = &actions(&ctx)?.connections.update_connection;
+    let update = &app.actions.connections.update_connection;
     Ok(Json(view(
         &update.run(scope.organisation.id, id, input).await?,
         None,
@@ -177,13 +170,13 @@ pub struct VerifyBody {
     responses((status = 202, body = RunAccepted), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 409, body = Problem), (status = 422, body = Problem)))]
 async fn verify(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
     ApiJson(body): ApiJson<VerifyBody>,
 ) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
     scope.require_owner()?;
-    let verify = &actions(&ctx)?.connections.request_verify;
+    let verify = &app.actions.connections.request_verify;
     let (org_id, id) = (scope.organisation.id, parse_id(&id)?);
     let run_id = verify
         .run(org_id, scope.member.user_id, id, &body.role_arn)
@@ -201,13 +194,13 @@ pub struct Disconnected {
 #[utoipa::path(delete, path = "/orgs/{org}/connections/{id}", tag = "connections", params(OrgIdPath),
     responses((status = 200, body = Disconnected), (status = 403, body = Problem), (status = 404, body = Problem)))]
 async fn disconnect(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Disconnected>, ApiError> {
     scope.require_owner()?;
     let org_id = scope.organisation.id;
-    let disconnect = &actions(&ctx)?.connections.disconnect_connection;
+    let disconnect = &app.actions.connections.disconnect_connection;
     disconnect
         .run(org_id, scope.member.user_id, parse_id(&id)?)
         .await?;
@@ -220,7 +213,7 @@ async fn disconnect(
     }))
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(create, list))
         .routes(routes!(show, update, disconnect))

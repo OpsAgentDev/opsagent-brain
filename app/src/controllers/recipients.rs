@@ -4,7 +4,6 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, FixedOffset};
-use loco_rs::app::AppContext;
 use opsagent_deliver::repo::RecipientRow;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -15,9 +14,9 @@ use super::{OrgIdPath, OrgPath};
 use crate::{
     actions::recipients as action,
     api_error::{ApiError, ApiJson, ApiQuery, Problem},
-    app::actions,
     controllers::page::{page_request, Page, PageParams},
     middleware::org_scope::OrgScope,
+    state::AppState,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -49,11 +48,11 @@ fn view(r: RecipientRow) -> Recipient {
 #[utoipa::path(get, path = "/orgs/{org}/recipients", tag = "recipients", params(OrgPath, PageParams),
     responses((status = 200, body = Page<Recipient>), (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn list(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiQuery(p): ApiQuery<PageParams>,
 ) -> Result<Json<Page<Recipient>>, ApiError> {
-    let list = &actions(&ctx)?.recipients.list_recipients;
+    let list = &app.actions.recipients.list_recipients;
     let got = list.run(scope.organisation.id, page_request(&p)?).await?;
     Ok(Json(Page::of(got).map(view)))
 }
@@ -73,7 +72,7 @@ pub struct NewRecipient {
     responses((status = 201, body = Recipient), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 409, body = Problem), (status = 422, body = Problem)))]
 async fn create(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiJson(body): ApiJson<NewRecipient>,
 ) -> Result<(StatusCode, Json<Recipient>), ApiError> {
@@ -83,7 +82,7 @@ async fn create(
         member_id: body.member_id,
         connection_id: body.connection_id,
     };
-    let create = &actions(&ctx)?.recipients.create_recipient;
+    let create = &app.actions.recipients.create_recipient;
     let row = create
         .run(scope.organisation.id, scope.member.user_id, new)
         .await?;
@@ -93,13 +92,13 @@ async fn create(
 #[utoipa::path(delete, path = "/orgs/{org}/recipients/{id}", tag = "recipients", params(OrgIdPath),
     responses((status = 204), (status = 403, body = Problem), (status = 404, body = Problem)))]
 async fn remove(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     scope.require_owner()?;
     let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
-    let delete = &actions(&ctx)?.recipients.delete_recipient;
+    let delete = &app.actions.recipients.delete_recipient;
     delete
         .run(scope.organisation.id, scope.member.user_id, id)
         .await?;
@@ -116,10 +115,10 @@ pub struct ConfirmBody {
 #[utoipa::path(post, path = "/recipients/confirm", tag = "recipients", request_body = ConfirmBody,
     responses((status = 204), (status = 410, body = Problem)))]
 async fn confirm(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     ApiJson(body): ApiJson<ConfirmBody>,
 ) -> Result<StatusCode, ApiError> {
-    let confirm = &actions(&ctx)?.recipients.confirm_recipient;
+    let confirm = &app.actions.recipients.confirm_recipient;
     confirm.run(&body.token).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -135,14 +134,14 @@ pub struct UnsubscribePath {
 #[utoipa::path(post, path = "/unsubscribe/{token}", tag = "recipients", params(UnsubscribePath),
     responses((status = 204), (status = 410, body = Problem)))]
 async fn unsubscribe(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     Path(token): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    actions(&ctx)?.recipients.unsubscribe.run(&token).await?;
+    app.actions.recipients.unsubscribe.run(&token).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list, create))
         .routes(routes!(remove))

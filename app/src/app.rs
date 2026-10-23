@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use axum::Router as AxumRouter;
 use loco_rs::{
-    app::{AppContext, Hooks, Initializer},
+    app::{AppContext, Hooks},
     bgworker::{BackgroundWorker, Queue},
     boot::{create_app, BootResult, StartMode},
     config::Config,
@@ -18,9 +18,7 @@ use crate::{
     adapters::loco_queue::LocoQueue,
     boot,
     config::Config as AppConfig,
-    controllers,
     logging::init_tracing,
-    middleware::{self, AuthInitializer},
     state::AppState,
     tasks::{
         deliver_briefing::DeliverBriefingNow, openapi_dump::OpenapiDump, scan_now::ScanNow,
@@ -108,25 +106,23 @@ impl Hooks for App {
     /// Our subscriber instead of Loco's (same filter and formats).
     fn init_logger(ctx: &AppContext) -> Result<bool> {
         init_tracing(&state(ctx)?.config);
+        crate::config::warn_if_loco_env();
         Ok(true)
     }
 
-    async fn initializers(_ctx: &AppContext) -> Result<Vec<Box<dyn Initializer>>> {
-        Ok(vec![Box::new(AuthInitializer)])
+    /// shortcut: Loco still runs the process until Task 15's `main`, so it serves our router
+    /// whole: its own routes and middleware are emptied (nothing doubled, no `x-powered-by` or
+    /// etag) and the router it built is empty, so ours replaces it. Removed with Loco in Task 15.
+    async fn after_routes(_router: AxumRouter, ctx: &AppContext) -> Result<AxumRouter> {
+        boot::router(state(ctx)?).map_err(|e| loco_rs::Error::string(&e.to_string()))
     }
 
-    /// `/v1` and `/openapi.json` come from the `utoipa-axum` router so every route is in the
-    /// OpenAPI document. Merged here (not in `after_routes`) so Loco's middleware stack wraps them.
-    async fn before_routes(_ctx: &AppContext) -> Result<AxumRouter<AppContext>> {
-        Ok(controllers::openapi::routes())
-    }
-
-    fn middlewares(ctx: &AppContext) -> Vec<Box<dyn MiddlewareLayer>> {
-        middleware::request_span::stack(ctx)
+    fn middlewares(_ctx: &AppContext) -> Vec<Box<dyn MiddlewareLayer>> {
+        vec![]
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {
-        AppRoutes::with_default_routes().add_route(controllers::health::routes())
+        AppRoutes::empty()
     }
 
     async fn connect_workers(ctx: &AppContext, queue: &Queue) -> Result<()> {
