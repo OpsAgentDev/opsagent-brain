@@ -3,14 +3,8 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::{AppEnv, Config, LogFormat};
 
-/// Loco's module list, plus `opsagent`: a target prefix, so every `opsagent_*` crate logs.
-const LOG_MODULES: [&str; 5] = [
-    "loco_rs",
-    "sea_orm_migration",
-    "tower_http",
-    "sqlx::query",
-    "opsagent",
-];
+/// The pre-switch module list, plus `opsagent`: a target prefix, so every `opsagent_*` crate logs.
+const LOG_MODULES: [&str; 4] = ["sea_orm_migration", "tower_http", "sqlx::query", "opsagent"];
 
 /// The filter when `RUST_LOG` is unset: each module at `level`.
 fn default_directives(level: &str) -> String {
@@ -19,7 +13,7 @@ fn default_directives(level: &str) -> String {
 }
 
 /// Installs the process subscriber: `RUST_LOG` wins, else `default_directives(LOG_LEVEL)`.
-/// Off in tests unless `RUST_LOG` is set (the Loco test logger was disabled). A second call
+/// Off in tests unless `RUST_LOG` is set (the old test logger was disabled). A second call
 /// is a no-op.
 pub fn init_tracing(c: &Config) {
     let filter = match EnvFilter::try_from_default_env() {
@@ -43,7 +37,7 @@ mod tests {
     fn default_filter_covers_every_opsagent_crate() {
         assert_eq!(
             default_directives("info"),
-            "loco_rs=info,sea_orm_migration=info,tower_http=info,sqlx::query=info,opsagent=info"
+            "sea_orm_migration=info,tower_http=info,sqlx::query=info,opsagent=info"
         );
     }
 }

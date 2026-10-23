@@ -186,14 +186,14 @@ fn invalid(name: &'static str, reason: &str) -> ConfigError {
 
 /// Warns when the environment came from `LOCO_ENV`. Called once tracing is up: config is read
 /// before the subscriber exists, so a warning from `from_vars` would go nowhere.
-pub fn warn_if_loco_env() {
+pub fn warn_if_deprecated_env() {
     let set = |k| std::env::var(k).is_ok_and(|v| !v.is_empty());
     if !set("APP_ENV") && set("LOCO_ENV") {
         tracing::warn!("LOCO_ENV is deprecated, set APP_ENV");
     }
 }
 
-/// `APP_ENV`, else the deprecated `LOCO_ENV` (see `warn_if_loco_env`), else development.
+/// `APP_ENV`, else the deprecated `LOCO_ENV` (see `warn_if_deprecated_env`), else development.
 fn app_env(get: &impl Fn(&str) -> Option<String>) -> Result<AppEnv, ConfigError> {
     let value = get("APP_ENV").or_else(|| get("LOCO_ENV"));
     match value.as_deref().unwrap_or("development") {

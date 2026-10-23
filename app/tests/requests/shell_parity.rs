@@ -1,4 +1,4 @@
-//! The HTTP shell's behaviour that must not change when Loco's stack is replaced (Task 14).
+//! The HTTP shell's behaviour that must not change across the framework switch (Task 14).
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -12,7 +12,7 @@ async fn request_id_echoed_and_generated() {
             .get("/healthz")
             .add_header("x-request-id", "abc-123=@x!")
             .await;
-        // Loco's sanitising: only word chars, `-` and `@` survive.
+        // Pre-switch sanitising: only word chars, `-` and `@` survive.
         assert_eq!(res.header("x-request-id"), "abc-123@x");
         let long = "x".repeat(300);
         let res = req.get("/healthz").add_header("x-request-id", &long).await;
@@ -128,7 +128,7 @@ async fn unmatched_route_404() {
 
 #[tokio::test]
 #[serial]
-async fn default_loco_routes_status() {
+async fn legacy_routes_status() {
     serve(|req, _ctx| async move {
         for path in ["/_ping", "/_health", "/_readiness"] {
             let res = req.get(path).await;
@@ -179,7 +179,7 @@ async fn secure_headers_present_and_hsts_only_in_production() {
             res.header("strict-transport-security"),
             "max-age=31536000; includeSubDomains"
         );
-        // Unmatched routes stay 404 in production (Loco's dev fallback page is gone).
+        // Unmatched routes stay 404 in production (the old dev fallback page is gone).
         assert_eq!(prod.get("/no/such/route").await.status_code(), 404);
     })
     .await;

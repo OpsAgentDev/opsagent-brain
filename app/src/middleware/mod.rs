@@ -1,6 +1,6 @@
 //! The HTTP middleware stack (app-shell.md): request id, request span, CSRF, session, CORS,
-//! secure headers, timeout, catch-panic and the body limit. Loco's `x-powered-by` and etag are
-//! gone by ruling.
+//! secure headers, timeout, catch-panic and the body limit. The old framework's `x-powered-by`
+//! and etag are gone by ruling.
 pub mod csrf;
 pub mod org_scope;
 pub mod request_span;
@@ -30,7 +30,7 @@ use crate::{
     state::AppState,
 };
 
-/// Today's value (Loco's default).
+/// Today's value (the old framework's default).
 const BODY_LIMIT: usize = 2_000_000;
 const HSTS: &str = "max-age=31536000; includeSubDomains";
 
@@ -98,7 +98,7 @@ async fn timeout(State(after): State<Duration>, req: Request, next: Next) -> Res
     }
 }
 
-/// Logs the panic message (as Loco did) and answers a 500 `internal` problem.
+/// Logs the panic message (as before the switch) and answers a 500 `internal` problem.
 fn panic_problem(err: Box<dyn Any + Send + 'static>) -> Response {
     let msg = err
         .downcast_ref::<String>()

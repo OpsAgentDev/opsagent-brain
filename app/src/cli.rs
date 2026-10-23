@@ -89,7 +89,7 @@ pub fn install_tracing() {
         Ok(c) => init_tracing(&c),
         Err(_) => drop(tracing_subscriber::fmt().try_init()),
     }
-    config::warn_if_loco_env();
+    config::warn_if_deprecated_env();
 }
 
 /// Runs `cli`; a failure is logged as one `tracing` error and exits 1.

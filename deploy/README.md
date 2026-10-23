@@ -10,7 +10,9 @@ Source of truth: `docs/tech-spec/deployment.md` in the architecture repo. Railwa
 
 The scheduler must never overlap itself during a deploy, hence overlap 0 and one replica.
 
-## Variables (set on all three services; `app/config/production.yaml` fails boot if a required one is missing)
+## Variables (set on all three services; `Config::from_env` in `app/src/config.rs` fails boot, naming every missing required one)
+
+The image sets `APP_ENV=production` and `PORT=3000`. `LOCO_ENV` is still read when `APP_ENV` is unset, with a deprecation warning, for one release only; set `APP_ENV`.
 
 | Kind | Variables |
 |---|---|
@@ -28,7 +30,16 @@ Plan 2 variables (placeholders only; real values live in Railway):
 | `MAIL_FROM` | plain | sender for recipient mail, e.g. `OpsAgent <briefing@opsagent.dev>`; default `OpsAgent <login@opsagent.dev>` |
 | `SLACK_API_BASE_URL` | plain, optional | default `https://slack.com/api`; override only for tests |
 
-Unsubscribe tokens are HMACs keyed from `UNSUBSCRIBE_SECRET` (sealed, at least 16 bytes), falling back to `SESSION_SECRET` when unset. Set it before the first weekly ships; to switch from the fallback without breaking links already sent, set it equal to the current `SESSION_SECRET`. Rotating `UNSUBSCRIBE_SECRET` invalidates every outstanding unsubscribe link, so do not rotate it; once it is set, `SESSION_SECRET` may rotate freely. `SLACK_SIGNING_SECRET`, Stripe and `JWT_SIGNING_KEY` are listed for later plans and not read yet. Optional: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `COOKIE_DOMAIN` (default `opsagent.dev`), `OPSAGENT_KEK_VERSION`, `OPSAGENT_KEK_PREV`, `LOG_LEVEL`. Railway sets `PORT`. Local compose values live in `.env.docker.example`.
+Unsubscribe tokens are HMACs keyed from `UNSUBSCRIBE_SECRET` (sealed, at least 16 bytes), falling back to `SESSION_SECRET` when unset. Set it before the first weekly ships; to switch from the fallback without breaking links already sent, set it equal to the current `SESSION_SECRET`. Rotating `UNSUBSCRIBE_SECRET` invalidates every outstanding unsubscribe link, so do not rotate it; once it is set, `SESSION_SECRET` may rotate freely. `SLACK_SIGNING_SECRET`, Stripe and `JWT_SIGNING_KEY` are listed for later plans and not read yet. Optional: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `COOKIE_DOMAIN` (default `opsagent.dev`), `OPSAGENT_KEK_VERSION`, `OPSAGENT_KEK_PREV`, `LOG_LEVEL`. Railway sets `PORT`.
+
+Worker variables (optional; read by `start --worker` and `start --server-and-worker`):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WORKER_CONCURRENCY` | `4` | jobs run at once per worker process |
+| `WORKER_POLL_MS` | `1000` | idle poll interval of the `jobs` table |
+| `JOB_LOCK_MAX_AGE_SECS` | `25200` (7 h, above the 6 h scan cap) | a job lock older than this is taken over; the ledger fence rejects the dead writer |
+| `WORKER_SHUTDOWN_GRACE_SECS` | `30` | on SIGTERM, time in-flight jobs get to finish; keep below `DRAINING_SECONDS` | Local compose values live in `.env.docker.example`.
 
 ## Slack app
 

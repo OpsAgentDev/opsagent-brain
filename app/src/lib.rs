@@ -1,7 +1,6 @@
 pub mod actions;
 pub mod adapters;
 pub mod api_error;
-pub mod app;
 pub mod boot;
 pub mod cli;
 pub mod config;

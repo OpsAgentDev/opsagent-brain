@@ -15,9 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && useradd --system --uid 10001 --no-create-home opsagent
 COPY --from=builder /opsagent-brain /usr/local/bin/opsagent-brain
 WORKDIR /app
-COPY app/config ./config
 COPY templates ./templates
 USER opsagent
-ENV LOCO_ENV=production PORT=3000
+ENV APP_ENV=production PORT=3000
 EXPOSE 3000
 CMD ["opsagent-brain", "start"]

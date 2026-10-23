@@ -2,18 +2,12 @@
 members = ["app", "crates/*"]
 resolver = "2"
 
-[workspace.dependencies]
-loco-rs = { version = "1.2" }
-
 [workspace.lints.clippy]
 print_stdout = "deny"
 print_stderr = "deny"
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
-# loco_rs::Error is framework-owned; it crosses clippy's size limit once aws-smithy enables
-# serde_json/preserve_order in the unified workspace build.
-result_large_err = "allow"
 
 # Keeps our own crates' debug info locally; drops it for third-party deps (AWS SDK) to shrink target/.
 [profile.dev.package."*"]

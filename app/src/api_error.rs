@@ -114,7 +114,6 @@ macro_rules! internal_from {
 }
 internal_from!(
     sea_orm::DbErr,
-    loco_rs::Error,
     tower_sessions::session::Error,
     opsagent_secrets::SecretsError,
     opsagent_ledger::LedgerError
