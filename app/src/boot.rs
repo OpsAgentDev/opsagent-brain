@@ -6,7 +6,7 @@ use opsagent_core::repo::Clock;
 use opsagent_secrets::Kek;
 
 use crate::{
-    actions::{auth, uow::UnitOfWork, Actions, RateLimiter},
+    actions::{auth, members, orgs, uow::UnitOfWork, Actions, RateLimiter},
     adapters::slack::SlackClient,
     mailers::Mailer,
     settings::Settings,
@@ -37,6 +37,26 @@ pub fn build_actions(d: &Deps) -> Actions {
             redeem_magic_link: auth::RedeemMagicLink::new(d.uow.clone(), d.clock.clone()),
             sign_in_github: auth::SignInGithub::new(d.uow.clone()),
             current_user: auth::CurrentUser::new(d.uow.clone()),
+        },
+        orgs: orgs::Orgs {
+            resolve_scope: orgs::ResolveOrgScope::new(d.uow.clone()),
+            create_org: orgs::CreateOrg::new(d.uow.clone(), d.kek.clone(), d.limiter.clone()),
+            list_orgs: orgs::ListOrgs::new(d.uow.clone()),
+            get_org: orgs::GetOrg,
+            update_org: orgs::UpdateOrg::new(d.uow.clone()),
+            delete_org: orgs::DeleteOrg::new(d.uow.clone(), d.clock.clone()),
+            is_owner_anywhere: orgs::IsOwnerAnywhere::new(d.uow.clone()),
+        },
+        members: members::Members {
+            list_members: members::ListMembers::new(d.uow.clone()),
+            invite_member: members::InviteMember::new(
+                d.uow.clone(),
+                d.mailer.clone(),
+                d.settings.web_base_url.clone(),
+                d.clock.clone(),
+            ),
+            accept_invite: members::AcceptInvite::new(d.uow.clone(), d.clock.clone()),
+            remove_member: members::RemoveMember::new(d.uow.clone()),
         },
     }
 }

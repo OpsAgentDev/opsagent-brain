@@ -64,6 +64,7 @@ pub struct Member {
     pub organisation_id: Uuid,
     pub user_id: Uuid,
     pub email: Email,
+    pub name: Option<String>,
     pub role: Role,
     pub created_at: DateTime<Utc>,
 }

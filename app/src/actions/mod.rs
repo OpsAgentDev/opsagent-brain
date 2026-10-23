@@ -1,5 +1,7 @@
 //! Use cases over repository traits (engineering principles, Layers).
 pub mod auth;
+pub mod members;
+pub mod orgs;
 pub mod uow;
 
 use async_trait::async_trait;
@@ -9,6 +11,8 @@ use crate::error::AppResult;
 /// Every action, built once by `boot::build_actions`.
 pub struct Actions {
     pub auth: auth::Auth,
+    pub orgs: orgs::Orgs,
+    pub members: members::Members,
 }
 
 /// Fixed-window counters shared by every rate limit.

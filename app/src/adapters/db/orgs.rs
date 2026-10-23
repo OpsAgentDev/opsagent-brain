@@ -9,7 +9,7 @@ use opsagent_core::{
 };
 use sea_orm::{
     prelude::DateTimeWithTimeZone, ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait,
-    QueryFilter, QuerySelect, Set, SqlErr, TryInsertResult,
+    QueryFilter, QuerySelect, Set, TryInsertResult,
 };
 use uuid::Uuid;
 
@@ -39,6 +39,7 @@ fn member((m, u): (members::Model, Option<users::Model>)) -> RepoResult<Member> 
         organisation_id: m.organisation_id,
         user_id: m.user_id,
         email: email(&u.email)?,
+        name: u.name,
         role: role(&m.role)?,
         created_at: utc(m.created_at),
     })
@@ -199,20 +200,25 @@ impl<C: Conn> OrganisationsRepo for Pg<C> {
         user_id: Uuid,
         role: Role,
     ) -> RepoResult<Member> {
-        members::ActiveModel {
+        let row = members::ActiveModel {
             id: Set(Uuid::new_v4()),
             organisation_id: Set(organisation_id),
             user_id: Set(user_id),
             role: Set(role.as_str().into()),
             created_at: Set(now()),
             updated_at: Set(now()),
+        };
+        // DO NOTHING, not an error: a double accept must not abort the caller's transaction.
+        let cols = [members::Column::OrganisationId, members::Column::UserId];
+        match members::Entity::insert(row)
+            .on_conflict_do_nothing_on(cols)
+            .exec_without_returning(self.db())
+            .await
+            .map_err(db_err)?
+        {
+            TryInsertResult::Inserted(1) => {}
+            _ => return Err(RepoError::Conflict("member")),
         }
-        .insert(self.db())
-        .await
-        .map_err(|e| match e.sql_err() {
-            Some(SqlErr::UniqueConstraintViolation(_)) => RepoError::Conflict("member"),
-            _ => db_err(e),
-        })?;
         let gone = || RepoError::Storage("member missing after insert".into());
         self.member_in(organisation_id, user_id)
             .await?

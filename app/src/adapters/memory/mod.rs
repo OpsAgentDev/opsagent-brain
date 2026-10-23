@@ -39,6 +39,15 @@ use uuid::Uuid;
 
 pub use rate_limiter::MemRateLimiter;
 
+/// A clock stopped at its time.
+pub struct FixedClock(pub DateTime<Utc>);
+
+impl opsagent_core::repo::Clock for FixedClock {
+    fn now(&self) -> DateTime<Utc> {
+        self.0
+    }
+}
+
 use crate::actions::uow::{Repos, Tx, UnitOfWork};
 
 #[derive(Clone)]
