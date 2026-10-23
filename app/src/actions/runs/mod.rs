@@ -1,8 +1,13 @@
-//! Runs: reading them, manual scans, and handing runs to the queue.
+//! Runs: reading them, manual scans, handing runs to the queue, verify runs and the scheduler tick.
+pub(crate) mod classify;
 mod dispatch;
 mod get_run;
 mod list_runs;
 mod request_manual_scan;
+mod scheduler_tick;
+mod verify_connection;
+mod verify_outcome;
+mod verify_verdict;
 
 use std::sync::Arc;
 
@@ -10,6 +15,8 @@ pub use dispatch::RunDispatcher;
 pub use get_run::GetRun;
 pub use list_runs::ListRuns;
 pub use request_manual_scan::RequestManualScan;
+pub use scheduler_tick::{SchedulerTick, TickReport};
+pub use verify_connection::VerifyConnection;
 
 pub struct Runs {
     /// Shared with the workers and the scheduler tick.
@@ -17,6 +24,8 @@ pub struct Runs {
     pub request_manual_scan: RequestManualScan,
     pub list_runs: ListRuns,
     pub get_run: GetRun,
+    pub verify_connection: VerifyConnection,
+    pub scheduler_tick: SchedulerTick,
 }
 
 #[cfg(test)]

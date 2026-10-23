@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use opsagent_connectors::Registry;
 use opsagent_core::repo::Clock;
-use opsagent_ledger::Queue;
+use opsagent_ledger::{redis, Queue};
 use opsagent_secrets::Kek;
 
 use crate::{
@@ -26,6 +26,10 @@ pub struct Deps {
     pub clock: Arc<dyn Clock>,
     pub settings: Settings,
     pub queue: Arc<dyn Queue>,
+    /// Lease locks for run workers.
+    pub ledger_redis: redis::Client,
+    /// The scheduler tick opens its own small pool on it.
+    pub db_url: String,
 }
 
 pub fn build_actions(d: &Deps) -> Actions {
@@ -80,6 +84,15 @@ pub fn build_actions(d: &Deps) -> Actions {
             ),
             list_runs: runs::ListRuns::new(d.uow.clone()),
             get_run: runs::GetRun::new(d.uow.clone()),
+            verify_connection: runs::VerifyConnection::new(
+                d.uow.clone(),
+                d.ledger_redis.clone(),
+                d.kek.clone(),
+                Arc::new(d.registry.clone()),
+                dispatcher.clone(),
+                d.clock.clone(),
+            ),
+            scheduler_tick: runs::SchedulerTick::new(d.db_url.clone(), dispatcher.clone()),
             dispatcher,
         },
     }

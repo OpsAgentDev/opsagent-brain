@@ -7,6 +7,7 @@ use opsagent_core::{
 };
 use opsagent_deliver::repo::{DeliveriesRepo, IntegrationsRepo, RecipientsRepo, SchedulesRepo};
 use opsagent_ledger::Storage;
+use uuid::Uuid;
 
 pub trait Repos: Send + Sync {
     fn orgs(&self) -> &dyn OrganisationsRepo;
@@ -29,6 +30,12 @@ pub trait Repos: Send + Sync {
 #[async_trait]
 pub trait Tx: Repos {
     async fn commit(self: Box<Self>) -> RepoResult<()>;
+    /// A nested transaction: dropping it undoes only its own writes, and a failed statement
+    /// inside it leaves this one usable. Do not use this one while it is open.
+    async fn savepoint(&self) -> RepoResult<Box<dyn Tx>>;
+    /// Holds run `run_id` until this transaction ends if `fence` is still its fence, so a
+    /// superseded worker cannot commit; `Err(StaleFence)` otherwise.
+    async fn hold_fence(&self, run_id: Uuid, fence: u64) -> opsagent_ledger::Result<()>;
 }
 
 #[async_trait]

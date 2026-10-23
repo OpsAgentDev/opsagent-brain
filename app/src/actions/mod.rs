@@ -6,7 +6,10 @@ pub mod resources;
 pub mod runs;
 pub mod uow;
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
+use opsagent_connectors::{Connector, ConnectorError, Registry};
 
 use crate::error::AppResult;
 
@@ -30,3 +33,14 @@ pub trait RateLimiter: Send + Sync {
 
 pub const HOUR_SECS: i64 = 3600;
 pub const DAY_SECS: i64 = 86_400;
+
+/// The connector for a provider.
+pub trait ConnectorSource: Send + Sync {
+    fn connector(&self, provider: &str) -> Result<Arc<dyn Connector>, ConnectorError>;
+}
+
+impl ConnectorSource for Registry {
+    fn connector(&self, provider: &str) -> Result<Arc<dyn Connector>, ConnectorError> {
+        Registry::connector(self, provider).map(Arc::from)
+    }
+}

@@ -76,6 +76,9 @@ pub struct Connection {
     pub slack_channel_id: Option<String>,
     pub first_connected_at: Option<DateTime<Utc>>,
     pub billable_from: Option<DateTime<Utc>>,
+    /// Consecutive verify calls refused access, and when the first of them was.
+    pub verify_denied_streak: i32,
+    pub verify_denied_first_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -114,6 +117,17 @@ pub struct Verification {
     pub missing_grants: serde_json::Value,
 }
 
+/// What a successful verify call established about the connection (status aside).
+#[derive(Debug, Clone, Default)]
+pub struct Verified {
+    /// The provider account behind the role, for a connected or degraded outcome.
+    pub account: Option<String>,
+    /// The new `status_reason`; `None` clears it.
+    pub reason: Option<String>,
+    /// Set on the first connect: stamps `first_connected_at` and `billable_from`.
+    pub first_connected_at: Option<DateTime<Utc>>,
+}
+
 /// Credentials sealed under the org DEK; `kek_version` is the KEK version that wrapped it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedCreds {
@@ -145,7 +159,8 @@ pub trait ConnectionsRepo: Send + Sync {
         patch: ConnectionPatch,
     ) -> RepoResult<Connection>;
     /// Compare-and-set on status, also writing `reason` when given; false when the row was
-    /// not in `from`.
+    /// not in `from`. `Conflict("account")` as for `record_verified` when `to` claims an
+    /// account another connection holds.
     async fn cas_status(
         &self,
         organisation_id: Uuid,
@@ -154,6 +169,27 @@ pub trait ConnectionsRepo: Send + Sync {
         to: ConnectionStatus,
         reason: Option<&str>,
     ) -> RepoResult<bool>;
+    /// Records `v` (its `at` is the record time) for verify run `run_id`; `NotFound` when the
+    /// connection is not in the organisation.
+    async fn record_verification(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        run_id: Uuid,
+        v: &Verification,
+    ) -> RepoResult<()>;
+    /// Writes `v` and clears the denial streak. `Conflict("account")` when the account is
+    /// claimed by another connection of the provider (connected, degraded or revoked); on
+    /// Postgres the transaction is then aborted, so call it under `Tx::savepoint`.
+    async fn record_verified(&self, organisation_id: Uuid, id: Uuid, v: Verified)
+        -> RepoResult<()>;
+    async fn record_denial(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        streak: i32,
+        first_at: DateTime<Utc>,
+    ) -> RepoResult<()>;
     /// `NotFound` when the connection is not in the organisation or has no credentials.
     async fn load_creds(&self, organisation_id: Uuid, id: Uuid) -> RepoResult<SealedCreds>;
     /// Replaces the stored credentials; `NotFound` as for `load_creds`.

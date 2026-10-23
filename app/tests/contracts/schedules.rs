@@ -13,6 +13,32 @@ async fn all_due(s: &dyn Repos) -> Vec<Uuid> {
 }
 
 contract_suite! {
+    async fn due_runs_are_queued_runs_with_a_due_marker(s) {
+        use opsagent_core::run::RunKey;
+        let (live, gone) = (org_id(s, "live").await, org_id(s, "gone").await);
+        // Whole seconds, so the markers survive Postgres' microsecond timestamps unchanged.
+        let now = chrono::DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
+        let mut ids = Vec::new();
+        for (org, minutes) in [(live, 2), (gone, 1), (live, -5)] {
+            let key = RunKey {
+                organisation_id: Some(org),
+                connection_id: None,
+                job_type: "verify".into(),
+                scheduled_at: now - Duration::minutes(minutes),
+            };
+            let id = s.ledger().create_run(key).await.unwrap().run.id;
+            let marker = now - Duration::minutes(minutes);
+            s.ledger().mark_enqueue_pending(id, marker).await.unwrap();
+            ids.push((id, marker));
+        }
+        s.orgs().soft_delete(gone, now).await.unwrap();
+        let due = s.schedules().due_runs(now).await.unwrap();
+        let got: Vec<_> = due.iter().map(|d| (d.run_id, d.marker, d.organisation_deleted)).collect();
+        // Earliest marker first; the run marked in the future is not due.
+        assert_eq!(got, [(ids[0].0, ids[0].1, false), (ids[1].0, ids[1].1, true)]);
+        assert!(due.iter().all(|d| d.job_type == "verify"));
+    }
+
     async fn advance_none_disables(s, seed) {
         let o = org_id(s, "acme").await;
         let c = seed.connection(o).await;

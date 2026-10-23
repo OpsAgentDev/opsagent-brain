@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use opsagent_brain::{
     actions::{
-        runs::{RequestManualScan, RunDispatcher},
+        runs::{RequestManualScan, RunDispatcher, TickReport as Report},
         uow::UnitOfWork,
     },
     adapters::{
@@ -14,7 +14,6 @@ use opsagent_brain::{
         },
         loco_queue::LocoQueue,
     },
-    tasks::scheduler_tick::{tick, Report},
 };
 use opsagent_core::{
     repo::FixedClock,
@@ -77,6 +76,15 @@ fn request_manual_scan(ctx: &AppContext, now: DateTime<Utc>) -> RequestManualSca
     let queue = Arc::new(LocoQueue(ctx.clone()));
     let dispatcher = Arc::new(RunDispatcher::new(uow.clone(), queue));
     RequestManualScan::new(uow, dispatcher, Arc::new(FixedClock(now)))
+}
+
+/// One tick of the installed `SchedulerTick` at `now`; `None` when the lock is held elsewhere.
+async fn tick(
+    ctx: &AppContext,
+    now: DateTime<Utc>,
+) -> opsagent_brain::error::AppResult<Option<Report>> {
+    let actions = opsagent_brain::app::actions(ctx).unwrap();
+    actions.runs.scheduler_tick.run(now).await
 }
 
 async fn run_tick(ctx: &AppContext, now: DateTime<Utc>) -> Report {

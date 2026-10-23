@@ -1067,7 +1067,14 @@ async fn provider_messages_never_reach_the_logs() {
                 .unwrap()
                 .run;
             let k = rigged(Some(Fault::Verify("MalformedPolicyDocument")));
-            opsagent_brain::workers::verify::verify(&ctx, run.id, Some(&k))
+            let verify = &opsagent_brain::app::actions(&ctx)
+                .unwrap()
+                .runs
+                .verify_connection;
+            verify
+                .clone()
+                .with_connector(std::sync::Arc::new(k))
+                .run(run.id)
                 .await
                 .unwrap();
         })
