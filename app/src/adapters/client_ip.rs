@@ -1,5 +1,5 @@
 //! The client address for rate limits: the rightmost `X-Forwarded-For` value, which the single
-//! trusted proxy in front of the app (Railway's edge) appends. Same as Loco's
+//! trusted proxy in front of the app (Railway's edge) appends. Same as the pre-switch
 //! `RemoteIP::Forwarded` with `RightmostXForwardedFor`; the socket address is never used.
 use std::{convert::Infallible, net::IpAddr};
 

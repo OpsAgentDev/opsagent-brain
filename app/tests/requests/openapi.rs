@@ -62,7 +62,7 @@ fn committed_document_is_current() {
     assert_eq!(
         committed,
         document_json(),
-        "run `cargo loco task openapi:dump`"
+        "run `cargo run -- task openapi:dump`"
     );
 }
 

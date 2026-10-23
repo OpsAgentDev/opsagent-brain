@@ -197,7 +197,7 @@ pub fn without_instance(res: &axum_test::TestResponse) -> String {
     v.to_string()
 }
 
-/// The booted state (what `app::state` read from Loco's shared store).
+/// The booted state.
 pub fn state(ctx: &TestApp) -> AppResult<AppState> {
     Ok(ctx.state.clone())
 }

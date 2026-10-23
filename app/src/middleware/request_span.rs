@@ -1,4 +1,4 @@
-//! Request id and the request span. Loco's `logger` recorded the full URI (`http.uri`) and so
+//! Request id and the request span. The old framework's logger recorded the full URI (`http.uri`) and so
 //! leaked OAuth codes, states and path tokens into logs. This span names the route template
 //! (`/v1/unsubscribe/{token}`) instead; status and latency come from the response event.
 use std::sync::OnceLock;
@@ -17,7 +17,7 @@ const X_REQUEST_ID: &str = "x-request-id";
 #[derive(Clone)]
 pub struct RequestId(pub String);
 
-/// Loco's rules, kept: only word characters, `-` and `@`, at most 255 of them.
+/// The pre-switch rules, kept: only word characters, `-` and `@`, at most 255 of them.
 fn sanitise(given: Option<&HeaderValue>) -> String {
     static STRIP: OnceLock<Regex> = OnceLock::new();
     let strip = STRIP.get_or_init(|| Regex::new(r"[^\w\-@]").expect("valid regex"));
@@ -67,7 +67,7 @@ mod tests {
     use super::sanitise;
 
     #[test]
-    fn request_id_is_sanitised_like_loco() {
+    fn request_id_is_sanitised_like_before() {
         let v = |s: &str| sanitise(Some(&HeaderValue::from_str(s).unwrap()));
         assert_eq!(v("foo-bar=baz"), "foo-barbaz");
         assert_eq!(v(&"x".repeat(1000)).len(), 255);

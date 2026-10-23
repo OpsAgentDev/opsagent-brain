@@ -12,8 +12,8 @@ async fn healthz() -> Json<Value> {
     Json(json!({"status": "ok"}))
 }
 
-/// Loco's `/_ping` and `/_health`, kept because they answered before the switch.
-async fn loco_ok() -> Json<Value> {
+/// The legacy `/_ping` and `/_health`, kept because they answered before the switch.
+async fn legacy_ok() -> Json<Value> {
     Json(json!({"ok": true}))
 }
 
@@ -57,8 +57,8 @@ async fn readyz(State(app): State<AppState>) -> (StatusCode, Json<Value>) {
     (status(ok), Json(body))
 }
 
-/// Loco's `/_readiness` shape (`{"ok": bool}`) over the same checks as `/readyz`.
-async fn loco_readiness(State(app): State<AppState>) -> (StatusCode, Json<Value>) {
+/// The legacy `/_readiness` shape (`{"ok": bool}`) over the same checks as `/readyz`.
+async fn legacy_readiness(State(app): State<AppState>) -> (StatusCode, Json<Value>) {
     let ok = ready(&app).await;
     (status(ok), Json(json!({"ok": ok})))
 }
@@ -67,7 +67,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .route("/_ping", get(loco_ok))
-        .route("/_health", get(loco_ok))
-        .route("/_readiness", get(loco_readiness))
+        .route("/_ping", get(legacy_ok))
+        .route("/_health", get(legacy_ok))
+        .route("/_readiness", get(legacy_readiness))
 }

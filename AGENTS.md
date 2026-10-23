@@ -1,6 +1,6 @@
 # AGENTS.md — opsagent-brain
 
-This repo is **brain**: the Rust (Loco.rs) API, MCP server, workers, and scheduler for OpsAgent. It holds implementation only. All knowledge, decisions, specs, and plans live in the ArchBoss hub: `../OpsAgent-ArchBoss` (read its `AGENTS.md` first, then `DECISIONS.md`). If ArchBoss is not checked out beside this repo, stop and ask for it; do not reconstruct decisions from code.
+This repo is **brain**: the Rust (axum) API, MCP server, workers, and scheduler for OpsAgent. It holds implementation only. All knowledge, decisions, specs, and plans live in the ArchBoss hub: `../OpsAgent-ArchBoss` (read its `AGENTS.md` first, then `DECISIONS.md`). If ArchBoss is not checked out beside this repo, stop and ask for it; do not reconstruct decisions from code.
 
 No `CLAUDE.md` in this repo; this file is the only instruction file.
 
@@ -15,7 +15,7 @@ export OPSAGENT_KEK=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=   # local only
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --check
 scripts/check-crate-isolation.sh && scripts/check-tenancy.sh && scripts/check-logging.sh && scripts/openapi-diff.sh
-cargo run -- start --server-and-worker                 # API on :3000 (dev)
+cargo run -- start --server-and-worker                 # API on :5150 (dev; APP_ENV, PORT)
 docker compose --profile brain up -d && scripts/smoke.sh http://localhost:3000
 ```
 
@@ -27,7 +27,7 @@ docker compose --profile brain up -d && scripts/smoke.sh http://localhost:3000
 
 ## Layout
 - `app/` axum shell: controllers (parse and respond), actions (rules and transactions), adapters, models (SeaORM), jobs (`WorkerRunner` on the Postgres `jobs` table, `Scheduler` loop), mailers.
-- `crates/` Loco-free domain: `core`, `secrets`, `ledger`, `connectors`, `checks`. Never depend on `loco-rs` or `sea-orm` here.
+- `crates/` framework-free domain: `core`, `secrets`, `ledger`, `connectors`, `checks`. Never depend on `sea-orm` (or any web framework) here; `scripts/check-crate-isolation.sh` also fails if `loco` appears in any workspace `Cargo.toml` or the dependency graph.
 - `templates/aws/` the customer-facing read-only role template, versioned with a checksum.
 - `openapi.json` generated (`cargo run -- task openapi:dump`), committed, diffed in CI.
 
