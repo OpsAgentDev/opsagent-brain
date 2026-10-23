@@ -26,7 +26,7 @@ docker compose --profile brain up -d && scripts/smoke.sh http://localhost:3000
 - Env: `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `MAIL_FROM`, `WEB_BASE_URL`; prod CLI needs `RESEND_API_KEY` at boot (see `deploy/README.md`).
 
 ## Layout
-- `app/` Loco shell: controllers (parse and respond), services (rules and transactions), models (SeaORM), workers, tasks, mailers.
+- `app/` axum shell: controllers (parse and respond), actions (rules and transactions), adapters, models (SeaORM), jobs (`WorkerRunner` on the Postgres `jobs` table, `Scheduler` loop), mailers.
 - `crates/` Loco-free domain: `core`, `secrets`, `ledger`, `connectors`, `checks`. Never depend on `loco-rs` or `sea-orm` here.
 - `templates/aws/` the customer-facing read-only role template, versioned with a checksum.
 - `openapi.json` generated (`cargo run -- task openapi:dump`), committed, diffed in CI.

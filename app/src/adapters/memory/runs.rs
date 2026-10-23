@@ -7,12 +7,11 @@ use opsagent_core::{
     run::{Run, RunFilter, RunKey, RunStatus, RunsRepo},
 };
 use opsagent_ledger::{
-    Checkpoint, CreateRunOutcome, EffectState, LedgerError, Result, RunRow, Storage,
+    Checkpoint, CreateRunOutcome, EffectState, JobKind, LedgerError, Result, RunRow, Storage,
 };
 use uuid::Uuid;
 
 use super::{MemState, MemStore};
-use crate::workers::full_scan::JOB;
 
 #[derive(Clone)]
 pub(super) struct RunEntry {
@@ -130,7 +129,7 @@ impl RunsRepo for MemStore {
         let scans = s.runs.iter().filter(|r| {
             r.in_org(organisation_id)
                 && r.row.key.connection_id == Some(connection_id)
-                && r.row.key.job_type == JOB
+                && r.row.key.job_type == JobKind::FullScan.as_str()
         });
         Ok(scans.map(|r| r.row.key.scheduled_at).max())
     }
@@ -243,13 +242,6 @@ impl Storage for MemStore {
             .effects
             .insert((run_id, key.to_owned()), Some(r));
         Ok(())
-    }
-
-    async fn mark_enqueue_pending(&self, id: Uuid, at: DateTime<Utc>) -> Result<()> {
-        self.with_run(id, |r| {
-            r.next_attempt_at = Some(at);
-            Ok(())
-        })
     }
 
     async fn clear_enqueue_marker(&self, id: Uuid, marker_at: DateTime<Utc>) -> Result<bool> {

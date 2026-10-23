@@ -45,7 +45,7 @@ impl RequestManualScan {
 
     /// For `actor`: creates the run (`scheduled_at = now`) and a `connection.scan_requested`
     /// audit row, or `rate_limited` within the window, or `connection_not_scannable` unless the
-    /// connection is connected or degraded, then hands the run to the queue. Runs under the
+    /// connection is connected or degraded; the run's job commits with it. Runs under the
     /// connection row lock, so two concurrent requests create one run.
     pub async fn run(
         &self,
@@ -80,7 +80,7 @@ impl RequestManualScan {
             job_type: JobKind::FullScan.as_str().into(),
             scheduled_at: now,
         };
-        let out = self.dispatcher.create_marked(&*tx, key, now).await?;
+        let out = self.dispatcher.create_and_enqueue(&*tx, key, now).await?;
         let target = Some(("connection", c.id.to_string()));
         let entry = AuditEntry::member(
             Some(organisation_id),
@@ -90,9 +90,6 @@ impl RequestManualScan {
         );
         tx.audit().record(entry).await?;
         tx.commit().await?;
-        if out.created {
-            self.dispatcher.hand_off(&out, now).await;
-        }
         Ok(out)
     }
 }
@@ -102,10 +99,7 @@ mod tests {
     use opsagent_core::repo::FixedClock;
 
     use super::*;
-    use crate::{
-        actions::runs::test_support::{connected, FakeQueue},
-        adapters::memory::MemStore,
-    };
+    use crate::{actions::runs::test_support::connected, adapters::memory::MemStore};
 
     #[test]
     fn retry_after_counts_down_the_hour() {
@@ -126,15 +120,14 @@ mod tests {
         let store = MemStore::default();
         let (org, actor) = (Uuid::new_v4(), Uuid::new_v4());
         let c = connected(&store, org).await;
-        let queue = Arc::new(FakeQueue::default());
-        let d = Arc::new(RunDispatcher::new(Arc::new(store.clone()), queue.clone()));
+        let d = Arc::new(RunDispatcher::new(Arc::new(store.clone())));
         let at = |t: DateTime<Utc>| {
             RequestManualScan::new(Arc::new(store.clone()), d.clone(), Arc::new(FixedClock(t)))
         };
         let first: DateTime<Utc> = "2026-10-22T12:00:00Z".parse().unwrap();
         let out = at(first).run(org, actor, c.id).await.unwrap();
         assert!(out.created);
-        assert_eq!(queue.sent().len(), 1);
+        assert_eq!(store.jobs().len(), 1);
         let later = first + Duration::minutes(10);
         let err = at(later).run(org, actor, c.id).await.unwrap_err();
         assert!(
@@ -148,7 +141,7 @@ mod tests {
             "{err:?}"
         );
         // Refused: no second run, no second audit row.
-        assert_eq!(queue.sent().len(), 1);
+        assert_eq!(store.jobs().len(), 1);
         let audits = store.audit_entries();
         let scans = audits
             .iter()

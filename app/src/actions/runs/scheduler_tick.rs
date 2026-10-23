@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use opsagent_deliver::schedule::next_after;
+use opsagent_ledger::JobKind;
 use uuid::Uuid;
 
 use super::RunDispatcher;
@@ -40,16 +41,12 @@ impl SchedulerTick {
         report.map(Some)
     }
 
-    /// One schedule, one transaction: lock, create the run, advance `next_due_at`, commit.
-    /// Returns the run only when this call created it.
-    async fn due_schedule(
-        &self,
-        id: Uuid,
-        now: DateTime<Utc>,
-    ) -> AppResult<Option<(Uuid, String)>> {
+    /// One schedule, one transaction: lock, create the run and its job, advance
+    /// `next_due_at`, commit. `true` when this call created a run a worker handles.
+    async fn due_schedule(&self, id: Uuid, now: DateTime<Utc>) -> AppResult<bool> {
         let tx = self.uow.begin().await?;
         let Some((key, cron, tz)) = tx.schedules().lock_due(id, now).await? else {
-            return Ok(None);
+            return Ok(false);
         };
         // Missed ticks collapse into this one run; the next slot is after `now` (PRD 7.3).
         let next = next_after(&cron, &tz, now);
@@ -57,17 +54,16 @@ impl SchedulerTick {
             tracing::error!(schedule = %id, cron, tz, "invalid schedule, disabling");
             tx.schedules().advance(id, None).await?;
             tx.commit().await?;
-            return Ok(None);
+            return Ok(false);
         }
-        let job = key.job_type.clone();
-        let out = self.dispatcher.create_marked(&*tx, key, now).await?;
+        let known = JobKind::parse(&key.job_type).is_some();
+        let out = self.dispatcher.create_and_enqueue(&*tx, key, now).await?;
         tx.schedules().advance(id, next).await?;
         tx.commit().await?;
-        Ok(out.created.then_some((out.run.id, job)))
+        Ok(out.created && known)
     }
 
     async fn locked(&self, now: DateTime<Utc>) -> AppResult<TickReport> {
-        let d = &self.dispatcher;
         let mut report = TickReport::default();
         // Connections verified before delivery schedules existed get them here, before the due scan.
         let repo = self.uow.schedules();
@@ -77,13 +73,7 @@ impl SchedulerTick {
         for id in repo.due_ids(now).await? {
             // One bad schedule must not block the others; its transaction rolled back, so it is due again next tick.
             match self.due_schedule(id, now).await {
-                Ok(Some((run, job))) => match d.dispatch(run, &job, now).await {
-                    Ok(sent) => report.schedules_run += usize::from(sent),
-                    Err(e) => {
-                        tracing::error!(schedule = %id, %run, error = %e, "enqueue failed, the retry pass picks it up next tick")
-                    }
-                },
-                Ok(None) => {}
+                Ok(sent) => report.schedules_run += usize::from(sent),
                 Err(e) => tracing::error!(schedule = %id, error = %e, "schedule failed"),
             }
         }
@@ -91,8 +81,8 @@ impl SchedulerTick {
         Ok(report)
     }
 
-    /// Runs parked with `schedule_retry` (status queued + next_attempt_at), and runs whose
-    /// enqueue was interrupted after they were committed (the outbox marker). Deleted
+    /// Runs parked with `schedule_retry` (status queued + next_attempt_at) get their job
+    /// again (`RunDispatcher::requeue`). Deleted
     /// organisations get no more work: their due parked runs end `Skipped` (fenced, so a
     /// worker already holding a lease cannot revive one) instead of waiting forever. Returns
     /// how many were handed to a worker.
@@ -108,7 +98,7 @@ impl SchedulerTick {
         for r in live {
             match self
                 .dispatcher
-                .dispatch(r.run_id, &r.job_type, r.marker)
+                .requeue(r.run_id, &r.job_type, r.marker)
                 .await
             {
                 Ok(sent) => sent_total += usize::from(sent),
@@ -124,12 +114,9 @@ mod tests {
     use sea_orm::{ConnectionTrait, Database, TransactionTrait};
 
     use super::*;
-    use crate::{
-        actions::runs::test_support::FakeQueue,
-        adapters::{
-            db::{ledger_storage::stmt, Pg},
-            memory::MemStore,
-        },
+    use crate::adapters::{
+        db::{ledger_storage::stmt, Pg},
+        memory::MemStore,
     };
 
     #[tokio::test]
@@ -144,7 +131,7 @@ mod tests {
         .await
         .unwrap();
         let store = Arc::new(MemStore::default());
-        let dispatcher = Arc::new(RunDispatcher::new(store, Arc::new(FakeQueue::default())));
+        let dispatcher = Arc::new(RunDispatcher::new(store));
         let pool = Database::connect(url).await.unwrap();
         let tick = SchedulerTick::new(Arc::new(Pg::new(pool)), dispatcher);
         assert_eq!(tick.run(Utc::now()).await.unwrap(), None);

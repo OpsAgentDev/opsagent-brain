@@ -243,13 +243,6 @@ impl Storage for Faulty {
     ) -> opsagent_ledger::Result<()> {
         self.0.effect_done(id, k, r).await
     }
-    async fn mark_enqueue_pending(
-        &self,
-        id: uuid::Uuid,
-        at: chrono::DateTime<chrono::Utc>,
-    ) -> opsagent_ledger::Result<()> {
-        self.0.mark_enqueue_pending(id, at).await
-    }
     async fn clear_enqueue_marker(
         &self,
         id: uuid::Uuid,

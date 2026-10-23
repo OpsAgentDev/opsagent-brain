@@ -1,5 +1,5 @@
 //! The `opsagent-brain` command line: `start`, `scheduler`, `task <name> [k:v…]`, `db`.
-use std::{collections::BTreeMap, process::ExitCode, sync::Arc};
+use std::{collections::BTreeMap, process::ExitCode};
 
 use chrono::Utc;
 use clap::{Parser, Subcommand};
@@ -7,7 +7,6 @@ use migration::{Migrator, MigratorTrait};
 use uuid::Uuid;
 
 use crate::{
-    adapters::loco_queue::LocoQueue,
     boot,
     config::{self, Config},
     controllers::openapi::document_json,
@@ -105,13 +104,10 @@ pub async fn main(cli: Cli) -> ExitCode {
 pub async fn run(cli: Cli) -> Result<(), AppError> {
     match cli.cmd {
         Cmd::Start {
-            worker: false,
-            server_and_worker: false,
-        } => serve().await,
-        // shortcut: Loco still runs the workers and the scheduler; Task 18 replaces both.
-        Cmd::Start { .. } | Cmd::Scheduler => loco_rs::cli::main::<crate::app::App, Migrator>()
-            .await
-            .map_err(internal),
+            worker,
+            server_and_worker,
+        } => start(worker, server_and_worker).await,
+        Cmd::Scheduler => boot::scheduler(&state(false).await?).run(shutdown()).await,
         Cmd::Task { name, vars } => task(&name, &TaskVars::parse(&vars)?).await,
         Cmd::Db { op } => db(op).await,
     }
@@ -125,17 +121,28 @@ fn config() -> AppResult<Config> {
     Config::from_env().map_err(internal)
 }
 
-/// The state over the Loco queue the workers drain (until Task 18).
-async fn state() -> AppResult<AppState> {
-    let c = config()?;
-    let queue = Arc::new(LocoQueue::connect(c.env).await?);
-    // shortcut: the worker modes still run under Loco; Task 18 boots them with `worker: true`.
-    boot::boot(c, queue, false).await
+/// The process's state; `worker`: it also runs a `WorkerRunner` (pool sized for it).
+async fn state(worker: bool) -> AppResult<AppState> {
+    boot::boot(config()?, worker).await
+}
+
+/// `start`: the API; `--worker`: the job runner; `--server-and-worker`: both in one process.
+/// Each part stops on SIGTERM or Ctrl-C (every part listens for the signal itself).
+async fn start(worker: bool, server_and_worker: bool) -> AppResult<()> {
+    let state = state(worker || server_and_worker).await?;
+    if worker && !server_and_worker {
+        return boot::worker(&state).run(shutdown()).await;
+    }
+    if !server_and_worker {
+        return serve(state).await;
+    }
+    let runner = boot::worker(&state);
+    // Either part failing ends the process.
+    tokio::try_join!(serve(state), runner.run(shutdown())).map(drop)
 }
 
 /// The API until SIGTERM or Ctrl-C; in-flight requests finish first.
-async fn serve() -> AppResult<()> {
-    let state = state().await?;
+async fn serve(state: AppState) -> AppResult<()> {
     let addr = format!("{}:{}", state.config.binding, state.config.port);
     let router = boot::router(state)?;
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -177,17 +184,17 @@ async fn task(name: &str, vars: &TaskVars) -> AppResult<()> {
         }
         "scan:now" => {
             let id = vars.uuid("connection")?;
-            let a = state().await?.actions.clone();
+            let a = state(false).await?.actions.clone();
             a.runs.scan_now.run(id).await.map(drop).map_err(not_found)
         }
         "deliver:briefing" => {
             let id = vars.uuid("connection")?;
-            let a = state().await?.actions.clone();
+            let a = state(false).await?.actions.clone();
             let now = &a.deliveries.deliver_briefing_now;
             now.run(id).await.map(drop).map_err(not_found)
         }
         "scheduler:tick" => {
-            let a = state().await?.actions.clone();
+            let a = state(false).await?.actions.clone();
             match a.runs.scheduler_tick.run(Utc::now()).await? {
                 Some(r) => tracing::info!(?r, "scheduler tick"),
                 None => tracing::info!("scheduler lock held elsewhere, skipping tick"),

@@ -7,10 +7,7 @@ use axum::Router;
 use axum_test::TestServer;
 use migration::{Migrator, MigratorTrait};
 use opsagent_brain::{
-    adapters::{
-        pg_queue::PgQueue,
-        slack::{Channel, Install, SlackClient, SlackError},
-    },
+    adapters::slack::{Channel, Install, SlackClient, SlackError},
     boot,
     config::{AppEnv, Config},
     jobs::WorkerRunner,
@@ -86,8 +83,7 @@ impl TestApp {
         // The doubles replace every env-dependent adapter (the production mailer needs
         // RESEND_API_KEY), so adapters build as `test`; the env applies to the config only.
         let env = std::mem::replace(&mut config.env, AppEnv::Test);
-        let queue = Arc::new(PgQueue(db.clone()));
-        let mut deps = boot::deps(config, db.clone(), queue).await.expect("deps");
+        let mut deps = boot::deps(config, db.clone()).await.expect("deps");
         deps.config.env = env;
         deps.mailer = Arc::new(CaptureMailer::default());
         deps.slack = Arc::new(NoSlack);

@@ -237,21 +237,6 @@ impl<C: Conn> Storage for Pg<C> {
         .map(|_| ())
     }
 
-    /// Back to `queued` with `next_attempt_at`; the due-run dispatcher re-enqueues it.
-    async fn mark_enqueue_pending(&self, id: Uuid, at: DateTime<Utc>) -> Result<()> {
-        let n = self
-            .exec(
-                // tenancy: the ledger addresses runs by id (from the queue); the row names its organisation.
-                "UPDATE runs SET next_attempt_at = $2, updated_at = now() WHERE id = $1",
-                vec![id.into(), at.into()],
-            )
-            .await?;
-        if n == 0 {
-            return Err(LedgerError::NotFound);
-        }
-        Ok(())
-    }
-
     async fn clear_enqueue_marker(&self, id: Uuid, marker_at: DateTime<Utc>) -> Result<bool> {
         let n = self
             .exec(
