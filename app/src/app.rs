@@ -18,7 +18,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use crate::{
     actions::Actions,
-    adapters::db::Pg,
+    adapters::{db::Pg, loco_queue::LocoQueue},
     boot::{build_actions, Deps},
     controllers,
     middleware::{self, AuthInitializer},
@@ -77,6 +77,7 @@ pub fn install_actions(ctx: &AppContext) -> Result<()> {
         slack: middleware::slack(ctx),
         clock: Arc::new(SystemClock),
         settings: Settings::get(ctx),
+        queue: Arc::new(LocoQueue(ctx.clone())),
     };
     ctx.shared_store.insert(Arc::new(build_actions(&deps)));
     Ok(())

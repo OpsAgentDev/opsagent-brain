@@ -57,6 +57,14 @@ contract_suite! {
         assert!(!repo.cas_status(other, c.id, S::Disconnected, S::Pending, None).await.unwrap());
     }
 
+    async fn last_verification_is_none_without_one_or_in_other_org(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        let c = connection(s, o, "Prod").await;
+        let repo = s.connections();
+        assert_eq!(repo.last_verification(o, c.id).await.unwrap(), None);
+        assert_eq!(repo.last_verification(other, c.id).await.unwrap(), None);
+    }
+
     async fn get_in_other_org_is_none(s) {
         let (o, other) = (org(s).await, org(s).await);
         let c = connection(s, o, "Prod").await;

@@ -3,6 +3,7 @@ use chrono::Utc;
 use opsagent_core::{
     connection::{
         Connection, ConnectionPatch, ConnectionStatus, ConnectionsRepo, NewConnection, SealedCreds,
+        Verification,
     },
     repo::{RepoError, RepoResult},
 };
@@ -58,6 +59,16 @@ impl ConnectionsRepo for MemStore {
 
     async fn lock(&self, organisation_id: Uuid, id: Uuid) -> RepoResult<Option<Connection>> {
         self.get(organisation_id, id).await
+    }
+
+    async fn last_verification(
+        &self,
+        _organisation_id: Uuid,
+        _id: Uuid,
+    ) -> RepoResult<Option<Verification>> {
+        // shortcut: the trait has no verification writer yet, so there is none to return;
+        // store them here when the verify worker's write moves behind the trait (Task 8).
+        Ok(None)
     }
 
     async fn list(&self, organisation_id: Uuid) -> RepoResult<Vec<Connection>> {

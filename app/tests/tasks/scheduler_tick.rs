@@ -1,10 +1,25 @@
 use chrono::{DateTime, Duration, Utc};
 use loco_rs::prelude::*;
+use std::sync::Arc;
+
 use opsagent_brain::{
-    adapters::db::ledger_storage::{stmt, PgStorage},
+    actions::{
+        runs::{RequestManualScan, RunDispatcher},
+        uow::UnitOfWork,
+    },
+    adapters::{
+        db::{
+            ledger_storage::{stmt, PgStorage},
+            Pg,
+        },
+        loco_queue::LocoQueue,
+    },
     tasks::scheduler_tick::{tick, Report},
 };
-use opsagent_core::run::{RunKey, RunStatus};
+use opsagent_core::{
+    repo::FixedClock,
+    run::{RunKey, RunStatus},
+};
 use opsagent_ledger::Storage;
 use sea_orm::{ConnectionTrait, Database};
 use serial_test::serial;
@@ -54,6 +69,14 @@ async fn next_due(ctx: &AppContext) -> DateTime<Utc> {
         .unwrap()
         .try_get("", "next_due_at")
         .unwrap()
+}
+
+/// `RequestManualScan` on `ctx`'s database and queue, at `now`.
+fn request_manual_scan(ctx: &AppContext, now: DateTime<Utc>) -> RequestManualScan {
+    let uow: Arc<dyn UnitOfWork> = Arc::new(Pg::new(ctx.db.clone()));
+    let queue = Arc::new(LocoQueue(ctx.clone()));
+    let dispatcher = Arc::new(RunDispatcher::new(uow.clone(), queue));
+    RequestManualScan::new(uow, dispatcher, Arc::new(FixedClock(now)))
 }
 
 async fn run_tick(ctx: &AppContext, now: DateTime<Utc>) -> Report {
@@ -426,14 +449,9 @@ async fn api_run_whose_enqueue_failed_is_sent_by_the_next_tick() {
             .await
             .unwrap()
             .unwrap();
-        let repo = opsagent_brain::adapters::db::Pg::new(&ctx.db);
-        let c = opsagent_brain::actions::uow::Repos::connections(&repo)
-            .get(m.organisation_id, conn)
-            .await
-            .unwrap()
-            .unwrap();
         let now = Utc::now();
-        let out = opsagent_brain::services::manual_scan::request(&broken, &c, Uuid::new_v4(), now)
+        let out = request_manual_scan(&broken, now)
+            .run(m.organisation_id, Uuid::new_v4(), conn)
             .await
             .unwrap();
         let q = format!(

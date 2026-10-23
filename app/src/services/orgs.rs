@@ -12,8 +12,10 @@ use sea_orm::{DatabaseConnection, TransactionTrait};
 use uuid::Uuid;
 
 use crate::{
-    actions::uow::Repos, adapters::db::Pg, api_error::ApiError, error::AppError,
-    services::connections as connections_service,
+    actions::{connections as connections_service, uow::Repos},
+    adapters::db::Pg,
+    api_error::ApiError,
+    error::AppError,
 };
 
 /// `slug` with a random 6-hex suffix, for a name whose slug is taken.

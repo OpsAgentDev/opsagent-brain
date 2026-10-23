@@ -102,6 +102,18 @@ pub struct ConnectionPatch {
     pub slack_channel_id: Option<Option<String>>,
 }
 
+/// One recorded verify outcome; the grants are the stored grant labels.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Verification {
+    pub outcome: String,
+    pub at: DateTime<Utc>,
+    pub assume_with_ok: Option<bool>,
+    pub assume_without_denied: Option<bool>,
+    pub policy_matches: Option<bool>,
+    pub extra_grants: serde_json::Value,
+    pub missing_grants: serde_json::Value,
+}
+
 /// Credentials sealed under the org DEK; `kek_version` is the KEK version that wrapped it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedCreds {
@@ -119,6 +131,12 @@ pub trait ConnectionsRepo: Send + Sync {
     async fn lock(&self, organisation_id: Uuid, id: Uuid) -> RepoResult<Option<Connection>>;
     /// Every connection of the organisation, oldest first.
     async fn list(&self, organisation_id: Uuid) -> RepoResult<Vec<Connection>>;
+    /// The latest recorded verification; `None` without one or outside the organisation.
+    async fn last_verification(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+    ) -> RepoResult<Option<Verification>>;
     /// `NotFound` when the connection is not in the organisation.
     async fn update(
         &self,

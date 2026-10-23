@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, FixedOffset};
 use loco_rs::app::AppContext;
 use opsagent_core::run;
 use serde::{Deserialize, Serialize};
@@ -14,15 +14,11 @@ use uuid::Uuid;
 
 use super::{OrgIdPath, RunAccepted};
 use crate::{
-    actions::uow::Repos,
-    adapters::db::Pg,
     api_error::{ApiError, ApiQuery, Problem},
+    app::actions,
     middleware::org_scope::OrgScope,
     models::enum_str,
-    services::{
-        manual_scan,
-        pagination::{self, Page, PageParams},
-    },
+    services::pagination::{self, Page, PageParams},
 };
 
 #[derive(Serialize, ToSchema)]
@@ -85,10 +81,9 @@ async fn list(
         connection_id: f.connection,
         job_type: f.job_type,
     };
-    let repo = Pg::new(&ctx.db);
-    let got = repo
-        .runs()
-        .list(scope.organisation_id, filter, pagination::request(&p)?)
+    let list = &actions(&ctx)?.runs.list_runs;
+    let got = list
+        .run(scope.organisation_id, filter, pagination::request(&p)?)
         .await?;
     Ok(Json(Page::of(got).map(summary)))
 }
@@ -100,10 +95,12 @@ async fn show(
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Run>, ApiError> {
-    let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
-    let repo = Pg::new(&ctx.db);
-    let r = repo.runs().get(scope.organisation_id, id).await?;
-    let r = r.ok_or_else(ApiError::not_found)?;
+    let id = super::connections::parse_id(&id)?;
+    let r = actions(&ctx)?
+        .runs
+        .get_run
+        .run(scope.organisation_id, id)
+        .await?;
     Ok(Json(Run {
         attempts: r.attempts,
         stats: Some(r.stats.clone()),
@@ -121,8 +118,9 @@ async fn scan(
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
-    let c = super::connections::find(&ctx, &scope, &id).await?;
-    let out = manual_scan::request(&ctx, &c, scope.user_id, Utc::now()).await?;
+    let id = super::connections::parse_id(&id)?;
+    let scan = &actions(&ctx)?.runs.request_manual_scan;
+    let out = scan.run(scope.organisation_id, scope.user_id, id).await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(RunAccepted { run_id: out.run.id }),

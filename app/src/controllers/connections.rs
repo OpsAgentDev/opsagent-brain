@@ -3,11 +3,9 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use chrono::NaiveTime;
 use loco_rs::app::AppContext;
 use opsagent_connectors::aws::client::short_id;
-use opsagent_core::{connection, org::valid_name};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use opsagent_core::org::valid_name;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -15,13 +13,10 @@ use uuid::Uuid;
 
 use super::{OrgIdPath, OrgPath, RunAccepted};
 use crate::{
-    actions::uow::Repos,
-    adapters::db::Pg,
+    actions::connections::{PatchInput, TEMPLATE_VERSION},
     api_error::{ApiError, ApiJson, Problem},
-    app::{kek, registry},
+    app::actions,
     middleware::org_scope::OrgScope,
-    models::_entities::connection_verifications,
-    services::connections::{self as service, TEMPLATE_VERSION},
     views::connections::{view, Connection},
 };
 
@@ -29,16 +24,9 @@ fn stack_name(organisation_id: Uuid) -> String {
     format!("OpsAgent-Read-{}", short_id(&organisation_id))
 }
 
-/// A malformed id, an unknown id and another org's id are the same 404.
-pub(super) async fn find(
-    ctx: &AppContext,
-    scope: &OrgScope,
-    id: &str,
-) -> Result<connection::Connection, ApiError> {
-    let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
-    let repo = Pg::new(&ctx.db);
-    let c = repo.connections().get(scope.organisation_id, id).await?;
-    c.ok_or_else(ApiError::not_found)
+/// A malformed id is the same 404 as an unknown id or another org's.
+pub(super) fn parse_id(id: &str) -> Result<Uuid, ApiError> {
+    id.parse().map_err(|_| ApiError::not_found())
 }
 
 fn quick_create_url(organisation_id: Uuid, external_id: &str) -> Result<String, ApiError> {
@@ -89,16 +77,10 @@ async fn create(
     scope.require_owner()?;
     let name = valid_name(&body.display_name).map_err(ApiError::invalid)?;
     let org_id = scope.organisation_id;
-    let created = service::create(
-        &ctx.db,
-        kek(&ctx)?.as_ref(),
-        &registry(&ctx)?,
-        org_id,
-        scope.user_id,
-        &body.provider,
-        name,
-    )
-    .await?;
+    let create = &actions(&ctx)?.connections.create_connection;
+    let created = create
+        .run(org_id, scope.user_id, &body.provider, name)
+        .await?;
     let url = created
         .spec
         .uses_template
@@ -120,8 +102,8 @@ async fn list(
     State(ctx): State<AppContext>,
     scope: OrgScope,
 ) -> Result<Json<Vec<Connection>>, ApiError> {
-    let repo = Pg::new(&ctx.db);
-    let rows = repo.connections().list(scope.organisation_id).await?;
+    let list = &actions(&ctx)?.connections.list_connections;
+    let rows = list.run(scope.organisation_id).await?;
     Ok(Json(rows.iter().map(|c| view(c, None)).collect()))
 }
 
@@ -132,12 +114,8 @@ async fn show(
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Connection>, ApiError> {
-    let c = find(&ctx, &scope, &id).await?;
-    let last = connection_verifications::Entity::find()
-        .filter(connection_verifications::Column::ConnectionId.eq(c.id))
-        .order_by_desc(connection_verifications::Column::CreatedAt)
-        .one(&ctx.db)
-        .await?;
+    let get = &actions(&ctx)?.connections.get_connection;
+    let (c, last) = get.run(scope.organisation_id, parse_id(&id)?).await?;
     Ok(Json(view(&c, last.as_ref())))
 }
 
@@ -155,26 +133,6 @@ pub struct ConnectionPatch {
     pub slack_channel_id: Option<String>,
 }
 
-/// `""` clears; otherwise a Slack conversation id.
-fn valid_channel(s: &str) -> Result<Option<String>, ApiError> {
-    if s.is_empty() {
-        return Ok(None);
-    }
-    let ok = (9..=21).contains(&s.len())
-        && matches!(s.as_bytes()[0], b'C' | b'G')
-        && s.bytes()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
-    ok.then(|| Some(s.to_owned()))
-        .ok_or_else(|| ApiError::invalid("slack_channel_id must be a Slack channel id"))
-}
-
-fn valid_hhmm(field: &str, s: &str) -> Result<NaiveTime, ApiError> {
-    (s.len() == 5)
-        .then(|| NaiveTime::parse_from_str(s, "%H:%M").ok())
-        .flatten()
-        .ok_or_else(|| ApiError::invalid(format!("{field} must be HH:MM")))
-}
-
 #[utoipa::path(patch, path = "/orgs/{org}/connections/{id}", tag = "connections", params(OrgIdPath),
     request_body = ConnectionPatch,
     responses((status = 200, body = Connection), (status = 403, body = Problem), (status = 404, body = Problem),
@@ -186,29 +144,19 @@ async fn update(
     ApiJson(body): ApiJson<ConnectionPatch>,
 ) -> Result<Json<Connection>, ApiError> {
     scope.require_owner()?;
-    let c = find(&ctx, &scope, &id).await?;
-    let hhmm =
-        |field: &str, v: &Option<String>| v.as_deref().map(|t| valid_hhmm(field, t)).transpose();
-    if body.api_rate_ceiling.is_some_and(|r| r < 1) {
-        return Err(ApiError::invalid("api_rate_ceiling must be at least 1"));
-    }
-    let patch = connection::ConnectionPatch {
-        display_name: body
-            .display_name
-            .as_deref()
-            .map(valid_name)
-            .transpose()
-            .map_err(ApiError::invalid)?,
-        scan_time_local: hhmm("scan_time_local", &body.scan_time_local)?,
-        briefing_time_local: hhmm("briefing_time_local", &body.briefing_time_local)?,
+    let id = parse_id(&id)?;
+    let input = PatchInput {
+        display_name: body.display_name,
+        scan_time_local: body.scan_time_local,
+        briefing_time_local: body.briefing_time_local,
         api_rate_ceiling: body.api_rate_ceiling,
-        slack_channel_id: body
-            .slack_channel_id
-            .as_deref()
-            .map(valid_channel)
-            .transpose()?,
+        slack_channel_id: body.slack_channel_id,
     };
-    Ok(Json(view(&service::update(&ctx.db, c, patch).await?, None)))
+    let update = &actions(&ctx)?.connections.update_connection;
+    Ok(Json(view(
+        &update.run(scope.organisation_id, id, input).await?,
+        None,
+    )))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -229,10 +177,11 @@ async fn verify(
     ApiJson(body): ApiJson<VerifyBody>,
 ) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
     scope.require_owner()?;
-    let c = find(&ctx, &scope, &id).await?;
-    let run_id =
-        service::request_verify(&ctx, kek(&ctx)?.as_ref(), &c, scope.user_id, &body.role_arn)
-            .await?;
+    let verify = &actions(&ctx)?.connections.request_verify;
+    let (org_id, id) = (scope.organisation_id, parse_id(&id)?);
+    let run_id = verify
+        .run(org_id, scope.user_id, id, &body.role_arn)
+        .await?;
     Ok((StatusCode::ACCEPTED, Json(RunAccepted { run_id })))
 }
 
@@ -251,9 +200,11 @@ async fn disconnect(
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Disconnected>, ApiError> {
     scope.require_owner()?;
-    let c = find(&ctx, &scope, &id).await?;
-    let org_id = c.organisation_id;
-    service::disconnect(&ctx.db, c, scope.user_id).await?;
+    let org_id = scope.organisation_id;
+    let disconnect = &actions(&ctx)?.connections.disconnect_connection;
+    disconnect
+        .run(org_id, scope.user_id, parse_id(&id)?)
+        .await?;
     Ok(Json(Disconnected {
         status: "disconnected".into(),
         next_step: format!(
