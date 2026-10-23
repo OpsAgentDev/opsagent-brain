@@ -41,6 +41,7 @@ jobs:
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/swap
       - name: Free disk space
         run: |
           df -h /
@@ -69,6 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/swap
       - run: docker build .
 
   backup-image:
@@ -96,6 +98,7 @@ jobs:
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/swap
       - run: docker build -t brain .
       - name: "No variables: non-zero exit naming the missing variable"
         run: |
@@ -121,6 +124,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/swap
       - run: docker compose --profile brain up -d --build
       - name: Wait for /readyz
         run: timeout 120 bash -c 'until curl -sf http://localhost:3000/readyz >/dev/null; do sleep 2; done'
