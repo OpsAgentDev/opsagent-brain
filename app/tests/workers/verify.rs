@@ -237,7 +237,7 @@ async fn first_connect_queues_one_first_scan() {
         let id: Uuid = id.parse().unwrap();
         let first = scans(&ctx, id).await;
         assert_eq!(first.len(), 1);
-        // The drain after the request ran the scan; the outbox marker is cleared.
+        // The drain after the request ran the scan; no retry time is left.
         assert_eq!(first[0].status, "done");
         assert!(first[0].next_attempt_at.is_none());
         // Later verifications of a connected connection queue nothing.

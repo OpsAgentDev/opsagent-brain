@@ -28,7 +28,7 @@ contract_suite! {
             };
             let id = s.ledger().create_run(key).await.unwrap().run.id;
             let marker = now - Duration::minutes(minutes);
-            s.ledger().mark_enqueue_pending(id, marker).await.unwrap();
+            s.ledger().schedule_retry(id, 0, marker).await.unwrap();
             ids.push((id, marker));
         }
         s.orgs().soft_delete(gone, now).await.unwrap();

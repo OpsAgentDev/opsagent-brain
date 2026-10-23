@@ -64,6 +64,8 @@ serial_test = "3.1.1"
 axum-test = "17"
 tower = { version = "0.5", features = ["util"] }
 wiremock = "0.6"
+# Paused clock for the scheduler loop test.
+tokio = { version = "1.45", features = ["test-util"] }
 
 [lints]
 workspace = true

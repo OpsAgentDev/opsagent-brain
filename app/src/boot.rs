@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 use migration::{Migrator, MigratorTrait};
 use opsagent_connectors::{aws::AwsOutbound, Registry};
 use opsagent_core::repo::{Clock, SystemClock};
-use opsagent_ledger::{redis, Queue};
+use opsagent_ledger::redis;
 use opsagent_secrets::{CachingKek, EnvKek, Kek};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 
@@ -25,7 +25,8 @@ use crate::{
     controllers,
     error::{AppError, AppResult},
     jobs::{
-        DeliverBriefingJob, DeliverWeeklyJob, FullScanJob, JobHandler, VerifyJob, WorkerRunner,
+        DeliverBriefingJob, DeliverWeeklyJob, FullScanJob, JobHandler, Scheduler, VerifyJob,
+        WorkerRunner,
     },
     mailers::{self, Mailer},
     middleware,
@@ -52,7 +53,6 @@ pub struct Deps {
     pub mailer: Arc<dyn Mailer>,
     pub slack: Arc<dyn SlackClient>,
     pub clock: Arc<dyn Clock>,
-    pub queue: Arc<dyn Queue>,
 }
 
 fn internal(e: impl std::fmt::Display) -> AppError {
@@ -86,32 +86,20 @@ pub async fn pool(c: &Config, worker: bool) -> AppResult<DatabaseConnection> {
     connect(c, c.db_min_connections, pool_size(c, worker), false).await
 }
 
-/// Connects the app pool (migrating when `DB_AUTO_MIGRATE`), then `boot_on` it. `worker`: the
-/// process also runs `worker(state)` (`start --worker`, `--server-and-worker`).
-pub async fn boot(config: Config, queue: Arc<dyn Queue>, worker: bool) -> AppResult<AppState> {
+/// Connects the app pool (migrating when `DB_AUTO_MIGRATE`), then every adapter and action
+/// over it. `worker`: the process also runs `worker(state)` (`start --worker`,
+/// `--server-and-worker`).
+pub async fn boot(config: Config, worker: bool) -> AppResult<AppState> {
     let db = pool(&config, worker).await?;
     if config.db_auto_migrate {
         Migrator::up(&db, None).await.map_err(internal)?;
     }
-    boot_on(config, db, queue).await
-}
-
-/// Every adapter over the app pool `db`, then the actions. `queue` is passed in while
-/// Loco's queue needs its `AppContext` (Task 18).
-pub async fn boot_on(
-    config: Config,
-    db: DatabaseConnection,
-    queue: Arc<dyn Queue>,
-) -> AppResult<AppState> {
-    Ok(assemble(deps(config, db, queue).await?))
+    Ok(assemble(deps(config, db).await?))
 }
 
 /// Builds every adapter over the app pool `db`; tests replace doubles before `assemble`.
-pub async fn deps(
-    config: Config,
-    db: DatabaseConnection,
-    queue: Arc<dyn Queue>,
-) -> AppResult<Deps> {
+/// Jobs are enqueued on the run's transaction (`Tx::queue`), so there is no queue adapter.
+pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
     // Lazy: only the scheduler process ever ticks.
     let scheduler = connect(&config, 0, 2, true).await?;
     let redis = redis::Client::open(config.redis_url.as_str()).map_err(internal)?;
@@ -138,7 +126,6 @@ pub async fn deps(
         registry,
         slack: Arc::new(slack),
         clock: Arc::new(SystemClock),
-        queue,
     })
 }
 
@@ -166,7 +153,7 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
 }
 
 pub fn build_actions(d: &Deps) -> Actions {
-    let dispatcher = Arc::new(runs::RunDispatcher::new(d.uow.clone(), d.queue.clone()));
+    let dispatcher = Arc::new(runs::RunDispatcher::new(d.uow.clone()));
     let connectors: Arc<dyn ConnectorSource> = Arc::new(d.registry.clone());
     let full_scan = runs::FullScan::new(
         d.uow.clone(),
@@ -255,7 +242,10 @@ pub fn build_actions(d: &Deps) -> Actions {
                 dispatcher.clone(),
                 d.clock.clone(),
             ),
-            scheduler_tick: runs::SchedulerTick::new(d.scheduler_uow.clone(), dispatcher.clone()),
+            scheduler_tick: Arc::new(runs::SchedulerTick::new(
+                d.scheduler_uow.clone(),
+                dispatcher.clone(),
+            )),
             dispatcher,
             scan_now: runs::ScanNow::new(d.uow.clone(), full_scan.clone(), d.clock.clone()),
             full_scan,
@@ -356,6 +346,14 @@ pub fn worker(state: &AppState) -> WorkerRunner {
     ];
     let source = Arc::new(PgQueue(state.db.clone()));
     WorkerRunner::new(source, handlers, &state.config, state.clock.clone())
+}
+
+/// The scheduler loop: the state's `SchedulerTick` every 60 s.
+pub fn scheduler(state: &AppState) -> Scheduler {
+    Scheduler {
+        tick: state.actions.runs.scheduler_tick.clone(),
+        every: Duration::from_secs(60),
+    }
 }
 
 /// Health, `/v1` and `/openapi.json` on the shell's middleware stack (`middleware::stack`).

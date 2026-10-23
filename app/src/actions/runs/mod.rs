@@ -32,54 +32,20 @@ pub struct Runs {
     pub list_runs: ListRuns,
     pub get_run: GetRun,
     pub verify_connection: VerifyConnection,
-    pub scheduler_tick: SchedulerTick,
+    /// Shared with the scheduler loop (`jobs::Scheduler`).
+    pub scheduler_tick: Arc<SchedulerTick>,
     pub full_scan: FullScan,
     pub scan_now: ScanNow,
 }
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::sync::Mutex;
-
-    use async_trait::async_trait;
     use opsagent_core::connection::{
         Connection, ConnectionStatus as S, ConnectionsRepo, NewConnection, SealedCreds,
     };
-    use opsagent_ledger::{LedgerError, NewJob, Queue};
     use uuid::Uuid;
 
     use crate::adapters::memory::MemStore;
-
-    /// Records what it is given; `failing()` refuses every job.
-    #[derive(Default)]
-    pub struct FakeQueue {
-        fail: bool,
-        sent: Mutex<Vec<NewJob>>,
-    }
-
-    impl FakeQueue {
-        pub fn failing() -> Self {
-            Self {
-                fail: true,
-                ..Self::default()
-            }
-        }
-
-        pub fn sent(&self) -> Vec<NewJob> {
-            self.sent.lock().unwrap().clone()
-        }
-    }
-
-    #[async_trait]
-    impl Queue for FakeQueue {
-        async fn enqueue(&self, job: NewJob) -> opsagent_ledger::Result<()> {
-            if self.fail {
-                return Err(LedgerError::Storage("queue down".into()));
-            }
-            self.sent.lock().unwrap().push(job);
-            Ok(())
-        }
-    }
 
     /// A pending connection of `org` in `store`.
     pub async fn pending(store: &MemStore, org: Uuid) -> Connection {

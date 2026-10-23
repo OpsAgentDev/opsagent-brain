@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use axum::Router as AxumRouter;
 use loco_rs::{
     app::{AppContext, Hooks},
-    bgworker::{BackgroundWorker, Queue},
+    bgworker::Queue,
     boot::{create_app, BootResult, StartMode},
     config::Config,
     controller::{middleware::MiddlewareLayer, AppRoutes},
@@ -11,35 +11,15 @@ use loco_rs::{
     Result,
 };
 use migration::Migrator;
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 
-use crate::{
-    actions::Actions,
-    adapters::loco_queue::LocoQueue,
-    boot,
-    config::Config as AppConfig,
-    logging::init_tracing,
-    state::AppState,
-    workers::{
-        full_scan::FullScanWorker, verify::VerifyWorker, DeliverBriefingWorker, DeliverWeeklyWorker,
-    },
-};
+use crate::{boot, config::Config as AppConfig, logging::init_tracing, state::AppState};
 
 /// The state `boot` built, from the shared store.
 pub fn state(ctx: &AppContext) -> Result<AppState> {
     ctx.shared_store
         .get::<AppState>()
         .ok_or_else(|| loco_rs::Error::string("app state not installed"))
-}
-
-/// The process-wide KEK (with the DEK cache).
-pub fn kek(ctx: &AppContext) -> Result<Arc<dyn opsagent_secrets::Kek>> {
-    Ok(state(ctx)?.kek.clone())
-}
-
-/// The actions, built once by `boot`.
-pub fn actions(ctx: &AppContext) -> Result<Arc<Actions>> {
-    Ok(state(ctx)?.actions.clone())
 }
 
 pub struct App;
@@ -79,11 +59,7 @@ impl Hooks for App {
         };
         let config =
             AppConfig::from_vars(vars).map_err(|e| loco_rs::Error::string(&e.to_string()))?;
-        let queue = Arc::new(LocoQueue(ctx.clone()));
-        // shortcut: Loco owns the app pool and migrations while it boots `start --worker`,
-        // `--server-and-worker` and `scheduler`, so the state reuses `ctx.db` (one pool, as
-        // before) until Task 18; our `cli` boots everything else through `boot::boot`.
-        let state = boot::boot_on(config, ctx.db.clone(), queue)
+        let state = boot::boot(config, false)
             .await
             .map_err(|e| loco_rs::Error::string(&e.to_string()))?;
         ctx.shared_store.insert(state);
@@ -112,14 +88,12 @@ impl Hooks for App {
         AppRoutes::empty()
     }
 
-    async fn connect_workers(ctx: &AppContext, queue: &Queue) -> Result<()> {
-        queue.register(VerifyWorker::build(ctx)).await?;
-        queue.register(FullScanWorker::build(ctx)).await?;
-        queue.register(DeliverBriefingWorker::build(ctx)).await?;
-        queue.register(DeliverWeeklyWorker::build(ctx)).await
+    /// Required by `Hooks`; jobs run on our `WorkerRunner`, never Loco's queue.
+    async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {
+        Ok(())
     }
 
-    /// Tasks run through our `cli`, never Loco's.
+    /// Required by `Hooks`; tasks run through our `cli`, never Loco's.
     fn register_tasks(_tasks: &mut Tasks) {}
 
     async fn truncate(_ctx: &AppContext) -> Result<()> {

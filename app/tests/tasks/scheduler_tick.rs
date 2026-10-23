@@ -1,33 +1,18 @@
 use chrono::{DateTime, Duration, Utc};
-use sea_orm::{entity::prelude::*, TransactionTrait};
-use std::sync::Arc;
+use sea_orm::TransactionTrait;
 
-use opsagent_brain::{
-    actions::{
-        runs::{RequestManualScan, RunDispatcher, TickReport as Report},
-        uow::UnitOfWork,
-    },
-    adapters::db::{
-        ledger_storage::{stmt, PgStorage},
-        Pg,
-    },
-};
-use opsagent_core::{
-    repo::FixedClock,
-    run::{RunKey, RunStatus},
-};
-use opsagent_ledger::Storage;
+use opsagent_brain::{actions::runs::TickReport as Report, adapters::db::ledger_storage::stmt};
 use sea_orm::{ConnectionTrait, Database};
 use serial_test::serial;
 use uuid::Uuid;
 
 use crate::requests::support::*;
 
-fn at(s: &str) -> DateTime<Utc> {
+pub(super) fn at(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
 }
 
-async fn count(ctx: &TestApp, sql: &str) -> i64 {
+pub(super) async fn count(ctx: &TestApp, sql: &str) -> i64 {
     ctx.db
         .query_one_raw(stmt(sql, vec![]))
         .await
@@ -38,7 +23,7 @@ async fn count(ctx: &TestApp, sql: &str) -> i64 {
 }
 
 /// Drops every schedule and run (and what hangs off runs, such as a first scan's rows).
-async fn reset(ctx: &TestApp) {
+pub(super) async fn reset(ctx: &TestApp) {
     ctx.db
         .execute_raw(stmt("TRUNCATE schedules, runs CASCADE", vec![]))
         .await
@@ -67,31 +52,8 @@ async fn next_due(ctx: &TestApp) -> DateTime<Utc> {
         .unwrap()
 }
 
-/// A queue that refuses work (what Loco's queue did with no provider configured).
-struct Refusing;
-
-#[async_trait::async_trait]
-impl opsagent_ledger::Queue for Refusing {
-    async fn enqueue(&self, _: opsagent_ledger::NewJob) -> opsagent_ledger::Result<()> {
-        Err(opsagent_ledger::LedgerError::Storage(
-            "queue provider is not configured".into(),
-        ))
-    }
-}
-
-/// `RequestManualScan` on `ctx`'s database over `queue`, at `now`.
-fn request_manual_scan(
-    ctx: &TestApp,
-    queue: Arc<dyn opsagent_ledger::Queue>,
-    now: DateTime<Utc>,
-) -> RequestManualScan {
-    let uow: Arc<dyn UnitOfWork> = Arc::new(Pg::new(ctx.db.clone()));
-    let dispatcher = Arc::new(RunDispatcher::new(uow.clone(), queue));
-    RequestManualScan::new(uow, dispatcher, Arc::new(FixedClock(now)))
-}
-
 /// One tick of the installed `SchedulerTick` at `now`; `None` when the lock is held elsewhere.
-async fn tick(
+pub(super) async fn tick(
     ctx: &TestApp,
     now: DateTime<Utc>,
 ) -> opsagent_brain::error::AppResult<Option<Report>> {
@@ -102,7 +64,7 @@ async fn tick(
     report
 }
 
-async fn run_tick(ctx: &TestApp, now: DateTime<Utc>) -> Report {
+pub(super) async fn run_tick(ctx: &TestApp, now: DateTime<Utc>) -> Report {
     tick(ctx, now).await.unwrap().expect("lock acquired")
 }
 
@@ -201,51 +163,6 @@ async fn second_lock_holder_does_not_tick() {
 
 #[tokio::test]
 #[serial]
-async fn queued_run_with_due_next_attempt_is_reenqueued_once() {
-    serve(|req, ctx| async move {
-        reset(&ctx).await;
-        let mail = prepare(&ctx);
-        let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
-        assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
-        reset(&ctx).await;
-        let now = at("2026-10-22T10:00:00Z");
-        let storage = PgStorage::new(ctx.db.clone());
-        let conn_id: Uuid = id.parse().unwrap();
-        let org_id: Uuid = ctx
-            .db
-            .query_one_raw(stmt(
-                &format!("SELECT organisation_id FROM connections WHERE id = '{id}'"),
-                vec![],
-            ))
-            .await
-            .unwrap()
-            .unwrap()
-            .try_get("", "organisation_id")
-            .unwrap();
-        let run = storage
-            .create_run(RunKey {
-                organisation_id: Some(org_id),
-                connection_id: Some(conn_id),
-                job_type: "full_scan".into(),
-                scheduled_at: now - Duration::hours(2),
-            })
-            .await
-            .unwrap();
-        storage
-            .schedule_retry(run.run.id, 1, now - Duration::minutes(1))
-            .await
-            .unwrap();
-        // Exactly one real enqueue (the drained worker finishes the run), then nothing is due.
-        assert_eq!(run_tick(&ctx, now).await.retries_run, 1);
-        assert_eq!(run_tick(&ctx, now).await, Report::default());
-        let q = "SELECT count(*) n FROM runs WHERE next_attempt_at IS NULL AND status = 'done'";
-        assert_eq!(count(&ctx, q).await, 1);
-    })
-    .await;
-}
-
-#[tokio::test]
-#[serial]
 async fn schedule_three_days_overdue_catches_up_once() {
     serve(|_req, ctx| async move {
         reset(&ctx).await;
@@ -326,7 +243,7 @@ async fn tick_gives_connected_connections_without_delivery_schedules_their_defau
 }
 
 /// Inserts a schedule for a real connection and returns nothing; `job` has a registered worker.
-async fn conn_schedule(ctx: &TestApp, id: &str, job: &str, due: DateTime<Utc>) {
+pub(super) async fn conn_schedule(ctx: &TestApp, id: &str, job: &str, due: DateTime<Utc>) {
     ctx.db
         .execute_raw(stmt(
             &format!(
@@ -380,170 +297,6 @@ async fn due_full_scan_enqueues_the_real_worker_once() {
             .try_get("", "next_due_at")
             .unwrap();
         assert_eq!(next, at("2026-10-23T02:00:00Z"));
-    })
-    .await;
-}
-
-#[tokio::test]
-#[serial]
-async fn run_written_but_not_enqueued_is_picked_up_by_the_next_tick() {
-    serve(|req, ctx| async move {
-        reset(&ctx).await;
-        let mail = prepare(&ctx);
-        let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
-        assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
-        reset(&ctx).await;
-        let now = at("2026-10-22T02:00:30Z");
-        // Simulates a crash after due_schedule committed: run queued, outbox marker still set.
-        conn_schedule(&ctx, &id, "full_scan", at("2026-10-22T02:00:00Z")).await;
-        ctx.db
-            .execute_raw(stmt(
-                "INSERT INTO runs (id, organisation_id, connection_id, job_type, scheduled_at, next_attempt_at, checkpoint) \
-                 SELECT gen_random_uuid(), organisation_id, connection_id, job_type, next_due_at, $1, jsonb_build_object('chunks_done', '[]'::jsonb, 'cursor', 'null'::jsonb, 'stats', '{}'::jsonb) FROM schedules",
-                vec![now.into()],
-            ))
-            .await
-            .unwrap();
-        ctx.db
-            .execute_raw(stmt(
-                "UPDATE schedules SET next_due_at = '2026-10-23T02:00:00Z'",
-                vec![],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(run_tick(&ctx, now).await.retries_run, 1);
-        let q = "SELECT count(*) n FROM runs WHERE status = 'done'";
-        assert_eq!(count(&ctx, q).await, 1);
-    })
-    .await;
-}
-
-#[tokio::test]
-#[serial]
-#[ignore = "race removed by Task 18's same-transaction enqueue"]
-async fn worker_retry_written_during_inline_enqueue_survives_the_marker_clear() {
-    serve(|req, ctx| async move {
-        reset(&ctx).await;
-        let mail = prepare(&ctx);
-        let (_, _, id) = fake_connection(&req, &mail, "o@example.com", "Org", "denied").await;
-        // Previously connected, role now denied: the verify worker parks a retry.
-        ctx.db
-            .execute_raw(stmt(
-                &format!(
-                    "UPDATE connections SET status = 'connected', external_account_id = 'denied' WHERE id = '{id}'"
-                ),
-                vec![],
-            ))
-            .await
-            .unwrap();
-        let now = Utc::now();
-        conn_schedule(&ctx, &id, "verify", now - Duration::minutes(1)).await;
-
-        // The worker now runs after the marker is cleared (the tick's drain); its retry time stays.
-        assert_eq!(run_tick(&ctx, now).await.schedules_run, 1);
-        let r = ctx
-            .db
-            .query_one_raw(stmt(
-                "SELECT attempts, status, next_attempt_at FROM runs WHERE job_type = 'verify'",
-                vec![],
-            ))
-            .await
-            .unwrap()
-            .unwrap();
-        let next: DateTime<Utc> = r.try_get("", "next_attempt_at").unwrap();
-        assert_eq!(r.try_get::<i32>("", "attempts").unwrap(), 1);
-        assert_eq!(r.try_get::<String>("", "status").unwrap(), "queued");
-        assert!(next > now, "retry time {next} was erased");
-    })
-    .await;
-}
-
-#[tokio::test]
-#[serial]
-async fn api_run_whose_enqueue_failed_is_sent_by_the_next_tick() {
-    serve(|req, ctx| async move {
-        let (_, _, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
-        reset(&ctx).await;
-        // A queue that refuses work: the run must still be recorded with its outbox marker.
-        let m = opsagent_brain::models::_entities::connections::Entity::find_by_id(conn)
-            .one(&ctx.db)
-            .await
-            .unwrap()
-            .unwrap();
-        let now = Utc::now();
-        let out = request_manual_scan(&ctx, Arc::new(Refusing), now)
-            .run(m.organisation_id, Uuid::new_v4(), conn)
-            .await
-            .unwrap();
-        let q = format!(
-            "SELECT count(*) n FROM runs WHERE id = '{}' AND status = 'queued' AND next_attempt_at IS NOT NULL",
-            out.run.id
-        );
-        assert_eq!(count(&ctx, &q).await, 1);
-        assert_eq!(run_tick(&ctx, now).await.retries_run, 1);
-        let q = format!(
-            "SELECT count(*) n FROM runs WHERE id = '{}' AND status = 'done' AND next_attempt_at IS NULL",
-            out.run.id
-        );
-        assert_eq!(count(&ctx, &q).await, 1);
-    })
-    .await;
-}
-
-#[tokio::test]
-#[serial]
-async fn retry_for_a_deleted_org_is_skipped_not_enqueued() {
-    serve(|req, ctx| async move {
-        reset(&ctx).await;
-        let mail = prepare(&ctx);
-        let t = sign_in(&req, &mail, "gone@example.com").await;
-        let org = create_org(&req, &t, "Gone").await;
-        let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
-        let now = at("2026-10-22T10:00:00Z");
-        let storage = PgStorage::new(ctx.db.clone());
-        let run = storage
-            .create_run(RunKey {
-                organisation_id: Some(org_id),
-                connection_id: None,
-                job_type: "full_scan".into(),
-                scheduled_at: now - Duration::hours(2),
-            })
-            .await
-            .unwrap()
-            .run;
-        storage
-            .schedule_retry(run.id, 1, now - Duration::minutes(1))
-            .await
-            .unwrap();
-        ctx.db
-            .execute_raw(stmt(
-                "UPDATE organisations SET deleted_at = now() WHERE id = $1",
-                vec![org_id.into()],
-            ))
-            .await
-            .unwrap();
-        // A worker took the lease but has not written `running` yet.
-        let redis = redis_of(&ctx);
-        let lease = opsagent_ledger::lease::acquire(
-            &storage,
-            &redis,
-            run.id,
-            "slow-worker",
-            std::time::Duration::from_secs(5),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(run_tick(&ctx, now).await, Report::default());
-        let row = storage.load_run(run.id).await.unwrap();
-        assert_eq!(row.status, RunStatus::Skipped);
-        assert_eq!(row.partial_reason.as_deref(), Some("org_deleted"));
-        // The skip bumped the fence: the worker cannot revive the run.
-        let res = storage
-            .set_status(run.id, lease.fence, RunStatus::Running, None)
-            .await;
-        assert!(matches!(res, Err(opsagent_ledger::LedgerError::StaleFence)));
-        opsagent_ledger::lease::release(&redis, &lease).await;
     })
     .await;
 }

@@ -16,4 +16,3 @@ pub mod models;
 pub mod state;
 pub mod tokens;
 pub mod views;
-pub mod workers;

@@ -165,21 +165,16 @@ impl VerifyConnection {
         self.outcome_schedules(&*tx, c, written, now).await?;
         self.record(&*tx, c, run.id, Some(o), &enum_str(written), None)
             .await?;
-        let first_scan = if first_connect && written == S::Connected {
+        if first_connect && written == S::Connected {
             let key = first_scan_key(c, now);
-            let out = self.dispatcher.create_marked(&*tx, key, now).await;
-            Some(out.map_err(lerr)?)
-        } else {
-            None
-        };
+            // The first scan's run and job commit with the outcome.
+            let out = self.dispatcher.create_and_enqueue(&*tx, key, now).await;
+            out.map_err(lerr)?;
+        }
         tx.ledger()
             .set_status(run.id, step.fence, RunStatus::Done, None)
             .await?;
         tx.commit().await.map_err(lerr)?;
-        // The first scan's run committed with its outbox marker; a lost hand-off is re-sent.
-        if let Some(out) = first_scan.filter(|o| o.created) {
-            self.dispatcher.hand_off(&out, now).await;
-        }
         Ok(true)
     }
 

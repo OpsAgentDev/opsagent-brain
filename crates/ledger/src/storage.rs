@@ -98,11 +98,8 @@ pub trait Storage: Send + Sync {
         key: &str,
         external_ref: Option<String>,
     ) -> Result<()>;
-    /// Outbox marker: sets `next_attempt_at = at` so a run whose enqueue is interrupted is
-    /// found again by the due-run dispatcher.
-    async fn mark_enqueue_pending(&self, id: Uuid, at: DateTime<Utc>) -> Result<()>;
-    /// Clears the marker only if it is still exactly `marker_at`; a retry time written since
-    /// (by `schedule_retry`) survives. Returns whether it was cleared.
+    /// Clears `next_attempt_at` only if it is still exactly `marker_at`; a retry time written
+    /// since (by `schedule_retry`) survives. Returns whether it was cleared.
     async fn clear_enqueue_marker(&self, id: Uuid, marker_at: DateTime<Utc>) -> Result<bool>;
     async fn schedule_retry(&self, id: Uuid, attempts: u32, next_at: DateTime<Utc>) -> Result<()>;
     /// Inside a transaction: locks the run row while `fence` is current, so a stale worker's

@@ -4,15 +4,13 @@ use opsagent_core::{
     repo::{PageOf, PageRequest, RepoError, RepoResult},
     run::{Run, RunFilter, RunsRepo},
 };
+use opsagent_ledger::JobKind;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QueryTrait};
 use serde_json::Value;
 use uuid::Uuid;
 
 use super::{db_err, page, utc, Conn, Pg};
-use crate::{
-    models::{_entities::runs, enum_of},
-    workers::full_scan::JOB,
-};
+use crate::models::{_entities::runs, enum_of};
 
 fn run(m: runs::Model) -> RepoResult<Run> {
     let status = enum_of(&m.status)
@@ -71,7 +69,7 @@ impl<C: Conn> RunsRepo for Pg<C> {
         Ok(runs::Entity::find()
             .filter(runs::Column::OrganisationId.eq(organisation_id))
             .filter(runs::Column::ConnectionId.eq(connection_id))
-            .filter(runs::Column::JobType.eq(JOB))
+            .filter(runs::Column::JobType.eq(JobKind::FullScan.as_str()))
             .order_by_desc(runs::Column::ScheduledAt)
             .one(self.db())
             .await

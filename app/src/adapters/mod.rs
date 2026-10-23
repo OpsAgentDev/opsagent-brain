@@ -2,7 +2,6 @@
 //! talks to directly.
 pub mod client_ip;
 pub mod db;
-pub mod loco_queue;
 #[cfg(feature = "test-support")]
 pub mod memory;
 pub mod pg_queue;

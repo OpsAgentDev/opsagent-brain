@@ -127,11 +127,6 @@ impl Storage for MemoryStorage {
             .insert((run_id, key.to_string()), Some(r));
         Ok(())
     }
-    async fn mark_enqueue_pending(&self, id: Uuid, at: DateTime<Utc>) -> Result<()> {
-        self.with(id, |_| Ok(()))?;
-        self.0.lock().unwrap().next_attempt.insert(id, at);
-        Ok(())
-    }
     async fn clear_enqueue_marker(&self, id: Uuid, marker_at: DateTime<Utc>) -> Result<bool> {
         let mut g = self.0.lock().unwrap();
         Ok(g.next_attempt.get(&id) == Some(&marker_at) && g.next_attempt.remove(&id).is_some())
