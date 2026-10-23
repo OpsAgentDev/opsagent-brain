@@ -29,6 +29,9 @@ pub trait Repos: Send + Sync {
 #[async_trait]
 pub trait Tx: Repos {
     async fn commit(self: Box<Self>) -> RepoResult<()>;
+    /// A nested transaction: dropping it undoes only its own writes, and a failed statement
+    /// inside it leaves this one usable. Do not use this one while it is open.
+    async fn savepoint(&self) -> RepoResult<Box<dyn Tx>>;
 }
 
 #[async_trait]

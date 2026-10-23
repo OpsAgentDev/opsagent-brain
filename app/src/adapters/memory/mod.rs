@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     audit::{AuditEntry, AuditLog},
-    connection::{Connection, ConnectionsRepo, SealedCreds},
+    connection::{Connection, ConnectionsRepo, SealedCreds, Verification},
     finding::FindingsRepo,
     org::{Invite, Organisation, OrganisationsRepo, Role},
     repo::{Cursor, PageOf, PageRequest, RepoResult},
@@ -119,6 +119,8 @@ pub struct MemState {
     integrations: Vec<Integration>,
     deliveries: Vec<DeliveryRow>,
     schedules: Vec<ScheduleRow>,
+    /// `(connection_id, verification)`, in record order.
+    verifications: Vec<(Uuid, Verification)>,
 }
 
 #[derive(Clone, Default)]
@@ -233,6 +235,10 @@ impl Tx for MemTx {
         let done = self.work.state().clone();
         *self.parent.state() = done;
         Ok(())
+    }
+
+    async fn savepoint(&self) -> RepoResult<Box<dyn Tx>> {
+        self.work.begin().await
     }
 }
 

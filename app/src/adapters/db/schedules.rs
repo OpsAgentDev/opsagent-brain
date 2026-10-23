@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveTime, Utc};
 use opsagent_core::{repo::RepoResult, run::RunKey};
 use opsagent_deliver::{
-    repo::{SchedulesRepo, SinceFn},
+    repo::{DueRun, SchedulesRepo, SinceFn},
     schedule::{daily_at, next_after, BRIEFING, FULL_SCAN, VERIFY_WEEKLY, WEEKLY},
 };
 use sea_orm::{ConnectionTrait, QueryResult};
@@ -16,6 +16,20 @@ fn get<T: sea_orm::TryGetable>(r: &QueryResult, col: &str) -> RepoResult<T> {
 }
 
 impl<C: Conn> Pg<C> {
+    /// Takes the scheduler's transaction-level advisory lock if no other scheduler holds it;
+    /// commit, rollback or disconnect releases it. Call on a transaction.
+    pub async fn try_lock_scheduler(&self) -> RepoResult<bool> {
+        let r = self
+            .db()
+            .query_one_raw(stmt(
+                "SELECT pg_try_advisory_xact_lock(hashtext('opsagent-scheduler')) AS ok",
+                vec![],
+            ))
+            .await
+            .map_err(db_err)?;
+        Ok(r.map(|r| get(&r, "ok")).transpose()?.unwrap_or(false))
+    }
+
     async fn org_timezone(&self, organisation_id: Uuid) -> RepoResult<String> {
         let r = self
             .db()
@@ -214,5 +228,30 @@ impl<C: Conn> SchedulesRepo for Pg<C> {
             ),
         };
         self.db().execute_raw(st).await.map(|_| ()).map_err(db_err)
+    }
+
+    async fn due_runs(&self, now: DateTime<Utc>) -> RepoResult<Vec<DueRun>> {
+        let rows = self
+            .db()
+            .query_all_raw(stmt(
+                // tenancy: scheduler pass over every organisation's parked runs.
+                "SELECT r.id, r.job_type, r.next_attempt_at, EXISTS (SELECT 1 FROM organisations o \
+                 WHERE o.id = r.organisation_id AND o.deleted_at IS NOT NULL) AS org_deleted \
+                 FROM runs r WHERE r.status = 'queued' AND r.next_attempt_at IS NOT NULL \
+                 AND r.next_attempt_at <= $1 ORDER BY r.next_attempt_at",
+                vec![now.into()],
+            ))
+            .await
+            .map_err(db_err)?;
+        rows.iter()
+            .map(|r| {
+                Ok(DueRun {
+                    run_id: get(r, "id")?,
+                    job_type: get(r, "job_type")?,
+                    marker: get(r, "next_attempt_at")?,
+                    organisation_deleted: get(r, "org_deleted")?,
+                })
+            })
+            .collect()
     }
 }

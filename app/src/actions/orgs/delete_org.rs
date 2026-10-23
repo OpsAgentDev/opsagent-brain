@@ -58,7 +58,7 @@ mod tests {
         user::UsersRepo,
     };
     use opsagent_deliver::repo::{
-        DeliveriesRepo, IntegrationsRepo, RecipientsRepo, SchedulesRepo, SinceFn,
+        DeliveriesRepo, DueRun, IntegrationsRepo, RecipientsRepo, SchedulesRepo, SinceFn,
     };
     use opsagent_ledger::Storage;
 
@@ -112,6 +112,9 @@ mod tests {
             Err(broken())
         }
         async fn advance(&self, _: Uuid, _: Option<DateTime<Utc>>) -> RepoResult<()> {
+            Err(broken())
+        }
+        async fn due_runs(&self, _: DateTime<Utc>) -> RepoResult<Vec<DueRun>> {
             Err(broken())
         }
     }
@@ -180,6 +183,9 @@ mod tests {
     impl Tx for WithBrokenSchedules<Box<dyn Tx>> {
         async fn commit(self: Box<Self>) -> RepoResult<()> {
             self.0.commit().await
+        }
+        async fn savepoint(&self) -> RepoResult<Box<dyn Tx>> {
+            Ok(Box::new(WithBrokenSchedules(self.0.savepoint().await?)))
         }
     }
 

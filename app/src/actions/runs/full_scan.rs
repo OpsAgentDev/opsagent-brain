@@ -3,9 +3,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use opsagent_checks::Check;
-use opsagent_connectors::{
-    registry as providers, CallContext, Connector, Credentials, Registry, Scope,
-};
+use opsagent_connectors::{registry as providers, CallContext, Connector, Credentials, Scope};
 use opsagent_core::{
     audit::AuditEntry,
     connection::{Connection, ConnectionStatus as S},
@@ -24,10 +22,10 @@ use uuid::Uuid;
 
 use super::full_scan_chunks::{Scan, FINALIZE, SIMULATE};
 use crate::{
-    actions::uow::UnitOfWork,
+    actions::runs::classify::{job_err, lerr, revoked},
+    actions::{uow::UnitOfWork, ConnectorSource},
     creds,
     models::enum_str,
-    workers::common::{job_err, lerr, revoked},
 };
 
 pub(super) const JOB: JobKind = JobKind::FullScan;
@@ -38,7 +36,7 @@ pub struct FullScan {
     pub(super) uow: Arc<dyn UnitOfWork>,
     redis: redis::Client,
     kek: Arc<dyn Kek>,
-    registry: Registry,
+    connectors: Arc<dyn ConnectorSource>,
     pub(super) clock: Arc<dyn Clock>,
     connector: Option<Arc<dyn Connector>>,
     pub(super) checks: fn() -> Vec<Box<dyn Check>>,
@@ -56,14 +54,14 @@ impl FullScan {
         uow: Arc<dyn UnitOfWork>,
         redis: redis::Client,
         kek: Arc<dyn Kek>,
-        registry: Registry,
+        connectors: Arc<dyn ConnectorSource>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             uow,
             redis,
             kek,
-            registry,
+            connectors,
             clock,
             connector: None,
             checks: opsagent_checks::all,
@@ -172,11 +170,9 @@ impl FullScan {
         if let Some(k) = &self.connector {
             return Ok(k.clone());
         }
-        let k = self
-            .registry
+        self.connectors
             .connector(&c.provider)
-            .map_err(|e| job_err(&e))?;
-        Ok(Arc::from(k))
+            .map_err(|e| job_err(&e))
     }
 
     /// `connection.scan_started`, once per run: a resumed or retried run does not repeat it.

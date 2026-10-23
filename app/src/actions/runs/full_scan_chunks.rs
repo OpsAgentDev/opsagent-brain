@@ -19,8 +19,8 @@ use uuid::Uuid;
 
 use super::{finding_lifecycle, FullScan};
 use crate::{
+    actions::runs::classify::{classify, lerr, revoked},
     actions::uow::Repos,
-    workers::common::{classify, lerr, revoked},
 };
 
 pub(super) const SIMULATE: &str = "simulate";

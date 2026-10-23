@@ -28,7 +28,8 @@ use crate::{
         scheduler_tick::SchedulerTick,
     },
     workers::{
-        full_scan::FullScanWorker, verify::VerifyWorker, DeliverBriefingWorker, DeliverWeeklyWorker,
+        common::redis_client, full_scan::FullScanWorker, verify::VerifyWorker,
+        DeliverBriefingWorker, DeliverWeeklyWorker,
     },
 };
 
@@ -77,7 +78,8 @@ pub fn install_actions(ctx: &AppContext) -> Result<()> {
         clock: Arc::new(SystemClock),
         settings: Settings::get(ctx),
         queue: Arc::new(LocoQueue(ctx.clone())),
-        ledger_redis: crate::workers::common::redis_client(ctx)?,
+        ledger_redis: redis_client(ctx)?,
+        db_url: ctx.config.database.uri.clone(),
     };
     ctx.shared_store.insert(Arc::new(build_actions(&deps)));
     Ok(())

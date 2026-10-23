@@ -1,14 +1,15 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use opsagent_core::{
     connection::{
         Connection, ConnectionPatch, ConnectionStatus, ConnectionsRepo, NewConnection, SealedCreds,
-        Verification,
+        Verification, Verified,
     },
     repo::{RepoError, RepoResult},
 };
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, QueryOrder,
-    QuerySelect, Set,
+    ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, IntoActiveModel, QueryFilter, QueryOrder,
+    QuerySelect, Set, SqlErr,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -27,6 +28,14 @@ pub fn status_of(c: &connections::Model) -> RepoResult<ConnectionStatus> {
         .ok_or_else(|| RepoError::Storage(format!("unknown connection status {:?}", c.status)))
 }
 
+/// The only unique index a connection update can hit is the claimed-account one.
+fn claim_err(e: DbErr) -> RepoError {
+    match e.sql_err() {
+        Some(SqlErr::UniqueConstraintViolation(_)) => RepoError::Conflict("account"),
+        _ => db_err(e),
+    }
+}
+
 fn connection(m: connections::Model) -> RepoResult<Connection> {
     Ok(Connection {
         status: status_of(&m)?,
@@ -43,6 +52,8 @@ fn connection(m: connections::Model) -> RepoResult<Connection> {
         slack_channel_id: m.slack_channel_id,
         first_connected_at: m.first_connected_at.map(utc),
         billable_from: m.billable_from.map(utc),
+        verify_denied_streak: m.verify_denied_streak,
+        verify_denied_first_at: m.verify_denied_first_at.map(utc),
         created_at: utc(m.created_at),
         updated_at: utc(m.updated_at),
     })
@@ -59,6 +70,27 @@ impl<C: Conn> Pg<C> {
             .filter(connections::Column::OrganisationId.eq(organisation_id));
         let q = if lock { q.lock_exclusive() } else { q };
         q.one(self.db()).await.map_err(db_err)
+    }
+
+    /// Applies `a` to the organisation's connection `id`; `NotFound` when there is none.
+    async fn write(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        mut a: connections::ActiveModel,
+    ) -> RepoResult<()> {
+        a.updated_at = Set(now());
+        let r = connections::Entity::update_many()
+            .set(a)
+            .filter(connections::Column::OrganisationId.eq(organisation_id))
+            .filter(connections::Column::Id.eq(id))
+            .exec(self.db())
+            .await
+            .map_err(claim_err)?;
+        if r.rows_affected == 0 {
+            return Err(RepoError::NotFound);
+        }
+        Ok(())
     }
 }
 
@@ -202,8 +234,74 @@ impl<C: Conn> ConnectionsRepo for Pg<C> {
             Some(r) => q.col_expr(Col::StatusReason, r.into()),
             None => q,
         };
-        let r = q.exec(self.db()).await.map_err(db_err)?;
+        let r = q.exec(self.db()).await.map_err(claim_err)?;
         Ok(r.rows_affected == 1)
+    }
+
+    async fn record_verification(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        run_id: Uuid,
+        v: &Verification,
+    ) -> RepoResult<()> {
+        if self
+            .connection_row(organisation_id, id, false)
+            .await?
+            .is_none()
+        {
+            return Err(RepoError::NotFound);
+        }
+        verifications::ActiveModel {
+            id: Set(Uuid::new_v4()),
+            connection_id: Set(id),
+            run_id: Set(Some(run_id)),
+            assume_with_ok: Set(v.assume_with_ok),
+            assume_without_denied: Set(v.assume_without_denied),
+            policy_matches: Set(v.policy_matches),
+            extra_grants: Set(v.extra_grants.clone()),
+            missing_grants: Set(v.missing_grants.clone()),
+            outcome: Set(v.outcome.clone()),
+            created_at: Set(v.at.into()),
+            updated_at: Set(v.at.into()),
+        }
+        .insert(self.db())
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    async fn record_verified(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        v: Verified,
+    ) -> RepoResult<()> {
+        let mut a = <connections::ActiveModel as ActiveModelTrait>::default();
+        a.status_reason = Set(v.reason);
+        a.verify_denied_streak = Set(0);
+        a.verify_denied_first_at = Set(None);
+        if let Some(account) = v.account {
+            a.external_account_id = Set(Some(account));
+        }
+        if let Some(at) = v.first_connected_at {
+            a.first_connected_at = Set(Some(at.into()));
+            a.billable_from = Set(Some(at.into()));
+        }
+        self.write(organisation_id, id, a).await
+    }
+
+    async fn record_denial(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        streak: i32,
+        first_at: DateTime<Utc>,
+    ) -> RepoResult<()> {
+        let mut a = <connections::ActiveModel as ActiveModelTrait>::default();
+        a.verify_denied_streak = Set(streak);
+        a.verify_denied_first_at = Set(Some(first_at.into()));
+        self.write(organisation_id, id, a).await
     }
 
     async fn load_creds(&self, organisation_id: Uuid, id: Uuid) -> RepoResult<SealedCreds> {

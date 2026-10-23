@@ -53,6 +53,23 @@ impl RunEntry {
 }
 
 impl MemState {
+    /// Queued runs with a due `next_attempt_at`: `(id, organisation, job_type, marker)`.
+    pub(super) fn parked_due(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Vec<(Uuid, Option<Uuid>, String, DateTime<Utc>)> {
+        let due = self
+            .runs
+            .iter()
+            .filter(|r| r.row.status == RunStatus::Queued);
+        due.filter_map(|r| {
+            let at = r.next_attempt_at.filter(|at| *at <= now)?;
+            let k = &r.row.key;
+            Some((r.row.id, k.organisation_id, k.job_type.clone(), at))
+        })
+        .collect()
+    }
+
     fn run_mut(&mut self, id: Uuid) -> Result<&mut RunEntry> {
         let r = self.runs.iter_mut().find(|r| r.row.id == id);
         r.ok_or(LedgerError::NotFound)

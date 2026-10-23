@@ -233,7 +233,6 @@ async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
     use opsagent_brain::{
         adapters::db::ledger_storage::PgStorage,
         models::_entities::runs,
-        tasks::scheduler_tick::tick,
         workers::verify::{VerifyArgs, VerifyWorker},
     };
     use opsagent_core::run::RunKey;
@@ -283,7 +282,11 @@ async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
             .execute_unprepared("TRUNCATE runs CASCADE")
             .await
             .unwrap();
-        assert_eq!(tick(&ctx, now).await.unwrap().unwrap(), Default::default());
+        let tick = &opsagent_brain::app::actions(&ctx)
+            .unwrap()
+            .runs
+            .scheduler_tick;
+        assert_eq!(tick.run(now).await.unwrap().unwrap(), Default::default());
         assert_eq!(runs::Entity::find().count(&ctx.db).await.unwrap(), 0);
 
         // And a run that slipped through is skipped by the worker.
