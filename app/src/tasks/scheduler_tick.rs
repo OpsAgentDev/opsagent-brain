@@ -13,11 +13,7 @@ use opsagent_ledger::Storage;
 use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection, TransactionTrait};
 use uuid::Uuid;
 
-use crate::{
-    adapters::db::Pg,
-    services::runs::{create_marked, dispatch},
-    workers::common::err,
-};
+use crate::{actions::runs::RunDispatcher, adapters::db::Pg, workers::common::err};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
@@ -67,7 +63,8 @@ pub async fn tick(ctx: &AppContext, now: DateTime<Utc>) -> Result<Option<Report>
     if !locked {
         return Ok(None);
     }
-    let report = tick_locked(ctx, &db, now).await;
+    let actions = crate::app::actions(ctx)?;
+    let report = tick_locked(&actions.runs.dispatcher, &db, now).await;
     lock.commit().await?;
     report.map(Some)
 }
@@ -75,31 +72,32 @@ pub async fn tick(ctx: &AppContext, now: DateTime<Utc>) -> Result<Option<Report>
 /// One schedule, one transaction: lock, create the run, advance `next_due_at`, commit. Returns
 /// the run only when this call created it.
 async fn due_schedule(
+    d: &RunDispatcher,
     db: &DatabaseConnection,
     id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<Option<(Uuid, String)>> {
-    let txn = db.begin().await?;
-    let Some((key, cron, tz)) = Pg::new(&txn).lock_due(id, now).await.map_err(err)? else {
+    let txn = Pg::new(db.begin().await?);
+    let Some((key, cron, tz)) = txn.lock_due(id, now).await.map_err(err)? else {
         return Ok(None);
     };
     // Missed ticks collapse into this one run; the next slot is after `now` (PRD 7.3).
     let next = next_after(&cron, &tz, now);
     if next.is_none() {
         tracing::error!(schedule = %id, cron, tz, "invalid schedule, disabling");
-        Pg::new(&txn).advance(id, None).await.map_err(err)?;
-        txn.commit().await?;
+        txn.advance(id, None).await.map_err(err)?;
+        txn.into_inner().commit().await?;
         return Ok(None);
     }
     let job = key.job_type.clone();
-    let (txn, out) = create_marked(txn, key, now).await?;
-    Pg::new(&txn).advance(id, next).await.map_err(err)?;
-    txn.commit().await?;
+    let out = d.create_marked(&txn, key, now).await.map_err(err)?;
+    txn.advance(id, next).await.map_err(err)?;
+    txn.into_inner().commit().await?;
     Ok(out.created.then_some((out.run.id, job)))
 }
 
 async fn tick_locked(
-    ctx: &AppContext,
+    d: &RunDispatcher,
     db: &DatabaseConnection,
     now: DateTime<Utc>,
 ) -> Result<Report> {
@@ -111,8 +109,8 @@ async fn tick_locked(
     }
     for id in repo.due_ids(now).await.map_err(err)? {
         // One bad schedule must not block the others; its transaction rolled back, so it is due again next tick.
-        match due_schedule(db, id, now).await {
-            Ok(Some((run, job))) => match dispatch(ctx, run, &job, now).await {
+        match due_schedule(d, db, id, now).await {
+            Ok(Some((run, job))) => match d.dispatch(run, &job, now).await {
                 Ok(sent) => report.schedules_run += usize::from(sent),
                 Err(e) => {
                     tracing::error!(schedule = %id, %run, error = %e, "enqueue failed, the retry pass picks it up next tick")
@@ -122,7 +120,7 @@ async fn tick_locked(
             Err(e) => tracing::error!(schedule = %id, error = %e, "schedule failed"),
         }
     }
-    report.retries_run = retry_pass(ctx, db, now).await?;
+    report.retries_run = retry_pass(d, db, now).await?;
     Ok(report)
 }
 
@@ -151,7 +149,7 @@ async fn skip_deleted_orgs(db: &DatabaseConnection, now: DateTime<Utc>) -> Resul
 /// enqueue was interrupted after they were committed (the outbox marker); those of deleted
 /// organisations are skipped. Returns how many were handed to a worker.
 async fn retry_pass(
-    ctx: &AppContext,
+    d: &RunDispatcher,
     db: &DatabaseConnection,
     now: DateTime<Utc>,
 ) -> Result<usize> {
@@ -172,7 +170,7 @@ async fn retry_pass(
             r.try_get::<String>("", "job_type")?,
             r.try_get("", "next_attempt_at")?,
         );
-        match dispatch(ctx, id, &job, marker).await {
+        match d.dispatch(id, &job, marker).await {
             Ok(sent) => sent_total += usize::from(sent),
             Err(e) => tracing::error!(run = %id, error = %e, "retry enqueue failed"),
         }

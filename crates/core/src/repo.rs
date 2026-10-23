@@ -42,3 +42,12 @@ impl Clock for SystemClock {
         Utc::now()
     }
 }
+
+/// Always the same instant (tests, replays).
+pub struct FixedClock(pub DateTime<Utc>);
+
+impl Clock for FixedClock {
+    fn now(&self) -> DateTime<Utc> {
+        self.0
+    }
+}

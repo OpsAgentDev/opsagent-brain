@@ -1,7 +1,9 @@
 //! Use cases over repository traits (engineering principles, Layers).
 pub mod auth;
+pub mod connections;
 pub mod findings;
 pub mod resources;
+pub mod runs;
 pub mod uow;
 
 use async_trait::async_trait;
@@ -13,6 +15,8 @@ pub struct Actions {
     pub auth: auth::Auth,
     pub findings: findings::Findings,
     pub resources: resources::Resources,
+    pub connections: connections::Connections,
+    pub runs: runs::Runs,
 }
 
 /// Fixed-window counters shared by every rate limit.

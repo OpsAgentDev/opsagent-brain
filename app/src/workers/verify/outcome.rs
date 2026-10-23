@@ -30,7 +30,6 @@ use crate::{
         _entities::{connection_verifications, connections},
         now,
     },
-    services::runs,
     workers::{
         common::{lerr, LResult},
         full_scan,
@@ -207,9 +206,12 @@ impl VerifyWorker {
         self.record_in(tx.db(), c, run.id, Some(o), &enum_str(written), None)
             .await?;
         let now = Utc::now();
+        let actions = crate::app::actions(&self.ctx).map_err(lerr)?;
+        let dispatcher = &actions.runs.dispatcher;
         let first_scan = if first_connect && written == S::Connected {
             Some(
-                runs::mark_new(&tx, first_scan_key(c, now), now)
+                dispatcher
+                    .create_marked(&tx, first_scan_key(c, now), now)
                     .await
                     .map_err(lerr)?,
             )
@@ -221,7 +223,7 @@ impl VerifyWorker {
         tx.into_inner().commit().await.map_err(lerr)?;
         // The first scan's run committed with its outbox marker; a lost hand-off is re-sent.
         if let Some(out) = first_scan.filter(|o| o.created) {
-            runs::hand_off(&self.ctx, &out, full_scan::JOB, now).await;
+            dispatcher.hand_off(&out, now).await;
         }
         Ok(true)
     }

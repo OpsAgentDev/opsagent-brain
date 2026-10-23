@@ -8,7 +8,7 @@ use uuid::Uuid;
 use opsagent_connectors::aws::policy_diff::grant_names;
 use opsagent_core::connection;
 
-use crate::models::{_entities::connection_verifications, enum_str};
+use crate::models::enum_str;
 
 fn hhmm(t: Option<NaiveTime>) -> Option<String> {
     t.map(|t| t.format("%H:%M").to_string())
@@ -57,10 +57,7 @@ pub struct Connection {
     pub last_verification: Option<Verification>,
 }
 
-pub fn view(
-    c: &connection::Connection,
-    last: Option<&connection_verifications::Model>,
-) -> Connection {
+pub fn view(c: &connection::Connection, last: Option<&connection::Verification>) -> Connection {
     Connection {
         id: c.id,
         provider: c.provider.clone(),
@@ -78,7 +75,7 @@ pub fn view(
         created_at: c.created_at.fixed_offset(),
         last_verification: last.map(|v| Verification {
             outcome: v.outcome.clone(),
-            at: v.created_at,
+            at: v.at.fixed_offset(),
             assume_with_ok: v.assume_with_ok,
             assume_without_denied: v.assume_without_denied,
             policy_matches: v.policy_matches,

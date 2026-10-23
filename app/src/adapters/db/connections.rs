@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use opsagent_core::{
     connection::{
         Connection, ConnectionPatch, ConnectionStatus, ConnectionsRepo, NewConnection, SealedCreds,
+        Verification,
     },
     repo::{RepoError, RepoResult},
 };
@@ -14,7 +15,9 @@ use uuid::Uuid;
 
 use super::{db_err, utc, Conn, Pg};
 use crate::models::{
-    _entities::{connection_credentials as creds, connections},
+    _entities::{
+        connection_credentials as creds, connection_verifications as verifications, connections,
+    },
     enum_of, enum_str, now,
 };
 
@@ -110,6 +113,35 @@ impl<C: Conn> ConnectionsRepo for Pg<C> {
     async fn lock(&self, organisation_id: Uuid, id: Uuid) -> RepoResult<Option<Connection>> {
         let row = self.connection_row(organisation_id, id, true).await?;
         row.map(connection).transpose()
+    }
+
+    async fn last_verification(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+    ) -> RepoResult<Option<Verification>> {
+        if self
+            .connection_row(organisation_id, id, false)
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let row = verifications::Entity::find()
+            .filter(verifications::Column::ConnectionId.eq(id))
+            .order_by_desc(verifications::Column::CreatedAt)
+            .one(self.db())
+            .await
+            .map_err(db_err)?;
+        Ok(row.map(|v| Verification {
+            outcome: v.outcome,
+            at: utc(v.created_at),
+            assume_with_ok: v.assume_with_ok,
+            assume_without_denied: v.assume_without_denied,
+            policy_matches: v.policy_matches,
+            extra_grants: v.extra_grants,
+            missing_grants: v.missing_grants,
+        }))
     }
 
     async fn list(&self, organisation_id: Uuid) -> RepoResult<Vec<Connection>> {
