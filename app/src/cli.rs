@@ -1,5 +1,7 @@
 //! The `opsagent-brain` command line: `start`, `scheduler`, `task <name> [k:v…]`, `db`.
-use std::{collections::BTreeMap, process::ExitCode};
+use std::{collections::BTreeMap, future::Future, process::ExitCode};
+
+use futures::FutureExt;
 
 use chrono::Utc;
 use clap::{Parser, Subcommand};
@@ -127,30 +129,46 @@ async fn state(worker: bool) -> AppResult<AppState> {
 }
 
 /// `start`: the API; `--worker`: the job runner; `--server-and-worker`: both in one process.
-/// Each part stops on SIGTERM or Ctrl-C (every part listens for the signal itself).
+/// Every part stops on SIGTERM or Ctrl-C.
 async fn start(worker: bool, server_and_worker: bool) -> AppResult<()> {
-    let state = state(worker || server_and_worker).await?;
-    if worker && !server_and_worker {
-        return boot::worker(&state).run(shutdown()).await;
-    }
-    if !server_and_worker {
-        return serve(state).await;
-    }
-    let runner = boot::worker(&state);
-    // Either part failing ends the process.
-    tokio::try_join!(serve(state), runner.run(shutdown())).map(drop)
+    start_with(config()?, worker, server_and_worker, shutdown()).await
 }
 
-/// The API until SIGTERM or Ctrl-C; in-flight requests finish first.
-async fn serve(state: AppState) -> AppResult<()> {
+/// `start` over `c`, stopping when `stop` resolves (one signal future, shared by every part).
+pub async fn start_with(
+    c: Config,
+    worker: bool,
+    server_and_worker: bool,
+    stop: impl Future<Output = ()> + Send + 'static,
+) -> AppResult<()> {
+    let stop = stop.boxed().shared();
+    let state = boot::boot(c, worker || server_and_worker).await?;
+    if worker && !server_and_worker {
+        return boot::worker(&state).run(stop).await;
+    }
+    // Bound before the runner starts: a taken port must not leave a job locked behind it.
     let addr = format!("{}:{}", state.config.binding, state.config.port);
-    let router = boot::router(state)?;
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(internal)?;
     tracing::info!(%addr, "listening");
+    if !server_and_worker {
+        return serve(listener, state, stop).await;
+    }
+    let runner = boot::worker(&state);
+    // Either part failing ends the process.
+    tokio::try_join!(serve(listener, state, stop.clone()), runner.run(stop)).map(drop)
+}
+
+/// The API on `listener` until `stop`; in-flight requests finish first.
+async fn serve(
+    listener: tokio::net::TcpListener,
+    state: AppState,
+    stop: impl Future<Output = ()> + Send + 'static,
+) -> AppResult<()> {
+    let router = boot::router(state)?;
     axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown())
+        .with_graceful_shutdown(stop)
         .await
         .map_err(internal)
 }
