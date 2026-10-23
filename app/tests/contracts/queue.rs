@@ -14,7 +14,7 @@ use opsagent_brain::{
 use opsagent_core::run::{RunKey, RunStatus};
 use opsagent_ledger::{
     queue::{Job, JobFailure, JobSource},
-    JobKind, NewJob, Queue,
+    JobKind, LedgerError, NewJob, Queue,
 };
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
 use serial_test::serial;
@@ -170,6 +170,7 @@ async fn two_concurrent_dequeues_never_get_the_same_job() {
         (a.len(), b.len()),
         "a worker got one job twice"
     );
+    assert!(!a.is_empty() && !b.is_empty(), "both workers got work");
     assert_eq!(sa.intersection(&sb).count(), 0);
     assert_eq!(sa.union(&sb).count(), 20);
 }
@@ -253,34 +254,62 @@ async fn fail_on_last_attempt_marks_run_failed_and_keeps_row() {
     l.sql("UPDATE jobs SET attempts = 4").await;
     let job = l.dequeue("w1").await.unwrap();
     assert_eq!(job.attempts, 5);
+    // A worker still holding the old lease (fence) when the job goes dead.
+    let stale = l.store.ledger().bump_fence(run).await.unwrap();
+    let running = RunStatus::Running;
+    l.store
+        .ledger()
+        .set_status(run, stale, running, None)
+        .await
+        .unwrap();
     assert_eq!(
         l.q.fail(&job, "boom", Utc::now()).await.unwrap(),
         JobFailure::Dead
     );
-    let r = &l.sql("SELECT locked_at, last_error FROM jobs").await[0];
-    assert!(r
-        .try_get::<Option<DateTime<Utc>>>("", "locked_at")
-        .unwrap()
-        .is_some());
-    assert_eq!(
-        r.try_get::<Option<String>>("", "last_error")
+    let late = l
+        .store
+        .ledger()
+        .set_status(run, stale, RunStatus::Done, None);
+    assert!(matches!(late.await, Err(LedgerError::StaleFence)));
+    l.assert_dead(run, "boom").await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stale_lock_on_last_attempt_is_finalised_dead() {
+    let l = lane().await;
+    let run = l.job(JobKind::FullScan).await;
+    l.sql("UPDATE jobs SET attempts = 4").await;
+    l.dequeue("w1").await.unwrap();
+    l.sql("UPDATE jobs SET locked_at = now() - interval '2 hours'")
+        .await;
+    assert!(l.dequeue("w2").await.is_none());
+    l.assert_dead(run, "lock_expired").await;
+}
+
+impl Lane {
+    /// The job stays locked with no owner and `error`; the run failed once; nothing revives it.
+    async fn assert_dead(&self, run: Uuid, error: &str) {
+        assert_eq!(self.q.release_mine("w1").await.unwrap(), 0);
+        let row = self.store.ledger().load_run(run).await.unwrap();
+        assert_eq!(row.status, RunStatus::Failed);
+        assert_eq!(
+            row.partial_reason.as_deref(),
+            Some("job_attempts_exhausted")
+        );
+        let n = "SELECT count(*) AS n FROM jobs WHERE locked_at IS NOT NULL AND locked_by IS NULL \
+                 AND attempts = 5 AND last_error = '";
+        let n: i64 = self.sql(&format!("{n}{error}'")).await[0]
+            .try_get("", "n")
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(self
+            .q
+            .dequeue("w2", ALL, Duration::ZERO)
+            .await
             .unwrap()
-            .as_deref(),
-        Some("boom")
-    );
-    let row = l.store.ledger().load_run(run).await.unwrap();
-    assert_eq!(row.status, RunStatus::Failed);
-    assert_eq!(
-        row.partial_reason.as_deref(),
-        Some("job_attempts_exhausted")
-    );
-    // A dead job is never picked up again, not even as a stale lock.
-    assert!(l
-        .q
-        .dequeue("w2", ALL, Duration::ZERO)
-        .await
-        .unwrap()
-        .is_none());
+            .is_none());
+    }
 }
 
 #[tokio::test]

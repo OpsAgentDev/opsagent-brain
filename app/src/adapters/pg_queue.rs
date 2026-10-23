@@ -73,6 +73,32 @@ async fn exec(db: &impl ConnectionTrait, sql: &str, values: Vec<sea_orm::Value>)
         .map_err(db_err)
 }
 
+impl PgQueue<DatabaseConnection> {
+    /// Marks one job dead with `mark` (an UPDATE returning `run_id` that leaves the row locked
+    /// with no owner) and fails its run, in one transaction. The fence is bumped first, as
+    /// `skip_run` does, so a worker still holding the lease cannot write a competing status.
+    async fn bury(&self, mark: &str, values: Vec<sea_orm::Value>) -> Result<Option<Uuid>> {
+        let txn = self.0.begin().await.map_err(db_err)?;
+        let Some(r) = txn
+            .query_one_raw(stmt(mark, values))
+            .await
+            .map_err(db_err)?
+        else {
+            return Ok(None);
+        };
+        let run_id: Uuid = r.try_get("", "run_id").map_err(db_err)?;
+        let runs = Pg::new(&txn);
+        let fence = runs.bump_fence(run_id).await?;
+        let run = runs.load_run(run_id).await?;
+        if matches!(run.status, RunStatus::Queued | RunStatus::Running) {
+            runs.fail_run(run_id, fence, "job_attempts_exhausted")
+                .await?;
+        }
+        txn.commit().await.map_err(db_err)?;
+        Ok(Some(run_id))
+    }
+}
+
 #[async_trait]
 impl JobSource for PgQueue<DatabaseConnection> {
     async fn dequeue(
@@ -81,6 +107,20 @@ impl JobSource for PgQueue<DatabaseConnection> {
         kinds: &[JobKind],
         lock_max_age: Duration,
     ) -> Result<Option<Job>> {
+        // A stale lock on the last attempt is not handed out again: the job is dead.
+        while self
+            .bury(
+                // tenancy: job queue is global
+                "UPDATE jobs SET locked_by = NULL, last_error = 'lock_expired' \
+                 WHERE id = (SELECT id FROM jobs WHERE locked_by IS NOT NULL \
+                   AND locked_at < now() - make_interval(secs => $1) \
+                   AND attempts >= max_attempts FOR UPDATE SKIP LOCKED LIMIT 1) \
+                 RETURNING run_id",
+                vec![lock_max_age.as_secs_f64().into()],
+            )
+            .await?
+            .is_some()
+        {}
         let kinds: Vec<String> = kinds.iter().map(|k| k.as_str().to_owned()).collect();
         // A stale lock is free unless the job is dead (attempts exhausted).
         let row = self
@@ -126,21 +166,14 @@ impl JobSource for PgQueue<DatabaseConnection> {
             .await?;
             return Ok(JobFailure::Retrying { at });
         }
-        let txn = self.0.begin().await.map_err(db_err)?;
-        exec(
-            &txn,
-            // tenancy: job queue is global
-            "UPDATE jobs SET last_error = $2 WHERE id = $1",
-            vec![job.id.into(), error.into()],
-        )
-        .await?;
-        let runs = Pg::new(&txn);
-        let run = runs.load_run(job.run_id).await?;
-        if matches!(run.status, RunStatus::Queued | RunStatus::Running) {
-            runs.fail_run(run.id, run.fence, "job_attempts_exhausted")
-                .await?;
-        }
-        txn.commit().await.map_err(db_err)?;
+        let dead = self
+            .bury(
+                // tenancy: job queue is global
+                "UPDATE jobs SET last_error = $2, locked_by = NULL WHERE id = $1 RETURNING run_id",
+                vec![job.id.into(), error.into()],
+            )
+            .await?;
+        dead.ok_or_else(|| db_err("job not found"))?;
         Ok(JobFailure::Dead)
     }
 
