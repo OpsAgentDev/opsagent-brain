@@ -2,15 +2,18 @@
 //! so a capped request looks exactly like a sent one (no enumeration).
 use std::net::{IpAddr, Ipv6Addr};
 
+use chrono::{Duration, Utc};
+use opsagent_core::user::{Email, UsersRepo};
 use opsagent_ledger::redis;
 use sea_orm::DatabaseConnection;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    adapters::db::Pg,
     api_error::ApiError,
     mailers::{magic_link as mail, Mailer},
-    models::{magic_links, users as user_model},
     services::rate_limit::{hit, HOUR_SECS},
+    tokens::{hash_token, new_token},
 };
 
 /// Links per address per hour.
@@ -54,10 +57,10 @@ pub async fn request_link(
     raw_email: &str,
     ip: Option<IpAddr>,
 ) -> Result<(), ApiError> {
-    let Some(email) = user_model::normalize_email(raw_email) else {
+    let Some(email) = Email::parse(raw_email) else {
         return Ok(());
     };
-    match rate_limit(redis, &email, ip).await {
+    match rate_limit(redis, email.as_str(), ip).await {
         Ok(true) => {}
         Ok(false) => return Ok(()),
         // Fail closed: no mail rather than an unlimited one.
@@ -66,14 +69,19 @@ pub async fn request_link(
             return Ok(());
         }
     }
-    let user = user_model::find_or_create_by_email(db, &email).await?;
-    let token = magic_links::issue(db, user.id, &email).await?;
+    let users = Pg::new(db);
+    let user = users.find_or_create_by_email(&email).await?;
+    let token = new_token();
+    let expires = Utc::now() + Duration::minutes(15);
+    users
+        .issue_magic_link(user.id, &email, &hash_token(&token), expires)
+        .await?;
     // The web page POSTs the token to `/auth/magic-link/redeem` after a click (login-CSRF safe).
     let link = format!(
         "{}/auth/callback?token={token}",
         web_base_url.trim_end_matches('/')
     );
-    if let Err(e) = mailer.send(mail::magic_link(&email, &link)).await {
+    if let Err(e) = mailer.send(mail::magic_link(email.as_str(), &link)).await {
         tracing::error!(error = %e, "magic link mail failed");
     }
     Ok(())

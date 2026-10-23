@@ -6,6 +6,7 @@ use axum::{
 };
 use chrono::{DateTime, FixedOffset};
 use loco_rs::app::AppContext;
+use opsagent_core::org::Role;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -23,9 +24,10 @@ use crate::{
         org_scope::{AuthUser, OrgScope},
         slack,
     },
-    models::{_entities::members, magic_links::new_token, members::OWNER},
+    models::_entities::members,
     services::integrations as service,
     settings::Settings,
+    tokens::new_token,
 };
 
 /// Session key holding `(state, organisation_id)` for the one Slack install in flight.
@@ -95,7 +97,7 @@ async fn claim_state(
     let owner = members::Entity::find()
         .filter(members::Column::OrganisationId.eq(org_id))
         .filter(members::Column::UserId.eq(user_id))
-        .filter(members::Column::Role.eq(OWNER))
+        .filter(members::Column::Role.eq(Role::Owner.as_str()))
         .one(&ctx.db)
         .await?;
     owner.map(|_| org_id).ok_or_else(ApiError::forbidden)

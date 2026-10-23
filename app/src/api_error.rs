@@ -120,6 +120,15 @@ internal_from!(
     opsagent_ledger::LedgerError
 );
 
+impl From<opsagent_core::repo::RepoError> for ApiError {
+    fn from(e: opsagent_core::repo::RepoError) -> Self {
+        match e {
+            opsagent_core::repo::RepoError::NotFound => Self::not_found(),
+            e => Self::internal(e),
+        }
+    }
+}
+
 /// `Json` extractor whose rejection is a problem-details body.
 pub struct ApiJson<T>(pub T);
 

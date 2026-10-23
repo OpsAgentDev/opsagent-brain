@@ -6,6 +6,7 @@ use opsagent_connectors::{
     registry::{self, ProviderSpec},
     ConnectorError, Registry,
 };
+use opsagent_core::audit::{AuditEntry, AuditLog};
 use opsagent_core::{
     connection::{transition, ConnectionEvent as E, ConnectionStatus as S},
     run::RunKey,
@@ -16,11 +17,11 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
+    adapters::db::Pg,
     api_error::ApiError,
     models::enum_str,
     models::{
         _entities::connections,
-        audit,
         connections::{
             cas, insert_creds, load_creds, save_creds, status_of, Creds, TEMPLATE_VERSION,
         },
@@ -84,14 +85,14 @@ pub async fn create(
     .insert(&txn)
     .await?;
     insert_creds(&txn, kek, organisation_id, id, spec.credential_kind, &creds).await?;
-    audit::record(
-        &txn,
-        Some(organisation_id),
-        actor,
-        "connection.create",
-        Some(("connection", id.to_string())),
-    )
-    .await?;
+    Pg::new(&txn)
+        .record(AuditEntry::member(
+            Some(organisation_id),
+            actor,
+            "connection.create",
+            Some(("connection", id.to_string())),
+        ))
+        .await?;
     txn.commit().await?;
     Ok(Created { id, creds, spec })
 }
@@ -146,14 +147,14 @@ pub async fn request_verify(
             "The connection changed while this request ran. Reload and try again.",
         ));
     }
-    audit::record(
-        &txn,
-        Some(c.organisation_id),
-        actor,
-        "connection.verify_requested",
-        Some(("connection", c.id.to_string())),
-    )
-    .await?;
+    Pg::new(&txn)
+        .record(AuditEntry::member(
+            Some(c.organisation_id),
+            actor,
+            "connection.verify_requested",
+            Some(("connection", c.id.to_string())),
+        ))
+        .await?;
     txn.commit().await?;
     // A duplicate request in the same minute is the same run.
     let key = RunKey {
@@ -203,14 +204,14 @@ pub async fn disconnect(
     if !end(&txn, c, "customer_disconnected").await? {
         return Ok(());
     }
-    audit::record(
-        &txn,
-        Some(org_id),
-        actor,
-        "connection.disconnect",
-        Some(("connection", conn_id.to_string())),
-    )
-    .await?;
+    Pg::new(&txn)
+        .record(AuditEntry::member(
+            Some(org_id),
+            actor,
+            "connection.disconnect",
+            Some(("connection", conn_id.to_string())),
+        ))
+        .await?;
     txn.commit().await?;
     Ok(())
 }

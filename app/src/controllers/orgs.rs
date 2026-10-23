@@ -1,7 +1,7 @@
 use axum::{extract::State, http::StatusCode, Json};
 use chrono::{DateTime, FixedOffset};
 use loco_rs::app::AppContext;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use opsagent_core::org::{valid_name, Organisation, OrganisationPatch, OrganisationsRepo};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -9,14 +9,10 @@ use uuid::Uuid;
 
 use super::OrgPath;
 use crate::{
+    adapters::db::Pg,
     api_error::{ApiError, ApiJson, Problem},
     app::kek,
     middleware::org_scope::{AuthUser, OrgScope},
-    models::{
-        _entities::{members, organisations},
-        now,
-        organisations::{valid_name, valid_timezone},
-    },
     services::{
         orgs,
         rate_limit::{hit, DAY_SECS},
@@ -35,15 +31,25 @@ pub struct Org {
     pub created_at: DateTime<FixedOffset>,
 }
 
-fn view(o: &organisations::Model, role: &str) -> Org {
+fn view(o: &Organisation, role: &str) -> Org {
     Org {
         id: o.id,
         name: o.name.clone(),
         slug: o.slug.clone(),
         timezone: o.timezone.clone(),
         role: role.into(),
-        created_at: o.created_at,
+        created_at: o.created_at.fixed_offset(),
     }
+}
+
+fn name(raw: &str) -> Result<String, ApiError> {
+    valid_name(raw).map_err(ApiError::invalid)
+}
+
+fn valid_timezone(raw: &str) -> Result<String, ApiError> {
+    raw.parse::<chrono_tz::Tz>()
+        .map(|_| raw.into())
+        .map_err(|_| ApiError::invalid("timezone must be an IANA name such as Europe/Berlin"))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -86,7 +92,7 @@ async fn create_org(
     AuthUser(user_id): AuthUser,
     ApiJson(body): ApiJson<NewOrg>,
 ) -> Result<(StatusCode, Json<Org>), ApiError> {
-    let name = valid_name(&body.name)?;
+    let name = name(&body.name)?;
     let tz = valid_timezone(body.timezone.as_deref().unwrap_or("UTC"))?;
     limit_creation(&ctx, user_id).await?;
     let org = orgs::create(&ctx.db, kek(&ctx)?.as_ref(), user_id, &name, &tz).await?;
@@ -99,26 +105,15 @@ async fn list(
     State(ctx): State<AppContext>,
     AuthUser(user_id): AuthUser,
 ) -> Result<Json<Vec<Org>>, ApiError> {
-    // tenancy: the caller's own memberships, across organisations.
-    let rows = members::Entity::find()
-        .filter(members::Column::UserId.eq(user_id))
-        .find_also_related(organisations::Entity)
-        .all(&ctx.db)
-        .await?;
+    let rows = Pg::new(&ctx.db).list_for_user(user_id).await?;
     Ok(Json(
-        rows.iter()
-            .filter_map(|(m, o)| {
-                o.as_ref()
-                    .filter(|o| o.deleted_at.is_none())
-                    .map(|o| view(o, &m.role))
-            })
-            .collect(),
+        rows.iter().map(|(o, r)| view(o, r.as_str())).collect(),
     ))
 }
 
-async fn load(ctx: &AppContext, scope: &OrgScope) -> Result<organisations::Model, ApiError> {
-    organisations::Entity::find_by_id(scope.organisation_id)
-        .one(&ctx.db)
+async fn load(ctx: &AppContext, scope: &OrgScope) -> Result<Organisation, ApiError> {
+    Pg::new(&ctx.db)
+        .get(scope.organisation_id)
         .await?
         .ok_or_else(ApiError::not_found)
 }
@@ -144,15 +139,13 @@ async fn update(
     ApiJson(body): ApiJson<OrgPatch>,
 ) -> Result<Json<Org>, ApiError> {
     scope.require_owner()?;
-    let mut a: organisations::ActiveModel = load(&ctx, &scope).await?.into();
-    if let Some(n) = &body.name {
-        a.name = Set(valid_name(n)?);
-    }
-    if let Some(t) = &body.timezone {
-        a.timezone = Set(valid_timezone(t)?);
-    }
-    a.updated_at = Set(now());
-    let org = a.update(&ctx.db).await?;
+    let patch = OrganisationPatch {
+        name: body.name.as_deref().map(name).transpose()?,
+        timezone: body.timezone.as_deref().map(valid_timezone).transpose()?,
+    };
+    let org = Pg::new(&ctx.db)
+        .update(scope.organisation_id, patch)
+        .await?;
     Ok(Json(view(&org, &scope.role)))
 }
 

@@ -7,6 +7,10 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use chrono::{Duration, Utc};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
+use opsagent_core::{
+    audit::{AuditEntry, AuditLog},
+    user::Email,
+};
 use opsagent_ledger::redis;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, Set,
@@ -16,6 +20,7 @@ use sha2::Sha256;
 use uuid::Uuid;
 
 use crate::{
+    adapters::db::Pg,
     api_error::ApiError,
     mailers::{magic_link as mail, Mailer},
     models::{
@@ -24,12 +29,10 @@ use crate::{
             recipients::{self, Column as C},
             users,
         },
-        audit, find_in_org,
-        magic_links::{hash_token, new_token},
-        now,
-        users::normalize_email,
+        find_in_org, now,
     },
     services::mail_guard,
+    tokens::{hash_token, new_token},
 };
 
 pub const PENDING: &str = "pending";
@@ -115,7 +118,10 @@ pub async fn create(
 ) -> Result<recipients::Model, ApiError> {
     let (email, member_id) = match (new.email.as_deref(), new.member_id) {
         (Some(e), None) => (
-            normalize_email(e).ok_or_else(|| ApiError::invalid("invalid email"))?,
+            Email::parse(e)
+                .ok_or_else(|| ApiError::invalid("invalid email"))?
+                .as_str()
+                .to_owned(),
             None,
         ),
         (None, Some(m)) => (member_email(db, organisation_id, m).await?, Some(m)),
@@ -160,14 +166,14 @@ pub async fn create(
             e.into()
         }
     })?;
-    audit::record(
-        &txn,
-        Some(organisation_id),
-        actor,
-        "recipient.create",
-        Some(("recipient", row.id.to_string())),
-    )
-    .await?;
+    Pg::new(&txn)
+        .record(AuditEntry::member(
+            Some(organisation_id),
+            actor,
+            "recipient.create",
+            Some(("recipient", row.id.to_string())),
+        ))
+        .await?;
     txn.commit().await?;
     if let Some(token) = token {
         let to = Confirm {
@@ -243,15 +249,17 @@ pub async fn confirm(
     if done.rows_affected != 1 {
         return Err(ApiError::gone("recipient_token_invalid"));
     }
-    audit::record_system(
-        &txn,
-        row.organisation_id,
-        "recipient.confirm",
-        ("recipient", row.id.to_string()),
-        "success",
-        serde_json::json!({}),
-    )
-    .await?;
+    Pg::new(&txn)
+        .record(
+            AuditEntry::system(
+                row.organisation_id,
+                "recipient.confirm",
+                ("recipient", row.id.to_string()),
+                "success",
+            )
+            .with_meta(serde_json::json!({})),
+        )
+        .await?;
     txn.commit().await?;
     mail_guard::confirmed(db, redis, row.organisation_id, &row.email).await?;
     Ok(())
@@ -281,15 +289,17 @@ pub async fn unsubscribe(
         .exec(&txn)
         .await?;
     if done.rows_affected == 1 {
-        audit::record_system(
-            &txn,
-            row.organisation_id,
-            "recipient.unsubscribe",
-            ("recipient", row.id.to_string()),
-            "success",
-            serde_json::json!({}),
-        )
-        .await?;
+        Pg::new(&txn)
+            .record(
+                AuditEntry::system(
+                    row.organisation_id,
+                    "recipient.unsubscribe",
+                    ("recipient", row.id.to_string()),
+                    "success",
+                )
+                .with_meta(serde_json::json!({})),
+            )
+            .await?;
     }
     mail_guard::suppress_unsubscribed(&txn, mail_guard::email_hash(&row.email)).await?;
     txn.commit().await?;
@@ -312,14 +322,14 @@ pub async fn delete(
     if gone.rows_affected != 1 {
         return Err(ApiError::not_found());
     }
-    audit::record(
-        &txn,
-        Some(organisation_id),
-        actor,
-        "recipient.delete",
-        Some(("recipient", id.to_string())),
-    )
-    .await?;
+    Pg::new(&txn)
+        .record(AuditEntry::member(
+            Some(organisation_id),
+            actor,
+            "recipient.delete",
+            Some(("recipient", id.to_string())),
+        ))
+        .await?;
     txn.commit().await?;
     Ok(())
 }

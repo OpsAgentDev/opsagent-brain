@@ -2,7 +2,7 @@
 use chrono::Utc;
 use loco_rs::app::AppContext;
 use opsagent_brain::{
-    models::members as member_model,
+    adapters::db::Pg,
     services::{
         mail_guard::email_hash,
         recipients::{unsubscribe, unsubscribe_token, unsubscribe_url},
@@ -10,6 +10,7 @@ use opsagent_brain::{
     settings::Settings,
     workers::deliver_weekly,
 };
+use opsagent_core::org::{OrganisationsRepo, Role};
 use opsagent_core::run::RunStatus;
 use opsagent_ledger::{harness, RunChunkedOptions};
 use serde_json::json;
@@ -121,7 +122,7 @@ async fn organisation_summary_goes_only_to_owners() {
         let w = world(&req, &ctx, "boss@example.com").await;
         let mail = prepare(&ctx);
         let u = user(&ctx, "member@example.com").await;
-        let m = member_model::add(&ctx.db, w.org, u, "member")
+        let m = Pg::new(&ctx.db).add_member(w.org, u, Role::Member)
             .await
             .unwrap();
         recipient(&ctx, &w, "member@example.com", Some(m.id)).await;
@@ -168,7 +169,7 @@ async fn non_member_mail_has_the_unsubscribe_link_and_members_do_not() {
         let w = world(&req, &ctx, "lead@example.com").await;
         let mail = prepare(&ctx);
         let u = user(&ctx, "dev@example.com").await;
-        let m = member_model::add(&ctx.db, w.org, u, "member").await.unwrap();
+        let m = Pg::new(&ctx.db).add_member(w.org, u, Role::Member).await.unwrap();
         recipient(&ctx, &w, "dev@example.com", Some(m.id)).await;
         let outside = recipient(&ctx, &w, "client@example.com", None).await;
         recipient(&ctx, &w, "gone@example.com", None).await;
@@ -232,7 +233,8 @@ async fn member_mail_ignores_an_unsubscribe_from_another_organisation() {
             .await
             .unwrap();
         let u = user(&ctx, "dev@example.com").await;
-        let m = member_model::add(&ctx.db, w.org, u, "member")
+        let m = Pg::new(&ctx.db)
+            .add_member(w.org, u, Role::Member)
             .await
             .unwrap();
         recipient(&ctx, &w, "dev@example.com", Some(m.id)).await;
@@ -253,7 +255,8 @@ async fn other_suppressions_still_block_a_member() {
         let w = world(&req, &ctx, "lead@example.com").await;
         let mail = prepare(&ctx);
         let u = user(&ctx, "dev@example.com").await;
-        let m = member_model::add(&ctx.db, w.org, u, "member")
+        let m = Pg::new(&ctx.db)
+            .add_member(w.org, u, Role::Member)
             .await
             .unwrap();
         recipient(&ctx, &w, "dev@example.com", Some(m.id)).await;

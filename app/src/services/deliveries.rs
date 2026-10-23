@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use opsagent_core::org::OrganisationsRepo;
 use opsagent_core::{
     connection::ConnectionStatus,
     finding::{FindingKey, Severity},
@@ -24,7 +25,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
-    models::organisations,
+    adapters::db::Pg,
     models::{
         _entities::{connections, integrations},
         connections::status_of,
@@ -398,7 +399,8 @@ pub(crate) async fn live_connection(
         .await
         .map_err(lerr)?
         .ok_or(LedgerError::NotFound)?;
-    let gone = organisations::deleted(db, c.organisation_id)
+    let gone = Pg::new(db)
+        .is_deleted(c.organisation_id)
         .await
         .map_err(lerr)?;
     Ok((!gone && deliverable(&c)).then_some(c))
