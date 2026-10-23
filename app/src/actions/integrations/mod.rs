@@ -21,7 +21,6 @@ pub use start_slack_install::StartSlackInstall;
 
 use crate::{
     actions::uow::Repos,
-    config::Config,
     creds::Dek,
     error::{AppError, AppResult},
 };
@@ -55,11 +54,21 @@ fn not_configured() -> AppError {
     }
 }
 
-fn configured(s: &Config) -> bool {
-    !s.slack_client_id.is_empty() && !s.slack_client_secret.is_empty()
+/// What the Slack install actions read from `Config`.
+#[derive(Clone)]
+pub struct SlackSettings {
+    /// Empty disables Slack (`slack_not_configured`).
+    pub client_id: String,
+    pub client_secret: String,
+    /// The API's own base URL, for the OAuth redirect.
+    pub api_base_url: String,
 }
 
-fn redirect_uri(s: &Config) -> String {
+fn configured(s: &SlackSettings) -> bool {
+    !s.client_id.is_empty() && !s.client_secret.is_empty()
+}
+
+fn redirect_uri(s: &SlackSettings) -> String {
     format!(
         "{}/v1/integrations/slack/callback",
         s.api_base_url.trim_end_matches('/')

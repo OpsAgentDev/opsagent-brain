@@ -1,18 +1,17 @@
-use super::{configured, not_configured, redirect_uri};
+use super::{configured, not_configured, redirect_uri, SlackSettings};
 use crate::{
     adapters::slack::{AUTHORIZE_URL, BOT_SCOPES},
-    config::Config,
     error::AppResult,
 };
 
 /// The Slack consent URL carrying `state`; 503 `slack_not_configured` without client
 /// credentials. The caller keeps `state` (in the session) to check the callback against.
 pub struct StartSlackInstall {
-    settings: Config,
+    settings: SlackSettings,
 }
 
 impl StartSlackInstall {
-    pub fn new(settings: Config) -> Self {
+    pub fn new(settings: SlackSettings) -> Self {
         Self { settings }
     }
 
@@ -24,7 +23,7 @@ impl StartSlackInstall {
         let e = |v: &str| urlencoding::encode(v).into_owned();
         Ok(format!(
             "{AUTHORIZE_URL}?client_id={}&scope={}&redirect_uri={}&state={}",
-            e(&s.slack_client_id),
+            e(&s.client_id),
             e(BOT_SCOPES),
             e(&redirect_uri(s)),
             e(state)

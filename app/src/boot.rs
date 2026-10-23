@@ -282,13 +282,18 @@ fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipi
 }
 
 fn integrations(d: &Deps) -> integrations::Integrations {
+    let slack = integrations::SlackSettings {
+        client_id: d.config.slack_client_id.clone(),
+        client_secret: d.config.slack_client_secret.clone(),
+        api_base_url: d.config.api_base_url.clone(),
+    };
     integrations::Integrations {
-        start_slack_install: integrations::StartSlackInstall::new(d.config.clone()),
+        start_slack_install: integrations::StartSlackInstall::new(slack.clone()),
         finish_slack_install: integrations::FinishSlackInstall::new(
             d.uow.clone(),
             d.kek.clone(),
             d.slack.clone(),
-            d.config.clone(),
+            slack,
         ),
         list_slack_channels: integrations::ListSlackChannels::new(
             d.uow.clone(),
@@ -314,7 +319,8 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
         slack: d.slack.clone(),
         guard,
         clock: d.clock.clone(),
-        settings: d.config.clone(),
+        web_base_url: d.config.web_base_url.clone(),
+        unsubscribe_key: d.config.unsubscribe_key().to_owned(),
     };
     deliveries::Deliveries {
         list_deliveries: deliveries::ListDeliveries::new(d.uow.clone()),

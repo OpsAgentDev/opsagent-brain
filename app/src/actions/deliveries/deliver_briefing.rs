@@ -53,7 +53,7 @@ impl DeliverBriefing {
         let Some(c) = live_connection(r, run).await? else {
             return Ok(outcome("skipped", "not_deliverable"));
         };
-        let link_base = &self.kit.settings.web_base_url;
+        let link_base = &self.kit.web_base_url;
         let now = self.kit.clock.now();
         let Some(b) = briefing(r, &c, run.key.scheduled_at, now, link_base)
             .await

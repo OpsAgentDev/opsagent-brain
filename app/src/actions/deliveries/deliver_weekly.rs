@@ -122,15 +122,15 @@ impl DeliverWeekly {
             None,
             &WeeklyExtras::default(),
             now,
-            &self.kit.settings.web_base_url,
+            &self.kit.web_base_url,
         ))
     }
 
     fn weekly_mail(&self, w: &Weekly, to: &Recipient) -> Mail {
-        let s = &self.kit.settings;
+        let k = &self.kit;
         let (mut text, mut html) = (render_text(w), render_html(w));
         if !to.member {
-            let url = unsubscribe_url(&s.web_base_url, s.unsubscribe_key(), to.id);
+            let url = unsubscribe_url(&k.web_base_url, &k.unsubscribe_key, to.id);
             text += &format!("\nUnsubscribe: {url}\n");
             let footer = format!("<p><a href=\"{url}\">Unsubscribe</a></p>\n</body>");
             html = html.replacen("</body>", &footer, 1);

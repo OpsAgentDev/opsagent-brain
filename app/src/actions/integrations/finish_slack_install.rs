@@ -8,13 +8,13 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::{
-    configured, not_configured, redirect_uri, seal_token, SLACK_NOT_CONFIGURED, WORKSPACE_IN_USE,
+    configured, not_configured, redirect_uri, seal_token, SlackSettings, SLACK_NOT_CONFIGURED,
+    WORKSPACE_IN_USE,
 };
 use crate::{
     actions::uow::UnitOfWork,
     adapters::slack::{Install, SlackClient, SlackError},
     api_error::ApiError,
-    config::Config,
     error::{AppError, AppResult},
 };
 
@@ -71,7 +71,7 @@ pub struct FinishSlackInstall {
     uow: Arc<dyn UnitOfWork>,
     kek: Arc<dyn Kek>,
     slack: Arc<dyn SlackClient>,
-    settings: Config,
+    settings: SlackSettings,
 }
 
 impl FinishSlackInstall {
@@ -79,7 +79,7 @@ impl FinishSlackInstall {
         uow: Arc<dyn UnitOfWork>,
         kek: Arc<dyn Kek>,
         slack: Arc<dyn SlackClient>,
-        settings: Config,
+        settings: SlackSettings,
     ) -> Self {
         Self {
             uow,
@@ -119,9 +119,9 @@ impl FinishSlackInstall {
             return Err(not_configured().into());
         }
         let redirect = redirect_uri(s);
-        let exchange =
-            self.slack
-                .oauth_access(&s.slack_client_id, &s.slack_client_secret, &code, &redirect);
+        let exchange = self
+            .slack
+            .oauth_access(&s.client_id, &s.client_secret, &code, &redirect);
         let install = exchange.await.map_err(|e| {
             tracing::warn!(error_code = e.code(), "slack oauth exchange failed");
             InstallError::Exchange(e)

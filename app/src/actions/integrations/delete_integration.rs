@@ -64,21 +64,20 @@ mod tests {
     use super::*;
     use crate::{
         actions::{
-            integrations::{test_support::*, Callback, FinishSlackInstall, InstallError},
+            integrations::{
+                test_support::*, Callback, FinishSlackInstall, InstallError, SlackSettings,
+            },
             recipients::test_support::{kek, member, org},
         },
         adapters::memory::MemStore,
-        config::Config,
     };
 
-    fn settings() -> Config {
-        let vars = |k: &str| match k {
-            "APP_BASE_URL" => Some("https://api.test".to_owned()),
-            "SLACK_CLIENT_ID" => Some("cid".to_owned()),
-            "SLACK_CLIENT_SECRET" => Some("csecret".to_owned()),
-            _ => None,
-        };
-        Config::from_vars(vars).unwrap_or_else(|e| panic!("{e}"))
+    fn settings() -> SlackSettings {
+        SlackSettings {
+            client_id: "cid".into(),
+            client_secret: "csecret".into(),
+            api_base_url: "https://api.test".into(),
+        }
     }
 
     #[tokio::test]

@@ -24,7 +24,7 @@ pub use list_deliveries::ListDeliveries;
 pub use preview_briefing::{Preview, PreviewBriefing};
 
 use super::{recipients::MailGuard, uow::Repos, uow::UnitOfWork};
-use crate::{adapters::slack::SlackClient, config::Config, mailers::Mailer};
+use crate::{adapters::slack::SlackClient, mailers::Mailer};
 
 const LEASE_TTL: Duration = Duration::from_secs(60);
 
@@ -48,7 +48,10 @@ pub struct Kit {
     pub slack: Arc<dyn SlackClient>,
     pub guard: Arc<MailGuard>,
     pub clock: Arc<dyn Clock>,
-    pub settings: Config,
+    /// Base of the links in briefings and digests.
+    pub web_base_url: String,
+    /// `Config::unsubscribe_key`, for unsubscribe links in the weekly digest.
+    pub unsubscribe_key: String,
 }
 
 /// A delivery row with the id of the recipient it went to (email rows only; owner fallback
