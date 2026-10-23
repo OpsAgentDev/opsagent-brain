@@ -6,7 +6,7 @@ use opsagent_core::{
 };
 use uuid::Uuid;
 
-use super::{page, MemStore};
+use super::{page, MemState, MemStore};
 
 #[derive(Clone)]
 pub struct ResourceMem {
@@ -19,6 +19,29 @@ pub struct ResourceMem {
 
 fn key(r: &ResourceMem) -> Cursor {
     (r.row.first_seen_at.into(), r.row.id)
+}
+
+/// Case-insensitive substring of name or identity, wildcards literal (as Pg's escaped ILIKE).
+fn matches(r: &ResourceRow, q: &str) -> bool {
+    let q = q.to_lowercase();
+    let has = |s: &str| s.to_lowercase().contains(&q);
+    has(&r.identity) || r.name.as_deref().is_some_and(has)
+}
+
+impl MemState {
+    /// Identities of the connection's resources missing from a complete inventory.
+    pub(super) fn gone_identities(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+    ) -> Vec<String> {
+        let gone = self.resources.iter().filter(|r| {
+            r.organisation_id == organisation_id
+                && r.row.connection_id == connection_id
+                && r.row.gone_at.is_some()
+        });
+        gone.map(|r| r.row.identity.clone()).collect()
+    }
 }
 
 #[async_trait]
@@ -37,6 +60,7 @@ impl ResourcesRepo for MemStore {
                 r.organisation_id == organisation_id
                     && f.connection_id.is_none_or(|c| r.row.connection_id == c)
                     && f.kind.is_none_or(|k| r.row.kind == k)
+                    && f.q.as_deref().is_none_or(|q| matches(&r.row, q))
             })
             .cloned()
             .collect();

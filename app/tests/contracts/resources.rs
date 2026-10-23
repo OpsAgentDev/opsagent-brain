@@ -88,4 +88,20 @@ contract_suite! {
         let rows = s.resources().list(org, ResourceFilter::default(), all()).await.unwrap().items;
         assert_eq!(rows.len(), 1, "one row per identity; history keeps the versions");
     }
+
+    async fn list_q_matches_name_or_identity_case_insensitively(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let run = seed.run(org, conn).await;
+        let chunk = [res("snap-public", ResourceKind::Storage, 1), res("i-1", ResourceKind::Compute, 1)];
+        s.resources().upsert_chunk(org, conn, run, &chunk, now()).await.unwrap();
+        let q = |q: &str| ResourceFilter { q: Some(q.into()), ..Default::default() };
+        let found = |f: ResourceFilter| async move {
+            s.resources().list(org, f, all()).await.unwrap().items.into_iter().map(|r| r.identity).collect::<Vec<_>>()
+        };
+        assert_eq!(found(q("SNAP-PUB")).await, ["snap-public"]);
+        assert_eq!(found(q("N-I-1")).await, ["i-1"], "name n-i-1 matches");
+        // LIKE wildcards are literals.
+        assert!(found(q("%")).await.is_empty());
+        assert!(found(q("_")).await.is_empty());
+    }
 }

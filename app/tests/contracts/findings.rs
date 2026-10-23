@@ -213,6 +213,27 @@ contract_suite! {
         assert_eq!(s.findings().get(org, id).await.unwrap().unwrap().status, "open");
     }
 
+    async fn view_fields_and_stored_evidence_round_trip(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let mut d = draft(conn, "no_mfa", "u", Severity::High);
+        d.cost_monthly_usd = Some(12.34);
+        d.evidence[0].excerpt = "Authorization: Bearer abc.def".into();
+        let run = scan(s, seed, org, conn, &[d]).await;
+        let id = s.findings().list(org, FindingFilter::default(), all()).await.unwrap().items[0].id;
+        let f = s.findings().get(org, id).await.unwrap().unwrap();
+        assert_eq!((f.summary.as_deref(), f.next_step.as_deref()), (Some("s"), Some("n")));
+        assert_eq!(f.cost_monthly_usd.map(|c| c.to_string()).as_deref(), Some("12.34"));
+        assert_eq!(f.resolved_reason, None);
+        let ev = s.findings().evidence(org, id).await.unwrap();
+        assert_eq!((ev[0].run_id, ev[0].redacted), (run, true));
+        assert_eq!(ev[0].excerpt, "Authorization: Bearer [redacted:token]");
+        assert_eq!(ev[0].source, "src");
+        let r2 = scan(s, seed, org, conn, &[]).await;
+        s.findings().resolve_unseen(org, conn, r2, &[], t(1)).await.unwrap();
+        let f = s.findings().get(org, id).await.unwrap().unwrap();
+        assert_eq!(f.resolved_reason.as_deref(), Some("check_passed"));
+    }
+
     async fn posture_rows_counts_open_only(s, seed) {
         let (org, conn) = world(s, seed).await;
         scan(s, seed, org, conn, &[

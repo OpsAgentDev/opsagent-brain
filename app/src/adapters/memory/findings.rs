@@ -2,22 +2,24 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     finding::{
-        dedupe, Evidence, Finding, FindingDraft, FindingEvent, FindingFilter, FindingsRepo,
-        PostureRow, StatusChange,
+        dedupe, Finding, FindingDraft, FindingEvent, FindingFilter, FindingsRepo, PostureRow,
+        StatusChange, StoredEvidence,
     },
     repo::{Cursor, PageOf, PageRequest, RepoError, RepoResult},
 };
+use sea_orm::prelude::Decimal;
 use uuid::Uuid;
 
 use super::{page, MemStore};
-use crate::models::enum_str;
+use crate::{actions::findings::redact::redact, models::enum_str};
 
 #[derive(Clone)]
 pub struct FindingRow {
     finding: Finding,
     /// Oldest first.
     events: Vec<FindingEvent>,
-    evidence: Vec<(Uuid, Evidence)>,
+    /// Oldest first.
+    evidence: Vec<StoredEvidence>,
 }
 
 impl FindingRow {
@@ -47,13 +49,37 @@ impl FindingRow {
         };
         if kind == Some("reopened") {
             f.status = "open".into();
-            f.resolved_at = None;
+            (f.resolved_at, f.resolved_reason) = (None, None);
         }
         (f.severity, f.title, f.last_seen_run_id) = (d.severity, d.title.clone(), Some(run_id));
+        (f.summary, f.next_step) = (Some(d.summary.clone()), Some(d.next_step.clone()));
+        f.cost_monthly_usd = cost(d);
         if let Some(k) = kind {
             self.event(k, Some(run_id), now);
         }
     }
+}
+
+/// As Postgres stores it: `numeric(14, 2)`.
+fn cost(d: &FindingDraft) -> Option<Decimal> {
+    let mut c = Decimal::try_from(d.cost_monthly_usd?).ok()?;
+    c.rescale(2);
+    Some(c)
+}
+
+fn stored(run_id: Uuid, d: &FindingDraft, now: DateTime<Utc>) -> Vec<StoredEvidence> {
+    let evidence = d.evidence.iter().map(|e| {
+        let ((source, a), (excerpt, b)) = (redact(&e.source), redact(&e.excerpt));
+        let redacted = a || b;
+        StoredEvidence {
+            source,
+            excerpt,
+            redacted,
+            run_id,
+            created_at: now,
+        }
+    });
+    evidence.collect()
 }
 
 fn key(f: &FindingRow) -> Cursor {
@@ -113,14 +139,14 @@ impl FindingsRepo for MemStore {
         Ok(events.unwrap_or_default().into_iter().rev().collect())
     }
 
-    async fn evidence(&self, organisation_id: Uuid, finding_id: Uuid) -> RepoResult<Vec<Evidence>> {
+    /// shortcut: evidence never expires here; expiry is Pg-only (`expires_at`).
+    async fn evidence(
+        &self,
+        organisation_id: Uuid,
+        finding_id: Uuid,
+    ) -> RepoResult<Vec<StoredEvidence>> {
         let ev = self.finding_row(organisation_id, finding_id, |f| f.evidence.clone());
-        Ok(ev
-            .unwrap_or_default()
-            .into_iter()
-            .rev()
-            .map(|(_, e)| e)
-            .collect())
+        Ok(ev.unwrap_or_default().into_iter().rev().collect())
     }
 
     async fn change_status(
@@ -177,12 +203,16 @@ impl FindingsRepo for MemStore {
                             severity: d.severity,
                             status: "open".into(),
                             title: d.title.clone(),
+                            summary: Some(d.summary.clone()),
+                            next_step: Some(d.next_step.clone()),
+                            cost_monthly_usd: cost(d),
                             accepted_reason: None,
                             accepted_until: None,
                             snoozed_until: None,
                             first_seen_run_id: Some(run_id),
                             last_seen_run_id: Some(run_id),
                             resolved_at: None,
+                            resolved_reason: None,
                             created_at: now,
                             updated_at: now,
                         },
@@ -194,9 +224,8 @@ impl FindingsRepo for MemStore {
                     f
                 }
             };
-            row.evidence.retain(|(r, _)| *r != run_id);
-            row.evidence
-                .extend(d.evidence.iter().map(|e| (run_id, e.clone())));
+            row.evidence.retain(|e| e.run_id != run_id);
+            row.evidence.extend(stored(run_id, d, now));
         }
         Ok(())
     }
@@ -210,7 +239,9 @@ impl FindingsRepo for MemStore {
         now: DateTime<Utc>,
     ) -> RepoResult<u64> {
         let mut n = 0;
-        for row in self.state().findings.iter_mut().filter(|r| {
+        let mut s = self.state();
+        let gone = s.gone_identities(organisation_id, connection_id);
+        for row in s.findings.iter_mut().filter(|r| {
             let f = &r.finding;
             f.organisation_id == organisation_id
                 && f.connection_id == connection_id
@@ -221,7 +252,14 @@ impl FindingsRepo for MemStore {
             if row.finding.status != "flapping" {
                 row.event("resolved", Some(run_id), now);
             }
-            (row.finding.status, row.finding.resolved_at) = ("resolved".into(), Some(now));
+            let reason = if gone.contains(&row.finding.key.resource_identity) {
+                "resource_gone"
+            } else {
+                "check_passed"
+            };
+            let f = &mut row.finding;
+            (f.status, f.resolved_at) = ("resolved".into(), Some(now));
+            f.resolved_reason = Some(reason.into());
             n += 1;
         }
         Ok(n)

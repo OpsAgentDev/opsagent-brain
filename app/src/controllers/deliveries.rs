@@ -24,12 +24,10 @@ use super::{OrgIdPath, OrgPath};
 use crate::{
     adapters::db::Pg,
     api_error::{ApiError, ApiQuery, Problem},
+    controllers::page::{page_request, Page, PageParams},
     middleware::org_scope::OrgScope,
     models::{_entities::connections, find_in_org},
-    services::{
-        deliveries::{briefing, deliverable},
-        pagination::{self, Page, PageParams},
-    },
+    services::deliveries::{briefing, deliverable},
     settings::Settings,
 };
 
@@ -134,7 +132,7 @@ async fn list(
         kind: f.kind,
     };
     let page = Pg::new(&ctx.db)
-        .list(scope.organisation_id, filter, pagination::request(&p)?)
+        .list(scope.organisation_id, filter, page_request(&p)?)
         .await?;
     let ids = recipient_ids(&ctx, scope.organisation_id, &page.items).await?;
     Ok(Json(Page::of(page).map(|d| view(d, &ids))))

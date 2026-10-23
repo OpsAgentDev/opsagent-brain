@@ -7,7 +7,10 @@ use opsagent_core::{
     repo::{PageOf, PageRequest, RepoError, RepoResult},
     resource::{Resource, ResourceFilter, ResourceKind, ResourceRow, ResourcesRepo},
 };
-use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryTrait};
+use sea_orm::{
+    sea_query::{extension::postgres::PgExpr, Condition, Expr, LikeExpr},
+    ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryTrait,
+};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -34,6 +37,16 @@ fn row(m: resources::Model) -> RepoResult<ResourceRow> {
         last_seen_at: utc(m.last_seen_at),
         gone_at: m.gone_at.map(utc),
     })
+}
+
+/// `%q%` with LIKE wildcards in `q` taken literally (backslash is Postgres's default escape;
+/// an explicit `ESCAPE` renders as invalid SQL in sea-query 1.0).
+fn contains(q: &str) -> LikeExpr {
+    let escaped = q
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    LikeExpr::new(format!("%{escaped}%"))
 }
 
 /// Upserts one resource and its history row for `run_id`; true when it is new, came back, or
@@ -102,7 +115,14 @@ impl<C: Conn> ResourcesRepo for Pg<C> {
         let q = resources::Entity::find()
             .filter(R::OrganisationId.eq(organisation_id))
             .apply_if(f.connection_id, |q, v| q.filter(R::ConnectionId.eq(v)))
-            .apply_if(f.kind, |q, v| q.filter(R::Kind.eq(v.to_string())));
+            .apply_if(f.kind, |q, v| q.filter(R::Kind.eq(v.to_string())))
+            .apply_if(f.q, |q, v| {
+                q.filter(
+                    Condition::any()
+                        .add(Expr::col(R::Name).ilike(contains(&v)))
+                        .add(Expr::col(R::Identity).ilike(contains(&v))),
+                )
+            });
         let rows = page(
             self.db(),
             q,
@@ -131,5 +151,22 @@ impl<C: Conn> ResourcesRepo for Pg<C> {
             changed |= upsert(self.db(), (organisation_id, connection_id, run_id), r, now).await?;
         }
         Ok(changed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sea_orm::{DbBackend, QuerySelect};
+
+    #[test]
+    fn q_wildcards_are_escaped() {
+        // tenancy: SQL rendering only, never executed.
+        let sql = resources::Entity::find()
+            .select_only()
+            .filter(Expr::col(resources::Column::Name).ilike(contains("a%_\\'")))
+            .build(DbBackend::Postgres)
+            .to_string();
+        assert!(str::contains(&sql, r"ILIKE E'%a\\%\\_\\\\\'%'"), "{sql}");
     }
 }

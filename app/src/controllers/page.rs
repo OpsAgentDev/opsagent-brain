@@ -1,12 +1,11 @@
-//! Keyset pagination shared by every list endpoint: `ORDER BY sort_key DESC, id DESC`, with an
-//! opaque cursor holding the last row's `(sort_key, id)`.
+//! Keyset pagination on the wire: `ORDER BY sort_key DESC, id DESC`, with an opaque cursor
+//! holding the last row's `(sort_key, id)`. Repositories page; this maps query and response.
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use opsagent_core::repo::{Cursor, PageOf, PageRequest};
-use sea_orm::{ConnectionTrait, EntityTrait, Select};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::{adapters::db::page, api_error::ApiError};
+use crate::api_error::ApiError;
 
 pub const DEFAULT_LIMIT: u64 = 50;
 pub const MAX_LIMIT: u64 = 200;
@@ -27,13 +26,11 @@ pub struct Page<T> {
     pub next_cursor: Option<String>,
 }
 
-pub type Key = Cursor;
-
-pub fn encode(k: &Key) -> String {
+pub fn encode(k: &Cursor) -> String {
     B64.encode(format!("{}|{}", k.0.to_rfc3339(), k.1))
 }
 
-pub fn decode(s: &str) -> Result<Key, ApiError> {
+pub fn decode(s: &str) -> Result<Cursor, ApiError> {
     let bad = || ApiError::invalid("cursor is not valid");
     let raw = String::from_utf8(B64.decode(s).map_err(|_| bad())?).map_err(|_| bad())?;
     let (ts, id) = raw.split_once('|').ok_or_else(bad)?;
@@ -48,28 +45,12 @@ fn limit(p: &PageParams) -> u64 {
 }
 
 /// The repository page request for `p`; an invalid cursor is a 422.
-pub fn request(p: &PageParams) -> Result<PageRequest, ApiError> {
+pub fn page_request(p: &PageParams) -> Result<PageRequest, ApiError> {
     let after = p.cursor.as_deref().map(decode).transpose()?;
     Ok(PageRequest {
         after,
         limit: limit(p),
     })
-}
-
-/// One page of `select` (already tenant-filtered), newest `sort` first; `key` reads a row's
-/// `(sort, id)` for the next cursor.
-pub async fn fetch<E, C>(
-    db: &C,
-    select: Select<E>,
-    cols: (E::Column, E::Column),
-    key: fn(&E::Model) -> Key,
-    p: &PageParams,
-) -> Result<Page<E::Model>, ApiError>
-where
-    E: EntityTrait,
-    C: ConnectionTrait,
-{
-    Ok(Page::of(page(db, select, cols, key, request(p)?).await?))
 }
 
 impl<T> Page<T> {

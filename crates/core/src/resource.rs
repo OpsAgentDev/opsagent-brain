@@ -97,6 +97,8 @@ pub struct ResourceRow {
 pub struct ResourceFilter {
     pub connection_id: Option<Uuid>,
     pub kind: Option<ResourceKind>,
+    /// Case-insensitive substring of name or identity; LIKE wildcards match literally.
+    pub q: Option<String>,
 }
 
 #[async_trait]

@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     finding::{
-        Evidence, Finding, FindingDraft, FindingEvent, FindingFilter, FindingKey, FindingsRepo,
-        PostureRow, Severity, StatusChange,
+        Finding, FindingDraft, FindingEvent, FindingFilter, FindingKey, FindingsRepo, PostureRow,
+        Severity, StatusChange, StoredEvidence,
     },
     repo::{PageOf, PageRequest, RepoError, RepoResult},
 };
@@ -56,12 +56,16 @@ fn finding(m: findings::Model) -> RepoResult<Finding> {
         severity: severity(&m.severity)?,
         status: m.status,
         title: m.title,
+        summary: m.summary,
+        next_step: m.next_step,
+        cost_monthly_usd: m.cost_monthly_usd,
         accepted_reason: m.accepted_reason,
         accepted_until: m.accepted_until.map(utc),
         snoozed_until: m.snoozed_until.map(utc),
         first_seen_run_id: m.first_seen_run_id,
         last_seen_run_id: m.last_seen_run_id,
         resolved_at: m.resolved_at.map(utc),
+        resolved_reason: m.resolved_reason,
         created_at: utc(m.created_at),
         updated_at: utc(m.updated_at),
     })
@@ -149,7 +153,11 @@ impl<C: Conn> FindingsRepo for Pg<C> {
             .collect()
     }
 
-    async fn evidence(&self, organisation_id: Uuid, finding_id: Uuid) -> RepoResult<Vec<Evidence>> {
+    async fn evidence(
+        &self,
+        organisation_id: Uuid,
+        finding_id: Uuid,
+    ) -> RepoResult<Vec<StoredEvidence>> {
         if self.row(organisation_id, finding_id).await?.is_none() {
             return Ok(vec![]);
         }
@@ -161,9 +169,12 @@ impl<C: Conn> FindingsRepo for Pg<C> {
             .await
             .map_err(db_err)?
             .into_iter()
-            .map(|e| Evidence {
+            .map(|e| StoredEvidence {
                 source: e.source,
                 excerpt: e.excerpt,
+                redacted: e.redacted,
+                run_id: e.run_id,
+                created_at: utc(e.created_at),
             })
             .collect())
     }

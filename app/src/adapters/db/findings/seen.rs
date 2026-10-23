@@ -14,10 +14,10 @@ use uuid::Uuid;
 
 use super::{exec, Target};
 use crate::{
+    actions::findings::redact::redact,
     adapters::db::db_err,
     adapters::db::ledger_storage::stmt,
     models::{_entities::findings, enum_of, enum_str},
-    services::redact::redact,
 };
 
 const FLAP_WINDOW: Duration = Duration::hours(24);
