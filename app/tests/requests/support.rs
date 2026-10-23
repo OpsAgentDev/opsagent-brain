@@ -228,5 +228,23 @@ pub async fn perform(
     opsagent_brain::adapters::pg_queue::PgQueue(ctx.db.clone())
         .enqueue(job)
         .await?;
-    Ok(ctx.drain_jobs().await)
+    let n = ctx.drain_jobs().await;
+    // A job left behind failed (kept for a retry, or dead).
+    use sea_orm::ConnectionTrait;
+    let q = "SELECT count(*) AS n FROM jobs WHERE run_id = $1";
+    let left = ctx
+        .db
+        .query_one_raw(opsagent_brain::adapters::db::ledger_storage::stmt(
+            q,
+            vec![run_id.into()],
+        ))
+        .await
+        .map_err(|e| opsagent_brain::error::AppError::Internal(e.to_string()))?
+        .and_then(|r| r.try_get::<i64>("", "n").ok());
+    match left {
+        Some(0) => Ok(n),
+        _ => Err(opsagent_brain::error::AppError::Internal(
+            "job failed: still queued".into(),
+        )),
+    }
 }

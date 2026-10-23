@@ -7,7 +7,7 @@ use std::{
 use futures::FutureExt;
 use opsagent_core::repo::Clock;
 use opsagent_ledger::{
-    queue::{Job, JobSource},
+    queue::{Job, JobFailure, JobSource},
     JobKind,
 };
 use tokio::{sync::Semaphore, task::JoinSet};
@@ -69,8 +69,10 @@ impl WorkerRunner {
         let out = AssertUnwindSafe(handler.handle(run)).catch_unwind().await;
         let error = match out {
             Ok(Ok(())) => {
-                if self.source.complete(id).await.is_err() {
-                    tracing::error!(job = %id, kind, %run, "job done but not completed");
+                match self.source.complete(&job).await {
+                    Ok(true) => {}
+                    Ok(false) => tracing::warn!(job = %id, kind, %run, "job done, lock lost"),
+                    Err(_) => tracing::error!(job = %id, kind, %run, "job done but not completed"),
                 }
                 return;
             }
@@ -78,6 +80,9 @@ impl WorkerRunner {
             Err(_) => "handler panicked".to_owned(),
         };
         match self.source.fail(&job, &error, self.clock.now()).await {
+            Ok(JobFailure::LockLost) => {
+                tracing::warn!(job = %id, kind, %run, "job failed, lock lost")
+            }
             Ok(outcome) => tracing::warn!(job = %id, kind, %run, ?outcome, "job failed"),
             Err(_) => tracing::error!(job = %id, kind, %run, "job failed and not recorded"),
         }

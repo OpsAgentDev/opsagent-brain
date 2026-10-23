@@ -144,10 +144,11 @@ impl JobSource for PgQueue<DatabaseConnection> {
         row.as_ref().map(job).transpose()
     }
 
-    async fn complete(&self, id: Uuid) -> Result<()> {
+    async fn complete(&self, job: &Job) -> Result<bool> {
         // tenancy: job queue is global
-        let sql = "DELETE FROM jobs WHERE id = $1";
-        exec(&self.0, sql, vec![id.into()]).await.map(drop)
+        let sql = "DELETE FROM jobs WHERE id = $1 AND attempts = $2 AND locked_at IS NOT NULL";
+        let n = exec(&self.0, sql, vec![job.id.into(), job.attempts.into()]).await?;
+        Ok(n == 1)
     }
 
     async fn fail(&self, job: &Job, error: &str, now: DateTime<Utc>) -> Result<JobFailure> {
@@ -156,33 +157,43 @@ impl JobSource for PgQueue<DatabaseConnection> {
         let wait = retry::backoff(retries).filter(|_| job.attempts < job.max_attempts);
         if let Some(wait) = wait {
             let at = now + chrono::Duration::from_std(wait).map_err(db_err)?;
-            exec(
+            let n = exec(
                 &self.0,
                 // tenancy: job queue is global
                 "UPDATE jobs SET locked_at = NULL, locked_by = NULL, run_at = $2, last_error = $3 \
-                 WHERE id = $1",
-                vec![job.id.into(), at.into(), error.into()],
+                 WHERE id = $1 AND attempts = $4 AND locked_at IS NOT NULL",
+                vec![job.id.into(), at.into(), error.into(), job.attempts.into()],
             )
             .await?;
-            return Ok(JobFailure::Retrying { at });
+            return Ok(if n == 1 {
+                JobFailure::Retrying { at }
+            } else {
+                JobFailure::LockLost
+            });
         }
         let dead = self
             .bury(
                 // tenancy: job queue is global
-                "UPDATE jobs SET last_error = $2, locked_by = NULL WHERE id = $1 RETURNING run_id",
-                vec![job.id.into(), error.into()],
+                "UPDATE jobs SET last_error = $2, locked_by = NULL \
+                 WHERE id = $1 AND attempts = $3 AND locked_at IS NOT NULL RETURNING run_id",
+                vec![job.id.into(), error.into(), job.attempts.into()],
             )
             .await?;
-        dead.ok_or_else(|| db_err("job not found"))?;
-        Ok(JobFailure::Dead)
+        Ok(match dead {
+            Some(_) => JobFailure::Dead,
+            None => JobFailure::LockLost,
+        })
     }
 
     async fn release_mine(&self, worker_id: &str) -> Result<u64> {
         exec(
             &self.0,
             // tenancy: job queue is global
+            // Due after the dropped handlers' ledger leases (max 120 s) lapse: taken sooner, the
+            // job would meet `LeaseHeld`, count as settled and be deleted with its run unfinished.
             "UPDATE jobs SET locked_at = NULL, locked_by = NULL, \
-             attempts = GREATEST(attempts - 1, 0) WHERE locked_by = $1",
+             attempts = GREATEST(attempts - 1, 0), run_at = now() + interval '150 seconds' \
+             WHERE locked_by = $1",
             vec![worker_id.into()],
         )
         .await

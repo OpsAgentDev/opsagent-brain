@@ -420,6 +420,7 @@ async fn run_written_but_not_enqueued_is_picked_up_by_the_next_tick() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "race removed by Task 18's same-transaction enqueue"]
 async fn worker_retry_written_during_inline_enqueue_survives_the_marker_clear() {
     serve(|req, ctx| async move {
         reset(&ctx).await;

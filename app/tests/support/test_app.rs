@@ -37,9 +37,10 @@ fn test_config() -> Config {
     .expect("test config")
 }
 
-/// A pool on the config's database with the `public` schema recreated and migrated.
+/// A pool on the config's database with the `public` schema recreated and migrated, sized
+/// for the in-process worker.
 async fn fresh_db(c: &Config) -> DatabaseConnection {
-    let db = boot::pool(c).await.expect("test database");
+    let db = boot::pool(c, true).await.expect("test database");
     db.execute_unprepared("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
         .await
         .expect("recreate schema");
@@ -91,7 +92,7 @@ impl TestApp {
         deps.mailer = Arc::new(CaptureMailer::default());
         deps.slack = Arc::new(NoSlack);
         let state = boot::assemble(deps);
-        let worker = Arc::new(boot::worker(&state).await.expect("worker"));
+        let worker = Arc::new(boot::worker(&state));
         let mut router = boot::router(state.clone()).expect("router");
         if env == AppEnv::Test {
             // Each request is followed by a drain, so a test sees the jobs it caused as done.

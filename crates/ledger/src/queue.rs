@@ -71,6 +71,8 @@ pub enum JobFailure {
     },
     /// Attempts exhausted: the job stays locked with its error and the run is failed.
     Dead,
+    /// The job is no longer this attempt's (another worker took it over): nothing was written.
+    LockLost,
 }
 
 /// The worker side of the queue.
@@ -83,11 +85,13 @@ pub trait JobSource: Send + Sync {
         kinds: &[JobKind],
         lock_max_age: Duration,
     ) -> Result<Option<Job>>;
-    /// The job succeeded: deletes it.
-    async fn complete(&self, id: Uuid) -> Result<()>;
+    /// The job succeeded: deletes it. `false`: the lock was lost and nothing was deleted.
+    /// `complete` and `fail` act only while the row is still locked at `job.attempts`.
+    async fn complete(&self, job: &Job) -> Result<bool>;
     /// Unlocks for a retry at `now + retry::backoff(retries so far)`, or `Dead`.
     async fn fail(&self, job: &Job, error: &str, now: DateTime<Utc>) -> Result<JobFailure>;
-    /// Shutdown: unlocks this worker's jobs without counting the interrupted attempt.
+    /// Shutdown: unlocks this worker's jobs without counting the interrupted attempt, due once
+    /// the dropped handlers' ledger leases have lapsed.
     async fn release_mine(&self, worker_id: &str) -> Result<u64>;
 }
 

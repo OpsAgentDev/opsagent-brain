@@ -17,11 +17,8 @@ use opsagent_brain::{
     error::{AppError, AppResult},
     jobs::{JobHandler, WorkerRunner},
 };
-use opsagent_core::run::{RunKey, RunStatus};
-use opsagent_ledger::{
-    run_chunked, Checkpoint, ChunkOutcome, JobKind, LedgerError, NewJob, Queue, RunChunkedOptions,
-    Storage,
-};
+use opsagent_core::run::RunKey;
+use opsagent_ledger::{JobKind, NewJob, Queue, Storage};
 use sea_orm::{ConnectionTrait, QueryResult};
 use serial_test::serial;
 use tokio::sync::Notify;
@@ -29,7 +26,7 @@ use uuid::Uuid;
 
 use crate::support::TestApp;
 
-async fn new_run(ctx: &TestApp, n: i64) -> Uuid {
+pub(super) async fn new_run(ctx: &TestApp, n: i64) -> Uuid {
     let key = RunKey {
         organisation_id: None,
         connection_id: None,
@@ -40,7 +37,7 @@ async fn new_run(ctx: &TestApp, n: i64) -> Uuid {
     storage.create_run(key).await.unwrap().run.id
 }
 
-async fn enqueue(ctx: &TestApp, kind: JobKind, run_id: Uuid) {
+pub(super) async fn enqueue(ctx: &TestApp, kind: JobKind, run_id: Uuid) {
     let run_at = chrono::Utc::now();
     let job = NewJob {
         kind,
@@ -50,7 +47,7 @@ async fn enqueue(ctx: &TestApp, kind: JobKind, run_id: Uuid) {
     PgQueue(ctx.db.clone()).enqueue(job).await.unwrap();
 }
 
-fn runner(
+pub(super) fn runner(
     ctx: &TestApp,
     handlers: Vec<Arc<dyn JobHandler>>,
     f: impl FnOnce(&mut Config),
@@ -61,7 +58,7 @@ fn runner(
     WorkerRunner::new(source, handlers, &c, ctx.state.clock.clone())
 }
 
-async fn job_row(ctx: &TestApp, run: Uuid) -> Option<QueryResult> {
+pub(super) async fn job_row(ctx: &TestApp, run: Uuid) -> Option<QueryResult> {
     // `ahead`: seconds until the job is due.
     let q = "SELECT attempts, locked_at IS NOT NULL AS locked, locked_by, last_error, \
              EXTRACT(EPOCH FROM run_at - now())::float8 AS ahead FROM jobs WHERE run_id = $1";
@@ -247,116 +244,9 @@ async fn shutdown_releases_own_locks_and_returns() {
     let r = job_row(&ctx, run).await.expect("job kept");
     assert!(!r.try_get::<bool>("", "locked").unwrap());
     assert_eq!(r.try_get::<Option<String>>("", "locked_by").unwrap(), None);
+    // Due only once the dropped handler's ledger lease (max 120 s) has lapsed.
+    let ahead: f64 = r.try_get("", "ahead").unwrap();
+    assert!((120.0..=150.0).contains(&ahead), "{ahead}");
     // The interrupted attempt is not counted.
     assert_eq!(r.try_get::<i32>("", "attempts").unwrap(), 0);
-}
-
-/// One chunk under the ledger lease. The first call (worker A) takes a short lease, never
-/// heartbeats and stalls inside its chunk until `gate`; later calls (worker B) run straight.
-struct Gated {
-    storage: PgStorage,
-    redis: opsagent_ledger::redis::Client,
-    calls: AtomicUsize,
-    entered: Notify,
-    gate: Notify,
-    a: Mutex<Option<(u64, RunStatus)>>,
-}
-
-#[async_trait]
-impl JobHandler for Gated {
-    fn kind(&self) -> JobKind {
-        JobKind::FullScan
-    }
-    async fn handle(&self, run_id: Uuid) -> AppResult<()> {
-        let first = self.calls.fetch_add(1, SeqCst) == 0;
-        let mut opts = RunChunkedOptions::default();
-        if first {
-            opts.lease_ttl = Duration::from_millis(300);
-            opts.heartbeat_every = Duration::from_secs(3600);
-        }
-        let fence = Mutex::new(0);
-        let chunks = vec!["only".to_owned()];
-        let out = run_chunked(
-            &self.storage,
-            &self.redis,
-            run_id,
-            chunks,
-            opts,
-            |_, lease| {
-                *fence.lock().unwrap() = lease.fence;
-                async move {
-                    if first {
-                        self.entered.notify_one();
-                        self.gate.notified().await;
-                    }
-                    Ok(ChunkOutcome::default())
-                }
-            },
-        )
-        .await?;
-        if first {
-            *self.a.lock().unwrap() = Some((*fence.lock().unwrap(), out));
-        }
-        Ok(())
-    }
-}
-
-/// Review Focus 2: a stale job lock is taken over and the ledger fence keeps one outcome.
-#[tokio::test]
-#[serial]
-async fn stale_lock_second_worker_wins_fence() {
-    let ctx = TestApp::boot().await;
-    let run = new_run(&ctx, 0).await;
-    enqueue(&ctx, JobKind::FullScan, run).await;
-    let gated = Arc::new(Gated {
-        storage: PgStorage::new(ctx.db.clone()),
-        redis: ctx.redis(),
-        calls: AtomicUsize::new(0),
-        entered: Notify::new(),
-        gate: Notify::new(),
-        a: Mutex::new(None),
-    });
-    let a = Arc::new(runner(&ctx, vec![gated.clone()], |_| {}));
-    let b = runner(&ctx, vec![gated.clone()], |_| {});
-    assert_ne!(a.worker_id(), b.worker_id());
-    let a_drain = tokio::spawn({
-        let a = a.clone();
-        async move { a.drain().await }
-    });
-    // A holds the job and the lease, and stalls mid-chunk.
-    gated.entered.notified().await;
-    let r = job_row(&ctx, run).await.unwrap();
-    assert_eq!(
-        r.try_get::<Option<String>>("", "locked_by")
-            .unwrap()
-            .as_deref(),
-        Some(a.worker_id())
-    );
-    // A's job lock ages past JOB_LOCK_MAX_AGE and its unrenewed lease lapses.
-    let age = "UPDATE jobs SET locked_at = now() - interval '8 hours' WHERE run_id = $1";
-    ctx.db
-        .execute_raw(stmt(age, vec![run.into()]))
-        .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // B takes the stale job (a second attempt), bumps the fence and finishes the run.
-    assert_eq!(b.drain().await.unwrap(), 1);
-    assert!(job_row(&ctx, run).await.is_none());
-    let storage = PgStorage::new(ctx.db.clone());
-    assert_eq!(storage.load_run(run).await.unwrap().status, RunStatus::Done);
-
-    // A wakes: its checkpoint write is rejected and it cannot change the outcome.
-    gated.gate.notify_one();
-    assert_eq!(a_drain.await.unwrap().unwrap(), 1);
-    let (a_fence, a_out) = gated.a.lock().unwrap().take().expect("A finished its call");
-    assert_eq!(a_out, RunStatus::Partial, "A gave up: lease lost");
-    let write = storage
-        .write_checkpoint(run, a_fence, &Checkpoint::default())
-        .await;
-    assert!(matches!(write, Err(LedgerError::StaleFence)), "{write:?}");
-    let row = storage.load_run(run).await.unwrap();
-    assert_eq!(row.status, RunStatus::Done, "exactly one terminal status");
-    assert!(row.checkpoint.chunks_done.contains("only"));
-    assert_eq!(gated.calls.load(SeqCst), 2);
 }

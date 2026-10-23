@@ -70,14 +70,26 @@ async fn connect(c: &Config, min: u32, max: u32, lazy: bool) -> AppResult<Databa
     Database::connect(opts).await.map_err(internal)
 }
 
-/// The app pool: `DB_MIN_CONNECTIONS`..`DB_MAX_CONNECTIONS` on `DATABASE_URL`.
-pub async fn pool(c: &Config) -> AppResult<DatabaseConnection> {
-    connect(c, c.db_min_connections, c.db_max_connections, false).await
+/// The one pool's size: `DB_MAX_CONNECTIONS`, and with a worker in the process at least one
+/// connection per job in flight plus one to poll.
+pub fn pool_size(c: &Config, worker: bool) -> u32 {
+    let jobs = u32::try_from(c.worker_concurrency + 1).unwrap_or(u32::MAX);
+    if worker {
+        c.db_max_connections.max(jobs)
+    } else {
+        c.db_max_connections
+    }
 }
 
-/// Connects the app pool (migrating when `DB_AUTO_MIGRATE`), then `boot_on` it.
-pub async fn boot(config: Config, queue: Arc<dyn Queue>) -> AppResult<AppState> {
-    let db = pool(&config).await?;
+/// The process's one pool on `DATABASE_URL`, sized by `pool_size`.
+pub async fn pool(c: &Config, worker: bool) -> AppResult<DatabaseConnection> {
+    connect(c, c.db_min_connections, pool_size(c, worker), false).await
+}
+
+/// Connects the app pool (migrating when `DB_AUTO_MIGRATE`), then `boot_on` it. `worker`: the
+/// process also runs `worker(state)` (`start --worker`, `--server-and-worker`).
+pub async fn boot(config: Config, queue: Arc<dyn Queue>, worker: bool) -> AppResult<AppState> {
+    let db = pool(&config, worker).await?;
     if config.db_auto_migrate {
         Migrator::up(&db, None).await.map_err(internal)?;
     }
@@ -328,12 +340,9 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
     }
 }
 
-/// The job runner with the four job handlers, the only registry of job kinds, on its own pool
-/// of `WORKER_CONCURRENCY + 1` connections (one per job in flight, one to poll).
-pub async fn worker(state: &AppState) -> AppResult<WorkerRunner> {
-    let c = &state.config;
-    let max = u32::try_from(c.worker_concurrency + 1).map_err(internal)?;
-    let pool = connect(c, 0, max, false).await?;
+/// The job runner with the four job handlers, the only registry of job kinds. The queue and
+/// the job work share the state's one pool (`pool_size` with a worker).
+pub fn worker(state: &AppState) -> WorkerRunner {
     let (runs, deliveries) = (&state.actions.runs, &state.actions.deliveries);
     let handlers: Vec<Arc<dyn JobHandler>> = vec![
         Arc::new(VerifyJob(Arc::new(runs.verify_connection.clone()))),
@@ -345,8 +354,8 @@ pub async fn worker(state: &AppState) -> AppResult<WorkerRunner> {
             deliveries.deliver_weekly.clone(),
         ))),
     ];
-    let source = Arc::new(PgQueue(pool));
-    Ok(WorkerRunner::new(source, handlers, c, state.clock.clone()))
+    let source = Arc::new(PgQueue(state.db.clone()));
+    WorkerRunner::new(source, handlers, &state.config, state.clock.clone())
 }
 
 /// Health, `/v1` and `/openapi.json` on the shell's middleware stack (`middleware::stack`).
@@ -355,4 +364,18 @@ pub fn router(state: AppState) -> AppResult<Router> {
     #[cfg(feature = "test-support")]
     let routes = routes.merge(controllers::test_routes::routes());
     middleware::stack(routes.with_state(state.clone()), &state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_worker_process_gets_a_connection_per_job_plus_one() {
+        let mut c = Config::from_vars(|k| (k == "APP_ENV").then(|| "test".into())).unwrap();
+        (c.db_max_connections, c.worker_concurrency) = (2, 4);
+        assert_eq!((pool_size(&c, false), pool_size(&c, true)), (2, 5));
+        c.db_max_connections = 10;
+        assert_eq!(pool_size(&c, true), 10);
+    }
 }

@@ -211,7 +211,7 @@ async fn complete_deletes_row() {
     let l = lane().await;
     l.job(JobKind::DeliverWeekly).await;
     let job = l.dequeue("w1").await.unwrap();
-    l.q.complete(job.id).await.unwrap();
+    assert!(l.q.complete(&job).await.unwrap());
     assert_eq!(l.count().await, 0);
 }
 
@@ -334,6 +334,33 @@ async fn stale_lock_is_dequeued_again() {
 
 #[tokio::test]
 #[serial]
+async fn stale_worker_cannot_complete_or_fail_after_takeover() {
+    let l = lane().await;
+    l.job(JobKind::FullScan).await;
+    let stale = l.dequeue("w1").await.unwrap();
+    l.sql("UPDATE jobs SET locked_at = now() - interval '2 hours'")
+        .await;
+    let live = l.dequeue("w2").await.unwrap();
+    // The stale worker's attempt no longer matches: nothing it does touches the row.
+    assert!(!l.q.complete(&stale).await.unwrap());
+    let lost = l.q.fail(&stale, "late", Utc::now()).await.unwrap();
+    assert_eq!(lost, JobFailure::LockLost);
+    let q = "SELECT count(*) AS n FROM jobs WHERE locked_by = 'w2' AND last_error IS NULL";
+    assert_eq!(l.sql(q).await[0].try_get::<i64>("", "n").unwrap(), 1);
+    // On its last attempt too: a lost lock is not buried.
+    let stale = Job {
+        attempts: 5,
+        ..stale
+    };
+    let lost = l.q.fail(&stale, "late", Utc::now()).await.unwrap();
+    assert_eq!(lost, JobFailure::LockLost);
+    assert_eq!(l.count().await, 1);
+    assert!(l.q.complete(&live).await.unwrap());
+    assert_eq!(l.count().await, 0);
+}
+
+#[tokio::test]
+#[serial]
 async fn release_mine_unlocks_only_own_rows() {
     let l = lane().await;
     l.job(JobKind::FullScan).await;
@@ -341,6 +368,14 @@ async fn release_mine_unlocks_only_own_rows() {
     let mine = l.dequeue("w1").await.unwrap();
     let theirs = l.dequeue("w2").await.unwrap();
     assert_eq!(l.q.release_mine("w1").await.unwrap(), 1);
+    // Not due until the dropped worker's ledger lease (max 120 s) has lapsed.
+    assert!(l.dequeue("w3").await.is_none());
+    let q =
+        "SELECT EXTRACT(EPOCH FROM run_at - now())::float8 AS s FROM jobs WHERE locked_at IS NULL";
+    let ahead: f64 = l.sql(q).await[0].try_get("", "s").unwrap();
+    assert!((120.0..=150.0).contains(&ahead), "{ahead}");
+    l.sql("UPDATE jobs SET run_at = now() WHERE locked_at IS NULL")
+        .await;
     let next = l.dequeue("w3").await.unwrap();
     // The interrupted attempt does not count against the job.
     assert_eq!((next.id, next.attempts), (mine.id, 1));
