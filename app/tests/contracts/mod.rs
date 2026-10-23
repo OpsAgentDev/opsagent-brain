@@ -3,17 +3,23 @@
 use async_trait::async_trait;
 use loco_rs::testing::prelude::boot_test;
 use opsagent_brain::{
+    actions::uow::Repos,
     adapters::{db::Pg, memory::MemStore},
     app::App,
 };
+use opsagent_core::org::NewOrganisation;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
 use uuid::Uuid;
 
 mod connections;
+mod deliveries;
 mod findings;
+mod integrations;
 mod orgs;
+mod recipients;
 mod resources;
 mod runs;
+mod schedules;
 mod users;
 
 /// A fresh, migrated lane database (`boot_test` recreates the schema).
@@ -21,6 +27,19 @@ pub async fn pg() -> Pg {
     crate::requests::support::test_env();
     let boot = boot_test::<App>().await.expect("boot");
     Pg::new(boot.app_context.db.clone())
+}
+
+/// A new organisation in zone `UTC`.
+pub async fn org_id(s: &dyn Repos, slug: &str) -> Uuid {
+    let new = NewOrganisation {
+        id: Uuid::new_v4(),
+        slug: slug.into(),
+        name: format!("Org {slug}"),
+        timezone: "UTC".into(),
+        kek_version: 1,
+        wrapped_dek: vec![1, 2, 3],
+    };
+    s.orgs().insert(new).await.unwrap().id
 }
 
 /// Parent rows a repository under test needs but does not own (foreign keys on Pg).

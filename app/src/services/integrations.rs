@@ -1,25 +1,77 @@
-//! Integration use cases: Slack install (OAuth), channel listing, removal.
+//! Integration use cases: Slack install (OAuth), channel listing, removal. Tokens are sealed
+//! with the org DEK (AAD table `integrations`, column `ciphertext`).
 use axum::http::StatusCode;
-use opsagent_core::audit::{AuditEntry, AuditLog};
-use opsagent_secrets::Kek;
-use sea_orm::{
-    sea_query::OnConflict, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder,
-    Set, SqlErr, TransactionTrait,
+use chrono::Utc;
+use loco_rs::Error;
+use opsagent_core::{
+    audit::{AuditEntry, AuditLog},
+    repo::RepoError,
 };
+use opsagent_deliver::repo::{Integration, IntegrationsRepo, SealedToken, REVOKED, SLACK};
+use opsagent_secrets::{open, seal, Aad, Kek, Sealed};
+use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 use serde_json::json;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::{
+    actions::uow::Repos,
     adapters::db::Pg,
     adapters::slack::{Channel, Install, SlackClient, SlackError, AUTHORIZE_URL, BOT_SCOPES},
     api_error::ApiError,
-    models::{
-        _entities::integrations::{self, Column as C},
-        integrations::{open_token, seal_token, ACTIVE, REVOKED, SLACK},
-        now,
-    },
+    creds::Dek,
     settings::Settings,
 };
+
+fn aad(organisation_id: Uuid) -> Aad {
+    Aad {
+        organisation_id,
+        table: "integrations",
+        column: "ciphertext",
+    }
+}
+
+/// `token` sealed under the org DEK, with the KEK version to store beside it.
+async fn seal_token(
+    db: &impl ConnectionTrait,
+    kek: &dyn Kek,
+    organisation_id: Uuid,
+    token: &str,
+) -> loco_rs::Result<SealedToken> {
+    let dek = Dek::of(&Pg::new(db), kek, organisation_id)
+        .await
+        .map_err(|e| Error::string(&e.to_string()))?;
+    let sealed = seal(&dek.key, token.as_bytes(), &aad(organisation_id));
+    Ok(SealedToken {
+        ciphertext: sealed.ciphertext,
+        nonce: sealed.nonce.to_vec(),
+        kek_version: dek.version,
+    })
+}
+
+/// The integration's plaintext token.
+pub async fn open_token(
+    db: &impl ConnectionTrait,
+    kek: &dyn Kek,
+    row: &Integration,
+) -> loco_rs::Result<Zeroizing<String>> {
+    let dek = Dek::of(&Pg::new(db), kek, row.organisation_id)
+        .await
+        .map_err(|e| Error::string(&e.to_string()))?;
+    let sealed = Sealed {
+        ciphertext: row.ciphertext.clone(),
+        nonce: row
+            .nonce
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::string("bad integration nonce"))?,
+    };
+    let plain = open(&dek.key, &sealed, &aad(row.organisation_id))
+        .map_err(|e| Error::string(&e.to_string()))?;
+    String::from_utf8(plain.to_vec())
+        .map(Zeroizing::new)
+        .map_err(|_| Error::string("integration token is not UTF-8"))
+}
 
 /// Another organisation already holds this Slack workspace (one workspace, one organisation).
 pub const WORKSPACE_IN_USE: &str = "slack_workspace_in_use";
@@ -59,42 +111,22 @@ pub async fn save_slack(
     actor: Uuid,
     install: &Install,
 ) -> Result<(), ApiError> {
-    let (sealed, kek_version) = seal_token(db, kek, organisation_id, &install.access_token).await?;
-    let row = integrations::ActiveModel {
-        id: Set(Uuid::new_v4()),
-        organisation_id: Set(organisation_id),
-        kind: Set(SLACK.into()),
-        config: Set(json!({
-            "team_id": install.team_id, "team_name": install.team_name,
-            "bot_user_id": install.bot_user_id, "scope": install.scope,
-        })),
-        ciphertext: Set(sealed.ciphertext),
-        nonce: Set(sealed.nonce.to_vec()),
-        kek_version: Set(kek_version),
-        status: Set(ACTIVE.into()),
-        created_at: Set(now()),
-        updated_at: Set(now()),
-    };
-    let upsert = OnConflict::columns([C::OrganisationId, C::Kind])
-        .update_columns([C::Config, C::Ciphertext, C::Nonce, C::KekVersion, C::Status])
-        .value(C::UpdatedAt, now())
-        .to_owned();
+    let token = seal_token(db, kek, organisation_id, &install.access_token).await?;
+    let config = json!({
+        "team_id": install.team_id, "team_name": install.team_name,
+        "bot_user_id": install.bot_user_id, "scope": install.scope,
+    });
     let txn = db.begin().await?;
-    integrations::Entity::insert(row)
-        .on_conflict(upsert)
-        .exec_without_returning(&txn)
+    Pg::new(&txn)
+        .upsert_slack(organisation_id, config, token)
         .await
-        .map_err(|e| match e.sql_err() {
-            Some(SqlErr::UniqueConstraintViolation(m))
-                if m.contains("integrations_slack_team_uniq") =>
-            {
-                ApiError::new(
-                    StatusCode::CONFLICT,
-                    WORKSPACE_IN_USE,
-                    "This Slack workspace is linked to another organisation.",
-                )
-            }
-            _ => e.into(),
+        .map_err(|e| match e {
+            RepoError::Conflict(_) => ApiError::new(
+                StatusCode::CONFLICT,
+                WORKSPACE_IN_USE,
+                "This Slack workspace is linked to another organisation.",
+            ),
+            e => e.into(),
         })?;
     Pg::new(&txn)
         .record(AuditEntry::member(
@@ -119,11 +151,13 @@ pub async fn slack_channels(
     slack: &dyn SlackClient,
     organisation_id: Uuid,
 ) -> Result<Vec<Channel>, ApiError> {
-    let row = integrations::Entity::find()
-        .filter(C::OrganisationId.eq(organisation_id))
-        .filter(C::Kind.eq(SLACK))
-        .one(db)
+    let repo = Pg::new(db);
+    let row = repo
+        .integrations()
+        .list(organisation_id)
         .await?
+        .into_iter()
+        .find(|i| i.kind == SLACK)
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::NOT_FOUND,
@@ -144,12 +178,7 @@ pub async fn slack_channels(
     match slack.channels(&token).await {
         Ok(c) => Ok(c),
         Err(SlackError::Revoked) => {
-            integrations::Entity::update_many()
-                .col_expr(C::Status, REVOKED.into())
-                .col_expr(C::UpdatedAt, now().into())
-                .filter(C::OrganisationId.eq(organisation_id))
-                .filter(C::Id.eq(row.id))
-                .exec(db)
+            repo.mark_revoked(organisation_id, row.id, Utc::now())
                 .await?;
             Err(revoked())
         }
@@ -171,12 +200,8 @@ pub async fn slack_channels(
 pub async fn list(
     db: &DatabaseConnection,
     organisation_id: Uuid,
-) -> Result<Vec<integrations::Model>, ApiError> {
-    Ok(integrations::Entity::find()
-        .filter(C::OrganisationId.eq(organisation_id))
-        .order_by_asc(C::CreatedAt)
-        .all(db)
-        .await?)
+) -> Result<Vec<Integration>, ApiError> {
+    Ok(Pg::new(db).integrations().list(organisation_id).await?)
 }
 
 /// Removes integration `id` for owner `actor`, then revokes its token at Slack (best effort).
@@ -188,30 +213,27 @@ pub async fn delete(
     actor: Uuid,
     id: Uuid,
 ) -> Result<(), ApiError> {
-    let row = integrations::Entity::find_by_id(id)
-        .filter(C::OrganisationId.eq(organisation_id))
-        .one(db)
+    let row = Pg::new(db)
+        .integrations()
+        .list(organisation_id)
         .await?
+        .into_iter()
+        .find(|i| i.id == id)
         .ok_or_else(ApiError::not_found)?;
     // Opened before the row (and its sealed token) is gone.
     let token = open_token(db, kek, &row).await;
     let txn = db.begin().await?;
-    let gone = integrations::Entity::delete_many()
-        .filter(C::OrganisationId.eq(organisation_id))
-        .filter(C::Id.eq(id))
-        .exec(&txn)
-        .await?;
-    if gone.rows_affected != 1 {
+    let repo = Pg::new(&txn);
+    if !repo.integrations().delete(organisation_id, id).await? {
         return Err(ApiError::not_found());
     }
-    Pg::new(&txn)
-        .record(AuditEntry::member(
-            Some(organisation_id),
-            actor,
-            "integration.delete",
-            Some(("integration", id.to_string())),
-        ))
-        .await?;
+    repo.record(AuditEntry::member(
+        Some(organisation_id),
+        actor,
+        "integration.delete",
+        Some(("integration", id.to_string())),
+    ))
+    .await?;
     txn.commit().await?;
     match (row.kind.as_str(), token) {
         (SLACK, Ok(t)) => {

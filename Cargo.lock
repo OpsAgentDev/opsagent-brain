@@ -4610,9 +4610,13 @@ name = "opsagent-deliver"
 version = "0.1.0"
 dependencies = [
  "askama",
+ "async-trait",
  "chrono",
+ "chrono-tz 0.10.4",
+ "cron",
  "opsagent-core",
  "serde",
+ "serde_json",
  "uuid",
 ]
 

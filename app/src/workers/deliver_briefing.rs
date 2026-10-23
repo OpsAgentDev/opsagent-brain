@@ -5,7 +5,10 @@ use async_trait::async_trait;
 use chrono::Utc;
 use loco_rs::{app::AppContext, bgworker::BackgroundWorker, Result};
 use opsagent_core::run::RunStatus;
-use opsagent_deliver::render_text;
+use opsagent_deliver::{
+    render_text,
+    repo::{DeliveriesRepo, IntegrationsRepo, RecipientsRepo},
+};
 use opsagent_ledger::{run_chunked, ChunkOutcome, LedgerError, RunChunkedOptions, RunRow, Storage};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -15,12 +18,11 @@ use super::{
     delivery::{plain, Out},
 };
 use crate::{
-    adapters::db::ledger_storage::PgStorage,
+    adapters::db::{ledger_storage::PgStorage, Pg},
     adapters::slack::SlackError,
     mailers::{magic_link::mail_safe_name, Mail},
     services::deliveries::{
-        briefing, live_connection, options, outcome, owners, revoke_notice_due, route,
-        slack_integration, BRIEFING, FALLBACK_EMAIL,
+        briefing, live_connection, options, outcome, route, BRIEFING, FALLBACK_EMAIL,
     },
     settings::Settings,
 };
@@ -88,9 +90,8 @@ async fn deliver(ctx: &AppContext, storage: &PgStorage, run: &RunRow) -> LResult
         connection_id: Some(c.id),
         kind: BRIEFING,
     };
-    let integration = slack_integration(db, c.organisation_id)
-        .await
-        .map_err(lerr)?;
+    let repo = Pg::new(db);
+    let integration = repo.active_slack(c.organisation_id).await.map_err(lerr)?;
     let channel = route(db, &c, integration.is_some())
         .await
         .map_err(lerr)?
@@ -107,7 +108,8 @@ async fn deliver(ctx: &AppContext, storage: &PgStorage, run: &RunRow) -> LResult
     }
     let notice = if channel_gone {
         CHANNEL_GONE_NOTICE
-    } else if revoke_notice_due(db, &c, run.key.scheduled_at)
+    } else if repo
+        .revoke_notice_due(c.organisation_id, c.id, run.key.scheduled_at)
         .await
         .map_err(lerr)?
     {
@@ -120,7 +122,7 @@ async fn deliver(ctx: &AppContext, storage: &PgStorage, run: &RunRow) -> LResult
         mail_safe_name(c.display_name.as_deref().unwrap_or(&c.provider))
     );
     let body = format!("{notice}{}", plain(&text));
-    for o in owners(db, c.organisation_id).await.map_err(lerr)? {
+    for o in repo.owners(c.organisation_id).await.map_err(lerr)? {
         let mail = Mail {
             to: o.email,
             subject: subject.clone(),

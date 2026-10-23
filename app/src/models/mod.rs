@@ -1,6 +1,4 @@
 pub mod _entities;
-pub mod integrations;
-pub mod schedules;
 
 use sea_orm::{
     prelude::DateTimeWithTimeZone, ColumnTrait, ConnectionTrait, EntityTrait, PrimaryKeyTrait,

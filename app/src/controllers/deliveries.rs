@@ -9,10 +9,12 @@ use axum::{
 };
 use chrono::{DateTime, FixedOffset, Utc};
 use loco_rs::app::AppContext;
-use opsagent_deliver::{model::Briefing, render_text};
-use sea_orm::{
-    ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryTrait, Statement, TryGetable,
+use opsagent_deliver::{
+    model::Briefing,
+    render_text,
+    repo::{self, DeliveriesRepo, DeliveryRow},
 };
+use sea_orm::{ConnectionTrait, Statement, TryGetable};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -20,12 +22,10 @@ use uuid::Uuid;
 
 use super::{OrgIdPath, OrgPath};
 use crate::{
+    adapters::db::Pg,
     api_error::{ApiError, ApiQuery, Problem},
     middleware::org_scope::OrgScope,
-    models::{
-        _entities::{connections, deliveries},
-        find_in_org,
-    },
+    models::{_entities::connections, find_in_org},
     services::{
         deliveries::{briefing, deliverable},
         pagination::{self, Page, PageParams},
@@ -70,7 +70,7 @@ fn bad(what: &str) -> ApiError {
 async fn recipient_ids(
     ctx: &AppContext,
     org: Uuid,
-    rows: &[deliveries::Model],
+    rows: &[DeliveryRow],
 ) -> Result<HashMap<String, Uuid>, ApiError> {
     let emails: Vec<String> = rows
         .iter()
@@ -95,7 +95,7 @@ async fn recipient_ids(
     Ok(map)
 }
 
-fn view(d: deliveries::Model, ids: &HashMap<String, Uuid>) -> Delivery {
+fn view(d: DeliveryRow, ids: &HashMap<String, Uuid>) -> Delivery {
     Delivery {
         recipient_id: (d.channel == "email")
             .then(|| ids.get(&d.target.to_lowercase()).copied())
@@ -106,8 +106,8 @@ fn view(d: deliveries::Model, ids: &HashMap<String, Uuid>) -> Delivery {
         channel: d.channel,
         status: d.status,
         attempts: d.attempts,
-        sent_at: d.sent_at,
-        created_at: d.created_at,
+        sent_at: d.sent_at.map(|t| t.fixed_offset()),
+        created_at: d.created_at.fixed_offset(),
     }
 }
 
@@ -120,7 +120,6 @@ async fn list(
     ApiQuery(f): ApiQuery<DeliveryFilter>,
     ApiQuery(p): ApiQuery<PageParams>,
 ) -> Result<Json<Page<Delivery>>, ApiError> {
-    use deliveries::Column as C;
     let connection = f
         .connection
         .map(|s| s.parse::<Uuid>().map_err(|_| bad("connection")))
@@ -130,20 +129,15 @@ async fn list(
             return Err(bad("kind"));
         }
     }
-    let q = deliveries::Entity::find()
-        .filter(C::OrganisationId.eq(scope.organisation_id))
-        .apply_if(connection, |q, v| q.filter(C::ConnectionId.eq(v)))
-        .apply_if(f.kind, |q, v| q.filter(C::Kind.eq(v)));
-    let page = pagination::fetch(
-        &ctx.db,
-        q,
-        (C::CreatedAt, C::Id),
-        |m| (m.created_at, m.id),
-        &p,
-    )
-    .await?;
+    let filter = repo::DeliveryFilter {
+        connection_id: connection,
+        kind: f.kind,
+    };
+    let page = Pg::new(&ctx.db)
+        .list(scope.organisation_id, filter, pagination::request(&p)?)
+        .await?;
     let ids = recipient_ids(&ctx, scope.organisation_id, &page.items).await?;
-    Ok(Json(page.map(|d| view(d, &ids))))
+    Ok(Json(Page::of(page).map(|d| view(d, &ids))))
 }
 
 #[utoipa::path(get, path = "/orgs/{org}/deliveries/{id}", tag = "deliveries", params(OrgIdPath),
@@ -153,8 +147,11 @@ async fn show(
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Delivery>, ApiError> {
-    let col = deliveries::Column::OrganisationId;
-    let d = find_in_org::<deliveries::Entity>(&ctx.db, col, scope.organisation_id, &id).await?;
+    let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
+    let d = Pg::new(&ctx.db)
+        .get(scope.organisation_id, id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let ids = recipient_ids(&ctx, scope.organisation_id, std::slice::from_ref(&d)).await?;
     Ok(Json(view(d, &ids)))
 }

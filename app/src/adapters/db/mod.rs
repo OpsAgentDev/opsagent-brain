@@ -2,12 +2,16 @@
 //! borrowed handle to either.
 mod audit;
 mod connections;
+mod deliveries;
 mod findings;
+mod integrations;
 pub mod ledger_storage;
 mod orgs;
 mod page;
+mod recipients;
 mod resources;
 mod runs;
+mod schedules;
 mod users;
 
 use std::fmt::Display;
@@ -24,6 +28,7 @@ use opsagent_core::{
     run::RunsRepo,
     user::{Email, UsersRepo},
 };
+use opsagent_deliver::repo::{DeliveriesRepo, IntegrationsRepo, RecipientsRepo, SchedulesRepo};
 use opsagent_ledger::Storage;
 use sea_orm::{
     prelude::DateTimeWithTimeZone, ConnectionTrait, DatabaseConnection, DatabaseTransaction,
@@ -118,6 +123,18 @@ impl<C: Conn> Repos for Pg<C> {
         self
     }
     fn resources(&self) -> &dyn ResourcesRepo {
+        self
+    }
+    fn recipients(&self) -> &dyn RecipientsRepo {
+        self
+    }
+    fn integrations(&self) -> &dyn IntegrationsRepo {
+        self
+    }
+    fn deliveries(&self) -> &dyn DeliveriesRepo {
+        self
+    }
+    fn schedules(&self) -> &dyn SchedulesRepo {
         self
     }
 }

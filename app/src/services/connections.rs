@@ -14,6 +14,7 @@ use opsagent_core::{
     },
     run::RunKey,
 };
+use opsagent_deliver::{repo::SchedulesRepo, schedule};
 use opsagent_secrets::Kek;
 use sea_orm::{DatabaseConnection, TransactionTrait};
 use uuid::Uuid;
@@ -23,7 +24,6 @@ use crate::{
     adapters::db::Pg,
     api_error::ApiError,
     creds::{self, Creds, Dek},
-    models::schedules,
     services::runs,
 };
 
@@ -247,26 +247,20 @@ pub async fn update(
         .await?;
     if let Some(t) = scan_time {
         let now = Utc::now();
-        let from = |tz: &str| schedules::end_of_local_day(tz, now);
-        schedules::set_cron(
-            &txn,
-            org_id,
-            conn_id,
-            "full_scan",
-            &schedules::daily_at(t),
-            from,
-        )
-        .await?;
+        let from = |tz: &str| schedule::end_of_local_day(tz, now);
+        let cron = schedule::daily_at(t);
+        Pg::new(&txn)
+            .set_cron(org_id, conn_id, "full_scan", &cron, &from)
+            .await?;
     }
     if let Some(t) = briefing_time {
         // From now: a later time today still briefs today; an already-sent briefing makes the
         // next one "nothing changed" unless something did.
         let now = Utc::now();
-        let cron = schedules::daily_at(t);
-        schedules::set_cron(&txn, org_id, conn_id, "deliver_briefing", &cron, |_| {
-            Some(now)
-        })
-        .await?;
+        let cron = schedule::daily_at(t);
+        Pg::new(&txn)
+            .set_cron(org_id, conn_id, "deliver_briefing", &cron, &|_| Some(now))
+            .await?;
     }
     txn.commit().await?;
     Ok(updated)

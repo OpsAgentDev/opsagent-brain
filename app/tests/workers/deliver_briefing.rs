@@ -8,14 +8,12 @@ use loco_rs::{app::AppContext, prelude::*};
 use opsagent_brain::{
     adapters::slack::{HttpSlack, Install, SlackClient},
     app::kek,
-    models::{
-        _entities::{deliveries, integrations, runs, schedules},
-        schedules::next_after,
-    },
+    models::_entities::{deliveries, integrations, runs, schedules},
     services::integrations::save_slack,
     workers::deliver_briefing,
 };
 use opsagent_core::run::{RunKey, RunStatus};
+use opsagent_deliver::schedule::next_after;
 use opsagent_ledger::{harness, RunChunkedOptions, Storage};
 use sea_orm::ConnectionTrait;
 use serde_json::{json, Value};

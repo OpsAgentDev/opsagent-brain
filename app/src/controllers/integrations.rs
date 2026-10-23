@@ -190,7 +190,7 @@ async fn list(
                 team_name: r.config["team_name"].as_str().map(str::to_owned),
                 kind: r.kind,
                 status: r.status,
-                created_at: r.created_at,
+                created_at: r.created_at.fixed_offset(),
             })
             .collect(),
     ))

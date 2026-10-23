@@ -21,12 +21,14 @@ use super::{
     verdict::{decide, Verdict},
     Step, VerifyWorker,
 };
+use opsagent_deliver::{repo::SchedulesRepo, schedule};
+
 use crate::{
     adapters::db::Pg,
     models::enum_str,
     models::{
         _entities::{connection_verifications, connections},
-        now, schedules,
+        now,
     },
     services::runs,
     workers::{
@@ -124,12 +126,11 @@ impl VerifyWorker {
         if revoke.is_some() {
             // Daily re-checks while revoked, so a returned role recovers within a day.
             let now = Utc::now();
-            let daily = schedules::VERIFY_REVOKED;
-            schedules::set_cron(tx.db(), c.organisation_id, c.id, "verify", daily, |_| {
-                Some(now)
-            })
-            .await
-            .map_err(lerr)?;
+            let daily = schedule::VERIFY_REVOKED;
+            Pg::new(tx.db())
+                .set_cron(c.organisation_id, c.id, "verify", daily, &|_| Some(now))
+                .await
+                .map_err(lerr)?;
         }
         if !cas(tx.db(), c, a).await.map_err(lerr)? {
             drop(tx);
@@ -237,12 +238,14 @@ impl VerifyWorker {
         let (org, id) = (c.organisation_id, c.id);
         if written == S::Connected {
             let times = (c.scan_time_local, c.briefing_time_local);
-            schedules::create_defaults(db, org, id, times, now)
+            Pg::new(db)
+                .create_defaults(org, id, times, now)
                 .await
                 .map_err(lerr)?;
         }
-        let weekly = schedules::VERIFY_WEEKLY;
-        schedules::set_cron(db, org, id, "verify", weekly, |_| Some(now))
+        let weekly = schedule::VERIFY_WEEKLY;
+        Pg::new(db)
+            .set_cron(org, id, "verify", weekly, &|_| Some(now))
             .await
             .map_err(lerr)
     }

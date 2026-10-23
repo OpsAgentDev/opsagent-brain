@@ -2,10 +2,14 @@
 //! `commit` writes the snapshot back, so a dropped transaction leaves nothing behind.
 mod audit;
 mod connections;
+mod deliveries;
 mod findings;
+mod integrations;
 mod orgs;
+mod recipients;
 mod resources;
 mod runs;
+mod schedules;
 mod users;
 
 use std::{
@@ -24,6 +28,10 @@ use opsagent_core::{
     resource::ResourcesRepo,
     run::RunsRepo,
     user::{User, UsersRepo},
+};
+use opsagent_deliver::repo::{
+    DeliveriesRepo, DeliveryRow, Integration, IntegrationsRepo, RecipientRow, RecipientsRepo,
+    SchedulesRepo, Suppression,
 };
 use opsagent_ledger::Storage;
 use uuid::Uuid;
@@ -54,6 +62,32 @@ struct MagicLinkRow {
     used: bool,
 }
 
+#[derive(Clone)]
+struct MemRecipient {
+    row: RecipientRow,
+    confirm: Option<(String, DateTime<Utc>)>,
+}
+
+#[derive(Clone)]
+struct SuppressionRow {
+    organisation_id: Option<Uuid>,
+    email_hash: String,
+    kind: Suppression,
+    expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone)]
+struct ScheduleRow {
+    id: Uuid,
+    organisation_id: Uuid,
+    connection_id: Option<Uuid>,
+    job_type: String,
+    cron_local: String,
+    timezone: String,
+    next_due_at: Option<DateTime<Utc>>,
+    enabled: bool,
+}
+
 #[derive(Clone, Default)]
 pub struct MemState {
     orgs: Vec<Organisation>,
@@ -68,6 +102,11 @@ pub struct MemState {
     effects: HashMap<(Uuid, String), Option<Option<String>>>,
     findings: Vec<findings::FindingRow>,
     resources: Vec<resources::ResourceMem>,
+    recipients: Vec<MemRecipient>,
+    suppressions: Vec<SuppressionRow>,
+    integrations: Vec<Integration>,
+    deliveries: Vec<DeliveryRow>,
+    schedules: Vec<ScheduleRow>,
 }
 
 #[derive(Clone, Default)]
@@ -103,6 +142,18 @@ impl Repos for MemStore {
         self
     }
     fn resources(&self) -> &dyn ResourcesRepo {
+        self
+    }
+    fn recipients(&self) -> &dyn RecipientsRepo {
+        self
+    }
+    fn integrations(&self) -> &dyn IntegrationsRepo {
+        self
+    }
+    fn deliveries(&self) -> &dyn DeliveriesRepo {
+        self
+    }
+    fn schedules(&self) -> &dyn SchedulesRepo {
         self
     }
 }
@@ -148,6 +199,18 @@ impl Repos for MemTx {
         &self.work
     }
     fn resources(&self) -> &dyn ResourcesRepo {
+        &self.work
+    }
+    fn recipients(&self) -> &dyn RecipientsRepo {
+        &self.work
+    }
+    fn integrations(&self) -> &dyn IntegrationsRepo {
+        &self.work
+    }
+    fn deliveries(&self) -> &dyn DeliveriesRepo {
+        &self.work
+    }
+    fn schedules(&self) -> &dyn SchedulesRepo {
         &self.work
     }
 }

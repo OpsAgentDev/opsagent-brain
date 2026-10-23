@@ -9,34 +9,25 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use opsagent_core::{
     audit::{AuditEntry, AuditLog},
+    repo::RepoError,
     user::Email,
 };
+use opsagent_deliver::repo::{self as repo, RecipientRow, RecipientsRepo, Suppression};
 use opsagent_ledger::redis;
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, Set,
-    SqlErr, TransactionTrait,
-};
+use sea_orm::{DatabaseConnection, TransactionTrait};
 use sha2::Sha256;
 use uuid::Uuid;
 
 use crate::{
+    actions::uow::Repos,
     adapters::db::Pg,
     api_error::ApiError,
     mailers::{magic_link as mail, Mailer},
-    models::{
-        _entities::{
-            connections, members, organisations,
-            recipients::{self, Column as C},
-            users,
-        },
-        find_in_org, now,
-    },
+    models::{_entities::connections, find_in_org},
     services::mail_guard,
     tokens::{hash_token, new_token},
 };
 
-pub const PENDING: &str = "pending";
-pub const ACTIVE: &str = "active";
 const CONFIRM_DAYS: i64 = 7;
 /// The HMAC key for unsubscribe tokens, derived from `Settings::unsubscribe_key`.
 fn unsubscribe_mac(secret: &str, id: Uuid) -> Hmac<Sha256> {
@@ -87,21 +78,13 @@ async fn member_email(
     organisation_id: Uuid,
     member_id: Uuid,
 ) -> Result<String, ApiError> {
-    let found = members::Entity::find_by_id(member_id)
-        .filter(members::Column::OrganisationId.eq(organisation_id))
-        .find_also_related(users::Entity)
-        .one(db)
-        .await?;
-    match found {
-        Some((_, Some(u))) => Ok(u.email.to_lowercase()),
-        _ => Err(ApiError::invalid(
+    let members = Pg::new(db).orgs().members(organisation_id).await?;
+    match members.into_iter().find(|m| m.id == member_id) {
+        Some(m) => Ok(m.email.as_str().to_lowercase()),
+        None => Err(ApiError::invalid(
             "member_id is not a member of this organisation",
         )),
     }
-}
-
-fn is_duplicate(e: &DbErr) -> bool {
-    matches!(e.sql_err(), Some(SqlErr::UniqueConstraintViolation(_)))
 }
 
 // shortcut: ~55 lines, one use case in one transaction plus its mail; split if it gains steps.
@@ -115,7 +98,7 @@ pub async fn create(
     organisation_id: Uuid,
     actor: Uuid,
     new: NewRecipient,
-) -> Result<recipients::Model, ApiError> {
+) -> Result<RecipientRow, ApiError> {
     let (email, member_id) = match (new.email.as_deref(), new.member_id) {
         (Some(e), None) => (
             Email::parse(e)
@@ -137,35 +120,27 @@ pub async fn create(
         .await?;
     }
     let token = member_id.is_none().then(new_token);
+    let new = repo::NewRecipient {
+        connection_id: new.connection_id,
+        email: email.clone(),
+        member_id,
+        confirm: token
+            .as_deref()
+            .map(|t| (hash_token(t), Utc::now() + Duration::days(CONFIRM_DAYS))),
+    };
     let txn = db.begin().await?;
-    let row = recipients::ActiveModel {
-        id: Set(Uuid::new_v4()),
-        organisation_id: Set(organisation_id),
-        connection_id: Set(new.connection_id),
-        email: Set(email.clone()),
-        member_id: Set(member_id),
-        status: Set(if token.is_some() { PENDING } else { ACTIVE }.into()),
-        confirm_token_hash: Set(token.as_deref().map(hash_token)),
-        confirm_expires_at: Set(token
-            .as_ref()
-            .map(|_| (Utc::now() + Duration::days(CONFIRM_DAYS)).into())),
-        unsubscribed_at: Set(None),
-        created_at: Set(now()),
-        updated_at: Set(now()),
-    }
-    .insert(&txn)
-    .await
-    .map_err(|e| {
-        if is_duplicate(&e) {
-            ApiError::new(
+    let row = Pg::new(&txn)
+        .recipients()
+        .insert(organisation_id, new)
+        .await
+        .map_err(|e| match e {
+            RepoError::Conflict(_) => ApiError::new(
                 StatusCode::CONFLICT,
                 "recipient_exists",
                 "This recipient is already added.",
-            )
-        } else {
-            e.into()
-        }
-    })?;
+            ),
+            e => e.into(),
+        })?;
     Pg::new(&txn)
         .record(AuditEntry::member(
             Some(organisation_id),
@@ -203,9 +178,7 @@ async fn send_confirm(
     if !mail_guard::may_send_confirm(db, redis, c.organisation_id, c.email).await? {
         return Ok(());
     }
-    let org = organisations::Entity::find_by_id(c.organisation_id)
-        .one(db)
-        .await?;
+    let org = Pg::new(db).orgs().get(c.organisation_id).await?;
     let name = org.map(|o| o.name).unwrap_or_default();
     let link = format!("{web_base_url}/recipients/confirm?token={}", c.token);
     if mailer
@@ -224,31 +197,11 @@ pub async fn confirm(
     redis: &redis::Client,
     token: &str,
 ) -> Result<(), ApiError> {
-    // tenancy: the token is the lookup key; the row names its organisation.
-    let row = recipients::Entity::find()
-        .filter(C::ConfirmTokenHash.eq(hash_token(token)))
-        .filter(C::Status.eq(PENDING))
-        .filter(C::ConfirmExpiresAt.gt(now()))
-        .one(db)
+    let txn = db.begin().await?;
+    let row = Pg::new(&txn)
+        .confirm(&hash_token(token), Utc::now())
         .await?
         .ok_or_else(|| ApiError::gone("recipient_token_invalid"))?;
-    let txn = db.begin().await?;
-    let done = recipients::Entity::update_many()
-        .col_expr(C::Status, ACTIVE.into())
-        .col_expr(C::ConfirmTokenHash, Option::<String>::None.into())
-        .col_expr(
-            C::ConfirmExpiresAt,
-            Option::<chrono::DateTime<chrono::FixedOffset>>::None.into(),
-        )
-        .col_expr(C::UpdatedAt, now().into())
-        .filter(C::OrganisationId.eq(row.organisation_id))
-        .filter(C::Id.eq(row.id))
-        .filter(C::Status.eq(PENDING))
-        .exec(&txn)
-        .await?;
-    if done.rows_affected != 1 {
-        return Err(ApiError::gone("recipient_token_invalid"));
-    }
     Pg::new(&txn)
         .record(
             AuditEntry::system(
@@ -274,21 +227,13 @@ pub async fn unsubscribe(
 ) -> Result<(), ApiError> {
     let gone = || ApiError::gone("unsubscribe_token_invalid");
     let id = verify_unsubscribe(secret, token).ok_or_else(gone)?;
-    // tenancy: the verified token names the recipient; the row names its organisation.
-    let row = recipients::Entity::find_by_id(id)
-        .one(db)
-        .await?
-        .ok_or_else(gone)?;
+    let row = Pg::new(db).by_id_unscoped(id).await?.ok_or_else(gone)?;
     let txn = db.begin().await?;
-    let done = recipients::Entity::update_many()
-        .col_expr(C::UnsubscribedAt, Some(now()).into())
-        .col_expr(C::UpdatedAt, now().into())
-        .filter(C::OrganisationId.eq(row.organisation_id))
-        .filter(C::Id.eq(row.id))
-        .filter(C::UnsubscribedAt.is_null())
-        .exec(&txn)
-        .await?;
-    if done.rows_affected == 1 {
+    let repo = Pg::new(&txn);
+    if repo
+        .unsubscribe(row.organisation_id, row.id, Utc::now())
+        .await?
+    {
         Pg::new(&txn)
             .record(
                 AuditEntry::system(
@@ -301,7 +246,9 @@ pub async fn unsubscribe(
             )
             .await?;
     }
-    mail_guard::suppress_unsubscribed(&txn, mail_guard::email_hash(&row.email)).await?;
+    let hash = mail_guard::email_hash(&row.email);
+    repo.suppress(None, &hash, Suppression::Unsubscribed)
+        .await?;
     txn.commit().await?;
     Ok(())
 }
@@ -314,22 +261,17 @@ pub async fn delete(
     id: Uuid,
 ) -> Result<(), ApiError> {
     let txn = db.begin().await?;
-    let gone = recipients::Entity::delete_many()
-        .filter(C::OrganisationId.eq(organisation_id))
-        .filter(C::Id.eq(id))
-        .exec(&txn)
-        .await?;
-    if gone.rows_affected != 1 {
+    let repo = Pg::new(&txn);
+    if !repo.recipients().delete(organisation_id, id).await? {
         return Err(ApiError::not_found());
     }
-    Pg::new(&txn)
-        .record(AuditEntry::member(
-            Some(organisation_id),
-            actor,
-            "recipient.delete",
-            Some(("recipient", id.to_string())),
-        ))
-        .await?;
+    repo.record(AuditEntry::member(
+        Some(organisation_id),
+        actor,
+        "recipient.delete",
+        Some(("recipient", id.to_string())),
+    ))
+    .await?;
     txn.commit().await?;
     Ok(())
 }

@@ -4,13 +4,18 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-# Domain crate: keep framework-free (see scripts/check-crate-isolation.sh). Pure: no I/O, no logging.
+# Domain crate: keep framework-free (see scripts/check-crate-isolation.sh). Pure: no I/O, no logging;
+# `repo` declares the storage ports the app implements.
 [dependencies]
 opsagent-core = { path = "../core" }
 serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 askama = "0.14"
+async-trait = "0.1"
+serde_json = "1"
+chrono-tz = "0.10"
+cron = "0.17.0"
 
 [lints]
 workspace = true

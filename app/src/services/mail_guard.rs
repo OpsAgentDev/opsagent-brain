@@ -14,25 +14,16 @@
 //! One owning user gets at most 2 confirm mails per address in 30 days across all of their
 //! organisations, so creating organisations buys nothing. The 30-day counters expire, and the
 //! address holder's confirm clears them (`confirmed`).
-use chrono::{Duration, Utc};
-use opsagent_core::org::Role;
+use opsagent_core::repo::RepoResult;
+use opsagent_deliver::repo::{RecipientsRepo, Suppression};
 use opsagent_ledger::redis;
-use sea_orm::{
-    ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
-    QueryFilter, QueryOrder, Statement,
-};
+use sea_orm::{ConnectionTrait, DatabaseConnection};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
+    adapters::db::Pg,
     api_error::ApiError,
-    models::{
-        _entities::{
-            email_suppressions::{self, Column as S},
-            members,
-        },
-        now,
-    },
     services::rate_limit::{distinct, hit, DAY_SECS},
 };
 
@@ -52,8 +43,6 @@ pub const PER_OWNER_CAP: i64 = 2;
 /// 30 days at which confirm mails to it are blocked for everyone (`confirm_blocked`).
 pub const UNCONFIRMED_OWNERS_CAP: i64 = 5;
 const WINDOW_30D: i64 = 30 * DAY_SECS;
-/// Days an `ignored` or `confirm_blocked` row lasts.
-pub const IGNORED_DAYS: i64 = 90;
 
 /// Hex SHA-256 of the lowercased address: the suppression key (no plaintext email stored).
 pub fn email_hash(email: &str) -> String {
@@ -73,100 +62,22 @@ fn unconfirmed_owners_key(hash: &str) -> String {
 }
 
 /// The organisation's creating owner: its earliest owner membership.
-async fn owner_of(db: &impl ConnectionTrait, organisation_id: Uuid) -> Result<Uuid, DbErr> {
-    let m = members::Entity::find()
-        .filter(members::Column::OrganisationId.eq(organisation_id))
-        .filter(members::Column::Role.eq(Role::Owner.as_str()))
-        .order_by_asc(members::Column::CreatedAt)
-        .one(db)
-        .await?;
+async fn owner_of(repo: &dyn RecipientsRepo, organisation_id: Uuid) -> RepoResult<Uuid> {
+    let first = repo.owners(organisation_id).await?.into_iter().next();
     // An organisation always keeps an owner; the org id stands in if that ever breaks.
-    Ok(m.map_or(organisation_id, |m| m.user_id))
-}
-
-/// Records the global `unsubscribed` row; it replaces a `confirm_blocked` row (no expiry).
-pub async fn suppress_unsubscribed(db: &impl ConnectionTrait, hash: String) -> Result<(), DbErr> {
-    let sql =
-        "INSERT INTO email_suppressions (id, organisation_id, email_hash, reason, expires_at) \
-               VALUES ($1, NULL, $2, 'unsubscribed', NULL) \
-               ON CONFLICT (organisation_id, email_hash) \
-               DO UPDATE SET reason = 'unsubscribed', expires_at = NULL";
-    let values = [Uuid::new_v4().into(), hash.into()];
-    db.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        sql,
-        values,
-    ))
-    .await
-    .map(|_| ())
-}
-
-/// Records (or renews) a 90-day `ignored` row for `organisation_id`.
-pub async fn suppress_ignored(
-    db: &impl ConnectionTrait,
-    organisation_id: Uuid,
-    hash: String,
-) -> Result<(), DbErr> {
-    expiring(db, Some(organisation_id), hash, "ignored").await
-}
-
-/// Records (or renews) the global 90-day `confirm_blocked` row; never downgrades an unsubscribe.
-pub async fn block_confirms(db: &impl ConnectionTrait, hash: String) -> Result<(), DbErr> {
-    expiring(db, None, hash, "confirm_blocked").await
-}
-
-async fn expiring(
-    db: &impl ConnectionTrait,
-    organisation_id: Option<Uuid>,
-    hash: String,
-    reason: &str,
-) -> Result<(), DbErr> {
-    let sql =
-        "INSERT INTO email_suppressions (id, organisation_id, email_hash, reason, expires_at) \
-               VALUES ($1, $2, $3, $4, $5) \
-               ON CONFLICT (organisation_id, email_hash) \
-               DO UPDATE SET expires_at = EXCLUDED.expires_at \
-               WHERE email_suppressions.reason = EXCLUDED.reason";
-    let expires = Utc::now() + Duration::days(IGNORED_DAYS);
-    let values = [
-        Uuid::new_v4().into(),
-        organisation_id.into(),
-        hash.into(),
-        reason.into(),
-        expires.fixed_offset().into(),
-    ];
-    db.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        sql,
-        values,
-    ))
-    .await
-    .map(|_| ())
+    Ok(first.map_or(organisation_id, |o| o.id))
 }
 
 /// Whether a live suppression row for one of `reasons` matches: global rows, or this
 /// organisation's.
 async fn suppressed(
-    db: &impl ConnectionTrait,
+    repo: &dyn RecipientsRepo,
     organisation_id: Uuid,
     email: &str,
-    reasons: &[&str],
-) -> Result<bool, DbErr> {
-    let live = Condition::any()
-        .add(S::ExpiresAt.is_null())
-        .add(S::ExpiresAt.gt(now()));
-    let found = email_suppressions::Entity::find()
-        .filter(S::EmailHash.eq(email_hash(email)))
-        .filter(
-            Condition::any()
-                .add(S::OrganisationId.is_null())
-                .add(S::OrganisationId.eq(organisation_id)),
-        )
-        .filter(S::Reason.is_in(reasons.iter().copied()))
-        .filter(live)
-        .one(db)
-        .await?;
-    Ok(found.is_some())
+    reasons: &[Suppression],
+) -> RepoResult<bool> {
+    let live = repo.suppressed(organisation_id, &email_hash(email)).await?;
+    Ok(live.iter().any(|k| reasons.contains(k)))
 }
 
 /// Whether a delivery (briefing, weekly, alert) from `organisation_id` may go to a confirmed
@@ -177,13 +88,13 @@ pub async fn may_deliver(
     organisation_id: Uuid,
     email: &str,
     member: bool,
-) -> Result<bool, DbErr> {
-    let reasons: &[&str] = if member {
-        &["ignored"]
+) -> RepoResult<bool> {
+    let reasons: &[Suppression] = if member {
+        &[Suppression::Ignored]
     } else {
-        &["unsubscribed", "ignored"]
+        &[Suppression::Unsubscribed, Suppression::Ignored]
     };
-    Ok(!suppressed(db, organisation_id, email, reasons).await?)
+    Ok(!suppressed(&Pg::new(db), organisation_id, email, reasons).await?)
 }
 
 /// The Redis-side verdict on one confirm mail.
@@ -263,27 +174,29 @@ pub async fn may_send_confirm(
     organisation_id: Uuid,
     email: &str,
 ) -> Result<bool, ApiError> {
-    if suppressed(
-        db,
-        organisation_id,
-        email,
-        &["unsubscribed", "ignored", "confirm_blocked"],
-    )
-    .await?
-    {
+    let repo = Pg::new(db);
+    let all = [
+        Suppression::Unsubscribed,
+        Suppression::Ignored,
+        Suppression::ConfirmBlocked,
+    ];
+    if suppressed(&repo, organisation_id, email, &all).await? {
         return Ok(false);
     }
     let hash = email_hash(email);
-    let owner = owner_of(db, organisation_id).await?;
+    let owner = owner_of(&repo, organisation_id).await?;
     match count(redis, organisation_id, owner, &hash).await {
         Ok(Verdict::Send) => Ok(true),
         Ok(Verdict::Capped) => Ok(false),
         Ok(Verdict::IgnoredByOrg) => {
-            suppress_ignored(db, organisation_id, hash).await?;
+            let ignored = Suppression::Ignored;
+            repo.suppress(Some(organisation_id), &hash, ignored).await?;
             Ok(false)
         }
         Ok(Verdict::Blocked) => {
-            block_confirms(db, hash).await?;
+            // Never downgrades an unsubscribe.
+            repo.suppress(None, &hash, Suppression::ConfirmBlocked)
+                .await?;
             Ok(false)
         }
         Err(_) => {
@@ -303,9 +216,9 @@ pub async fn confirmed(
     redis: &redis::Client,
     organisation_id: Uuid,
     email: &str,
-) -> Result<(), DbErr> {
+) -> RepoResult<()> {
     let hash = email_hash(email);
-    let owner = owner_of(db, organisation_id).await?;
+    let owner = owner_of(&Pg::new(db), organisation_id).await?;
     if let Ok(mut c) = redis.get_multiplexed_async_connection().await {
         let _: redis::RedisResult<()> = redis::pipe()
             .del(unconfirmed_key(organisation_id, &hash))

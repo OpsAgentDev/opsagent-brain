@@ -5,6 +5,7 @@ use opsagent_core::{
     audit::AuditLog, connection::ConnectionsRepo, finding::FindingsRepo, org::OrganisationsRepo,
     repo::RepoResult, resource::ResourcesRepo, run::RunsRepo, user::UsersRepo,
 };
+use opsagent_deliver::repo::{DeliveriesRepo, IntegrationsRepo, RecipientsRepo, SchedulesRepo};
 use opsagent_ledger::Storage;
 
 pub trait Repos: Send + Sync {
@@ -18,6 +19,10 @@ pub trait Repos: Send + Sync {
     fn ledger(&self) -> &dyn Storage;
     fn findings(&self) -> &dyn FindingsRepo;
     fn resources(&self) -> &dyn ResourcesRepo;
+    fn recipients(&self) -> &dyn RecipientsRepo;
+    fn integrations(&self) -> &dyn IntegrationsRepo;
+    fn deliveries(&self) -> &dyn DeliveriesRepo;
+    fn schedules(&self) -> &dyn SchedulesRepo;
 }
 
 /// Writes through a `Tx` are discarded unless it is committed.
