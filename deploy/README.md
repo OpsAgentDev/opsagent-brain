@@ -15,13 +15,28 @@ The scheduler must never overlap itself during a deploy, hence overlap 0 and one
 | Kind | Variables |
 |---|---|
 | Sealed | `OPSAGENT_KEK`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `GITHUB_CLIENT_SECRET`, `RESEND_API_KEY`, `SESSION_SECRET`, `JWT_SIGNING_KEY` |
-| Plain | `DATABASE_URL`, `REDIS_URL`, `APP_BASE_URL`, `WEB_BASE_URL`, `OPSAGENT_CONNECTORS=aws`, `OPSAGENT_AWS_OUTBOUND_ROLE_ARN`, `OPSAGENT_TEMPLATE_BASE_URL` |
+| Plain | `DATABASE_URL`, `REDIS_URL`, `APP_BASE_URL`, `WEB_BASE_URL`, `SLACK_CLIENT_ID`, `MAIL_FROM`, `OPSAGENT_CONNECTORS=aws`, `OPSAGENT_AWS_OUTBOUND_ROLE_ARN`, `OPSAGENT_TEMPLATE_BASE_URL` |
 
-Required today: `DATABASE_URL`, `REDIS_URL`, `APP_BASE_URL`, `WEB_BASE_URL`, `SESSION_SECRET`, `OPSAGENT_KEK`, `OPSAGENT_CONNECTORS`, `OPSAGENT_AWS_OUTBOUND_ROLE_ARN`, `OPSAGENT_TEMPLATE_BASE_URL`, and `RESEND_API_KEY` (api boot; a loopback `MAILER_SMTP_URL` replaces it). The Stripe, Slack and `JWT_SIGNING_KEY` variables are listed for later plans and not read yet. Optional: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `COOKIE_DOMAIN` (default `opsagent.dev`), `OPSAGENT_KEK_VERSION`, `OPSAGENT_KEK_PREV`, `MAIL_FROM`, `LOG_LEVEL`. Railway sets `PORT`. Local compose values live in `.env.docker.example`.
+Required today: `DATABASE_URL`, `REDIS_URL`, `APP_BASE_URL`, `WEB_BASE_URL`, `SESSION_SECRET`, `OPSAGENT_KEK`, `OPSAGENT_CONNECTORS`, `OPSAGENT_AWS_OUTBOUND_ROLE_ARN`, `OPSAGENT_TEMPLATE_BASE_URL`, and `RESEND_API_KEY` (a loopback `MAILER_SMTP_URL` replaces it). Plan 2 adds Slack delivery and recipient mail, so `RESEND_API_KEY` is needed at boot by every production process, including one-off CLI commands (`opsagent-brain task ...`, `db migrate`, `scheduler`): without it boot fails with "RESEND_API_KEY is required in production". Set it on all three services and in any shell that runs a task.
+
+Plan 2 variables (placeholders only; real values live in Railway):
+
+| Variable | Kind | Purpose |
+|---|---|---|
+| `SLACK_CLIENT_ID` | plain | Slack app client id (OAuth install) |
+| `SLACK_CLIENT_SECRET` | sealed | Slack app client secret |
+| `MAIL_FROM` | plain | sender for recipient mail, e.g. `OpsAgent <briefing@opsagent.dev>`; default `OpsAgent <login@opsagent.dev>` |
+| `SLACK_API_BASE_URL` | plain, optional | default `https://slack.com/api`; override only for tests |
+
+Unsubscribe tokens are HMACs keyed from `SESSION_SECRET` (sealed), so no separate secret exists; rotating `SESSION_SECRET` invalidates outstanding unsubscribe links. `SLACK_SIGNING_SECRET`, Stripe and `JWT_SIGNING_KEY` are listed for later plans and not read yet. Optional: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `COOKIE_DOMAIN` (default `opsagent.dev`), `OPSAGENT_KEK_VERSION`, `OPSAGENT_KEK_PREV`, `LOG_LEVEL`. Railway sets `PORT`. Local compose values live in `.env.docker.example`.
+
+## Slack app
+
+Create the app from the hub manifest `docs/ops/slack-app-manifest.json` and follow `docs/ops/slack-app-setup.md` (both in the architecture repo). Bot scopes: `chat:write`, `chat:write.public`, `channels:read`, `groups:read`. Production redirect URL: `https://brain.opsagent.dev/v1/integrations/slack/callback`. Copy the Client ID and Client Secret into `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET`. Customers install through the dashboard's Connect Slack button, not from the Slack admin page.
 
 ## Post-deploy smoke
 
-After a deploy (Railway deploys itself on push to `main`), run the manual step: the `ci` workflow's `smoke` job via "Run workflow" with `base_url`, or locally `scripts/smoke.sh https://brain.opsagent.dev`. Add `SMOKE_ORG_SLUG`, `SMOKE_CONNECTION_ID`, `SMOKE_ROLE_ARN` and `SMOKE_SESSION_COOKIE` (repository secrets in CI) to also verify the founder's connection. Then confirm a scheduler tick in the scheduler logs.
+After a deploy (Railway deploys itself on push to `main`), run the manual step: the `ci` workflow's `smoke` job via "Run workflow" with `base_url`, or locally `scripts/smoke.sh https://brain.opsagent.dev`. Add `SMOKE_ORG_SLUG`, `SMOKE_CONNECTION_ID`, `SMOKE_ROLE_ARN` and `SMOKE_SESSION_COOKIE` (repository secrets in CI) to also verify the founder's connection. Add `SMOKE_BRIEFING_CONNECTION_ID` with the same `SMOKE_ORG_SLUG` and `SMOKE_SESSION_COOKIE` to also check the briefing preview. Then confirm a scheduler tick in the scheduler logs.
 
 ## Backups
 
