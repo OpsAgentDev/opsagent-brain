@@ -101,6 +101,19 @@ pub fn decide(status: &str, action: Action, now: DateTime<Utc>) -> Result<Change
     }
 }
 
+/// The finding was loaded before the transaction: a status change or a vanished row is the
+/// same 409, as before repositories.
+fn cas_miss(e: RepoError) -> ApiError {
+    match e {
+        RepoError::Conflict(_) | RepoError::NotFound => ApiError::new(
+            StatusCode::CONFLICT,
+            "finding_state_changed",
+            "The finding changed while this request ran. Reload and try again.",
+        ),
+        e => e.into(),
+    }
+}
+
 /// Applies `action` to `f` for `actor`: status compare-and-set, event and audit row, one
 /// transaction. Returns the updated finding.
 pub async fn apply(
@@ -129,16 +142,9 @@ pub async fn apply(
             at: now,
         },
     };
-    match repo.change_status(f.organisation_id, f.id, change).await {
-        Err(RepoError::Conflict(_)) => {
-            return Err(ApiError::new(
-                StatusCode::CONFLICT,
-                "finding_state_changed",
-                "The finding changed while this request ran. Reload and try again.",
-            ))
-        }
-        r => r?,
-    };
+    repo.change_status(f.organisation_id, f.id, change)
+        .await
+        .map_err(cas_miss)?;
     repo.record(AuditEntry::member(
         Some(f.organisation_id),
         actor,
@@ -244,6 +250,20 @@ mod tests {
         for s in ["open", "flapping"] {
             assert!(decide(s, Action::Reopen, now()).is_err());
         }
+    }
+
+    #[test]
+    fn cas_miss_is_409_for_changed_or_vanished_rows() {
+        for e in [
+            RepoError::Conflict("finding_state_changed"),
+            RepoError::NotFound,
+        ] {
+            assert_eq!(cas_miss(e).code(), "finding_state_changed");
+        }
+        assert_ne!(
+            cas_miss(RepoError::Storage("x".into())).code(),
+            "finding_state_changed"
+        );
     }
 
     #[test]

@@ -227,6 +227,8 @@ impl<C: Conn> FindingsRepo for Pg<C> {
         seen::upsert_seen(self.db(), c, run_id, drafts, now).await
     }
 
+    /// "Unseen" is judged by `last_seen_run_id` after `upsert_seen`. When a run is applied again
+    /// with fewer drafts, a finding stamped by the earlier attempt counts as seen and stays open.
     async fn resolve_unseen(
         &self,
         organisation_id: Uuid,

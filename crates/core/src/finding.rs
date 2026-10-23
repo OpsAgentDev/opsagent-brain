@@ -54,6 +54,25 @@ pub struct FindingDraft {
     pub evidence: Vec<Evidence>,
 }
 
+/// One draft per key (checks may emit a key twice): highest severity wins, evidence merges.
+pub fn dedupe(drafts: &[FindingDraft]) -> Vec<FindingDraft> {
+    let mut out: Vec<FindingDraft> = Vec::with_capacity(drafts.len());
+    for d in drafts {
+        match out.iter_mut().find(|o| o.key == d.key) {
+            Some(o) => {
+                let mut evidence = std::mem::take(&mut o.evidence);
+                evidence.extend(d.evidence.iter().cloned());
+                if d.severity.weight() > o.severity.weight() {
+                    *o = d.clone();
+                }
+                o.evidence = evidence;
+            }
+            None => out.push(d.clone()),
+        }
+    }
+    out
+}
+
 /// A stored finding. `status` is `open`, `resolved`, `accepted`, `snoozed` or `flapping`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finding {
@@ -136,7 +155,10 @@ pub trait FindingsRepo: Send + Sync {
         id: Uuid,
         change: StatusChange,
     ) -> RepoResult<Finding>;
-    /// Upsert every draft seen in this run (lifecycle and stability counters, PRD 7.4).
+    /// Upsert every draft seen in this run, deduped by key (`dedupe`), with the lifecycle and
+    /// stability counters of PRD 7.4. The in-memory fake implements open, seen, reopen and
+    /// expiry only; flapping, escalation and stability counters are Pg-only, so tests of them
+    /// run on Pg (`workers/full_scan.rs`).
     async fn upsert_seen(
         &self,
         organisation_id: Uuid,

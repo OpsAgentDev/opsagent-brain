@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     finding::{
-        Evidence, Finding, FindingDraft, FindingEvent, FindingFilter, FindingsRepo, PostureRow,
-        StatusChange,
+        dedupe, Evidence, Finding, FindingDraft, FindingEvent, FindingFilter, FindingsRepo,
+        PostureRow, StatusChange,
     },
     repo::{Cursor, PageOf, PageRequest, RepoError, RepoResult},
 };
@@ -155,7 +155,7 @@ impl FindingsRepo for MemStore {
         now: DateTime<Utc>,
     ) -> RepoResult<()> {
         let mut s = self.state();
-        for d in drafts {
+        for d in &dedupe(drafts) {
             let found = s.findings.iter_mut().find(|f| {
                 f.finding.organisation_id == organisation_id
                     && f.finding.connection_id == connection_id

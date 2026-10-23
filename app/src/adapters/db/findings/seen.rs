@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
 use opsagent_core::{
-    finding::{FindingDraft, Severity},
+    finding::{dedupe, FindingDraft, Severity},
     repo::RepoResult,
 };
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
@@ -74,25 +74,6 @@ pub(super) async fn upsert_seen(
         evidence(db, id, run_id, d, now).await?;
     }
     Ok(())
-}
-
-/// One draft per key (checks may emit a key twice): highest severity wins, evidence merges.
-fn dedupe(drafts: &[FindingDraft]) -> Vec<FindingDraft> {
-    let mut out: Vec<FindingDraft> = Vec::with_capacity(drafts.len());
-    for d in drafts {
-        match out.iter_mut().find(|o| o.key == d.key) {
-            Some(o) => {
-                let mut evidence = std::mem::take(&mut o.evidence);
-                evidence.extend(d.evidence.iter().cloned());
-                if d.severity.weight() > o.severity.weight() {
-                    *o = d.clone();
-                }
-                o.evidence = evidence;
-            }
-            None => out.push(d.clone()),
-        }
-    }
-    out
 }
 
 async fn insert(

@@ -129,6 +129,20 @@ contract_suite! {
         assert_eq!(s.findings().resolve_unseen(org, a, r2, &["old_key".into()], t(1)).await.unwrap(), 0);
     }
 
+    async fn upsert_seen_dedupes_drafts_by_key(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let low = draft(conn, "no_mfa", "u", Severity::Low);
+        let mut high = draft(conn, "no_mfa", "u", Severity::High);
+        high.evidence[0].excerpt = "second".into();
+        scan(s, seed, org, conn, &[low, high]).await;
+        let items = s.findings().list(org, FindingFilter::default(), all()).await.unwrap().items;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].severity, Severity::High);
+        let mut ev: Vec<_> = s.findings().evidence(org, items[0].id).await.unwrap().into_iter().map(|e| e.excerpt).collect();
+        ev.sort();
+        assert_eq!(ev, ["ex", "second"]);
+    }
+
     async fn resolve_unseen_resolves_removed_check_findings(s, seed) {
         let (org, conn) = world(s, seed).await;
         // Check "99" is not in any registry; a later full run must still resolve it.
@@ -180,8 +194,8 @@ contract_suite! {
                 None => break,
             }
         }
-        seen.dedup();
         assert_eq!(seen.len(), 3);
+        assert_eq!(seen.iter().collect::<std::collections::HashSet<_>>().len(), 3);
     }
 
     async fn other_org_finding_invisible(s, seed) {
