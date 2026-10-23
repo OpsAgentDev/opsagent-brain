@@ -1,6 +1,5 @@
 use axum::{extract::State, http::StatusCode, Json};
 use chrono::{DateTime, FixedOffset};
-use loco_rs::app::AppContext;
 use opsagent_core::org::{Organisation, OrganisationPatch};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -11,8 +10,8 @@ use super::OrgPath;
 use crate::{
     actions::orgs::CreateOrgInput,
     api_error::{ApiError, ApiJson, Problem},
-    app::actions,
     middleware::org_scope::{AuthUser, OrgScope},
+    state::AppState,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -48,7 +47,7 @@ pub struct NewOrg {
     responses((status = 201, body = Org), (status = 401, body = Problem), (status = 422, body = Problem),
         (status = 429, body = Problem)))]
 async fn create_org(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     AuthUser(user_id): AuthUser,
     ApiJson(body): ApiJson<NewOrg>,
 ) -> Result<(StatusCode, Json<Org>), ApiError> {
@@ -57,17 +56,17 @@ async fn create_org(
         name: body.name,
         timezone: body.timezone.unwrap_or_else(|| "UTC".into()),
     };
-    let org = actions(&ctx)?.orgs.create_org.run(input).await?;
+    let org = app.actions.orgs.create_org.run(input).await?;
     Ok((StatusCode::CREATED, Json(view(&org, "owner"))))
 }
 
 #[utoipa::path(get, path = "/orgs", tag = "orgs",
     responses((status = 200, body = Vec<Org>), (status = 401, body = Problem)))]
 async fn list(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     AuthUser(user_id): AuthUser,
 ) -> Result<Json<Vec<Org>>, ApiError> {
-    let rows = actions(&ctx)?.orgs.list_orgs.run(user_id).await?;
+    let rows = app.actions.orgs.list_orgs.run(user_id).await?;
     Ok(Json(
         rows.iter().map(|(o, r)| view(o, r.as_str())).collect(),
     ))
@@ -75,8 +74,8 @@ async fn list(
 
 #[utoipa::path(get, path = "/orgs/{org}", tag = "orgs", params(OrgPath),
     responses((status = 200, body = Org), (status = 404, body = Problem)))]
-async fn show(State(ctx): State<AppContext>, scope: OrgScope) -> Result<Json<Org>, ApiError> {
-    let org = actions(&ctx)?.orgs.get_org.run(&scope).await?;
+async fn show(State(app): State<AppState>, scope: OrgScope) -> Result<Json<Org>, ApiError> {
+    let org = app.actions.orgs.get_org.run(&scope).await?;
     Ok(Json(view(&org, scope.member.role.as_str())))
 }
 
@@ -90,7 +89,7 @@ pub struct OrgPatch {
     responses((status = 200, body = Org), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 422, body = Problem)))]
 async fn update(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiJson(body): ApiJson<OrgPatch>,
 ) -> Result<Json<Org>, ApiError> {
@@ -98,19 +97,19 @@ async fn update(
         name: body.name,
         timezone: body.timezone,
     };
-    let org = actions(&ctx)?.orgs.update_org.run(&scope, patch).await?;
+    let org = app.actions.orgs.update_org.run(&scope, patch).await?;
     Ok(Json(view(&org, scope.member.role.as_str())))
 }
 
 #[utoipa::path(delete, path = "/orgs/{org}", tag = "orgs", params(OrgPath),
     responses((status = 204), (status = 403, body = Problem), (status = 404, body = Problem)))]
-async fn delete(State(ctx): State<AppContext>, scope: OrgScope) -> Result<StatusCode, ApiError> {
+async fn delete(State(app): State<AppState>, scope: OrgScope) -> Result<StatusCode, ApiError> {
     let actor = scope.member.user_id;
-    actions(&ctx)?.orgs.delete_org.run(&scope, actor).await?;
+    app.actions.orgs.delete_org.run(&scope, actor).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(create_org, list))
         .routes(routes!(show, update, delete))

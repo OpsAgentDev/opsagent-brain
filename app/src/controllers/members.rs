@@ -4,7 +4,6 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, FixedOffset};
-use loco_rs::app::AppContext;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -13,8 +12,8 @@ use uuid::Uuid;
 use super::{OrgIdPath, OrgPath};
 use crate::{
     api_error::{ApiError, ApiJson, Problem},
-    app::actions,
     middleware::org_scope::{AuthUser, OrgScope},
+    state::AppState,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -28,11 +27,8 @@ pub struct Member {
 
 #[utoipa::path(get, path = "/orgs/{org}/members", tag = "members", params(OrgPath),
     responses((status = 200, body = Vec<Member>), (status = 404, body = Problem)))]
-async fn list(
-    State(ctx): State<AppContext>,
-    scope: OrgScope,
-) -> Result<Json<Vec<Member>>, ApiError> {
-    let rows = actions(&ctx)?.members.list_members.run(&scope).await?;
+async fn list(State(app): State<AppState>, scope: OrgScope) -> Result<Json<Vec<Member>>, ApiError> {
+    let rows = app.actions.members.list_members.run(&scope).await?;
     Ok(Json(
         rows.into_iter()
             .map(|m| Member {
@@ -66,11 +62,11 @@ pub struct Invite {
     responses((status = 201, body = Invite), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 422, body = Problem)))]
 async fn invite(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiJson(body): ApiJson<NewInvite>,
 ) -> Result<(StatusCode, Json<Invite>), ApiError> {
-    let invite = &actions(&ctx)?.members.invite_member;
+    let invite = &app.actions.members.invite_member;
     let actor = scope.member.user_id;
     let row = invite.run(&scope, actor, &body.email, &body.role).await?;
     Ok((
@@ -104,11 +100,12 @@ pub struct TokenPath {
     responses((status = 200, body = Membership), (status = 401, body = Problem), (status = 403, body = Problem),
         (status = 410, body = Problem)))]
 async fn accept(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     AuthUser(user_id): AuthUser,
     Path(token): Path<String>,
 ) -> Result<Json<Membership>, ApiError> {
-    let (org, role) = actions(&ctx)?
+    let (org, role) = app
+        .actions
         .members
         .accept_invite
         .run(user_id, &token)
@@ -125,17 +122,17 @@ async fn accept(
     responses((status = 204), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 409, body = Problem)))]
 async fn remove(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, member_id)): Path<(String, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
     let actor = scope.member.user_id;
-    let remove = &actions(&ctx)?.members.remove_member;
+    let remove = &app.actions.members.remove_member;
     remove.run(&scope, actor, member_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list))
         .routes(routes!(invite))

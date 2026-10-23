@@ -24,8 +24,8 @@ server:
   binding: <%= get_env(name="BINDING", default="localhost") %>
   # The UI hostname or IP address that mailers will point to.
   host: http://localhost
-  # Out of the box middleware configuration. to disable middleware you can changed the `enable` field to `false` of comment the middleware block
-  middlewares:
+  # Loco's middleware is off: `App::middlewares` is empty and the stack (request id, CORS, ...) is
+  # `middleware::stack` in src/middleware/mod.rs; the client IP is the `ClientIp` extractor.
 
 # Worker Configuration
 workers:

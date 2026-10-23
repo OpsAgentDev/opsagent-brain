@@ -7,13 +7,14 @@ mod list_integrations;
 mod list_slack_channels;
 mod start_slack_install;
 
+use axum::http::StatusCode;
 use opsagent_deliver::repo::{Integration, SealedToken};
 use opsagent_secrets::{Aad, Kek};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
 pub use delete_integration::DeleteIntegration;
-pub use finish_slack_install::{FinishSlackInstall, InstallError};
+pub use finish_slack_install::{Callback, FinishSlackInstall, InstallError};
 pub use list_integrations::ListIntegrations;
 pub use list_slack_channels::ListSlackChannels;
 pub use start_slack_install::StartSlackInstall;
@@ -42,6 +43,15 @@ fn aad(organisation_id: Uuid) -> Aad {
         organisation_id,
         table: "integrations",
         column: "ciphertext",
+    }
+}
+
+/// 503 `slack_not_configured`: no Slack app credentials.
+fn not_configured() -> AppError {
+    AppError::Refused {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        code: SLACK_NOT_CONFIGURED,
+        detail: "Slack is not configured.".into(),
     }
 }
 

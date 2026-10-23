@@ -42,7 +42,7 @@ cron = "0.17.0"
 utoipa = { version = "6", features = ["chrono", "uuid", "decimal"] }
 utoipa-axum = "0.3"
 lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "tokio1", "builder", "hostname"] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["catch-panic", "cors", "set-header", "trace"] }
 thiserror = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
@@ -60,6 +60,7 @@ opsagent-brain = { path = ".", features = ["test-support"] }
 opsagent-ledger = { path = "../crates/ledger", features = ["test-support"] }
 serial_test = "3.1.1"
 axum-test = "17"
+tower = { version = "0.5", features = ["util"] }
 wiremock = "0.6"
 
 [lints]

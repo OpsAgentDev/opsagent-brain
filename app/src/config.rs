@@ -69,6 +69,8 @@ pub struct Config {
     pub worker_poll_ms: u64,
     pub job_lock_max_age_secs: u64,
     pub worker_shutdown_grace_secs: u64,
+    /// A request still running after this answers 504 `timeout`.
+    pub request_timeout_secs: u64,
 }
 
 /// Required in production (no default there); the same list as deployment.md and deploy/README.md.
@@ -153,6 +155,7 @@ impl Config {
             // 420 min, the old reaper age, above the 6 h scan cap.
             job_lock_max_age_secs: p(&get, "JOB_LOCK_MAX_AGE_SECS", "25200")?,
             worker_shutdown_grace_secs: p(&get, "WORKER_SHUTDOWN_GRACE_SECS", "30")?,
+            request_timeout_secs: p(&get, "REQUEST_TIMEOUT_SECS", "30")?,
         };
         if c.session_secret.len() < 16 {
             return Err(invalid("SESSION_SECRET", "must be at least 16 bytes"));
@@ -181,15 +184,18 @@ fn invalid(name: &'static str, reason: &str) -> ConfigError {
     }
 }
 
-/// `APP_ENV`, else the deprecated `LOCO_ENV`, else development.
+/// Warns when the environment came from `LOCO_ENV`. Called once tracing is up: config is read
+/// before the subscriber exists, so a warning from `from_vars` would go nowhere.
+pub fn warn_if_loco_env() {
+    let set = |k| std::env::var(k).is_ok_and(|v| !v.is_empty());
+    if !set("APP_ENV") && set("LOCO_ENV") {
+        tracing::warn!("LOCO_ENV is deprecated, set APP_ENV");
+    }
+}
+
+/// `APP_ENV`, else the deprecated `LOCO_ENV` (see `warn_if_loco_env`), else development.
 fn app_env(get: &impl Fn(&str) -> Option<String>) -> Result<AppEnv, ConfigError> {
-    let value = get("APP_ENV").or_else(|| {
-        let v = get("LOCO_ENV");
-        if v.is_some() {
-            tracing::warn!("LOCO_ENV is deprecated, set APP_ENV");
-        }
-        v
-    });
+    let value = get("APP_ENV").or_else(|| get("LOCO_ENV"));
     match value.as_deref().unwrap_or("development") {
         "development" => Ok(AppEnv::Development),
         "test" => Ok(AppEnv::Test),
@@ -300,6 +306,7 @@ mod tests {
         assert_eq!((c.log_format, c.db_max_connections), (LogFormat::Json, 10));
         assert!(c.cookie_secure && !c.db_auto_migrate);
         assert_eq!(c.cookie_domain, "opsagent.dev");
+        assert_eq!(c.request_timeout_secs, 30);
     }
 
     #[test]

@@ -7,7 +7,9 @@ use opsagent_secrets::Kek;
 use serde_json::json;
 use uuid::Uuid;
 
-use super::{configured, redirect_uri, seal_token, SLACK_NOT_CONFIGURED, WORKSPACE_IN_USE};
+use super::{
+    configured, not_configured, redirect_uri, seal_token, SLACK_NOT_CONFIGURED, WORKSPACE_IN_USE,
+};
 use crate::{
     actions::uow::UnitOfWork,
     adapters::slack::{Install, SlackClient, SlackError},
@@ -19,6 +21,10 @@ use crate::{
 /// Why an install did not finish; the callback redirects with `redirect_code`.
 #[derive(Debug)]
 pub enum InstallError {
+    /// The user cancelled on Slack (`access_denied`).
+    Denied,
+    /// Slack sent neither a code nor an error.
+    MissingCode,
     /// Slack refused the code exchange (logged by code).
     Exchange(SlackError),
     App(AppError),
@@ -35,6 +41,8 @@ impl InstallError {
     /// `slack_not_configured`, else `internal` (logged here).
     pub fn redirect_code(self) -> String {
         match self {
+            Self::Denied => "access_denied".into(),
+            Self::MissingCode => "missing_code".into(),
             Self::Exchange(e) => urlencoding::encode(e.code()).into_owned(),
             Self::App(AppError::Refused { code, .. })
                 if code == WORKSPACE_IN_USE || code == SLACK_NOT_CONFIGURED =>
@@ -48,6 +56,13 @@ impl InstallError {
             }
         }
     }
+}
+
+/// What Slack sent to the callback.
+pub struct Callback {
+    pub code: Option<String>,
+    /// Set by Slack when the user cancels.
+    pub error: Option<String>,
 }
 
 /// Completes a Slack install for `actor`, an owner of the organisation the OAuth state names:
@@ -76,7 +91,7 @@ impl FinishSlackInstall {
 
     /// 403 unless `user_id` owns `organisation_id` (checked before the callback reads Slack's
     /// answer, as the install may have outlived the ownership).
-    pub async fn ensure_owner(&self, organisation_id: Uuid, user_id: Uuid) -> AppResult<()> {
+    async fn ensure_owner(&self, organisation_id: Uuid, user_id: Uuid) -> AppResult<()> {
         let members = self.uow.orgs().members(organisation_id).await?;
         let owner = |m: &opsagent_core::org::Member| m.user_id == user_id && m.role == Role::Owner;
         members
@@ -86,25 +101,27 @@ impl FinishSlackInstall {
             .ok_or(AppError::Forbidden)
     }
 
+    /// Owner check first: a non-owner gets 403 (`InstallError::App(Forbidden)`), every later
+    /// refusal is a redirect code.
     pub async fn run(
         &self,
         organisation_id: Uuid,
         actor: Uuid,
-        code: &str,
+        callback: Callback,
     ) -> Result<(), InstallError> {
+        self.ensure_owner(organisation_id, actor).await?;
+        if callback.error.is_some() {
+            return Err(InstallError::Denied);
+        }
+        let code = callback.code.ok_or(InstallError::MissingCode)?;
         let s = &self.settings;
         if !configured(s) {
-            return Err(AppError::Refused {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                code: SLACK_NOT_CONFIGURED,
-                detail: "Slack is not configured.".into(),
-            }
-            .into());
+            return Err(not_configured().into());
         }
         let redirect = redirect_uri(s);
         let exchange =
             self.slack
-                .oauth_access(&s.slack_client_id, &s.slack_client_secret, code, &redirect);
+                .oauth_access(&s.slack_client_id, &s.slack_client_secret, &code, &redirect);
         let install = exchange.await.map_err(|e| {
             tracing::warn!(error_code = e.code(), "slack oauth exchange failed");
             InstallError::Exchange(e)

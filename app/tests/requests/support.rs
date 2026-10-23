@@ -27,7 +27,37 @@ where
     Fut: std::future::Future<Output = ()>,
 {
     test_env();
-    request_with_config::<App, F, Fut>(cookie_config(), callback).await;
+    let boot = boot_test::<App>().await.unwrap();
+    let ctx = boot.app_context.clone();
+    let server = TestServer::new_with_config(current_router(ctx.clone()), cookie_config()).unwrap();
+    callback(server, ctx).await;
+}
+
+/// shortcut: the router holds the `AppState` it was built with, but `replace_deps` swaps the
+/// state after boot, so each request is served by `boot::router` over the current state
+/// (rebuilt only when it changed). Task 15's `TestApp` passes doubles to boot and drops this.
+fn current_router(ctx: AppContext) -> axum::Router {
+    use tower::ServiceExt;
+    type Built = Option<(Arc<opsagent_brain::actions::Actions>, axum::Router)>;
+    let built: Arc<std::sync::Mutex<Built>> = Arc::default();
+    axum::Router::new().fallback(move |req: axum::extract::Request| {
+        let (ctx, built) = (ctx.clone(), built.clone());
+        async move {
+            let state = opsagent_brain::app::state(&ctx).unwrap();
+            let router = {
+                let mut b = built.lock().unwrap();
+                match &*b {
+                    Some((a, r)) if Arc::ptr_eq(a, &state.actions) => r.clone(),
+                    _ => {
+                        let r = opsagent_brain::boot::router(state.clone()).unwrap();
+                        *b = Some((state.actions.clone(), r.clone()));
+                        r
+                    }
+                }
+            };
+            router.oneshot(req).await.unwrap()
+        }
+    })
 }
 
 /// The Redis the app's queue (and the magic-link limiter) uses.
@@ -210,4 +240,15 @@ pub fn without_instance(res: &axum_test::TestResponse) -> String {
     let mut v: Value = serde_json::from_str(&res.text()).unwrap();
     v["instance"] = Value::Null;
     v.to_string()
+}
+
+/// The shell's router over the booted state with `f` applied to its config.
+pub fn router_with(
+    ctx: &loco_rs::app::AppContext,
+    f: impl FnOnce(&mut opsagent_brain::config::Config),
+) -> axum_test::TestServer {
+    let mut deps = opsagent_brain::app::state(ctx).unwrap().deps.clone();
+    f(&mut deps.config);
+    let router = opsagent_brain::boot::router(opsagent_brain::boot::assemble(deps)).unwrap();
+    axum_test::TestServer::new(router).unwrap()
 }

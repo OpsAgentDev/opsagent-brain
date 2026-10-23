@@ -4,7 +4,6 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, FixedOffset, Utc};
-use loco_rs::app::AppContext;
 use opsagent_core::finding::{self as core, Severity, StoredEvidence};
 use sea_orm::prelude::Decimal;
 use serde::{Deserialize, Serialize};
@@ -20,9 +19,9 @@ use super::{
 use crate::{
     actions::findings::FindingAction,
     api_error::{ApiError, ApiJson, ApiQuery, Problem},
-    app::actions,
     middleware::org_scope::OrgScope,
     models::{enum_of, enum_str},
+    state::AppState,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -140,11 +139,6 @@ fn event(e: core::FindingEvent) -> FindingEvent {
     }
 }
 
-/// A malformed id is the same 404 as an unknown one or another org's.
-fn finding_id(id: &str) -> Result<Uuid, ApiError> {
-    id.parse().map_err(|_| ApiError::not_found())
-}
-
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct FindingFilter {
@@ -159,7 +153,7 @@ pub struct FindingFilter {
     params(super::OrgPath, FindingFilter, PageParams),
     responses((status = 200, body = Page<FindingSummary>), (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn list(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiQuery(f): ApiQuery<FindingFilter>,
     ApiQuery(p): ApiQuery<PageParams>,
@@ -181,7 +175,8 @@ async fn list(
         severity,
         check_id: f.check,
     };
-    let got = actions(&ctx)?
+    let got = app
+        .actions
         .findings
         .list_findings
         .run(scope.organisation.id, filter, page)
@@ -192,14 +187,15 @@ async fn list(
 #[utoipa::path(get, path = "/orgs/{org}/findings/{id}", tag = "findings", params(OrgIdPath),
     responses((status = 200, body = FindingDetail), (status = 404, body = Problem)))]
 async fn show(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<FindingDetail>, ApiError> {
-    let d = actions(&ctx)?
+    let d = app
+        .actions
         .findings
         .get_finding
-        .run(scope.organisation.id, finding_id(&id)?)
+        .run(scope.organisation.id, super::parse_id(&id)?)
         .await?;
     Ok(Json(FindingDetail {
         finding: full(d.finding),
@@ -210,13 +206,14 @@ async fn show(
 }
 
 async fn act(
-    ctx: &AppContext,
+    app: &AppState,
     scope: &OrgScope,
     id: &str,
     action: FindingAction,
 ) -> Result<Json<Finding>, ApiError> {
-    let id = finding_id(id)?;
-    let updated = actions(ctx)?
+    let id = super::parse_id(id)?;
+    let updated = app
+        .actions
         .findings
         .change_finding_status
         .run(scope.organisation.id, scope.member.user_id, id, action)
@@ -236,7 +233,7 @@ pub struct AcceptBody {
     request_body = AcceptBody,
     responses((status = 200, body = Finding), (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn accept(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
     ApiJson(b): ApiJson<AcceptBody>,
@@ -245,7 +242,7 @@ async fn accept(
         reason: b.reason,
         until: b.until,
     };
-    act(&ctx, &scope, &id, action).await
+    act(&app, &scope, &id, action).await
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -258,22 +255,22 @@ pub struct SnoozeBody {
     request_body = SnoozeBody,
     responses((status = 200, body = Finding), (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn snooze(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
     ApiJson(b): ApiJson<SnoozeBody>,
 ) -> Result<Json<Finding>, ApiError> {
-    act(&ctx, &scope, &id, FindingAction::Snooze { until: b.until }).await
+    act(&app, &scope, &id, FindingAction::Snooze { until: b.until }).await
 }
 
 #[utoipa::path(post, path = "/orgs/{org}/findings/{id}/reopen", tag = "findings", params(OrgIdPath),
     responses((status = 200, body = Finding), (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn reopen(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Finding>, ApiError> {
-    act(&ctx, &scope, &id, FindingAction::Reopen).await
+    act(&app, &scope, &id, FindingAction::Reopen).await
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -286,25 +283,25 @@ pub struct ExplanationReport {
     params(OrgIdPath), request_body = ExplanationReport,
     responses((status = 204), (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn report_explanation(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
     ApiJson(b): ApiJson<ExplanationReport>,
 ) -> Result<StatusCode, ApiError> {
-    actions(&ctx)?
+    app.actions
         .findings
         .report_explanation
         .run(
             scope.organisation.id,
             scope.member.user_id,
-            finding_id(&id)?,
+            super::parse_id(&id)?,
             &b.note,
         )
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list))
         .routes(routes!(show))
