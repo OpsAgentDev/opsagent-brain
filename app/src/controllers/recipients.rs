@@ -97,7 +97,7 @@ async fn remove(
     Path((_, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     scope.require_owner()?;
-    let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
+    let id = super::parse_id(&id)?;
     let delete = &app.actions.recipients.delete_recipient;
     delete
         .run(scope.organisation.id, scope.member.user_id, id)

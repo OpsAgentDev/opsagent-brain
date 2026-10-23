@@ -61,9 +61,31 @@ async fn cors_preflight_web_origin_only() {
 
 #[tokio::test]
 #[serial]
-async fn body_over_two_megabytes_is_413() {
-    // shortcut: named for the brief, but today's answer is 400 `invalid_body` (axum's
-    // DefaultBodyLimit surfaces through `ApiJson`), kept as is until a ruling picks 413.
+async fn cors_headers_on_timeout_and_panic() {
+    serve(|_req, ctx| async move {
+        let srv = router_with(&ctx, |c| c.request_timeout_secs = 1);
+        for (path, status) in [("/_test/slow", 504), ("/_test/panic", 500)] {
+            let res = srv.get(path).add_header("Origin", WEB_ORIGIN).await;
+            assert_eq!(res.status_code(), status, "{path}");
+            assert_eq!(
+                res.header("access-control-allow-origin"),
+                WEB_ORIGIN,
+                "{path}"
+            );
+            assert_eq!(
+                res.header("access-control-allow-credentials"),
+                "true",
+                "{path}"
+            );
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn body_over_two_megabytes_is_400_invalid_body() {
+    // Today's answer: axum's DefaultBodyLimit surfaces through `ApiJson` as `invalid_body`.
     serve(|req, _ctx| async move {
         // `{"email":"…"}` padded to exactly 2,000,001 bytes.
         let pad = "a".repeat(2_000_001 - r#"{"email":""}"#.len());
@@ -118,17 +140,6 @@ async fn default_loco_routes_status() {
 }
 
 // Ruled changes (2026-10-23): asserted on the axum shell only.
-
-/// The shell's router over the booted state with `f` applied to its config.
-fn router_with(
-    ctx: &loco_rs::app::AppContext,
-    f: impl FnOnce(&mut opsagent_brain::config::Config),
-) -> axum_test::TestServer {
-    let mut deps = opsagent_brain::app::state(ctx).unwrap().deps.clone();
-    f(&mut deps.config);
-    let router = opsagent_brain::boot::router(opsagent_brain::boot::assemble(deps)).unwrap();
-    axum_test::TestServer::new(router).unwrap()
-}
 
 fn assert_secure_headers(res: &axum_test::TestResponse) {
     assert_eq!(res.header("x-content-type-options"), "nosniff");

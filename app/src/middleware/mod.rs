@@ -35,7 +35,7 @@ const BODY_LIMIT: usize = 2_000_000;
 const HSTS: &str = "max-age=31536000; includeSubDomains";
 
 /// Wraps `routes`; each `.layer` wraps everything above it, so the last one meets the request
-/// first. Secure headers sit outside timeout and catch-panic so their 504 and 500 carry them too.
+/// first.
 pub fn stack(routes: Router, app: &AppState) -> AppResult<Router> {
     let c = &app.config;
     // The response event (INFO) carries `status` and `latency`, inside the span.
@@ -48,15 +48,15 @@ pub fn stack(routes: Router, app: &AppState) -> AppResult<Router> {
     };
     let timeout_after = Duration::from_secs(c.request_timeout_secs);
     Ok(routes
-        .layer(trace)
-        // The session must load before the CSRF guard runs, and CORS wraps both so their
-        // error responses still reach the browser.
+        // The session must load before the CSRF guard runs.
         .layer(from_fn_with_state(app.clone(), csrf::guard))
         .layer(session::layer(app.db.clone(), c))
-        .layer(cors_layer(&c.web_base_url)?)
         .layer(from_fn_with_state(timeout_after, timeout))
         .layer(CatchPanicLayer::custom(panic_problem))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        // Outside every layer that can answer on its own (CSRF, session, timeout, panic), so
+        // those responses reach the browser with CORS and secure headers and are logged once.
+        .layer(cors_layer(&c.web_base_url)?)
         .layer(set(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
         .layer(set(header::X_FRAME_OPTIONS, "DENY"))
         .layer(set(header::REFERRER_POLICY, "no-referrer"))
@@ -64,6 +64,8 @@ pub fn stack(routes: Router, app: &AppState) -> AppResult<Router> {
             header::STRICT_TRANSPORT_SECURITY,
             move |_: &Response| hsts.clone(),
         ))
+        // Just inside the request id, which the span reads.
+        .layer(trace)
         .layer(from_fn(request_span::request_id)))
 }
 

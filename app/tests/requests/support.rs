@@ -241,3 +241,14 @@ pub fn without_instance(res: &axum_test::TestResponse) -> String {
     v["instance"] = Value::Null;
     v.to_string()
 }
+
+/// The shell's router over the booted state with `f` applied to its config.
+pub fn router_with(
+    ctx: &loco_rs::app::AppContext,
+    f: impl FnOnce(&mut opsagent_brain::config::Config),
+) -> axum_test::TestServer {
+    let mut deps = opsagent_brain::app::state(ctx).unwrap().deps.clone();
+    f(&mut deps.config);
+    let router = opsagent_brain::boot::router(opsagent_brain::boot::assemble(deps)).unwrap();
+    axum_test::TestServer::new(router).unwrap()
+}

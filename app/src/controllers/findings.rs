@@ -139,11 +139,6 @@ fn event(e: core::FindingEvent) -> FindingEvent {
     }
 }
 
-/// A malformed id is the same 404 as an unknown one or another org's.
-fn finding_id(id: &str) -> Result<Uuid, ApiError> {
-    id.parse().map_err(|_| ApiError::not_found())
-}
-
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct FindingFilter {
@@ -200,7 +195,7 @@ async fn show(
         .actions
         .findings
         .get_finding
-        .run(scope.organisation.id, finding_id(&id)?)
+        .run(scope.organisation.id, super::parse_id(&id)?)
         .await?;
     Ok(Json(FindingDetail {
         finding: full(d.finding),
@@ -216,7 +211,7 @@ async fn act(
     id: &str,
     action: FindingAction,
 ) -> Result<Json<Finding>, ApiError> {
-    let id = finding_id(id)?;
+    let id = super::parse_id(id)?;
     let updated = app
         .actions
         .findings
@@ -299,7 +294,7 @@ async fn report_explanation(
         .run(
             scope.organisation.id,
             scope.member.user_id,
-            finding_id(&id)?,
+            super::parse_id(&id)?,
             &b.note,
         )
         .await?;
