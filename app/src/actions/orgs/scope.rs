@@ -14,8 +14,8 @@ use crate::{
 pub struct OrgScope {
     pub organisation: Organisation,
     pub member: Member,
-    // shortcut: copies of `member.user_id` and `organisation.id` for the controllers Tasks 7-12
-    // have not moved yet; drop them when the last `scope.organisation_id` caller is gone.
+    // shortcut: copies of `member.user_id` and `organisation.id` for controllers not yet on
+    // actions; remove them in Task 12, once the last `scope.organisation_id` caller is gone.
     pub user_id: Uuid,
     pub organisation_id: Uuid,
 }
@@ -58,5 +58,22 @@ impl ResolveOrgScope {
             .await?
             .ok_or(AppError::NotFound)?;
         Ok(OrgScope::new(organisation, member))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{actions::orgs::test_support::*, adapters::memory::MemStore};
+
+    #[tokio::test]
+    async fn debug_output_leaves_out_the_wrapped_dek() {
+        let store = MemStore::default();
+        let (owner, org) = owned_org(&store, "d@example.com", "Keys").await;
+        let scope = scope(&store, &org, &owner).await;
+        let dek = scope.organisation.wrapped_dek.clone().unwrap();
+        let shown = format!("{scope:?}");
+        assert!(shown.contains(&org.slug), "{shown}");
+        assert!(!shown.contains("wrapped_dek"), "{shown}");
+        assert!(!shown.contains(&format!("{dek:?}")), "{shown}");
     }
 }

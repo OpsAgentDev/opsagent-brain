@@ -217,6 +217,13 @@ mod tests {
         let store = MemStore::default();
         let (owner, org) = owned_org(&store, "o@example.com", "Doomed").await;
         let conn = connection(&store, org.id).await;
+        let now = Utc::now();
+        store
+            .create_defaults(org.id, conn, (None, None), now)
+            .await
+            .unwrap();
+        let schedules = store.enabled_schedules(org.id);
+        assert!(schedules > 0);
         let scope = scope(&store, &org, &owner).await;
 
         // A failing schedule write after the soft delete and the disconnect rolls back both.
@@ -236,6 +243,7 @@ mod tests {
             .audit_entries()
             .iter()
             .all(|e| e.action != "org.delete"));
+        assert_eq!(store.enabled_schedules(org.id), schedules);
 
         let delete = DeleteOrg::new(Arc::new(store.clone()), Arc::new(SystemClock));
         delete.run(&scope, owner.id).await.unwrap();
@@ -244,6 +252,7 @@ mod tests {
             status(&store, org.id, conn).await,
             ConnectionStatus::Disconnected
         );
+        assert_eq!(store.enabled_schedules(org.id), 0);
         let deleted = store.audit_entries();
         assert_eq!(
             deleted.iter().filter(|e| e.action == "org.delete").count(),
