@@ -1,6 +1,10 @@
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fmt};
+use uuid::Uuid;
+
+use crate::repo::{PageOf, PageRequest, RepoResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,4 +75,46 @@ pub fn resource_identity(
     region: &str,
 ) -> String {
     provider_id.map_or_else(|| format!("{kind}:{region}:{name}"), str::to_owned)
+}
+
+/// A stored resource (inventory row). Provider, account and attributes are not part of the row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResourceRow {
+    pub id: Uuid,
+    pub connection_id: Uuid,
+    pub kind: ResourceKind,
+    pub identity: String,
+    pub name: Option<String>,
+    pub region: Option<String>,
+    pub tags: BTreeMap<String, String>,
+    pub first_seen_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+    /// Set when the resource was missing from a complete inventory.
+    pub gone_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResourceFilter {
+    pub connection_id: Option<Uuid>,
+    pub kind: Option<ResourceKind>,
+}
+
+#[async_trait]
+pub trait ResourcesRepo: Send + Sync {
+    async fn list(
+        &self,
+        organisation_id: Uuid,
+        filter: ResourceFilter,
+        page: PageRequest,
+    ) -> RepoResult<PageOf<ResourceRow>>;
+    /// Upsert one inventory chunk and its history rows (one per resource per run); true when
+    /// a resource is new, came back, or changed kind, name, region, tags or attributes.
+    async fn upsert_chunk(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        resources: &[Resource],
+        now: DateTime<Utc>,
+    ) -> RepoResult<bool>;
 }

@@ -1,6 +1,6 @@
 use chrono::Utc;
 use loco_rs::prelude::*;
-use opsagent_brain::models::ledger_storage::stmt;
+use opsagent_brain::adapters::db::ledger_storage::stmt;
 use sea_orm::ConnectionTrait;
 use serde_json::Value;
 use serial_test::serial;

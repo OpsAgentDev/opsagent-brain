@@ -8,29 +8,16 @@ use opsagent_ledger::{
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, QueryResult, Statement, Value};
 use uuid::Uuid;
 
-use super::{enum_of, enum_str};
+use super::{Conn, Pg};
+use crate::models::{enum_of, enum_str};
 
-/// Bound to the pool by default, or to a transaction to commit run writes with other work.
-pub struct PgStorage<C = DatabaseConnection> {
-    db: C,
-}
+/// `Pg` is the ledger storage: bound to the pool by default, or to a transaction to commit run
+/// writes with other work.
+pub type PgStorage<C = DatabaseConnection> = Pg<C>;
 
-impl<C: ConnectionTrait> PgStorage<C> {
-    pub fn new(db: C) -> Self {
-        Self { db }
-    }
-
-    pub fn into_inner(self) -> C {
-        self.db
-    }
-
-    /// The connection or transaction run writes go to, for other writes that must commit with them.
-    pub fn db(&self) -> &C {
-        &self.db
-    }
-
+impl<C: Conn> Pg<C> {
     async fn one(&self, sql: &str, values: Vec<Value>) -> Result<Option<QueryResult>> {
-        self.db
+        self.db()
             .query_one_raw(stmt(sql, values))
             .await
             .map_err(db_err)
@@ -38,7 +25,7 @@ impl<C: ConnectionTrait> PgStorage<C> {
 
     /// Rows affected; 0 means the fence (or the id) did not match.
     async fn exec(&self, sql: &str, values: Vec<Value>) -> Result<u64> {
-        self.db
+        self.db()
             .execute_raw(stmt(sql, values))
             .await
             .map(|r| r.rows_affected())
@@ -97,7 +84,7 @@ fn cp_json(cp: &Checkpoint) -> Result<serde_json::Value> {
 }
 
 #[async_trait]
-impl<C: ConnectionTrait + Send + Sync> Storage for PgStorage<C> {
+impl<C: Conn> Storage for Pg<C> {
     async fn create_run(&self, key: RunKey) -> Result<CreateRunOutcome> {
         let k = || {
             vec![

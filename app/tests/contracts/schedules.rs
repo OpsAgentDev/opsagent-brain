@@ -2,7 +2,7 @@ use chrono::{Duration, Utc};
 use opsagent_brain::actions::uow::{Repos, UnitOfWork};
 use uuid::Uuid;
 
-use super::conn_suite;
+use super::{contract_suite, org_id, Seed};
 
 /// Ids of everything due a week and a day from now, i.e. all enabled schedules.
 async fn all_due(s: &dyn Repos) -> Vec<Uuid> {
@@ -12,8 +12,10 @@ async fn all_due(s: &dyn Repos) -> Vec<Uuid> {
         .unwrap()
 }
 
-conn_suite! {
-    async fn advance_none_disables(s, o, c) {
+contract_suite! {
+    async fn advance_none_disables(s, seed) {
+        let o = org_id(s, "acme").await;
+        let c = seed.connection(o).await;
         let now = Utc::now();
         s.schedules().create_defaults(o, c, (None, None), now).await.unwrap();
         // Idempotent: 4 per connection and the organisation's weekly summary.
@@ -31,7 +33,9 @@ conn_suite! {
         assert!(s.schedules().due_ids(far).await.unwrap().is_empty());
     }
 
-    async fn due_ids_excludes_deleted_orgs(s, o, c) {
+    async fn due_ids_excludes_deleted_orgs(s, seed) {
+        let o = org_id(s, "acme").await;
+        let c = seed.connection(o).await;
         let now = Utc::now();
         s.schedules().create_defaults(o, c, (None, None), now).await.unwrap();
         let ids = all_due(s).await;
@@ -50,9 +54,9 @@ conn_suite! {
 #[tokio::test]
 #[serial_test::serial]
 async fn lock_due_skips_row_locked_by_other_tx() {
-    let (store, db) = super::pg_db().await;
-    let o = super::org_id(&store, "acme").await;
-    let c = super::pg_connection(&db, o).await;
+    let store = super::pg().await;
+    let o = org_id(&store, "acme").await;
+    let c = super::PgSeed::new().await.connection(o).await;
     let now = Utc::now();
     store
         .schedules()

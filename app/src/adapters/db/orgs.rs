@@ -26,7 +26,7 @@ fn org(m: organisations::Model) -> Organisation {
         name: m.name,
         timezone: m.timezone,
         kek_version: m.kek_version,
-        wrapped_dek: m.wrapped_dek.unwrap_or_default(),
+        wrapped_dek: m.wrapped_dek,
         created_at: utc(m.created_at),
         deleted_at: m.deleted_at.map(utc),
     }

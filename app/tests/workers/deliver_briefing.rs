@@ -1,5 +1,6 @@
 //! `deliver_briefing` (Plan 2 Task 10). Scans, findings and earlier briefings are seeded in
 //! the database; Slack is a wiremock server, mail a `CaptureMailer`.
+use opsagent_brain::adapters::db::ledger_storage::{stmt, PgStorage};
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
@@ -7,10 +8,7 @@ use loco_rs::{app::AppContext, prelude::*};
 use opsagent_brain::{
     adapters::slack::{HttpSlack, Install, SlackClient},
     app::kek,
-    models::{
-        _entities::{deliveries, integrations, runs, schedules},
-        ledger_storage::{stmt, PgStorage},
-    },
+    models::_entities::{deliveries, integrations, runs, schedules},
     services::integrations::save_slack,
     workers::deliver_briefing,
 };

@@ -1,5 +1,6 @@
 //! `scheduler:tick`: enqueue due schedules and due retries, then advance `next_due_at`.
 //! The scheduler holds no state; the unique run key makes a repeated tick a no-op (jobs.md).
+use crate::adapters::db::ledger_storage::{stmt, PgStorage};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use loco_rs::{
@@ -14,7 +15,6 @@ use uuid::Uuid;
 
 use crate::{
     adapters::db::Pg,
-    models::ledger_storage::{stmt, PgStorage},
     services::runs::{create_marked, dispatch},
     workers::common::err,
 };

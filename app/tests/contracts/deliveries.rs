@@ -3,7 +3,7 @@ use opsagent_core::repo::PageRequest;
 use opsagent_deliver::repo::{DeliveryFilter, NewDelivery, BRIEFING, FAILED, SENT, WEEKLY};
 use uuid::Uuid;
 
-use super::{conn_suite, contract_suite, org_id};
+use super::{contract_suite, org_id};
 
 const PAGE: PageRequest = PageRequest {
     after: None,
@@ -60,10 +60,10 @@ contract_suite! {
         let briefings = DeliveryFilter { kind: Some(BRIEFING.into()), ..Default::default() };
         assert!(d.list(a, briefings, PAGE).await.unwrap().items.is_empty());
     }
-}
 
-conn_suite! {
-    async fn last_success_at_respects_before(s, o, c) {
+    async fn last_success_at_respects_before(s, seed) {
+        let o = org_id(s, "acme").await;
+        let c = seed.connection(o).await;
         let d = s.deliveries();
         let later = Utc::now() + Duration::hours(1);
         d.record(o, row(Some(c), Uuid::new_v4(), "briefing", BRIEFING, FAILED)).await.unwrap();

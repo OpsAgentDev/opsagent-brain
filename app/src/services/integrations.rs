@@ -19,7 +19,7 @@ use crate::{
     adapters::db::Pg,
     adapters::slack::{Channel, Install, SlackClient, SlackError, AUTHORIZE_URL, BOT_SCOPES},
     api_error::ApiError,
-    models::connections::org_dek,
+    creds::Dek,
     settings::Settings,
 };
 
@@ -38,7 +38,9 @@ async fn seal_token(
     organisation_id: Uuid,
     token: &str,
 ) -> loco_rs::Result<SealedToken> {
-    let dek = org_dek(db, kek, organisation_id).await?;
+    let dek = Dek::of(&Pg::new(db), kek, organisation_id)
+        .await
+        .map_err(|e| Error::string(&e.to_string()))?;
     let sealed = seal(&dek.key, token.as_bytes(), &aad(organisation_id));
     Ok(SealedToken {
         ciphertext: sealed.ciphertext,
@@ -53,7 +55,9 @@ pub async fn open_token(
     kek: &dyn Kek,
     row: &Integration,
 ) -> loco_rs::Result<Zeroizing<String>> {
-    let dek = org_dek(db, kek, row.organisation_id).await?;
+    let dek = Dek::of(&Pg::new(db), kek, row.organisation_id)
+        .await
+        .map_err(|e| Error::string(&e.to_string()))?;
     let sealed = Sealed {
         ciphertext: row.ciphertext.clone(),
         nonce: row

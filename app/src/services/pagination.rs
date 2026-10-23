@@ -47,6 +47,15 @@ fn limit(p: &PageParams) -> u64 {
     p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
 }
 
+/// The repository page request for `p`; an invalid cursor is a 422.
+pub fn request(p: &PageParams) -> Result<PageRequest, ApiError> {
+    let after = p.cursor.as_deref().map(decode).transpose()?;
+    Ok(PageRequest {
+        after,
+        limit: limit(p),
+    })
+}
+
 /// One page of `select` (already tenant-filtered), newest `sort` first; `key` reads a row's
 /// `(sort, id)` for the next cursor.
 pub async fn fetch<E, C>(
@@ -61,14 +70,6 @@ where
     C: ConnectionTrait,
 {
     Ok(Page::of(page(db, select, cols, key, request(p)?).await?))
-}
-
-/// The repository page `p` asks for.
-pub fn request(p: &PageParams) -> Result<PageRequest, ApiError> {
-    Ok(PageRequest {
-        after: p.cursor.as_deref().map(decode).transpose()?,
-        limit: limit(p),
-    })
 }
 
 impl<T> Page<T> {

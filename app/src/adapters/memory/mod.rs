@@ -1,27 +1,39 @@
 //! In-memory fakes of every repository, for tests. `begin` snapshots the whole state and
 //! `commit` writes the snapshot back, so a dropped transaction leaves nothing behind.
 mod audit;
+mod connections;
 mod deliveries;
+mod findings;
 mod integrations;
 mod orgs;
 mod recipients;
+mod resources;
+mod runs;
 mod schedules;
 mod users;
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     audit::{AuditEntry, AuditLog},
+    connection::{Connection, ConnectionsRepo, SealedCreds},
+    finding::FindingsRepo,
     org::{Invite, Organisation, OrganisationsRepo, Role},
     repo::{Cursor, PageOf, PageRequest, RepoResult},
+    resource::ResourcesRepo,
+    run::RunsRepo,
     user::{User, UsersRepo},
 };
 use opsagent_deliver::repo::{
     DeliveriesRepo, DeliveryRow, Integration, IntegrationsRepo, RecipientRow, RecipientsRepo,
     SchedulesRepo, Suppression,
 };
+use opsagent_ledger::Storage;
 use uuid::Uuid;
 
 use crate::actions::uow::{Repos, Tx, UnitOfWork};
@@ -84,6 +96,12 @@ pub struct MemState {
     users: Vec<User>,
     magic_links: Vec<MagicLinkRow>,
     audit: Vec<AuditEntry>,
+    connections: Vec<(Connection, SealedCreds)>,
+    runs: Vec<runs::RunEntry>,
+    /// `None`: started, `Some(external_ref)`: done.
+    effects: HashMap<(Uuid, String), Option<Option<String>>>,
+    findings: Vec<findings::FindingRow>,
+    resources: Vec<resources::ResourceMem>,
     recipients: Vec<MemRecipient>,
     suppressions: Vec<SuppressionRow>,
     integrations: Vec<Integration>,
@@ -109,6 +127,21 @@ impl Repos for MemStore {
         self
     }
     fn audit(&self) -> &dyn AuditLog {
+        self
+    }
+    fn connections(&self) -> &dyn ConnectionsRepo {
+        self
+    }
+    fn runs(&self) -> &dyn RunsRepo {
+        self
+    }
+    fn ledger(&self) -> &dyn Storage {
+        self
+    }
+    fn findings(&self) -> &dyn FindingsRepo {
+        self
+    }
+    fn resources(&self) -> &dyn ResourcesRepo {
         self
     }
     fn recipients(&self) -> &dyn RecipientsRepo {
@@ -153,6 +186,21 @@ impl Repos for MemTx {
     fn audit(&self) -> &dyn AuditLog {
         &self.work
     }
+    fn connections(&self) -> &dyn ConnectionsRepo {
+        &self.work
+    }
+    fn runs(&self) -> &dyn RunsRepo {
+        &self.work
+    }
+    fn ledger(&self) -> &dyn Storage {
+        &self.work
+    }
+    fn findings(&self) -> &dyn FindingsRepo {
+        &self.work
+    }
+    fn resources(&self) -> &dyn ResourcesRepo {
+        &self.work
+    }
     fn recipients(&self) -> &dyn RecipientsRepo {
         &self.work
     }
@@ -176,16 +224,15 @@ impl Tx for MemTx {
     }
 }
 
-/// One keyset page of `rows`, newest `key` first (as `db::page`).
-fn page<T>(mut rows: Vec<T>, key: impl Fn(&T) -> Cursor, req: PageRequest) -> PageOf<T> {
+/// One page of `rows` (already tenant-filtered), newest first by `key`, as `db::page` does.
+fn page<T>(mut rows: Vec<T>, key: fn(&T) -> Cursor, p: PageRequest) -> PageOf<T> {
     rows.sort_by_key(|r| std::cmp::Reverse(key(r)));
     let mut items: Vec<T> = rows
         .into_iter()
-        .filter(|r| req.after.is_none_or(|after| key(r) < after))
-        .take(req.limit as usize + 1)
+        .filter(|r| p.after.is_none_or(|a| key(r) < a))
         .collect();
-    let more = items.len() as u64 > req.limit;
-    items.truncate(req.limit as usize);
-    let next = more.then(|| items.last().map(&key)).flatten();
+    let more = items.len() as u64 > p.limit;
+    items.truncate(p.limit as usize);
+    let next = more.then(|| items.last().map(key)).flatten();
     PageOf { items, next }
 }

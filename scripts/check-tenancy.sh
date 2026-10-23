@@ -5,7 +5,7 @@
 # the scheduler's global pass) carries a `// tenancy: <reason>` comment on one of the three
 # lines above it. Tenant tables are those with an organisation_id column.
 # Self-test: delete `organisation_id` from the posture query in
-# app/src/services/finding_lifecycle.rs, run this (expect exit 1), then revert.
+# app/src/adapters/db/findings/mod.rs, run this (expect exit 1), then revert.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 exec python3 - "$@" <<'PY'

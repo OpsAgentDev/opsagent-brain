@@ -1,8 +1,12 @@
 use loco_rs::prelude::*;
-use opsagent_brain::models::{
-    _entities::{audit_events, connection_credentials, connection_verifications, connections},
-    connections::cas,
+use opsagent_brain::{
+    actions::uow::Repos,
+    adapters::db::Pg,
+    models::_entities::{
+        audit_events, connection_credentials, connection_verifications, connections,
+    },
 };
+use opsagent_core::connection::ConnectionStatus as S;
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -176,19 +180,20 @@ async fn status_cas_refuses_a_stale_read() {
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
         let stale = row(&ctx, &id).await; // read as pending
+        let (org_id, conn_id) = (stale.organisation_id, stale.id);
         let res = req
             .delete(&format!("/v1/orgs/{org}/connections/{id}"))
             .add_header("X-CSRF-Token", &t)
             .await;
         assert_eq!(res.status_code(), 200);
-        let write = |s: &str| connections::ActiveModel {
-            status: Set(s.into()),
-            ..Default::default()
+        let repo = Pg::new(&ctx.db);
+        let cas = |from, to| {
+            repo.connections()
+                .cas_status(org_id, conn_id, from, to, None)
         };
-        assert!(!cas(&ctx.db, &stale, write("verifying")).await.unwrap());
+        assert!(!cas(S::Pending, S::Verifying).await.unwrap());
         assert_eq!(row(&ctx, &id).await.status, "disconnected");
-        let fresh = row(&ctx, &id).await;
-        assert!(cas(&ctx.db, &fresh, write("disconnected")).await.unwrap());
+        assert!(cas(S::Disconnected, S::Disconnected).await.unwrap());
     })
     .await;
 }
@@ -293,13 +298,12 @@ async fn changing_the_role_of_a_live_connection_needs_a_reconnect() {
                 "role_change_requires_reconnect"
             );
             let kek = opsagent_brain::app::kek(&ctx).unwrap();
-            let creds = opsagent_brain::models::connections::load_creds(
-                &ctx.db,
-                kek.as_ref(),
-                &row(&ctx, id).await,
-            )
-            .await
-            .unwrap();
+            let org_id = row(&ctx, id).await.organisation_id;
+            let conn_id = id.parse().unwrap();
+            let creds =
+                opsagent_brain::creds::load(&Pg::new(&ctx.db), kek.as_ref(), org_id, conn_id)
+                    .await
+                    .unwrap();
             assert_eq!(creds.role_arn.as_deref(), Some(ROLE_ARN), "{status}");
             assert_eq!(row(&ctx, id).await.status, status);
         }

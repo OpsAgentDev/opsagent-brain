@@ -18,9 +18,9 @@ use super::{
     delivery::{plain, Out},
 };
 use crate::{
-    adapters::{db::Pg, slack::SlackError},
+    adapters::db::{ledger_storage::PgStorage, Pg},
+    adapters::slack::SlackError,
     mailers::{magic_link::mail_safe_name, Mail},
-    models::ledger_storage::PgStorage,
     services::deliveries::{
         briefing, live_connection, options, outcome, route, BRIEFING, FALLBACK_EMAIL,
     },

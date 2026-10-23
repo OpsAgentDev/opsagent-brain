@@ -2,21 +2,18 @@
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
 use loco_rs::app::AppContext;
-use opsagent_core::audit::{AuditEntry, AuditLog};
-use opsagent_core::{connection::ConnectionStatus as S, run::RunKey};
+use opsagent_core::audit::AuditEntry;
+use opsagent_core::{
+    connection::{Connection, ConnectionStatus as S},
+    run::RunKey,
+};
 use opsagent_ledger::CreateRunOutcome;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait};
+use sea_orm::TransactionTrait;
 use uuid::Uuid;
 
 use crate::{
-    adapters::db::Pg,
-    api_error::ApiError,
-    models::{
-        _entities::{connections, runs},
-        connections::status_of,
-    },
-    services::runs as run_service,
-    workers::full_scan::JOB,
+    actions::uow::Repos, adapters::db::Pg, api_error::ApiError, models::enum_str,
+    services::runs as run_service, workers::full_scan::JOB,
 };
 
 pub const WINDOW: Duration = Duration::hours(1);
@@ -42,28 +39,21 @@ fn not_scannable(status: &str) -> ApiError {
 /// lock, so two concurrent requests create one run.
 pub async fn request(
     ctx: &AppContext,
-    c: &connections::Model,
+    c: &Connection,
     actor: Uuid,
     now: DateTime<Utc>,
 ) -> Result<CreateRunOutcome, ApiError> {
     let txn = ctx.db.begin().await?;
-    let locked = connections::Entity::find_by_id(c.id)
-        .filter(connections::Column::OrganisationId.eq(c.organisation_id))
-        .lock_exclusive()
-        .one(&txn)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
-    if !matches!(status_of(&locked)?, S::Connected | S::Degraded) {
-        return Err(not_scannable(&locked.status));
+    let repos = Pg::new(&txn);
+    let locked = repos.connections().lock(c.organisation_id, c.id).await?;
+    let locked = locked.ok_or_else(ApiError::not_found)?;
+    if !matches!(locked.status, S::Connected | S::Degraded) {
+        return Err(not_scannable(&enum_str(locked.status)));
     }
-    let last = runs::Entity::find()
-        .filter(runs::Column::OrganisationId.eq(c.organisation_id))
-        .filter(runs::Column::ConnectionId.eq(c.id))
-        .filter(runs::Column::JobType.eq(JOB))
-        .order_by_desc(runs::Column::ScheduledAt)
-        .one(&txn)
-        .await?
-        .map(|r| r.scheduled_at.with_timezone(&Utc));
+    let last = repos
+        .runs()
+        .last_manual_scan(c.organisation_id, c.id)
+        .await?;
     if let Some(secs) = retry_after(last, now) {
         return Err(ApiError::rate_limited(
             "A scan ran for this connection within the last hour.",
@@ -76,8 +66,9 @@ pub async fn request(
         job_type: JOB.into(),
         scheduled_at: now,
     };
-    let (txn, out) = run_service::create_marked(txn, key, now).await?;
-    Pg::new(&txn)
+    let out = run_service::mark_new(repos.ledger(), key, now).await?;
+    repos
+        .audit()
         .record(AuditEntry::member(
             Some(c.organisation_id),
             actor,

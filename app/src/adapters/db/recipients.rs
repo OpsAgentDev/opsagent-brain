@@ -13,13 +13,12 @@ use sea_orm::{
 };
 use uuid::Uuid;
 
-use super::{db_err, page, utc, Conn, Pg};
+use super::{db_err, ledger_storage::stmt, page, utc, Conn, Pg};
 use crate::models::{
     _entities::{
         email_suppressions::{self, Column as S},
         recipients::{self, Column as Col},
     },
-    ledger_storage::stmt,
     now,
 };
 

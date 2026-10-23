@@ -1,11 +1,16 @@
 //! SeaORM implementations of the repository traits. `Pg` wraps a pool, a transaction, or a
 //! borrowed handle to either.
 mod audit;
+mod connections;
 mod deliveries;
+mod findings;
 mod integrations;
+pub mod ledger_storage;
 mod orgs;
 mod page;
 mod recipients;
+mod resources;
+mod runs;
 mod schedules;
 mod users;
 
@@ -15,16 +20,22 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     audit::AuditLog,
+    connection::ConnectionsRepo,
+    finding::FindingsRepo,
     org::{OrganisationsRepo, Role},
     repo::{RepoError, RepoResult},
+    resource::ResourcesRepo,
+    run::RunsRepo,
     user::{Email, UsersRepo},
 };
 use opsagent_deliver::repo::{DeliveriesRepo, IntegrationsRepo, RecipientsRepo, SchedulesRepo};
+use opsagent_ledger::Storage;
 use sea_orm::{
     prelude::DateTimeWithTimeZone, ConnectionTrait, DatabaseConnection, DatabaseTransaction,
     TransactionTrait,
 };
 
+pub use connections::status_of;
 pub use page::page;
 
 use crate::actions::uow::{Repos, Tx, UnitOfWork};
@@ -63,7 +74,12 @@ impl<C: Conn> Pg<C> {
         Self(c)
     }
 
-    fn db(&self) -> &C::C {
+    pub fn into_inner(self) -> C {
+        self.0
+    }
+
+    /// The connection or transaction writes go to, for raw writes that must commit with them.
+    pub fn db(&self) -> &C::C {
         self.0.conn()
     }
 }
@@ -92,6 +108,21 @@ impl<C: Conn> Repos for Pg<C> {
         self
     }
     fn audit(&self) -> &dyn AuditLog {
+        self
+    }
+    fn connections(&self) -> &dyn ConnectionsRepo {
+        self
+    }
+    fn runs(&self) -> &dyn RunsRepo {
+        self
+    }
+    fn ledger(&self) -> &dyn Storage {
+        self
+    }
+    fn findings(&self) -> &dyn FindingsRepo {
+        self
+    }
+    fn resources(&self) -> &dyn ResourcesRepo {
         self
     }
     fn recipients(&self) -> &dyn RecipientsRepo {

@@ -1,6 +1,7 @@
 //! Shared by `deliver_briefing` and `deliver_weekly`: one email or one Slack post per run and
 //! effect key (side-effect ledger), each with its `deliveries` row. Logs codes only: never
 //! message text, tokens or addresses (logging.md).
+use crate::adapters::db::ledger_storage::PgStorage;
 use chrono::Utc;
 use loco_rs::app::AppContext;
 use opsagent_deliver::repo::{DeliveriesRepo, Integration, IntegrationsRepo, NewDelivery};
@@ -13,7 +14,7 @@ use crate::{
     app::kek,
     mailers::Mail,
     middleware::{mailer, slack},
-    models::{_entities::connections, ledger_storage::PgStorage},
+    models::_entities::connections,
     services::{
         deliveries::{clear_channel, FAILED, SENT, SUPPRESSED},
         integrations::open_token,

@@ -8,11 +8,11 @@ use opsagent_core::{
 use opsagent_deliver::repo::SchedulesRepo;
 use opsagent_secrets::{generate_dek, Kek};
 use rand::RngCore;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, TransactionTrait};
+use sea_orm::{DatabaseConnection, TransactionTrait};
 use uuid::Uuid;
 
 use crate::{
-    adapters::db::Pg, api_error::ApiError, models::_entities::connections,
+    actions::uow::Repos, adapters::db::Pg, api_error::ApiError,
     services::connections as connections_service,
 };
 
@@ -70,12 +70,8 @@ pub async fn delete(
     let repo = Pg::new(&txn);
     repo.lock(organisation_id).await?;
     repo.soft_delete(organisation_id, Utc::now()).await?;
-    let live = connections::Entity::find()
-        .filter(connections::Column::OrganisationId.eq(organisation_id))
-        .all(&txn)
-        .await?;
-    for c in live {
-        connections_service::end(&txn, c, "organisation_deleted").await?;
+    for c in repo.connections().list(organisation_id).await? {
+        connections_service::end(&repo, c, "organisation_deleted").await?;
     }
     repo.disable_for_org(organisation_id).await?;
     let target = Some(("organisation", organisation_id.to_string()));

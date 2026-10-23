@@ -1,5 +1,6 @@
 //! Delivery history and the briefing preview. Recipient addresses and Slack tokens never leave
 //! the server: a row shows its channel kind and, for email, the recipient's id.
+use crate::adapters::db::ledger_storage::stmt;
 use std::collections::HashMap;
 
 use axum::{
@@ -24,7 +25,7 @@ use crate::{
     adapters::db::Pg,
     api_error::{ApiError, ApiQuery, Problem},
     middleware::org_scope::OrgScope,
-    models::{_entities::connections, find_in_org, ledger_storage::stmt},
+    models::{_entities::connections, find_in_org},
     services::{
         deliveries::{briefing, deliverable},
         pagination::{self, Page, PageParams},

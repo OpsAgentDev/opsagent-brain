@@ -1,5 +1,6 @@
 //! `cargo loco task deliver:briefing connection:<id>`: delivers the briefing inline (local and
 //! e2e use).
+use crate::adapters::db::ledger_storage::PgStorage;
 use async_trait::async_trait;
 use loco_rs::{
     app::AppContext,
@@ -12,7 +13,7 @@ use sea_orm::EntityTrait;
 use uuid::Uuid;
 
 use crate::{
-    models::{_entities::connections, ledger_storage::PgStorage},
+    models::_entities::connections,
     workers::{
         common::err,
         deliver_briefing::{self, JOB},

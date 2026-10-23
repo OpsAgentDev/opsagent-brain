@@ -2,6 +2,7 @@
 //! recipients (the owners when none are set) and posts it to its Slack channel; an
 //! organisation run (no connection) emails one summary of every connection to the owners.
 //! Opt-in non-members get the unsubscribe footer; members do not.
+use crate::adapters::db::ledger_storage::PgStorage;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -28,10 +29,7 @@ use super::{
 use crate::{
     adapters::db::Pg,
     mailers::{magic_link::mail_safe_name, Mail},
-    models::{
-        _entities::{connections, organisations as orgs},
-        ledger_storage::PgStorage,
-    },
+    models::_entities::{connections, organisations as orgs},
     services::{
         deliveries::{deliverable, live_connection, options, outcome, route, SENT, WEEKLY},
         recipients::unsubscribe_url,

@@ -1,6 +1,7 @@
 //! Delivery reads the workers share: the briefing window and document, the route, and
 //! connection housekeeping. Rows live in the deliveries repository, keyed by (run, effect
 //! key), so a resumed run rewrites its own rows instead of adding more.
+use crate::adapters::db::ledger_storage::stmt;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -19,8 +20,8 @@ use uuid::Uuid;
 pub use opsagent_deliver::repo::{BRIEFING, FAILED, FALLBACK_EMAIL, SENT, SUPPRESSED, WEEKLY};
 
 use crate::{
-    adapters::db::Pg,
-    models::{_entities::connections, connections::status_of, ledger_storage::stmt},
+    adapters::db::{status_of, Pg},
+    models::_entities::connections,
     workers::common::{lerr, LResult},
 };
 

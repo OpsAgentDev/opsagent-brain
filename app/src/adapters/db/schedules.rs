@@ -8,8 +8,8 @@ use opsagent_deliver::{
 use sea_orm::{ConnectionTrait, QueryResult};
 use uuid::Uuid;
 
+use super::ledger_storage::stmt;
 use super::{db_err, Conn, Pg};
-use crate::models::ledger_storage::stmt;
 
 fn get<T: sea_orm::TryGetable>(r: &QueryResult, col: &str) -> RepoResult<T> {
     r.try_get("", col).map_err(db_err)
