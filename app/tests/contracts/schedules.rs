@@ -78,3 +78,47 @@ async fn lock_due_skips_row_locked_by_other_tx() {
     let tx = other.begin().await.unwrap();
     assert!(tx.schedules().lock_due(id, soon).await.unwrap().is_some());
 }
+
+/// MemStore only: on Pg a connected row needs a verified account id, and the backfill is
+/// covered by the scheduler tick tests.
+#[tokio::test]
+async fn mem_backfill_fills_connected_connections_once() {
+    use opsagent_core::connection::ConnectionStatus as S;
+    let store = opsagent_brain::adapters::memory::MemStore::default();
+    let o = org_id(&store, "acme").await;
+    let c = super::connections::connection(&store, o, "prod").await;
+    let repo = store.connections();
+    assert_eq!(
+        store
+            .schedules()
+            .backfill_defaults(Utc::now())
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(repo
+        .cas_status(o, c.id, S::Pending, S::Verifying, None)
+        .await
+        .unwrap());
+    assert!(repo
+        .cas_status(o, c.id, S::Verifying, S::Connected, None)
+        .await
+        .unwrap());
+    assert_eq!(
+        store
+            .schedules()
+            .backfill_defaults(Utc::now())
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .schedules()
+            .backfill_defaults(Utc::now())
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(all_due(&store).await.len(), 5);
+}

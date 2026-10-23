@@ -121,22 +121,24 @@ impl DeliveriesRepo for MemStore {
         }))
     }
 
-    // shortcut: snapshots join connections, findings and runs, which MemStore does not hold
-    // yet; implement once those repositories' rows live in MemState.
+    // shortcut: not modelled in MemStore (needs finding costs, run scans and the posture
+    // score); fails loudly so no fake-backed test passes on an empty snapshot. Model it before a
+    // MemStore action test reads snapshots (Task 12).
     async fn connection_snapshot(
         &self,
         _organisation_id: Uuid,
         _connection_id: Uuid,
     ) -> RepoResult<ConnectionSnapshot> {
-        Err(RepoError::NotFound)
+        Err(RepoError::Storage("not modelled in MemStore".into()))
     }
 
+    // shortcut: not modelled in MemStore, as `connection_snapshot`.
     async fn finding_snapshots(
         &self,
         _organisation_id: Uuid,
         _connection_id: Uuid,
         _since: DateTime<Utc>,
     ) -> RepoResult<Vec<FindingSnapshot>> {
-        Ok(Vec::new())
+        Err(RepoError::Storage("not modelled in MemStore".into()))
     }
 }

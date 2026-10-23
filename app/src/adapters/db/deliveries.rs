@@ -49,6 +49,8 @@ fn get<T: sea_orm::TryGetable>(r: &QueryResult, col: &str) -> RepoResult<T> {
 }
 
 impl<C: Conn> Pg<C> {
+    // shortcut: posture formula duplicated from services::posture; Task 9 replaces both with
+    // Posture::from_rows.
     /// Open-finding counts by severity (open and flapping) and the posture score (checks.md:
     /// `max(0, 100 - sum of weight(open))`, flapping excluded).
     async fn counts_and_score(&self, org: Uuid, id: Uuid) -> RepoResult<(SeverityCounts, f64)> {

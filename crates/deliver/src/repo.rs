@@ -160,6 +160,7 @@ pub trait IntegrationsRepo: Send + Sync {
     /// Oldest first.
     async fn list(&self, organisation_id: Uuid) -> RepoResult<Vec<Integration>>;
     async fn active_slack(&self, organisation_id: Uuid) -> RepoResult<Option<Integration>>;
+    /// The revocation time is the store's clock (Pg: SQL `now()`), as `deliveries.sent_at`.
     async fn mark_revoked(
         &self,
         organisation_id: Uuid,

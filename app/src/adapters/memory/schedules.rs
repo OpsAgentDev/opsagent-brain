@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveTime, Utc};
-use opsagent_core::{repo::RepoResult, run::RunKey};
+use opsagent_core::{connection::ConnectionStatus, repo::RepoResult, run::RunKey};
 use opsagent_deliver::{
     repo::{SchedulesRepo, SinceFn},
     schedule::{daily_at, next_after, BRIEFING, FULL_SCAN, VERIFY_WEEKLY, WEEKLY},
@@ -101,10 +101,37 @@ impl SchedulesRepo for MemStore {
         Ok(mine.map(|r| r.enabled = false).count() as u64)
     }
 
-    // shortcut: MemStore holds no connections yet, so nothing needs a backfill; implement once
-    // connection rows live in MemState.
-    async fn backfill_defaults(&self, _now: DateTime<Utc>) -> RepoResult<u64> {
-        Ok(0)
+    async fn backfill_defaults(&self, now: DateTime<Utc>) -> RepoResult<u64> {
+        let todo: Vec<_> = {
+            let s = self.state();
+            let briefed = |id| {
+                s.schedules
+                    .iter()
+                    .any(|r| r.connection_id == Some(id) && r.job_type == "deliver_briefing")
+            };
+            s.connections
+                .iter()
+                .map(|(c, _)| c)
+                .filter(|c| c.status == ConnectionStatus::Connected)
+                .filter(|c| {
+                    s.orgs
+                        .iter()
+                        .any(|o| o.id == c.organisation_id && o.deleted_at.is_none())
+                })
+                .filter(|c| !briefed(c.id))
+                .map(|c| {
+                    (
+                        c.organisation_id,
+                        c.id,
+                        (c.scan_time_local, c.briefing_time_local),
+                    )
+                })
+                .collect()
+        };
+        for &(org, id, times) in &todo {
+            self.create_defaults(org, id, times, now).await?;
+        }
+        Ok(todo.len() as u64)
     }
 
     async fn due_ids(&self, now: DateTime<Utc>) -> RepoResult<Vec<Uuid>> {

@@ -3,8 +3,8 @@ use chrono::{DateTime, Utc};
 use opsagent_core::repo::{RepoError, RepoResult};
 use opsagent_deliver::repo::{Integration, IntegrationsRepo, SealedToken, ACTIVE, REVOKED, SLACK};
 use sea_orm::{
-    prelude::DateTimeWithTimeZone, sea_query::OnConflict, ColumnTrait, EntityTrait, QueryFilter,
-    QueryOrder, Set, SqlErr,
+    sea_query::{Expr, OnConflict},
+    ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set, SqlErr,
 };
 use uuid::Uuid;
 
@@ -98,11 +98,13 @@ impl<C: Conn> IntegrationsRepo for Pg<C> {
         &self,
         organisation_id: Uuid,
         id: Uuid,
-        at: DateTime<Utc>,
+        _at: DateTime<Utc>,
     ) -> RepoResult<()> {
+        // SQL now(), not `at`: `revoke_notice_due` compares it with `deliveries.sent_at`, also
+        // SQL now().
         integrations::Entity::update_many()
             .col_expr(Col::Status, REVOKED.into())
-            .col_expr(Col::UpdatedAt, DateTimeWithTimeZone::from(at).into())
+            .col_expr(Col::UpdatedAt, Expr::current_timestamp())
             .filter(Col::OrganisationId.eq(organisation_id))
             .filter(Col::Id.eq(id))
             .exec(self.db())

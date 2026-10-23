@@ -52,8 +52,13 @@ contract_suite! {
     async fn deliveries_cross_org_get_is_none(s) {
         let (a, b) = (org_id(s, "a").await, org_id(s, "b").await);
         let d = s.deliveries();
-        d.record(a, row(None, Uuid::new_v4(), "k", WEEKLY, SENT)).await.unwrap();
+        let run = Uuid::new_v4();
+        d.record(a, row(None, run, "k", WEEKLY, SENT)).await.unwrap();
         let id = d.list(a, DeliveryFilter::default(), PAGE).await.unwrap().items[0].id;
+        // Another organisation cannot rewrite the row of the same (run, key).
+        d.record(b, row(None, run, "k", WEEKLY, FAILED)).await.unwrap();
+        let kept = d.get(a, id).await.unwrap().unwrap();
+        assert_eq!((kept.status.as_str(), kept.attempts), (SENT, 1));
         assert!(d.get(a, id).await.unwrap().is_some());
         assert!(d.get(b, id).await.unwrap().is_none());
         assert!(d.list(b, DeliveryFilter::default(), PAGE).await.unwrap().items.is_empty());
