@@ -200,7 +200,8 @@ impl Scan<'_> {
             unavailable: &unavailable,
         };
         let (drafts, check_errors) = run_checks(self.checks, k, &cx, run_id);
-        finding_lifecycle::apply(&txn, c, run_id, &drafts, now, partial).await?;
+        let check_ids: Vec<String> = (self.checks)().iter().map(|ch| ch.id().into()).collect();
+        finding_lifecycle::apply(&txn, c, run_id, &drafts, now, partial, &check_ids).await?;
         let mut stats = posture::posture(&txn, c).await?;
         stats["partial"] = json!(partial);
         stats["check_errors"] = json!(check_errors);

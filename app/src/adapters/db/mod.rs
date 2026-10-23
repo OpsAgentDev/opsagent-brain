@@ -1,8 +1,10 @@
 //! SeaORM implementations of the repository traits. `Pg` wraps a pool, a transaction, or a
 //! borrowed handle to either.
 mod audit;
+mod findings;
 mod orgs;
 mod page;
+mod resources;
 mod users;
 
 use std::fmt::Display;
@@ -11,8 +13,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     audit::AuditLog,
+    finding::FindingsRepo,
     org::{OrganisationsRepo, Role},
     repo::{RepoError, RepoResult},
+    resource::ResourcesRepo,
     user::{Email, UsersRepo},
 };
 use sea_orm::{
@@ -87,6 +91,12 @@ impl<C: Conn> Repos for Pg<C> {
         self
     }
     fn audit(&self) -> &dyn AuditLog {
+        self
+    }
+    fn findings(&self) -> &dyn FindingsRepo {
+        self
+    }
+    fn resources(&self) -> &dyn ResourcesRepo {
         self
     }
 }

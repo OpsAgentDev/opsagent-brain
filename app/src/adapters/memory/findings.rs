@@ -1,0 +1,262 @@
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use opsagent_core::{
+    finding::{
+        Evidence, Finding, FindingDraft, FindingEvent, FindingFilter, FindingsRepo, PostureRow,
+        StatusChange,
+    },
+    repo::{Cursor, PageOf, PageRequest, RepoError, RepoResult},
+};
+use uuid::Uuid;
+
+use super::{page, MemStore};
+use crate::models::enum_str;
+
+#[derive(Clone)]
+pub struct FindingRow {
+    finding: Finding,
+    /// Oldest first.
+    events: Vec<FindingEvent>,
+    evidence: Vec<(Uuid, Evidence)>,
+}
+
+impl FindingRow {
+    fn event(&mut self, kind: &str, run_id: Option<Uuid>, at: DateTime<Utc>) {
+        let s = Some(self.finding.severity);
+        self.events.push(FindingEvent {
+            finding_id: self.finding.id,
+            kind: kind.into(),
+            run_id,
+            from_severity: s,
+            to_severity: s,
+            at,
+        });
+    }
+
+    /// shortcut: open, seen, reopen and expiry only; flapping, escalation and the stability
+    /// counters are Pg-only (`adapters::db::findings::seen`), tested by the full-scan worker tests.
+    fn seen(&mut self, run_id: Uuid, d: &FindingDraft, now: DateTime<Utc>) {
+        let f = &mut self.finding;
+        let expired = |u: Option<DateTime<Utc>>| u.is_some_and(|u| u <= now);
+        let kind = match f.status.as_str() {
+            "open" => Some("seen"),
+            "accepted" if expired(f.accepted_until) => Some("reopened"),
+            "snoozed" if expired(f.snoozed_until) => Some("reopened"),
+            "accepted" | "snoozed" | "flapping" => None,
+            _ => Some("reopened"),
+        };
+        if kind == Some("reopened") {
+            f.status = "open".into();
+            f.resolved_at = None;
+        }
+        (f.severity, f.title, f.last_seen_run_id) = (d.severity, d.title.clone(), Some(run_id));
+        if let Some(k) = kind {
+            self.event(k, Some(run_id), now);
+        }
+    }
+}
+
+fn key(f: &FindingRow) -> Cursor {
+    (f.finding.created_at.into(), f.finding.id)
+}
+
+impl MemStore {
+    fn finding_row<T>(&self, org: Uuid, id: Uuid, read: impl Fn(&FindingRow) -> T) -> Option<T> {
+        let s = self.state();
+        let f = s
+            .findings
+            .iter()
+            .find(|f| f.finding.organisation_id == org && f.finding.id == id);
+        f.map(read)
+    }
+}
+
+#[async_trait]
+impl FindingsRepo for MemStore {
+    async fn get(&self, organisation_id: Uuid, id: Uuid) -> RepoResult<Option<Finding>> {
+        Ok(self.finding_row(organisation_id, id, |f| f.finding.clone()))
+    }
+
+    async fn list(
+        &self,
+        organisation_id: Uuid,
+        q: FindingFilter,
+        p: PageRequest,
+    ) -> RepoResult<PageOf<Finding>> {
+        let rows = self
+            .state()
+            .findings
+            .iter()
+            .filter(|r| {
+                let f = &r.finding;
+                f.organisation_id == organisation_id
+                    && q.connection_id.is_none_or(|c| f.connection_id == c)
+                    && q.status.as_ref().is_none_or(|s| &f.status == s)
+                    && q.severity.is_none_or(|s| f.severity == s)
+                    && q.check_id.as_ref().is_none_or(|c| &f.key.check_id == c)
+            })
+            .cloned()
+            .collect();
+        let rows = page(rows, key, p);
+        Ok(PageOf {
+            items: rows.items.into_iter().map(|r| r.finding).collect(),
+            next: rows.next,
+        })
+    }
+
+    async fn events(
+        &self,
+        organisation_id: Uuid,
+        finding_id: Uuid,
+    ) -> RepoResult<Vec<FindingEvent>> {
+        let events = self.finding_row(organisation_id, finding_id, |f| f.events.clone());
+        Ok(events.unwrap_or_default().into_iter().rev().collect())
+    }
+
+    async fn evidence(&self, organisation_id: Uuid, finding_id: Uuid) -> RepoResult<Vec<Evidence>> {
+        let ev = self.finding_row(organisation_id, finding_id, |f| f.evidence.clone());
+        Ok(ev
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .map(|(_, e)| e)
+            .collect())
+    }
+
+    async fn change_status(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        c: StatusChange,
+    ) -> RepoResult<Finding> {
+        let mut s = self.state();
+        let row = s
+            .findings
+            .iter_mut()
+            .find(|f| f.finding.organisation_id == organisation_id && f.finding.id == id)
+            .ok_or(RepoError::NotFound)?;
+        if row.finding.status != c.from_status {
+            return Err(RepoError::Conflict("finding_state_changed"));
+        }
+        let f = &mut row.finding;
+        f.status = c.status;
+        (f.accepted_reason, f.accepted_until) = (c.accepted_reason, c.accepted_until);
+        (f.snoozed_until, f.updated_at) = (c.snoozed_until, c.event.at);
+        row.events.push(c.event);
+        Ok(row.finding.clone())
+    }
+
+    async fn upsert_seen(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        drafts: &[FindingDraft],
+        now: DateTime<Utc>,
+    ) -> RepoResult<()> {
+        let mut s = self.state();
+        for d in drafts {
+            let found = s.findings.iter_mut().find(|f| {
+                f.finding.organisation_id == organisation_id
+                    && f.finding.connection_id == connection_id
+                    && f.finding.key == d.key
+            });
+            let row = match found {
+                Some(f) if f.finding.last_seen_run_id == Some(run_id) => continue,
+                Some(f) => {
+                    f.seen(run_id, d, now);
+                    f
+                }
+                None => {
+                    s.findings.push(FindingRow {
+                        finding: Finding {
+                            id: Uuid::now_v7(),
+                            organisation_id,
+                            connection_id,
+                            key: d.key.clone(),
+                            severity: d.severity,
+                            status: "open".into(),
+                            title: d.title.clone(),
+                            accepted_reason: None,
+                            accepted_until: None,
+                            snoozed_until: None,
+                            first_seen_run_id: Some(run_id),
+                            last_seen_run_id: Some(run_id),
+                            resolved_at: None,
+                            created_at: now,
+                            updated_at: now,
+                        },
+                        events: vec![],
+                        evidence: vec![],
+                    });
+                    let f = s.findings.last_mut().expect("just pushed");
+                    f.event("opened", Some(run_id), now);
+                    f
+                }
+            };
+            row.evidence.retain(|(r, _)| *r != run_id);
+            row.evidence
+                .extend(d.evidence.iter().map(|e| (run_id, e.clone())));
+        }
+        Ok(())
+    }
+
+    async fn resolve_unseen(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        check_ids: &[String],
+        now: DateTime<Utc>,
+    ) -> RepoResult<u64> {
+        let mut n = 0;
+        for row in self.state().findings.iter_mut().filter(|r| {
+            let f = &r.finding;
+            f.organisation_id == organisation_id
+                && f.connection_id == connection_id
+                && check_ids.contains(&f.key.check_id)
+                && matches!(f.status.as_str(), "open" | "flapping")
+                && f.last_seen_run_id != Some(run_id)
+        }) {
+            if row.finding.status != "flapping" {
+                row.event("resolved", Some(run_id), now);
+            }
+            (row.finding.status, row.finding.resolved_at) = ("resolved".into(), Some(now));
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    async fn posture_rows(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+    ) -> RepoResult<Vec<PostureRow>> {
+        let mut rows: Vec<PostureRow> = vec![];
+        for f in self
+            .state()
+            .findings
+            .iter()
+            .map(|r| &r.finding)
+            .filter(|f| {
+                f.organisation_id == organisation_id
+                    && f.connection_id == connection_id
+                    && f.status == "open"
+            })
+        {
+            match rows
+                .iter_mut()
+                .find(|r| r.check_id == f.key.check_id && r.severity == f.severity)
+            {
+                Some(r) => r.open += 1,
+                None => rows.push(PostureRow {
+                    check_id: f.key.check_id.clone(),
+                    severity: f.severity,
+                    open: 1,
+                }),
+            }
+        }
+        rows.sort_by_key(|r| (r.check_id.clone(), enum_str(r.severity)));
+        Ok(rows)
+    }
+}

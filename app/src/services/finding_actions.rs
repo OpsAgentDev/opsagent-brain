@@ -2,17 +2,18 @@
 //! snooze (at most 30 days), reopen. `decide` holds the rules; `apply` persists one action.
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
-use opsagent_core::audit::{AuditEntry, AuditLog};
-use sea_orm::{
-    sea_query::Expr, ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
-    Set, TransactionTrait,
+use opsagent_core::{
+    audit::{AuditEntry, AuditLog},
+    finding::{FindingEvent, FindingsRepo, StatusChange},
+    repo::RepoError,
 };
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, TransactionTrait};
 use uuid::Uuid;
 
 use crate::{
     adapters::db::Pg,
     api_error::ApiError,
-    models::_entities::{finding_events, findings},
+    models::{_entities::findings, enum_of},
 };
 
 pub const ACCEPT_DEFAULT: Duration = Duration::days(90);
@@ -100,7 +101,6 @@ pub fn decide(status: &str, action: Action, now: DateTime<Utc>) -> Result<Change
     }
 }
 
-// shortcut: ~57 lines, mostly the column list of one CAS update; split if the action set grows.
 /// Applies `action` to `f` for `actor`: status compare-and-set, event and audit row, one
 /// transaction. Returns the updated finding.
 pub async fn apply(
@@ -112,51 +112,46 @@ pub async fn apply(
 ) -> Result<findings::Model, ApiError> {
     let c = decide(&f.status, action, now)?;
     let txn = db.begin().await?;
-    let updated = findings::Entity::update_many()
-        .col_expr(findings::Column::Status, Expr::value(c.status))
-        .col_expr(
-            findings::Column::AcceptedReason,
-            Expr::value(c.accepted_reason),
-        )
-        .col_expr(
-            findings::Column::AcceptedUntil,
-            Expr::value(c.accepted_until),
-        )
-        .col_expr(findings::Column::SnoozedUntil, Expr::value(c.snoozed_until))
-        .col_expr(findings::Column::UpdatedAt, Expr::value(now))
-        .filter(findings::Column::OrganisationId.eq(f.organisation_id))
-        .filter(findings::Column::Id.eq(f.id))
-        .filter(findings::Column::Status.eq(f.status.as_str()))
-        .exec_with_returning(&txn)
-        .await?
-        .pop()
-        .ok_or_else(|| {
-            ApiError::new(
+    let repo = Pg::new(&txn);
+    let severity = enum_of(&f.severity);
+    let change = StatusChange {
+        from_status: f.status.clone(),
+        status: c.status.into(),
+        accepted_reason: c.accepted_reason,
+        accepted_until: c.accepted_until,
+        snoozed_until: c.snoozed_until,
+        event: FindingEvent {
+            finding_id: f.id,
+            kind: c.event.into(),
+            run_id: None,
+            from_severity: severity,
+            to_severity: severity,
+            at: now,
+        },
+    };
+    match repo.change_status(f.organisation_id, f.id, change).await {
+        Err(RepoError::Conflict(_)) => {
+            return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 "finding_state_changed",
                 "The finding changed while this request ran. Reload and try again.",
-            )
-        })?;
-    finding_events::ActiveModel {
-        id: Set(Uuid::now_v7()),
-        finding_id: Set(f.id),
-        run_id: Set(None),
-        event_type: Set(c.event.into()),
-        from_severity: Set(Some(f.severity.clone())),
-        to_severity: Set(Some(f.severity.clone())),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(&txn)
+            ))
+        }
+        r => r?,
+    };
+    repo.record(AuditEntry::member(
+        Some(f.organisation_id),
+        actor,
+        format!("finding.{}", c.event),
+        Some(("finding", f.id.to_string())),
+    ))
     .await?;
-    Pg::new(&txn)
-        .record(AuditEntry::member(
-            Some(f.organisation_id),
-            actor,
-            format!("finding.{}", c.event),
-            Some(("finding", f.id.to_string())),
-        ))
-        .await?;
+    // shortcut: re-reads the row for the full response view; Task 10 maps the domain finding.
+    let updated = findings::Entity::find_by_id(f.id)
+        .filter(findings::Column::OrganisationId.eq(f.organisation_id))
+        .one(&txn)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     txn.commit().await?;
     Ok(updated)
 }
