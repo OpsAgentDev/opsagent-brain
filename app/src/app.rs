@@ -20,10 +20,6 @@ use crate::{
     config::Config as AppConfig,
     logging::init_tracing,
     state::AppState,
-    tasks::{
-        deliver_briefing::DeliverBriefingNow, openapi_dump::OpenapiDump, scan_now::ScanNow,
-        scheduler_tick::SchedulerTick,
-    },
     workers::{
         full_scan::FullScanWorker, verify::VerifyWorker, DeliverBriefingWorker, DeliverWeeklyWorker,
     },
@@ -44,16 +40,6 @@ pub fn kek(ctx: &AppContext) -> Result<Arc<dyn opsagent_secrets::Kek>> {
 /// The actions, built once by `boot`.
 pub fn actions(ctx: &AppContext) -> Result<Arc<Actions>> {
     Ok(state(ctx)?.actions.clone())
-}
-
-#[cfg(feature = "test-support")]
-/// Test seam until Task 15's `TestApp` hands its doubles to `boot`: replaces the state with
-/// `f` applied to its adapters, so every action is rebuilt over them.
-pub fn replace_deps(ctx: &AppContext, f: impl FnOnce(&mut boot::Deps)) -> Result<()> {
-    let mut deps = state(ctx)?.deps.clone();
-    f(&mut deps);
-    ctx.shared_store.insert(boot::assemble(deps));
-    Ok(())
 }
 
 pub struct App;
@@ -94,8 +80,9 @@ impl Hooks for App {
         let config =
             AppConfig::from_vars(vars).map_err(|e| loco_rs::Error::string(&e.to_string()))?;
         let queue = Arc::new(LocoQueue(ctx.clone()));
-        // shortcut: Loco owns the app pool and migrations while it boots the process, so the
-        // state reuses `ctx.db` (one pool, as before); `boot` connects its own from Task 16.
+        // shortcut: Loco owns the app pool and migrations while it boots `start --worker`,
+        // `--server-and-worker` and `scheduler`, so the state reuses `ctx.db` (one pool, as
+        // before) until Task 18; our `cli` boots everything else through `boot::boot`.
         let state = boot::boot_on(config, ctx.db.clone(), queue)
             .await
             .map_err(|e| loco_rs::Error::string(&e.to_string()))?;
@@ -110,9 +97,9 @@ impl Hooks for App {
         Ok(true)
     }
 
-    /// shortcut: Loco still runs the process until Task 15's `main`, so it serves our router
-    /// whole: its own routes and middleware are emptied (nothing doubled, no `x-powered-by` or
-    /// etag) and the router it built is empty, so ours replaces it. Removed with Loco in Task 15.
+    /// shortcut: Loco still runs `start --server-and-worker` until Task 18, so it serves our
+    /// router whole: its own routes and middleware are emptied (nothing doubled, no
+    /// `x-powered-by` or etag) and the router it built is empty, so ours replaces it.
     async fn after_routes(_router: AxumRouter, ctx: &AppContext) -> Result<AxumRouter> {
         boot::router(state(ctx)?).map_err(|e| loco_rs::Error::string(&e.to_string()))
     }
@@ -132,12 +119,8 @@ impl Hooks for App {
         queue.register(DeliverWeeklyWorker::build(ctx)).await
     }
 
-    fn register_tasks(tasks: &mut Tasks) {
-        tasks.register(OpenapiDump);
-        tasks.register(ScanNow);
-        tasks.register(DeliverBriefingNow);
-        tasks.register(SchedulerTick);
-    }
+    /// Tasks run through our `cli`, never Loco's.
+    fn register_tasks(_tasks: &mut Tasks) {}
 
     async fn truncate(_ctx: &AppContext) -> Result<()> {
         Ok(())

@@ -1,5 +1,5 @@
-use loco_rs::prelude::*;
 use migration::{Migrator, MigratorTrait};
+use sea_orm::entity::prelude::*;
 use serial_test::serial;
 
 async fn exec(db: &DatabaseConnection, sql: &str) -> Result<(), DbErr> {

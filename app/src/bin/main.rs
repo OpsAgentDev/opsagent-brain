@@ -1,8 +1,10 @@
-use loco_rs::cli;
-use migration::Migrator;
-use opsagent_brain::app::App;
+use clap::Parser;
+use opsagent_brain::{
+    cli::{run, Cli},
+    error::AppError,
+};
 
 #[tokio::main]
-async fn main() -> loco_rs::Result<()> {
-    cli::main::<App, Migrator>().await
+async fn main() -> Result<(), AppError> {
+    run(Cli::parse()).await
 }

@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration, Utc};
-use loco_rs::prelude::*;
+use sea_orm::{entity::prelude::*, TransactionTrait};
 use std::sync::Arc;
 
 use opsagent_brain::{
@@ -7,12 +7,9 @@ use opsagent_brain::{
         runs::{RequestManualScan, RunDispatcher, TickReport as Report},
         uow::UnitOfWork,
     },
-    adapters::{
-        db::{
-            ledger_storage::{stmt, PgStorage},
-            Pg,
-        },
-        loco_queue::LocoQueue,
+    adapters::db::{
+        ledger_storage::{stmt, PgStorage},
+        Pg,
     },
 };
 use opsagent_core::{
@@ -30,7 +27,7 @@ fn at(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
 }
 
-async fn count(ctx: &AppContext, sql: &str) -> i64 {
+async fn count(ctx: &TestApp, sql: &str) -> i64 {
     ctx.db
         .query_one_raw(stmt(sql, vec![]))
         .await
@@ -41,7 +38,7 @@ async fn count(ctx: &AppContext, sql: &str) -> i64 {
 }
 
 /// Drops every schedule and run (and what hangs off runs, such as a first scan's rows).
-async fn reset(ctx: &AppContext) {
+async fn reset(ctx: &TestApp) {
     ctx.db
         .execute_raw(stmt("TRUNCATE schedules, runs CASCADE", vec![]))
         .await
@@ -49,7 +46,7 @@ async fn reset(ctx: &AppContext) {
 }
 
 /// An org-less schedule for a job type with no worker, so ticks only create run rows.
-async fn schedule(ctx: &AppContext, cron: &str, tz: &str, due: DateTime<Utc>) {
+async fn schedule(ctx: &TestApp, cron: &str, tz: &str, due: DateTime<Utc>) {
     ctx.db
         .execute_raw(stmt(
             "INSERT INTO schedules (id, job_type, cron_local, timezone, next_due_at) \
@@ -60,7 +57,7 @@ async fn schedule(ctx: &AppContext, cron: &str, tz: &str, due: DateTime<Utc>) {
         .unwrap();
 }
 
-async fn next_due(ctx: &AppContext) -> DateTime<Utc> {
+async fn next_due(ctx: &TestApp) -> DateTime<Utc> {
     ctx.db
         .query_one_raw(stmt("SELECT next_due_at FROM schedules", vec![]))
         .await
@@ -70,24 +67,39 @@ async fn next_due(ctx: &AppContext) -> DateTime<Utc> {
         .unwrap()
 }
 
-/// `RequestManualScan` on `ctx`'s database and queue, at `now`.
-fn request_manual_scan(ctx: &AppContext, now: DateTime<Utc>) -> RequestManualScan {
+/// A queue that refuses work (what Loco's queue did with no provider configured).
+struct Refusing;
+
+#[async_trait::async_trait]
+impl opsagent_ledger::Queue for Refusing {
+    async fn enqueue(&self, _: opsagent_ledger::NewJob) -> opsagent_ledger::Result<()> {
+        Err(opsagent_ledger::LedgerError::Storage(
+            "queue provider is not configured".into(),
+        ))
+    }
+}
+
+/// `RequestManualScan` on `ctx`'s database over `queue`, at `now`.
+fn request_manual_scan(
+    ctx: &TestApp,
+    queue: Arc<dyn opsagent_ledger::Queue>,
+    now: DateTime<Utc>,
+) -> RequestManualScan {
     let uow: Arc<dyn UnitOfWork> = Arc::new(Pg::new(ctx.db.clone()));
-    let queue = Arc::new(LocoQueue(ctx.clone()));
     let dispatcher = Arc::new(RunDispatcher::new(uow.clone(), queue));
     RequestManualScan::new(uow, dispatcher, Arc::new(FixedClock(now)))
 }
 
 /// One tick of the installed `SchedulerTick` at `now`; `None` when the lock is held elsewhere.
 async fn tick(
-    ctx: &AppContext,
+    ctx: &TestApp,
     now: DateTime<Utc>,
 ) -> opsagent_brain::error::AppResult<Option<Report>> {
-    let actions = opsagent_brain::app::actions(ctx).unwrap();
+    let actions = actions(ctx).unwrap();
     actions.runs.scheduler_tick.run(now).await
 }
 
-async fn run_tick(ctx: &AppContext, now: DateTime<Utc>) -> Report {
+async fn run_tick(ctx: &TestApp, now: DateTime<Utc>) -> Report {
     tick(ctx, now).await.unwrap().expect("lock acquired")
 }
 
@@ -163,7 +175,7 @@ async fn second_lock_holder_does_not_tick() {
     serve(|_req, ctx| async move {
         reset(&ctx).await;
         schedule(&ctx, "0 8 * * *", "UTC", at("2026-10-22T08:00:00Z")).await;
-        let other = Database::connect(ctx.config.database.uri.clone())
+        let other = Database::connect(ctx.state.config.database_url.clone())
             .await
             .unwrap();
         // A pooled connection could differ between statements; keep the lock on a single one.
@@ -311,7 +323,7 @@ async fn tick_gives_connected_connections_without_delivery_schedules_their_defau
 }
 
 /// Inserts a schedule for a real connection and returns nothing; `job` has a registered worker.
-async fn conn_schedule(ctx: &AppContext, id: &str, job: &str, due: DateTime<Utc>) {
+async fn conn_schedule(ctx: &TestApp, id: &str, job: &str, due: DateTime<Utc>) {
     ctx.db
         .execute_raw(stmt(
             &format!(
@@ -449,16 +461,13 @@ async fn api_run_whose_enqueue_failed_is_sent_by_the_next_tick() {
         let (_, _, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
         reset(&ctx).await;
         // A queue that refuses work: the run must still be recorded with its outbox marker.
-        let mut broken = ctx.clone();
-        broken.config.workers.mode = loco_rs::config::WorkerMode::BackgroundQueue;
-        broken.queue_provider = None;
         let m = opsagent_brain::models::_entities::connections::Entity::find_by_id(conn)
             .one(&ctx.db)
             .await
             .unwrap()
             .unwrap();
         let now = Utc::now();
-        let out = request_manual_scan(&broken, now)
+        let out = request_manual_scan(&ctx, Arc::new(Refusing), now)
             .run(m.organisation_id, Uuid::new_v4(), conn)
             .await
             .unwrap();

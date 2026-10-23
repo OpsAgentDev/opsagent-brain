@@ -1,11 +1,9 @@
 //! Repository contracts: every test body runs against `Pg` (the lane database, schema recreated
 //! and migrated per boot) and against the in-memory `MemStore`; both must pass.
 use async_trait::async_trait;
-use loco_rs::testing::prelude::boot_test;
 use opsagent_brain::{
     actions::uow::Repos,
     adapters::{db::Pg, memory::MemStore},
-    app::App,
 };
 use opsagent_core::org::NewOrganisation;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
@@ -22,11 +20,9 @@ mod runs;
 mod schedules;
 mod users;
 
-/// A fresh, migrated lane database (`boot_test` recreates the schema).
+/// A fresh, migrated lane database (`TestApp` recreates the schema).
 pub async fn pg() -> Pg {
-    crate::requests::support::test_env();
-    let boot = boot_test::<App>().await.expect("boot");
-    Pg::new(boot.app_context.db.clone())
+    Pg::new(crate::support::TestApp::boot().await.db)
 }
 
 /// A new organisation in zone `UTC`.

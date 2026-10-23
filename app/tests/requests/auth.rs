@@ -1,5 +1,5 @@
-use loco_rs::prelude::*;
 use opsagent_brain::models::_entities::{sessions, users};
+use sea_orm::{entity::prelude::*, QueryOrder};
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -318,12 +318,12 @@ async fn magic_links_from_one_ipv6_64_share_one_cap() {
 #[tokio::test]
 #[serial]
 async fn concurrent_magic_links_for_one_address_send_exactly_the_cap() {
-    use opsagent_brain::{actions::auth::MagicLinkInput, app, models::_entities::magic_links};
+    use opsagent_brain::{actions::auth::MagicLinkInput, models::_entities::magic_links};
     serve(|_req, ctx| async move {
         let _mail = prepare(&ctx);
         let tasks: Vec<_> = (0..6)
             .map(|_| {
-                let actions = app::actions(&ctx).unwrap();
+                let actions = actions(&ctx).unwrap();
                 tokio::spawn(async move {
                     let input = MagicLinkInput {
                         email: "race@example.com".into(),

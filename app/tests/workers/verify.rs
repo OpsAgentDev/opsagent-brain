@@ -1,18 +1,17 @@
 use chrono::{Duration, Utc};
-use loco_rs::{bgworker::BackgroundWorker, prelude::*};
 use opsagent_brain::adapters::db::ledger_storage::PgStorage;
-use opsagent_brain::{
-    models::_entities::{audit_events, connection_verifications, connections, runs, schedules},
-    workers::verify::{VerifyArgs, VerifyWorker},
+use opsagent_brain::models::_entities::{
+    audit_events, connection_verifications, connections, runs, schedules,
 };
 use opsagent_core::run::RunKey;
-use opsagent_ledger::Storage;
+use opsagent_ledger::{JobKind, Storage};
+use sea_orm::{entity::prelude::*, Set};
 use serial_test::serial;
 use uuid::Uuid;
 
 use crate::requests::support::*;
 
-async fn conn(ctx: &AppContext, id: Uuid) -> connections::Model {
+async fn conn(ctx: &TestApp, id: Uuid) -> connections::Model {
     connections::Entity::find_by_id(id)
         .one(&ctx.db)
         .await
@@ -21,7 +20,7 @@ async fn conn(ctx: &AppContext, id: Uuid) -> connections::Model {
 }
 
 /// Creates a run for the connection at a fixed key and performs the worker on it.
-async fn run_worker(ctx: &AppContext, id: Uuid, minute: i64) -> Uuid {
+async fn run_worker(ctx: &TestApp, id: Uuid, minute: i64) -> Uuid {
     let c = conn(ctx, id).await;
     let run = PgStorage::new(ctx.db.clone())
         .create_run(RunKey {
@@ -33,14 +32,11 @@ async fn run_worker(ctx: &AppContext, id: Uuid, minute: i64) -> Uuid {
         .await
         .unwrap()
         .run;
-    VerifyWorker::build(ctx)
-        .perform(VerifyArgs { run_id: run.id })
-        .await
-        .unwrap();
+    perform(ctx, JobKind::Verify, run.id).await.unwrap();
     run.id
 }
 
-async fn set(ctx: &AppContext, id: Uuid, f: impl FnOnce(&mut connections::ActiveModel)) {
+async fn set(ctx: &TestApp, id: Uuid, f: impl FnOnce(&mut connections::ActiveModel)) {
     let mut a: connections::ActiveModel = conn(ctx, id).await.into();
     f(&mut a);
     a.update(&ctx.db).await.unwrap();
@@ -202,16 +198,16 @@ async fn non_retryable_connector_error_is_recorded_on_first_run() {
     .await;
 }
 
-async fn set_fixture(ctx: &AppContext, id: Uuid, account: &str) {
+async fn set_fixture(ctx: &TestApp, id: Uuid, account: &str) {
     use opsagent_brain::{adapters::db::Pg, creds};
-    let kek = opsagent_brain::app::kek(ctx).unwrap();
+    let kek = kek(ctx).unwrap();
     let (org, repo) = (conn(ctx, id).await.organisation_id, Pg::new(&ctx.db));
     let mut c = creds::load(&repo, kek.as_ref(), org, id).await.unwrap();
     c.fake_account = Some(account.into());
     creds::save(&repo, kek.as_ref(), org, id, &c).await.unwrap();
 }
 
-async fn verify_cron(ctx: &AppContext, id: Uuid) -> String {
+async fn verify_cron(ctx: &TestApp, id: Uuid) -> String {
     schedules::Entity::find()
         .filter(schedules::Column::ConnectionId.eq(id))
         .filter(schedules::Column::JobType.eq("verify"))
@@ -222,7 +218,7 @@ async fn verify_cron(ctx: &AppContext, id: Uuid) -> String {
         .cron_local
 }
 
-async fn scans(ctx: &AppContext, id: Uuid) -> Vec<runs::Model> {
+async fn scans(ctx: &TestApp, id: Uuid) -> Vec<runs::Model> {
     runs::Entity::find()
         .filter(runs::Column::ConnectionId.eq(id))
         .filter(runs::Column::JobType.eq("full_scan"))
@@ -252,7 +248,7 @@ async fn first_connect_queues_one_first_scan() {
 }
 
 /// The customer deletes the stack: three denials over more than an hour revoke it (minutes 0-3).
-async fn revoke(ctx: &AppContext, id: Uuid) {
+async fn revoke(ctx: &TestApp, id: Uuid) {
     set_fixture(ctx, id, "denied").await;
     for n in 0..3 {
         run_worker(ctx, id, n).await;
@@ -325,7 +321,7 @@ async fn revoked_connection_is_rechecked_daily_and_recovers() {
 async fn killed_verify_resumes_to_the_uninterrupted_outcome() {
     use opsagent_brain::models::_entities::audit_events;
     use opsagent_core::run::RunStatus;
-    use opsagent_ledger::{lease, redis, LedgerError};
+    use opsagent_ledger::{lease, LedgerError};
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let (_, _, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
@@ -345,10 +341,7 @@ async fn killed_verify_resumes_to_the_uninterrupted_outcome() {
             .run;
 
         // A worker takes the lease, starts the run, and dies before writing any outcome.
-        let Some(loco_rs::config::QueueConfig::Redis(q)) = &ctx.config.queue else {
-            panic!("tests run with the redis queue")
-        };
-        let r = redis::Client::open(q.uri.as_str()).unwrap();
+        let r = redis_of(&ctx);
         let dead = lease::acquire(
             &storage,
             &r,
@@ -367,10 +360,7 @@ async fn killed_verify_resumes_to_the_uninterrupted_outcome() {
         lease::release(&r, &dead).await;
 
         // Redelivery: a fresh worker resumes and reaches the normal outcome.
-        VerifyWorker::build(&ctx)
-            .perform(VerifyArgs { run_id: run.id })
-            .await
-            .unwrap();
+        perform(&ctx, JobKind::Verify, run.id).await.unwrap();
         let row = runs::Entity::find_by_id(run.id)
             .one(&ctx.db)
             .await
@@ -387,10 +377,7 @@ async fn killed_verify_resumes_to_the_uninterrupted_outcome() {
             Err(LedgerError::StaleFence)
         ));
         // A second redelivery of the finished run is a no-op.
-        VerifyWorker::build(&ctx)
-            .perform(VerifyArgs { run_id: run.id })
-            .await
-            .unwrap();
+        perform(&ctx, JobKind::Verify, run.id).await.unwrap();
         let verifications = connection_verifications::Entity::find()
             .filter(connection_verifications::Column::ConnectionId.eq(id))
             .count(&ctx.db)

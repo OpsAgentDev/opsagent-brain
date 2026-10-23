@@ -66,28 +66,36 @@ async fn connect(c: &Config, min: u32, max: u32, lazy: bool) -> AppResult<Databa
     Database::connect(opts).await.map_err(internal)
 }
 
+/// The app pool: `DB_MIN_CONNECTIONS`..`DB_MAX_CONNECTIONS` on `DATABASE_URL`.
+pub async fn pool(c: &Config) -> AppResult<DatabaseConnection> {
+    connect(c, c.db_min_connections, c.db_max_connections, false).await
+}
+
 /// Connects the app pool (migrating when `DB_AUTO_MIGRATE`), then `boot_on` it.
 pub async fn boot(config: Config, queue: Arc<dyn Queue>) -> AppResult<AppState> {
-    let db = connect(
-        &config,
-        config.db_min_connections,
-        config.db_max_connections,
-        false,
-    )
-    .await?;
+    let db = pool(&config).await?;
     if config.db_auto_migrate {
         Migrator::up(&db, None).await.map_err(internal)?;
     }
     boot_on(config, db, queue).await
 }
 
-/// Builds every adapter over the app pool `db`, then the actions. `queue` is passed in while
+/// Every adapter over the app pool `db`, then the actions. `queue` is passed in while
 /// Loco's queue needs its `AppContext` (Task 18).
 pub async fn boot_on(
     config: Config,
     db: DatabaseConnection,
     queue: Arc<dyn Queue>,
 ) -> AppResult<AppState> {
+    Ok(assemble(deps(config, db, queue).await?))
+}
+
+/// Builds every adapter over the app pool `db`; tests replace doubles before `assemble`.
+pub async fn deps(
+    config: Config,
+    db: DatabaseConnection,
+    queue: Arc<dyn Queue>,
+) -> AppResult<Deps> {
     // Lazy: only the scheduler process ever ticks.
     let scheduler = connect(&config, 0, 2, true).await?;
     let redis = redis::Client::open(config.redis_url.as_str()).map_err(internal)?;
@@ -102,7 +110,7 @@ pub async fn boot_on(
     let registry = Registry::new(outbound, config.connectors == ConnectorMode::Fake);
     let slack = HttpSlack::new(&config.slack_api_base_url)
         .map_err(|_| internal("slack: HTTP client could not be built"))?;
-    Ok(assemble(Deps {
+    Ok(Deps {
         mailer: mailers::from_config(&config).map_err(internal)?,
         config,
         uow: Arc::new(Pg::new(db.clone())),
@@ -115,13 +123,30 @@ pub async fn boot_on(
         slack: Arc::new(slack),
         clock: Arc::new(SystemClock),
         queue,
-    }))
+    })
 }
 
-/// The state over `deps`, with every action built from them.
-pub fn assemble(deps: Deps) -> AppState {
+/// The state over `deps`, with every action built from them, once. Under `test-support` the
+/// mailer and Slack client sit in cells `AppState::set_mailer`/`set_slack` swap.
+pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
+    #[cfg(feature = "test-support")]
+    let swaps = {
+        use crate::adapters::test_doubles::{Swappable, Swaps};
+        let swaps = Swaps {
+            mailer: Swappable::new(deps.mailer.clone()),
+            slack: Swappable::new(deps.slack.clone()),
+        };
+        deps.mailer = swaps.mailer.clone();
+        deps.slack = swaps.slack.clone();
+        swaps
+    };
     let actions = Arc::new(build_actions(&deps));
-    AppState(Arc::new(Inner { deps, actions }))
+    AppState(Arc::new(Inner {
+        deps,
+        actions,
+        #[cfg(feature = "test-support")]
+        swaps,
+    }))
 }
 
 pub fn build_actions(d: &Deps) -> Actions {

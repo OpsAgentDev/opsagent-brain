@@ -1,5 +1,5 @@
-use loco_rs::prelude::*;
 use opsagent_brain::models::_entities::{audit_events, connections};
+use sea_orm::{entity::prelude::*, Set};
 use serde_json::Value;
 use serial_test::serial;
 
