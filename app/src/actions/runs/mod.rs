@@ -1,15 +1,22 @@
 //! Runs: reading them, manual scans, and handing runs to the queue.
 mod dispatch;
+mod finding_lifecycle;
+mod full_scan;
+mod full_scan_chunks;
 mod get_run;
 mod list_runs;
 mod request_manual_scan;
+mod scan_now;
 
 use std::sync::Arc;
 
 pub use dispatch::RunDispatcher;
+pub use full_scan::FullScan;
+pub use full_scan_chunks::Chunk;
 pub use get_run::GetRun;
 pub use list_runs::ListRuns;
 pub use request_manual_scan::RequestManualScan;
+pub use scan_now::ScanNow;
 
 pub struct Runs {
     /// Shared with the workers and the scheduler tick.
@@ -17,6 +24,8 @@ pub struct Runs {
     pub request_manual_scan: RequestManualScan,
     pub list_runs: ListRuns,
     pub get_run: GetRun,
+    pub full_scan: FullScan,
+    pub scan_now: ScanNow,
 }
 
 #[cfg(test)]

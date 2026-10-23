@@ -3,7 +3,12 @@ use chrono::{DateTime, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::repo::RepoResult;
+use std::collections::BTreeMap;
+
+use crate::{
+    finding::{PostureRow, Severity},
+    repo::RepoResult,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -163,4 +168,56 @@ pub trait ConnectionsRepo: Send + Sync {
         id: Uuid,
         creds: SealedCreds,
     ) -> RepoResult<()>;
+    /// tenancy: operator tasks name a connection by id alone; the row names its organisation.
+    async fn by_id_unscoped(&self, id: Uuid) -> RepoResult<Option<Connection>>;
+}
+
+/// Posture score of a connection (checks.md): `max(0, 100 - sum of weight(open))`, with the
+/// open count per severity. Accepted, snoozed and flapping findings are not in the rows.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Posture {
+    pub score: f64,
+    pub counts_by_severity: BTreeMap<Severity, u64>,
+}
+
+impl Posture {
+    pub fn from_rows(rows: &[PostureRow]) -> Self {
+        use Severity::*;
+        let mut counts: BTreeMap<Severity, u64> =
+            [Critical, High, Medium, Low, Info].map(|s| (s, 0)).into();
+        let mut sum = 0f32;
+        for r in rows {
+            sum += r.severity.weight() * r.open as f32;
+            *counts.entry(r.severity).or_default() += r.open;
+        }
+        Self {
+            score: f64::from((100.0 - sum).max(0.0)),
+            counts_by_severity: counts,
+        }
+    }
+}
+
+#[cfg(test)]
+mod posture_tests {
+    use super::*;
+
+    #[test]
+    fn from_rows_weighs_open_findings_and_floors_at_zero() {
+        let row = |severity, open| PostureRow {
+            check_id: "c".into(),
+            severity,
+            open,
+        };
+        let p = Posture::from_rows(&[row(Severity::High, 2), row(Severity::Low, 1)]);
+        assert_eq!(p.score, 89.5);
+        assert_eq!(p.counts_by_severity[&Severity::High], 2);
+        assert_eq!(p.counts_by_severity[&Severity::Info], 0);
+        assert_eq!(
+            Posture::from_rows(&[row(Severity::Critical, 11)]).score,
+            0.0
+        );
+        let json = serde_json::to_value(Posture::from_rows(&[])).unwrap();
+        assert_eq!(json["score"], 100.0);
+        assert_eq!(json["counts_by_severity"]["critical"], 0);
+    }
 }
