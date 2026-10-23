@@ -124,7 +124,7 @@ fn noisy_json() -> Value {
 }
 
 /// `noisy`, edited.
-fn fixture(edit: impl FnOnce(&mut Value)) -> FakeConnector {
+pub fn fixture(edit: impl FnOnce(&mut Value)) -> FakeConnector {
     let mut v = noisy_json();
     edit(&mut v);
     FakeConnector::from_fixture_json(&v.to_string()).unwrap()
@@ -134,7 +134,7 @@ pub fn noisy() -> FakeConnector {
     fixture(|_| {})
 }
 
-fn without_snapshot() -> FakeConnector {
+pub fn without_snapshot() -> FakeConnector {
     fixture(|v| {
         v["resources"]
             .as_array_mut()

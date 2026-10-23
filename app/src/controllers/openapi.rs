@@ -9,7 +9,8 @@ use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 
 use super::{
-    auth, connections, findings, integrations, members, orgs, recipients, resources, runs,
+    auth, connections, deliveries, findings, integrations, members, orgs, recipients, resources,
+    runs,
 };
 use crate::{
     api_error::ApiError,
@@ -41,6 +42,7 @@ fn api() -> OpenApiRouter<AppContext> {
         .merge(integrations::api())
         .merge(recipients::api())
         .merge(findings::api())
+        .merge(deliveries::api())
         .merge(resources::api())
         .merge(runs::api())
 }
