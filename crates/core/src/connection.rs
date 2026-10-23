@@ -1,4 +1,9 @@
+use async_trait::async_trait;
+use chrono::{DateTime, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::repo::RepoResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,4 +58,91 @@ pub fn transition(
         (S::Revoked, E::RoleReturned) => Ok(S::Verifying),
         _ => Err(InvalidTransition { from, event }),
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Connection {
+    pub id: Uuid,
+    pub organisation_id: Uuid,
+    pub provider: String,
+    pub display_name: Option<String>,
+    pub status: ConnectionStatus,
+    pub status_reason: Option<String>,
+    pub external_account_id: Option<String>,
+    pub template_version: Option<String>,
+    pub scan_time_local: Option<NaiveTime>,
+    pub briefing_time_local: Option<NaiveTime>,
+    pub api_rate_ceiling: Option<i32>,
+    pub slack_channel_id: Option<String>,
+    pub first_connected_at: Option<DateTime<Utc>>,
+    pub billable_from: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A `pending` connection; its sealed credentials are stored with it.
+#[derive(Debug, Clone)]
+pub struct NewConnection {
+    pub organisation_id: Uuid,
+    pub provider: String,
+    pub display_name: String,
+    pub template_version: Option<String>,
+    /// The provider's credential kind, stored beside the sealed credentials.
+    pub credential_kind: String,
+}
+
+/// `None` leaves a field as it is.
+#[derive(Debug, Clone, Default)]
+pub struct ConnectionPatch {
+    pub display_name: Option<String>,
+    pub scan_time_local: Option<NaiveTime>,
+    pub briefing_time_local: Option<NaiveTime>,
+    pub api_rate_ceiling: Option<i32>,
+    /// `Some(None)` clears the channel.
+    pub slack_channel_id: Option<Option<String>>,
+}
+
+/// Credentials sealed under the org DEK; `kek_version` is the KEK version that wrapped it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedCreds {
+    pub ciphertext: Vec<u8>,
+    pub nonce: Vec<u8>,
+    pub kek_version: i32,
+}
+
+#[async_trait]
+pub trait ConnectionsRepo: Send + Sync {
+    async fn insert(&self, new: NewConnection, creds: SealedCreds) -> RepoResult<Connection>;
+    async fn get(&self, organisation_id: Uuid, id: Uuid) -> RepoResult<Option<Connection>>;
+    /// Holds the connection row until the transaction ends (serialises scan requests). Not a
+    /// lock outside a transaction; `MemStore` ignores it.
+    async fn lock(&self, organisation_id: Uuid, id: Uuid) -> RepoResult<Option<Connection>>;
+    /// Every connection of the organisation, oldest first.
+    async fn list(&self, organisation_id: Uuid) -> RepoResult<Vec<Connection>>;
+    /// `NotFound` when the connection is not in the organisation.
+    async fn update(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        patch: ConnectionPatch,
+    ) -> RepoResult<Connection>;
+    /// Compare-and-set on status, also writing `reason` when given; false when the row was
+    /// not in `from`.
+    async fn cas_status(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        from: ConnectionStatus,
+        to: ConnectionStatus,
+        reason: Option<&str>,
+    ) -> RepoResult<bool>;
+    /// `NotFound` when the connection is not in the organisation or has no credentials.
+    async fn load_creds(&self, organisation_id: Uuid, id: Uuid) -> RepoResult<SealedCreds>;
+    /// Replaces the stored credentials; `NotFound` as for `load_creds`.
+    async fn save_creds(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        creds: SealedCreds,
+    ) -> RepoResult<()>;
 }

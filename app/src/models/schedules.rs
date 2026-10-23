@@ -9,7 +9,7 @@ use cron::Schedule;
 use sea_orm::{ConnectionTrait, DbErr};
 use uuid::Uuid;
 
-use super::ledger_storage::stmt;
+use crate::adapters::db::ledger_storage::stmt;
 
 /// Nightly full scan at 02:00 local unless the connection sets `scan_time_local`.
 pub const FULL_SCAN: &str = "0 2 * * *";

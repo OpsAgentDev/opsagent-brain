@@ -9,7 +9,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
-    models::ledger_storage::{db_err, hold_fence, stmt},
+    adapters::db::ledger_storage::{db_err, hold_fence, stmt},
     workers::common::classify,
 };
 

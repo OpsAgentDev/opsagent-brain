@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use loco_rs::prelude::*;
 use opsagent_brain::{
-    models::ledger_storage::{stmt, PgStorage},
+    adapters::db::ledger_storage::{stmt, PgStorage},
     tasks::scheduler_tick::{tick, Report},
 };
 use opsagent_core::run::{RunKey, RunStatus};
@@ -421,8 +421,14 @@ async fn api_run_whose_enqueue_failed_is_sent_by_the_next_tick() {
         let mut broken = ctx.clone();
         broken.config.workers.mode = loco_rs::config::WorkerMode::BackgroundQueue;
         broken.queue_provider = None;
-        let c = opsagent_brain::models::_entities::connections::Entity::find_by_id(conn)
+        let m = opsagent_brain::models::_entities::connections::Entity::find_by_id(conn)
             .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        let repo = opsagent_brain::adapters::db::Pg::new(&ctx.db);
+        let c = opsagent_brain::actions::uow::Repos::connections(&repo)
+            .get(m.organisation_id, conn)
             .await
             .unwrap()
             .unwrap();

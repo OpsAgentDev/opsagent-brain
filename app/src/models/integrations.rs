@@ -5,7 +5,14 @@ use sea_orm::ConnectionTrait;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use super::{_entities::integrations, connections::org_dek};
+use super::_entities::integrations;
+use crate::{adapters::db::Pg, creds::Dek};
+
+async fn org_dek(db: &impl ConnectionTrait, kek: &dyn Kek, organisation_id: Uuid) -> Result<Dek> {
+    Dek::of(&Pg::new(db), kek, organisation_id)
+        .await
+        .map_err(|e| Error::string(&e.to_string()))
+}
 
 pub const SLACK: &str = "slack";
 pub const ACTIVE: &str = "active";

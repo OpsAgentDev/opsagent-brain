@@ -3,6 +3,7 @@ pub mod adapters;
 pub mod api_error;
 pub mod app;
 pub mod controllers;
+pub mod creds;
 pub mod mailers;
 pub mod middleware;
 pub mod models;

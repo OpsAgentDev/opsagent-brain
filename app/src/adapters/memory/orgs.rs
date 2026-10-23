@@ -50,7 +50,7 @@ impl OrganisationsRepo for MemStore {
             name: new.name,
             timezone: new.timezone,
             kek_version: Some(new.kek_version),
-            wrapped_dek: new.wrapped_dek,
+            wrapped_dek: Some(new.wrapped_dek),
             created_at: Utc::now(),
             deleted_at: None,
         };

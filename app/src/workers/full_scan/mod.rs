@@ -1,6 +1,7 @@
 //! `full_scan` job (PRD 7.3, jobs.md): one chunk per service × region, then a `finalize` chunk
 //! that marks unseen resources gone, runs the checks and applies the finding lifecycle.
 mod chunks;
+use crate::adapters::db::ledger_storage::{db_err, stmt, PgStorage};
 use std::{collections::BTreeSet, time::Duration};
 
 use async_trait::async_trait;
@@ -22,13 +23,10 @@ use uuid::Uuid;
 use self::chunks::Scan;
 use super::common::{err, job_err, lerr, redis_client, revoked, LResult};
 use crate::{
-    adapters::db::Pg,
+    adapters::db::{status_of, Pg},
     app::{kek, registry},
-    models::{
-        _entities::connections,
-        connections::{load_creds, status_of},
-        ledger_storage::{db_err, stmt, PgStorage},
-    },
+    creds,
+    models::_entities::connections,
 };
 use opsagent_core::org::OrganisationsRepo;
 
@@ -245,7 +243,7 @@ async fn call_credentials(
     run_id: Uuid,
 ) -> LResult<Credentials> {
     let kek = kek(ctx).map_err(lerr)?;
-    let creds = load_creds(&ctx.db, kek.as_ref(), c)
+    let creds = creds::load(&Pg::new(&ctx.db), kek.as_ref(), c.organisation_id, c.id)
         .await
         .map_err(|_| LedgerError::Job {
             code: "credentials_unavailable".into(),

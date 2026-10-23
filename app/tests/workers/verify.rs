@@ -1,10 +1,8 @@
 use chrono::{Duration, Utc};
 use loco_rs::{bgworker::BackgroundWorker, prelude::*};
+use opsagent_brain::adapters::db::ledger_storage::PgStorage;
 use opsagent_brain::{
-    models::{
-        _entities::{audit_events, connection_verifications, connections, runs, schedules},
-        ledger_storage::PgStorage,
-    },
+    models::_entities::{audit_events, connection_verifications, connections, runs, schedules},
     workers::verify::{VerifyArgs, VerifyWorker},
 };
 use opsagent_core::run::RunKey;
@@ -205,12 +203,12 @@ async fn non_retryable_connector_error_is_recorded_on_first_run() {
 }
 
 async fn set_fixture(ctx: &AppContext, id: Uuid, account: &str) {
-    use opsagent_brain::models::connections::{load_creds, save_creds};
+    use opsagent_brain::{adapters::db::Pg, creds};
     let kek = opsagent_brain::app::kek(ctx).unwrap();
-    let c = conn(ctx, id).await;
-    let mut creds = load_creds(&ctx.db, kek.as_ref(), &c).await.unwrap();
-    creds.fake_account = Some(account.into());
-    save_creds(&ctx.db, kek.as_ref(), &c, &creds).await.unwrap();
+    let (org, repo) = (conn(ctx, id).await.organisation_id, Pg::new(&ctx.db));
+    let mut c = creds::load(&repo, kek.as_ref(), org, id).await.unwrap();
+    c.fake_account = Some(account.into());
+    creds::save(&repo, kek.as_ref(), org, id, &c).await.unwrap();
 }
 
 async fn verify_cron(ctx: &AppContext, id: Uuid) -> String {

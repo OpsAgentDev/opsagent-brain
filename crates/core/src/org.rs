@@ -36,7 +36,7 @@ pub struct Organisation {
     pub name: String,
     pub timezone: String,
     pub kek_version: Option<i32>,
-    pub wrapped_dek: Vec<u8>,
+    pub wrapped_dek: Option<Vec<u8>>,
     pub created_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
 }

@@ -2,6 +2,7 @@
 mod outcome;
 mod verdict;
 
+use crate::adapters::db::ledger_storage::PgStorage;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -22,13 +23,10 @@ use uuid::Uuid;
 
 use super::common::{classify, err, lerr, redis_client, LResult};
 use crate::{
-    adapters::db::Pg,
+    adapters::db::{status_of, Pg},
     app::{kek, registry},
-    models::{
-        _entities::connections,
-        connections::{load_creds, status_of},
-        ledger_storage::PgStorage,
-    },
+    creds,
+    models::_entities::connections,
 };
 
 const LEASE_TTL: Duration = Duration::from_secs(120);
@@ -146,12 +144,17 @@ impl VerifyWorker {
         k: Option<&dyn Connector>,
     ) -> LResult<Called> {
         let kek = kek(&self.ctx).map_err(lerr)?;
-        let creds = load_creds(&self.ctx.db, kek.as_ref(), c)
-            .await
-            .map_err(|_| LedgerError::Job {
-                code: "credentials_unavailable".into(),
-                retry: false,
-            })?;
+        let creds = creds::load(
+            &Pg::new(&self.ctx.db),
+            kek.as_ref(),
+            c.organisation_id,
+            c.id,
+        )
+        .await
+        .map_err(|_| LedgerError::Job {
+            code: "credentials_unavailable".into(),
+            retry: false,
+        })?;
         let context = CallContext {
             organisation_id: c.organisation_id,
             run_id,

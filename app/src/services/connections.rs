@@ -1,34 +1,33 @@
 //! Connection use cases: create, request verification, disconnect (PRD 7.2).
 use axum::http::StatusCode;
-use chrono::{DurationRound, NaiveTime, TimeDelta, Utc};
+use chrono::{DurationRound, TimeDelta, Utc};
 use loco_rs::app::AppContext;
 use opsagent_connectors::{
     registry::{self, ProviderSpec},
     ConnectorError, Registry,
 };
-use opsagent_core::audit::{AuditEntry, AuditLog};
+use opsagent_core::audit::AuditEntry;
 use opsagent_core::{
-    connection::{transition, ConnectionEvent as E, ConnectionStatus as S},
+    connection::{
+        transition, Connection, ConnectionEvent as E, ConnectionPatch, ConnectionStatus as S,
+        NewConnection,
+    },
     run::RunKey,
 };
 use opsagent_secrets::Kek;
-use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseConnection, Set, TransactionTrait};
-use serde_json::json;
+use sea_orm::{DatabaseConnection, TransactionTrait};
 use uuid::Uuid;
 
 use crate::{
+    actions::uow::Repos,
     adapters::db::Pg,
     api_error::ApiError,
-    models::enum_str,
-    models::{
-        _entities::connections,
-        connections::{
-            cas, insert_creds, load_creds, save_creds, status_of, Creds, TEMPLATE_VERSION,
-        },
-        now, schedules,
-    },
+    creds::{self, Creds, Dek},
+    models::schedules,
     services::runs,
 };
+
+pub const TEMPLATE_VERSION: &str = "1";
 
 pub fn disconnected() -> ApiError {
     ApiError::new(
@@ -59,33 +58,21 @@ pub async fn create(
         .spec(provider)
         .map_err(|_| ApiError::invalid("provider must be aws"))?;
     let creds = registry::new_creds(provider, Uuid::new_v4().to_string(), &name);
-    let id = Uuid::new_v4();
     let txn = db.begin().await?;
-    connections::ActiveModel {
-        id: Set(id),
-        organisation_id: Set(organisation_id),
-        provider: Set(provider.to_owned()),
-        external_account_id: Set(None),
-        display_name: Set(Some(name)),
-        status: Set(enum_str(S::Pending)),
-        status_reason: Set(None),
-        template_version: Set(spec.uses_template.then(|| TEMPLATE_VERSION.to_owned())),
-        scan_time_local: Set(None),
-        briefing_time_local: Set(None),
-        slack_channel_id: Set(None),
-        recipients: Set(json!([])),
-        api_rate_ceiling: Set(None),
-        first_connected_at: Set(None),
-        billable_from: Set(None),
-        verify_denied_streak: Set(0),
-        verify_denied_first_at: Set(None),
-        created_at: Set(now()),
-        updated_at: Set(now()),
-    }
-    .insert(&txn)
-    .await?;
-    insert_creds(&txn, kek, organisation_id, id, spec.credential_kind, &creds).await?;
-    Pg::new(&txn)
+    let repos = Pg::new(&txn);
+    let sealed = Dek::of(repos.orgs(), kek, organisation_id)
+        .await?
+        .seal(organisation_id, &creds)?;
+    let new = NewConnection {
+        organisation_id,
+        provider: provider.to_owned(),
+        display_name: name,
+        template_version: spec.uses_template.then(|| TEMPLATE_VERSION.to_owned()),
+        credential_kind: spec.credential_kind.to_owned(),
+    };
+    let id = repos.connections().insert(new, sealed).await?.id;
+    repos
+        .audit()
         .record(AuditEntry::member(
             Some(organisation_id),
             actor,
@@ -117,11 +104,11 @@ fn role_error(e: ConnectorError, service: &str) -> ApiError {
 pub async fn request_verify(
     ctx: &AppContext,
     kek: &dyn Kek,
-    c: &connections::Model,
+    c: &Connection,
     actor: Uuid,
     role_arn: &str,
 ) -> Result<Uuid, ApiError> {
-    let from = status_of(c)?;
+    let from = c.status;
     if from == S::Disconnected {
         return Err(disconnected());
     }
@@ -133,21 +120,21 @@ pub async fn request_verify(
     }
     .map_err(ApiError::internal)?;
     let txn = ctx.db.begin().await?;
-    save_creds(&txn, kek, c, &creds).await?;
+    let repos = Pg::new(&txn);
+    creds::save(&repos, kek, c.organisation_id, c.id, &creds).await?;
     // Guarded on the status read above, so a concurrent Disconnect or worker outcome is not lost.
-    let mut a = <connections::ActiveModel as ActiveModelTrait>::default();
-    if to != from {
-        a.status = Set(enum_str(to));
-    }
-    a.updated_at = Set(now());
-    if !cas(&txn, c, a).await? {
+    let cas = repos
+        .connections()
+        .cas_status(c.organisation_id, c.id, from, to, None);
+    if !cas.await? {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "connection_state_changed",
             "The connection changed while this request ran. Reload and try again.",
         ));
     }
-    Pg::new(&txn)
+    repos
+        .audit()
         .record(AuditEntry::member(
             Some(c.organisation_id),
             actor,
@@ -174,12 +161,12 @@ pub async fn request_verify(
 async fn with_reported_role(
     db: &DatabaseConnection,
     kek: &dyn Kek,
-    c: &connections::Model,
+    c: &Connection,
     from: S,
     raw: &str,
 ) -> Result<Creds, ApiError> {
     let role = registry::reported_role(&c.provider, raw).map_err(|e| role_error(e, &c.provider))?;
-    let mut creds = load_creds(db, kek, c).await?;
+    let mut creds = creds::load(&Pg::new(db), kek, c.organisation_id, c.id).await?;
     if role.is_some() && role != creds.role_arn && matches!(from, S::Connected | S::Degraded) {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
@@ -196,15 +183,17 @@ async fn with_reported_role(
 /// Disconnects for owner `actor`; already disconnected is a no-op (idempotent DELETE).
 pub async fn disconnect(
     db: &DatabaseConnection,
-    c: connections::Model,
+    c: Connection,
     actor: Uuid,
 ) -> Result<(), ApiError> {
     let (org_id, conn_id) = (c.organisation_id, c.id);
     let txn = db.begin().await?;
-    if !end(&txn, c, "customer_disconnected").await? {
+    let repos = Pg::new(&txn);
+    if !end(&repos, c, "customer_disconnected").await? {
         return Ok(());
     }
-    Pg::new(&txn)
+    repos
+        .audit()
         .record(AuditEntry::member(
             Some(org_id),
             actor,
@@ -216,32 +205,26 @@ pub async fn disconnect(
     Ok(())
 }
 
-/// Moves `c` to `disconnected` with `reason` on `db` (the caller's transaction); `false` if it
-/// already was.
-pub async fn end(
-    db: &impl ConnectionTrait,
-    c: connections::Model,
-    reason: &str,
-) -> Result<bool, ApiError> {
-    let Ok(to) = transition(status_of(&c)?, E::Disconnect) else {
-        return Ok(false);
-    };
-    let mut a: connections::ActiveModel = c.into();
-    a.status = Set(enum_str(to));
-    a.status_reason = Set(Some(reason.into()));
-    a.updated_at = Set(now());
-    a.update(db).await?;
-    Ok(true)
-}
-
-/// Validated `PATCH` fields; `None` leaves a field as it is.
-pub struct Patch {
-    pub display_name: Option<String>,
-    pub scan_time_local: Option<NaiveTime>,
-    pub briefing_time_local: Option<NaiveTime>,
-    pub api_rate_ceiling: Option<i32>,
-    /// `Some(None)` clears the channel.
-    pub slack_channel_id: Option<Option<String>>,
+/// Moves `c` to `disconnected` with `reason` through `repos` (the caller's transaction);
+/// `false` if it already was. A status changed since `c` was read is re-read and retried.
+pub async fn end(repos: &dyn Repos, mut c: Connection, reason: &str) -> Result<bool, ApiError> {
+    let (org, id) = (c.organisation_id, c.id);
+    loop {
+        let Ok(to) = transition(c.status, E::Disconnect) else {
+            return Ok(false);
+        };
+        let cas = repos
+            .connections()
+            .cas_status(org, id, c.status, to, Some(reason));
+        if cas.await? {
+            return Ok(true);
+        }
+        c = repos
+            .connections()
+            .get(org, id)
+            .await?
+            .ok_or_else(ApiError::not_found)?;
+    }
 }
 
 /// Applies `p`. A new scan time rewrites the nightly `full_scan` schedule, effective from the
@@ -249,33 +232,20 @@ pub struct Patch {
 /// rewrites `deliver_briefing`, effective from its next occurrence.
 pub async fn update(
     db: &DatabaseConnection,
-    c: connections::Model,
-    p: Patch,
-) -> Result<connections::Model, ApiError> {
-    if status_of(&c)? == S::Disconnected {
+    c: Connection,
+    p: ConnectionPatch,
+) -> Result<Connection, ApiError> {
+    if c.status == S::Disconnected {
         return Err(disconnected());
     }
     let (org_id, conn_id) = (c.organisation_id, c.id);
-    let mut a: connections::ActiveModel = c.into();
-    if let Some(n) = p.display_name {
-        a.display_name = Set(Some(n));
-    }
-    if let Some(t) = p.scan_time_local {
-        a.scan_time_local = Set(Some(t));
-    }
-    if let Some(t) = p.briefing_time_local {
-        a.briefing_time_local = Set(Some(t));
-    }
-    if let Some(r) = p.api_rate_ceiling {
-        a.api_rate_ceiling = Set(Some(r));
-    }
-    if let Some(ch) = p.slack_channel_id {
-        a.slack_channel_id = Set(ch);
-    }
-    a.updated_at = Set(now());
+    let (scan_time, briefing_time) = (p.scan_time_local, p.briefing_time_local);
     let txn = db.begin().await?;
-    let updated = a.update(&txn).await?;
-    if let Some(t) = p.scan_time_local {
+    let updated = Pg::new(&txn)
+        .connections()
+        .update(org_id, conn_id, p)
+        .await?;
+    if let Some(t) = scan_time {
         let now = Utc::now();
         let from = |tz: &str| schedules::end_of_local_day(tz, now);
         schedules::set_cron(
@@ -288,7 +258,7 @@ pub async fn update(
         )
         .await?;
     }
-    if let Some(t) = p.briefing_time_local {
+    if let Some(t) = briefing_time {
         // From now: a later time today still briefs today; an already-sent briefing makes the
         // next one "nothing changed" unless something did.
         let now = Utc::now();

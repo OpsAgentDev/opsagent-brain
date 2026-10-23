@@ -1,3 +1,4 @@
+use opsagent_brain::adapters::db::ledger_storage::PgStorage;
 use std::{
     collections::{BTreeSet, HashMap},
     sync::atomic::{AtomicUsize, Ordering::SeqCst},
@@ -6,11 +7,8 @@ use std::{
 use async_trait::async_trait;
 use loco_rs::prelude::*;
 use opsagent_brain::{
-    models::{
-        _entities::{
-            connections, evidence, finding_events, findings, resource_history, resources, runs,
-        },
-        ledger_storage::PgStorage,
+    models::_entities::{
+        connections, evidence, finding_events, findings, resource_history, resources, runs,
     },
     services::inventory_upsert,
     workers::full_scan,

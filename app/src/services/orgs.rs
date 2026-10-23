@@ -11,12 +11,10 @@ use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Transac
 use uuid::Uuid;
 
 use crate::{
+    actions::uow::Repos,
     adapters::db::Pg,
     api_error::ApiError,
-    models::{
-        _entities::{connections, schedules},
-        now,
-    },
+    models::{_entities::schedules, now},
     services::connections as connections_service,
 };
 
@@ -74,12 +72,8 @@ pub async fn delete(
     let repo = Pg::new(&txn);
     repo.lock(organisation_id).await?;
     repo.soft_delete(organisation_id, Utc::now()).await?;
-    let live = connections::Entity::find()
-        .filter(connections::Column::OrganisationId.eq(organisation_id))
-        .all(&txn)
-        .await?;
-    for c in live {
-        connections_service::end(&txn, c, "organisation_deleted").await?;
+    for c in repo.connections().list(organisation_id).await? {
+        connections_service::end(&repo, c, "organisation_deleted").await?;
     }
     schedules::Entity::update_many()
         .col_expr(schedules::Column::Enabled, false.into())

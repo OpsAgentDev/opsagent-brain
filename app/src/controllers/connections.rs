@@ -6,7 +6,7 @@ use axum::{
 use chrono::NaiveTime;
 use loco_rs::app::AppContext;
 use opsagent_connectors::aws::client::short_id;
-use opsagent_core::org::valid_name;
+use opsagent_core::{connection, org::valid_name};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -15,15 +15,13 @@ use uuid::Uuid;
 
 use super::{OrgIdPath, OrgPath, RunAccepted};
 use crate::{
+    actions::uow::Repos,
+    adapters::db::Pg,
     api_error::{ApiError, ApiJson, Problem},
     app::{kek, registry},
     middleware::org_scope::OrgScope,
-    models::{
-        _entities::{connection_verifications, connections},
-        connections::TEMPLATE_VERSION,
-        find_in_org,
-    },
-    services::connections as service,
+    models::_entities::connection_verifications,
+    services::connections::{self as service, TEMPLATE_VERSION},
     views::connections::{view, Connection},
 };
 
@@ -31,18 +29,16 @@ fn stack_name(organisation_id: Uuid) -> String {
     format!("OpsAgent-Read-{}", short_id(&organisation_id))
 }
 
-async fn find(
+/// A malformed id, an unknown id and another org's id are the same 404.
+pub(super) async fn find(
     ctx: &AppContext,
     scope: &OrgScope,
     id: &str,
-) -> Result<connections::Model, ApiError> {
-    find_in_org::<connections::Entity>(
-        &ctx.db,
-        connections::Column::OrganisationId,
-        scope.organisation_id,
-        id,
-    )
-    .await
+) -> Result<connection::Connection, ApiError> {
+    let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
+    let repo = Pg::new(&ctx.db);
+    let c = repo.connections().get(scope.organisation_id, id).await?;
+    c.ok_or_else(ApiError::not_found)
 }
 
 fn quick_create_url(organisation_id: Uuid, external_id: &str) -> Result<String, ApiError> {
@@ -124,11 +120,8 @@ async fn list(
     State(ctx): State<AppContext>,
     scope: OrgScope,
 ) -> Result<Json<Vec<Connection>>, ApiError> {
-    let rows = connections::Entity::find()
-        .filter(connections::Column::OrganisationId.eq(scope.organisation_id))
-        .order_by_asc(connections::Column::CreatedAt)
-        .all(&ctx.db)
-        .await?;
+    let repo = Pg::new(&ctx.db);
+    let rows = repo.connections().list(scope.organisation_id).await?;
     Ok(Json(rows.iter().map(|c| view(c, None)).collect()))
 }
 
@@ -199,7 +192,7 @@ async fn update(
     if body.api_rate_ceiling.is_some_and(|r| r < 1) {
         return Err(ApiError::invalid("api_rate_ceiling must be at least 1"));
     }
-    let patch = service::Patch {
+    let patch = connection::ConnectionPatch {
         display_name: body
             .display_name
             .as_deref()

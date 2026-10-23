@@ -1,6 +1,7 @@
 //! Writing a verify outcome. Each outcome commits in one transaction that holds the run's
 //! fence and sets the run's next status, so a killed worker leaves either nothing or the whole
 //! outcome, and a superseded one cannot commit at all.
+use crate::adapters::db::ledger_storage::{hold_fence, PgStorage};
 use chrono::Utc;
 use opsagent_connectors::VerifyOutcome;
 use opsagent_core::audit::{AuditEntry, AuditLog};
@@ -10,7 +11,8 @@ use opsagent_core::{
 };
 use opsagent_ledger::{retry::retry_or_fail, Storage};
 use sea_orm::{
-    ActiveModelTrait, ConnectionTrait, DatabaseTransaction, Set, SqlErr, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseTransaction, EntityTrait, QueryFilter,
+    Set, SqlErr, TransactionTrait,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -24,8 +26,6 @@ use crate::{
     models::enum_str,
     models::{
         _entities::{connection_verifications, connections},
-        connections::cas,
-        ledger_storage::{hold_fence, PgStorage},
         now, schedules,
     },
     services::runs,
@@ -38,6 +38,22 @@ use crate::{
 /// Access denied must repeat this often, spanning at least `DENIED_SPAN`, before `revoked`.
 const DENIED_TIMES: i32 = 3;
 const DENIED_SPAN: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+
+/// Writes `a` only if the row still has `c.status` (the status the caller read). `false`: it changed.
+async fn cas(
+    db: &impl ConnectionTrait,
+    c: &connections::Model,
+    a: connections::ActiveModel,
+) -> Result<bool, sea_orm::DbErr> {
+    let r = connections::Entity::update_many()
+        .set(a)
+        .filter(connections::Column::OrganisationId.eq(c.organisation_id))
+        .filter(connections::Column::Id.eq(c.id))
+        .filter(connections::Column::Status.eq(&c.status))
+        .exec(db)
+        .await?;
+    Ok(r.rows_affected == 1)
+}
 
 fn is_unique_violation(e: &sea_orm::DbErr) -> bool {
     matches!(e.sql_err(), Some(SqlErr::UniqueConstraintViolation(_)))

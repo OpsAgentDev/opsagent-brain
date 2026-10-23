@@ -33,7 +33,7 @@ contract_suite! {
     async fn insert_then_membership_by_slug(s) {
         let (owner, stranger) = (user(s, "o@example.com").await, user(s, "x@example.com").await);
         let o = org(s, "acme").await;
-        assert_eq!((o.slug.as_str(), o.wrapped_dek.as_slice()), ("acme", &[1u8, 2, 3][..]));
+        assert_eq!((o.slug.as_str(), o.wrapped_dek.as_deref()), ("acme", Some(&[1u8, 2, 3][..])));
         assert_eq!(s.orgs().get(o.id).await.unwrap().as_ref(), Some(&o));
         let m = s.orgs().add_member(o.id, owner.id, Role::Owner).await.unwrap();
         let (found, fm) = s.orgs().membership("acme", owner.id).await.unwrap().unwrap();
