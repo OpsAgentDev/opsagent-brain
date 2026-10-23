@@ -1,29 +1,62 @@
 name: ci
+# Fail fast: cheap gates first, then tests and one image build, then the jobs that boot that image.
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       base_url:
         description: Post-deploy smoke target, e.g. https://brain.opsagent.dev (run after a Railway deploy)
         required: true
 
+# A new push to the same branch cancels the run still going.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
+  # Smaller artifacts: the AWS SDK crates otherwise fill the runner disk.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: -C link-arg=-fuse-ld=lld
   DATABASE_URL: postgres://loco:loco@localhost:5432/opsagent_brain_test
   REDIS_URL: redis://localhost:6379
 
 jobs:
-  check:
+  # Seconds for the scripts and fmt, minutes for clippy. Everything else waits on this.
+  lint:
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
-    # Smaller artifacts: the AWS SDK crates otherwise fill the runner disk (ld bus error).
-    env:
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
-      CARGO_INCREMENTAL: "0"
-      CARGO_TERM_COLOR: always
-      RUSTFLAGS: -C link-arg=-fuse-ld=lld
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-room
+      - run: sudo apt-get update && sudo apt-get install -y lld
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: scripts/check-crate-isolation.sh
+      - run: scripts/check-tenancy.sh
+      - run: scripts/check-logging.sh
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:17
@@ -44,40 +77,41 @@ jobs:
       - uses: ./.github/actions/build-room
       - run: sudo apt-get update && sudo apt-get install -y lld
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: scripts/check-crate-isolation.sh
-      - run: scripts/check-tenancy.sh
-      - run: scripts/check-logging.sh
-      - run: cargo fmt --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: scripts/openapi-diff.sh
-      - run: cargo install cargo-audit --locked
-      - run: cargo audit
 
-  docker-build:
-    if: github.event_name != 'workflow_dispatch'
+  # One release build, shared by the boot jobs below.
+  image:
+    needs: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/build-room
-      - run: docker build .
+      - run: docker build -t opsagent-brain:ci .
+      - run: docker save opsagent-brain:ci | gzip > brain-image.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brain-image
+          path: brain-image.tar.gz
+          retention-days: 1
 
   backup-image:
-    if: github.event_name != 'workflow_dispatch'
+    needs: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: docker build -f deploy/backup/Dockerfile .
 
   # The production image: refuses to boot with no variables; serves /readyz with a complete set.
   production-boot:
-    if: github.event_name != 'workflow_dispatch'
+    needs: image
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17
@@ -92,8 +126,10 @@ jobs:
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/build-room
-      - run: docker build -t brain .
+      - uses: actions/download-artifact@v4
+        with:
+          name: brain-image
+      - run: docker load < brain-image.tar.gz && docker tag opsagent-brain:ci brain
       - name: "No variables: non-zero exit naming the missing variable"
         run: |
           if out=$(docker run --rm brain 2>&1); then echo "booted without variables" >&2; exit 1; fi
@@ -114,12 +150,16 @@ jobs:
         run: docker logs api
 
   compose-smoke:
-    if: github.event_name != 'workflow_dispatch'
+    needs: image
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/build-room
-      - run: docker compose --profile brain up -d --build
+      - uses: actions/download-artifact@v4
+        with:
+          name: brain-image
+      - run: docker load < brain-image.tar.gz && docker tag opsagent-brain:ci opsagent-brain:compose
+      - run: docker compose --profile brain up -d --no-build
       - name: Wait for /readyz
         run: timeout 120 bash -c 'until curl -sf http://localhost:3000/readyz >/dev/null; do sleep 2; done'
       - run: scripts/smoke.sh http://localhost:3000
@@ -132,6 +172,7 @@ jobs:
   smoke:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: scripts/smoke.sh "$BASE_URL"
