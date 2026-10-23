@@ -2,6 +2,7 @@
 //! snooze (at most 30 days), reopen. `decide` holds the rules; `apply` persists one action.
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
+use opsagent_core::audit::{AuditEntry, AuditLog};
 use sea_orm::{
     sea_query::Expr, ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
     Set, TransactionTrait,
@@ -9,11 +10,9 @@ use sea_orm::{
 use uuid::Uuid;
 
 use crate::{
+    adapters::db::Pg,
     api_error::ApiError,
-    models::{
-        _entities::{finding_events, findings},
-        audit,
-    },
+    models::_entities::{finding_events, findings},
 };
 
 pub const ACCEPT_DEFAULT: Duration = Duration::days(90);
@@ -150,14 +149,14 @@ pub async fn apply(
     }
     .insert(&txn)
     .await?;
-    audit::record(
-        &txn,
-        Some(f.organisation_id),
-        actor,
-        &format!("finding.{}", c.event),
-        Some(("finding", f.id.to_string())),
-    )
-    .await?;
+    Pg::new(&txn)
+        .record(AuditEntry::member(
+            Some(f.organisation_id),
+            actor,
+            format!("finding.{}", c.event),
+            Some(("finding", f.id.to_string())),
+        ))
+        .await?;
     txn.commit().await?;
     Ok(updated)
 }
@@ -177,15 +176,17 @@ pub async fn report_explanation(
             "note is required (at most {NOTE_MAX} characters)"
         )));
     }
-    audit::record_meta(
-        db,
-        Some(f.organisation_id),
-        actor,
-        "finding.report_explanation",
-        Some(("finding", f.id.to_string())),
-        serde_json::json!({ "note": note }),
-    )
-    .await?;
+    Pg::new(db)
+        .record(
+            AuditEntry::member(
+                Some(f.organisation_id),
+                actor,
+                "finding.report_explanation",
+                Some(("finding", f.id.to_string())),
+            )
+            .with_meta(serde_json::json!({ "note": note })),
+        )
+        .await?;
     Ok(())
 }
 

@@ -7,6 +7,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use loco_rs::{app::AppContext, bgworker::BackgroundWorker, Result};
+use opsagent_core::org::OrganisationsRepo;
 use opsagent_core::run::RunStatus;
 use opsagent_deliver::{
     model::{Weekly, WeeklyExtras},
@@ -24,11 +25,11 @@ use super::{
     delivery::Out,
 };
 use crate::{
+    adapters::db::Pg,
     mailers::{magic_link::mail_safe_name, Mail},
     models::{
         _entities::{connections, organisations as orgs},
         ledger_storage::PgStorage,
-        organisations,
     },
     services::{
         deliveries::{
@@ -185,7 +186,7 @@ fn weekly_mail(w: &Weekly, to: &Recipient, s: &Settings) -> Mail {
 /// skipped with fewer than two, where it would only repeat the connection's own weekly.
 async fn summary(out: &Out<'_>) -> LResult<ChunkOutcome> {
     let (ctx, org) = (out.ctx, out.organisation_id);
-    if organisations::deleted(&ctx.db, org).await.map_err(lerr)? {
+    if Pg::new(&ctx.db).is_deleted(org).await.map_err(lerr)? {
         return Ok(outcome("skipped", "organisation_deleted"));
     }
     let all = connections::Entity::find()

@@ -9,6 +9,7 @@ use loco_rs::{app::AppContext, bgworker::BackgroundWorker, Result};
 use opsagent_connectors::{
     registry as providers, CallContext, Connector, ConnectorError, Credentials, VerifyOutcome,
 };
+use opsagent_core::org::OrganisationsRepo;
 use opsagent_core::{connection::ConnectionStatus as S, run::RunStatus};
 use opsagent_ledger::{
     lease,
@@ -21,12 +22,12 @@ use uuid::Uuid;
 
 use super::common::{classify, err, lerr, redis_client, LResult};
 use crate::{
+    adapters::db::Pg,
     app::{kek, registry},
     models::{
         _entities::connections,
         connections::{load_creds, status_of},
         ledger_storage::PgStorage,
-        organisations,
     },
 };
 
@@ -114,7 +115,8 @@ impl VerifyWorker {
             .map_err(lerr)?
             .ok_or(LedgerError::NotFound)?;
         let status = status_of(&c).map_err(lerr)?;
-        let skip = if organisations::deleted(&self.ctx.db, c.organisation_id)
+        let skip = if Pg::new(&self.ctx.db)
+            .is_deleted(c.organisation_id)
             .await
             .map_err(lerr)?
         {

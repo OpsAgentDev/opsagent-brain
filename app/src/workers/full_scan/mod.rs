@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use loco_rs::{app::AppContext, bgworker::BackgroundWorker, Result};
 use opsagent_checks::Check;
 use opsagent_connectors::{registry as providers, CallContext, Connector, Credentials, Scope};
+use opsagent_core::audit::{AuditEntry, AuditLog};
 use opsagent_core::{connection::ConnectionStatus as S, run::RunStatus};
 use opsagent_ledger::{
     lease::{self, claim, unclaim},
@@ -21,15 +22,15 @@ use uuid::Uuid;
 use self::chunks::Scan;
 use super::common::{err, job_err, lerr, redis_client, revoked, LResult};
 use crate::{
+    adapters::db::Pg,
     app::{kek, registry},
     models::{
         _entities::connections,
-        audit,
         connections::{load_creds, status_of},
         ledger_storage::{db_err, stmt, PgStorage},
-        organisations,
     },
 };
+use opsagent_core::org::OrganisationsRepo;
 
 pub const JOB: &str = "full_scan";
 const SIMULATE: &str = "simulate";
@@ -111,7 +112,8 @@ async fn scan_run(
         return Ok(run.status); // duplicate delivery of a finished run
     }
     let c = connection(&ctx.db, &run).await?;
-    if organisations::deleted(&ctx.db, c.organisation_id)
+    if Pg::new(&ctx.db)
+        .is_deleted(c.organisation_id)
         .await
         .map_err(lerr)?
     {
@@ -205,16 +207,18 @@ async fn audit_start(db: &DatabaseConnection, c: &connections::Model, run_id: Uu
     }
     let target = ("connection", c.id.to_string());
     let meta = json!({ "run_id": run_id });
-    audit::record_system(
-        db,
-        c.organisation_id,
-        "connection.scan_started",
-        target,
-        "success",
-        meta,
-    )
-    .await
-    .map_err(db_err)
+    Pg::new(db)
+        .record(
+            AuditEntry::system(
+                c.organisation_id,
+                "connection.scan_started",
+                target,
+                "success",
+            )
+            .with_meta(meta),
+        )
+        .await
+        .map_err(db_err)
 }
 
 async fn connection(db: &DatabaseConnection, run: &RunRow) -> LResult<connections::Model> {

@@ -15,6 +15,7 @@
 //! organisations, so creating organisations buys nothing. The 30-day counters expire, and the
 //! address holder's confirm clears them (`confirmed`).
 use chrono::{Duration, Utc};
+use opsagent_core::org::Role;
 use opsagent_ledger::redis;
 use sea_orm::{
     ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
@@ -30,7 +31,6 @@ use crate::{
             email_suppressions::{self, Column as S},
             members,
         },
-        members::OWNER,
         now,
     },
     services::rate_limit::{distinct, hit, DAY_SECS},
@@ -76,7 +76,7 @@ fn unconfirmed_owners_key(hash: &str) -> String {
 async fn owner_of(db: &impl ConnectionTrait, organisation_id: Uuid) -> Result<Uuid, DbErr> {
     let m = members::Entity::find()
         .filter(members::Column::OrganisationId.eq(organisation_id))
-        .filter(members::Column::Role.eq(OWNER))
+        .filter(members::Column::Role.eq(Role::Owner.as_str()))
         .order_by_asc(members::Column::CreatedAt)
         .one(db)
         .await?;

@@ -1,5 +1,6 @@
 //! Integration use cases: Slack install (OAuth), channel listing, removal.
 use axum::http::StatusCode;
+use opsagent_core::audit::{AuditEntry, AuditLog};
 use opsagent_secrets::Kek;
 use sea_orm::{
     sea_query::OnConflict, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder,
@@ -9,11 +10,11 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
+    adapters::db::Pg,
     adapters::slack::{Channel, Install, SlackClient, SlackError, AUTHORIZE_URL, BOT_SCOPES},
     api_error::ApiError,
     models::{
         _entities::integrations::{self, Column as C},
-        audit,
         integrations::{open_token, seal_token, ACTIVE, REVOKED, SLACK},
         now,
     },
@@ -95,14 +96,14 @@ pub async fn save_slack(
             }
             _ => e.into(),
         })?;
-    audit::record(
-        &txn,
-        Some(organisation_id),
-        actor,
-        "integration.slack_connect",
-        Some(("integration", SLACK.into())),
-    )
-    .await?;
+    Pg::new(&txn)
+        .record(AuditEntry::member(
+            Some(organisation_id),
+            actor,
+            "integration.slack_connect",
+            Some(("integration", SLACK.into())),
+        ))
+        .await?;
     txn.commit().await?;
     Ok(())
 }
@@ -203,14 +204,14 @@ pub async fn delete(
     if gone.rows_affected != 1 {
         return Err(ApiError::not_found());
     }
-    audit::record(
-        &txn,
-        Some(organisation_id),
-        actor,
-        "integration.delete",
-        Some(("integration", id.to_string())),
-    )
-    .await?;
+    Pg::new(&txn)
+        .record(AuditEntry::member(
+            Some(organisation_id),
+            actor,
+            "integration.delete",
+            Some(("integration", id.to_string())),
+        ))
+        .await?;
     txn.commit().await?;
     match (row.kind.as_str(), token) {
         (SLACK, Ok(t)) => {

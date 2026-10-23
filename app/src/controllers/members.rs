@@ -99,9 +99,9 @@ async fn invite(
         StatusCode::CREATED,
         Json(Invite {
             id: row.id,
-            email: row.email,
-            role: row.role,
-            expires_at: row.expires_at,
+            email: row.email.as_str().into(),
+            role: row.role.as_str().into(),
+            expires_at: row.expires_at.fixed_offset(),
         }),
     ))
 }
@@ -135,7 +135,7 @@ async fn accept(
         id: org.id,
         name: org.name,
         slug: org.slug,
-        role,
+        role: role.as_str().into(),
     }))
 }
 

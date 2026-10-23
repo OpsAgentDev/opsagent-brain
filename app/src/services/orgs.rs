@@ -1,23 +1,31 @@
 //! Organisation use cases: create (with its DEK and first owner) and delete.
+use chrono::Utc;
+use opsagent_core::{
+    audit::{AuditEntry, AuditLog},
+    org::{slugify, NewOrganisation, Organisation, OrganisationsRepo, Role},
+    repo::RepoError,
+};
 use opsagent_secrets::{generate_dek, Kek};
 use rand::RngCore;
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QuerySelect, Set,
-    TransactionTrait,
-};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, TransactionTrait};
 use uuid::Uuid;
 
 use crate::{
+    adapters::db::Pg,
     api_error::ApiError,
     models::{
-        _entities::{connections, organisations, schedules},
-        audit,
-        members::{self, OWNER},
+        _entities::{connections, schedules},
         now,
-        organisations::slugify,
     },
     services::connections as connections_service,
 };
+
+/// `slug` with a random 6-hex suffix, for a name whose slug is taken.
+fn suffixed(slug: &str) -> String {
+    let mut b = [0u8; 3];
+    rand::rngs::OsRng.fill_bytes(&mut b);
+    format!("{slug}-{:02x}{:02x}{:02x}", b[0], b[1], b[2])
+}
 
 /// Creates the org with a fresh wrapped DEK and makes `user_id` its owner.
 pub async fn create(
@@ -26,47 +34,30 @@ pub async fn create(
     user_id: Uuid,
     name: &str,
     timezone: &str,
-) -> Result<organisations::Model, ApiError> {
+) -> Result<Organisation, ApiError> {
     let id = Uuid::new_v4();
     let wrapped = kek.wrap(id, &generate_dek())?;
-    let mut slug = slugify(name);
-    if organisations::Entity::find()
-        .filter(organisations::Column::Slug.eq(&slug))
-        .one(db)
-        .await?
-        .is_some()
-    {
-        let mut b = [0u8; 3];
-        rand::rngs::OsRng.fill_bytes(&mut b);
-        slug = format!("{slug}-{:02x}{:02x}{:02x}", b[0], b[1], b[2]);
-    }
+    let mut new = NewOrganisation {
+        id,
+        slug: slugify(name),
+        name: name.into(),
+        timezone: timezone.into(),
+        kek_version: i32::try_from(wrapped.version).map_err(ApiError::internal)?,
+        wrapped_dek: wrapped.blob,
+    };
     let txn = db.begin().await?;
-    let org = organisations::ActiveModel {
-        id: Set(id),
-        name: Set(name.into()),
-        slug: Set(slug),
-        timezone: Set(timezone.into()),
-        plan: Set(None),
-        stripe_customer_id: Set(None),
-        kek_version: Set(Some(
-            i32::try_from(wrapped.version).map_err(ApiError::internal)?,
-        )),
-        wrapped_dek: Set(Some(wrapped.blob)),
-        deleted_at: Set(None),
-        created_at: Set(now()),
-        updated_at: Set(now()),
-    }
-    .insert(&txn)
-    .await?;
-    members::add(&txn, id, user_id, OWNER).await?;
-    audit::record(
-        &txn,
-        Some(id),
-        user_id,
-        "org.create",
-        Some(("organisation", id.to_string())),
-    )
-    .await?;
+    let repo = Pg::new(&txn);
+    let org = match repo.insert(new.clone()).await {
+        Err(RepoError::Conflict("slug")) => {
+            new.slug = suffixed(&new.slug);
+            repo.insert(new).await?
+        }
+        other => other?,
+    };
+    repo.add_member(id, user_id, Role::Owner).await?;
+    let target = Some(("organisation", id.to_string()));
+    repo.record(AuditEntry::member(Some(id), user_id, "org.create", target))
+        .await?;
     txn.commit().await?;
     Ok(org)
 }
@@ -80,15 +71,9 @@ pub async fn delete(
 ) -> Result<(), ApiError> {
     // TODO(billing): cancel the Stripe subscription before marking the org deleted.
     let txn = db.begin().await?;
-    let org = organisations::Entity::find_by_id(organisation_id)
-        .lock_exclusive()
-        .one(&txn)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
-    let mut a: organisations::ActiveModel = org.into();
-    a.deleted_at = Set(Some(now()));
-    a.updated_at = Set(now());
-    a.update(&txn).await?;
+    let repo = Pg::new(&txn);
+    repo.lock(organisation_id).await?;
+    repo.soft_delete(organisation_id, Utc::now()).await?;
     let live = connections::Entity::find()
         .filter(connections::Column::OrganisationId.eq(organisation_id))
         .all(&txn)
@@ -102,13 +87,13 @@ pub async fn delete(
         .filter(schedules::Column::OrganisationId.eq(organisation_id))
         .exec(&txn)
         .await?;
-    audit::record(
-        &txn,
+    let target = Some(("organisation", organisation_id.to_string()));
+    repo.record(AuditEntry::member(
         Some(organisation_id),
         actor,
         "org.delete",
-        Some(("organisation", organisation_id.to_string())),
-    )
+        target,
+    ))
     .await?;
     txn.commit().await?;
     Ok(())

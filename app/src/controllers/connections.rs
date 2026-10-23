@@ -6,6 +6,7 @@ use axum::{
 use chrono::NaiveTime;
 use loco_rs::app::AppContext;
 use opsagent_connectors::aws::client::short_id;
+use opsagent_core::org::valid_name;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -21,7 +22,6 @@ use crate::{
         _entities::{connection_verifications, connections},
         connections::TEMPLATE_VERSION,
         find_in_org,
-        organisations::valid_name,
     },
     services::connections as service,
     views::connections::{view, Connection},
@@ -91,7 +91,7 @@ async fn create(
     ApiJson(body): ApiJson<NewConnection>,
 ) -> Result<(StatusCode, Json<CreatedConnection>), ApiError> {
     scope.require_owner()?;
-    let name = valid_name(&body.display_name)?;
+    let name = valid_name(&body.display_name).map_err(ApiError::invalid)?;
     let org_id = scope.organisation_id;
     let created = service::create(
         &ctx.db,
@@ -200,7 +200,12 @@ async fn update(
         return Err(ApiError::invalid("api_rate_ceiling must be at least 1"));
     }
     let patch = service::Patch {
-        display_name: body.display_name.as_deref().map(valid_name).transpose()?,
+        display_name: body
+            .display_name
+            .as_deref()
+            .map(valid_name)
+            .transpose()
+            .map_err(ApiError::invalid)?,
         scan_time_local: hhmm("scan_time_local", &body.scan_time_local)?,
         briefing_time_local: hhmm("briefing_time_local", &body.briefing_time_local)?,
         api_rate_ceiling: body.api_rate_ceiling,

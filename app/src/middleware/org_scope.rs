@@ -5,6 +5,7 @@ use axum::{
     http::request::Parts,
 };
 use loco_rs::app::AppContext;
+use opsagent_core::org::Role;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use tower_sessions::Session;
 use uuid::Uuid;
@@ -12,10 +13,7 @@ use uuid::Uuid;
 use super::session::USER_KEY;
 use crate::{
     api_error::ApiError,
-    models::{
-        _entities::{members, organisations},
-        members::OWNER,
-    },
+    models::_entities::{members, organisations},
 };
 
 /// The signed-in user.
@@ -45,7 +43,7 @@ pub struct OrgScope {
 
 impl OrgScope {
     pub fn require_owner(&self) -> Result<(), ApiError> {
-        if self.role == OWNER {
+        if self.role == Role::Owner.as_str() {
             Ok(())
         } else {
             Err(ApiError::forbidden())

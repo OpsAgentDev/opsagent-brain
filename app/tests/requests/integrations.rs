@@ -4,7 +4,10 @@ use std::sync::Arc;
 use axum_test::TestServer;
 use loco_rs::{app::AppContext, prelude::*};
 use opsagent_brain::{
-    adapters::slack::{HttpSlack, SlackClient},
+    adapters::{
+        db::Pg,
+        slack::{HttpSlack, SlackClient},
+    },
     app::kek,
     mailers::CaptureMailer,
     models::{
@@ -12,11 +15,11 @@ use opsagent_brain::{
             audit_events, email_suppressions, integrations, organisations, recipients, users,
         },
         integrations::open_token,
-        members as member_model,
     },
     services::{mail_guard, recipients as recipient_service},
     settings::Settings,
 };
+use opsagent_core::org::{OrganisationsRepo, Role};
 use serde_json::{json, Value};
 use serial_test::serial;
 use wiremock::{
@@ -123,7 +126,8 @@ async fn as_member(
         .await
         .unwrap()
         .unwrap();
-    member_model::add(&ctx.db, o.id, user.id, "member")
+    Pg::new(&ctx.db)
+        .add_member(o.id, user.id, Role::Member)
         .await
         .unwrap();
     t

@@ -3,6 +3,7 @@
 //! outcome, and a superseded one cannot commit at all.
 use chrono::Utc;
 use opsagent_connectors::VerifyOutcome;
+use opsagent_core::audit::{AuditEntry, AuditLog};
 use opsagent_core::{
     connection::{transition, ConnectionEvent as E, ConnectionStatus as S},
     run::{RunKey, RunStatus},
@@ -19,10 +20,10 @@ use super::{
     Step, VerifyWorker,
 };
 use crate::{
+    adapters::db::Pg,
     models::enum_str,
     models::{
         _entities::{connection_verifications, connections},
-        audit,
         connections::cas,
         ledger_storage::{hold_fence, PgStorage},
         now, schedules,
@@ -289,16 +290,18 @@ impl VerifyWorker {
         .insert(db)
         .await
         .map_err(lerr)?;
-        audit::record_system(
-            db,
-            c.organisation_id,
-            "connection.verify_outcome",
-            ("connection", c.id.to_string()),
-            outcome,
-            json!({ "run_id": run_id, "code": code }),
-        )
-        .await
-        .map_err(lerr)
+        Pg::new(db)
+            .record(
+                AuditEntry::system(
+                    c.organisation_id,
+                    "connection.verify_outcome",
+                    ("connection", c.id.to_string()),
+                    outcome,
+                )
+                .with_meta(json!({ "run_id": run_id, "code": code })),
+            )
+            .await
+            .map_err(lerr)
     }
 }
 

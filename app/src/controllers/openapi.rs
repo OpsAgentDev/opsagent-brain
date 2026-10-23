@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use axum::{extract::State, http::header, response::IntoResponse, routing::get, Router};
 use loco_rs::app::AppContext;
+use opsagent_core::org::Role;
 use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
@@ -15,10 +16,7 @@ use super::{
 use crate::{
     api_error::ApiError,
     middleware::org_scope::AuthUser,
-    models::{
-        _entities::{members as member_rows, organisations},
-        members::OWNER,
-    },
+    models::_entities::{members as member_rows, organisations},
 };
 
 #[derive(OpenApi)]
@@ -94,7 +92,7 @@ async fn serve(
     let AuthUser(user_id) = user.map_err(|_| ApiError::not_found())?;
     let owned = member_rows::Entity::find()
         .filter(member_rows::Column::UserId.eq(user_id))
-        .filter(member_rows::Column::Role.eq(OWNER))
+        .filter(member_rows::Column::Role.eq(Role::Owner.as_str()))
         .inner_join(organisations::Entity)
         .filter(organisations::Column::DeletedAt.is_null())
         .count(&ctx.db)

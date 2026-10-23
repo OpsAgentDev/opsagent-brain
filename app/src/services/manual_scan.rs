@@ -2,16 +2,17 @@
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
 use loco_rs::app::AppContext;
+use opsagent_core::audit::{AuditEntry, AuditLog};
 use opsagent_core::{connection::ConnectionStatus as S, run::RunKey};
 use opsagent_ledger::CreateRunOutcome;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait};
 use uuid::Uuid;
 
 use crate::{
+    adapters::db::Pg,
     api_error::ApiError,
     models::{
         _entities::{connections, runs},
-        audit,
         connections::status_of,
     },
     services::runs as run_service,
@@ -76,14 +77,14 @@ pub async fn request(
         scheduled_at: now,
     };
     let (txn, out) = run_service::create_marked(txn, key, now).await?;
-    audit::record(
-        &txn,
-        Some(c.organisation_id),
-        actor,
-        "connection.scan_requested",
-        Some(("connection", c.id.to_string())),
-    )
-    .await?;
+    Pg::new(&txn)
+        .record(AuditEntry::member(
+            Some(c.organisation_id),
+            actor,
+            "connection.scan_requested",
+            Some(("connection", c.id.to_string())),
+        ))
+        .await?;
     txn.commit().await?;
     if out.created {
         run_service::hand_off(ctx, &out, JOB, now).await;
