@@ -12,8 +12,8 @@
 //! it never stops deliveries. There is no total per-address cap: it would count mails that were
 //! later confirmed and block a legitimate shared address everywhere.
 //! One owning user gets at most 2 confirm mails per address in 30 days across all of their
-//! organisations, so creating organisations buys nothing. The 30-day counters only expire;
-//! a confirm does not reset them.
+//! organisations, so creating organisations buys nothing. The 30-day counters expire, and the
+//! address holder's confirm clears them (`confirmed`).
 use chrono::{Duration, Utc};
 use opsagent_ledger::redis;
 use sea_orm::{
