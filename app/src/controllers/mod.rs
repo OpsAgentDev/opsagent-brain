@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod connections;
+pub mod deliveries;
 pub mod findings;
 pub mod health;
 pub mod integrations;
