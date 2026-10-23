@@ -1,19 +1,9 @@
-//! Shared by every worker: error mapping and the Redis client. Connector error
-//! classification is the actions' (`actions::runs::classify`); retries are the ledger's.
-use loco_rs::{app::AppContext, config::QueueConfig, Error, Result};
-use opsagent_ledger::redis;
-
-pub(crate) use crate::actions::runs::classify::{lerr, LResult};
+//! Shared by every worker: Loco error mapping. Connector error classification is the
+//! actions' (`actions::runs::classify`); retries are the ledger's.
+use loco_rs::Error;
 
 pub(crate) fn err(e: impl std::fmt::Display) -> Error {
     Error::string(&e.to_string())
-}
-
-pub(crate) fn redis_client(ctx: &AppContext) -> Result<redis::Client> {
-    let Some(QueueConfig::Redis(cfg)) = &ctx.config.queue else {
-        return Err(err("workers need the redis queue config"));
-    };
-    redis::Client::open(cfg.uri.as_str()).map_err(err)
 }
 
 #[cfg(test)]

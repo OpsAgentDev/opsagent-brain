@@ -1,36 +1,123 @@
-//! Wiring in one place: every action is built here, once per process, from its adapters.
-use std::sync::Arc;
+//! Wiring in one place: every adapter and every action is built here, once per process.
+use std::{sync::Arc, time::Duration};
 
-use opsagent_connectors::Registry;
-use opsagent_core::repo::Clock;
+use migration::{Migrator, MigratorTrait};
+use opsagent_connectors::{aws::AwsOutbound, Registry};
+use opsagent_core::repo::{Clock, SystemClock};
 use opsagent_ledger::{redis, Queue};
-use opsagent_secrets::Kek;
+use opsagent_secrets::{CachingKek, EnvKek, Kek};
+use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 
 use crate::{
     actions::{
         auth, connections, deliveries, findings, integrations, members, orgs, recipients,
         resources, runs, uow::UnitOfWork, Actions, ConnectorSource, RateLimiter,
     },
-    adapters::slack::SlackClient,
-    mailers::Mailer,
-    settings::Settings,
+    adapters::{
+        db::Pg,
+        rate_limiter::RedisRateLimiter,
+        slack::{HttpSlack, SlackClient},
+    },
+    config::{Config, ConnectorMode},
+    error::{AppError, AppResult},
+    mailers::{self, Mailer},
+    state::{AppState, Inner},
 };
 
+/// security.md: unwrapped DEKs stay in memory for at most 10 minutes.
+const DEK_TTL: Duration = Duration::from_secs(600);
+
 /// The adapters actions are built from.
+#[derive(Clone)]
 pub struct Deps {
+    pub config: Config,
+    pub db: DatabaseConnection,
     pub uow: Arc<dyn UnitOfWork>,
+    /// The scheduler tick's own 2-connection pool: one connection holds the advisory-lock
+    /// transaction for the whole tick, the other does the per-schedule work.
+    pub scheduler_uow: Arc<dyn UnitOfWork>,
+    /// Leases and per-connection claims (`opsagent_ledger::lease`), and the rate limiter.
+    pub redis: redis::Client,
     pub limiter: Arc<dyn RateLimiter>,
     pub kek: Arc<dyn Kek>,
     pub registry: Registry,
     pub mailer: Arc<dyn Mailer>,
     pub slack: Arc<dyn SlackClient>,
     pub clock: Arc<dyn Clock>,
-    pub settings: Settings,
     pub queue: Arc<dyn Queue>,
-    /// The scheduler tick opens its own small pool on it.
-    pub db_url: String,
-    /// Leases and per-connection claims (`opsagent_ledger::lease`).
-    pub ledger_redis: redis::Client,
+}
+
+fn internal(e: impl std::fmt::Display) -> AppError {
+    AppError::Internal(e.to_string())
+}
+
+async fn connect(c: &Config, min: u32, max: u32, lazy: bool) -> AppResult<DatabaseConnection> {
+    let mut opts = ConnectOptions::new(c.database_url.clone());
+    opts.min_connections(min)
+        .max_connections(max)
+        .connect_timeout(Duration::from_millis(c.db_connect_timeout_ms))
+        .idle_timeout(Duration::from_millis(c.db_idle_timeout_ms))
+        .sqlx_logging(c.db_logging)
+        .connect_lazy(lazy);
+    Database::connect(opts).await.map_err(internal)
+}
+
+/// Connects the app pool (migrating when `DB_AUTO_MIGRATE`), then `boot_on` it.
+pub async fn boot(config: Config, queue: Arc<dyn Queue>) -> AppResult<AppState> {
+    let db = connect(
+        &config,
+        config.db_min_connections,
+        config.db_max_connections,
+        false,
+    )
+    .await?;
+    if config.db_auto_migrate {
+        Migrator::up(&db, None).await.map_err(internal)?;
+    }
+    boot_on(config, db, queue).await
+}
+
+/// Builds every adapter over the app pool `db`, then the actions. `queue` is passed in while
+/// Loco's queue needs its `AppContext` (Task 18).
+pub async fn boot_on(
+    config: Config,
+    db: DatabaseConnection,
+    queue: Arc<dyn Queue>,
+) -> AppResult<AppState> {
+    // Lazy: only the scheduler process ever ticks.
+    let scheduler = connect(&config, 0, 2, true).await?;
+    let redis = redis::Client::open(config.redis_url.as_str()).map_err(internal)?;
+    let kek: Arc<dyn Kek> = Arc::new(CachingKek::new(
+        EnvKek::from_env().map_err(internal)?,
+        DEK_TTL,
+    ));
+    let outbound = AwsOutbound {
+        principal_arn: config.aws_outbound_role_arn.clone(),
+        ..Default::default()
+    };
+    let registry = Registry::new(outbound, config.connectors == ConnectorMode::Fake);
+    let slack = HttpSlack::new(&config.slack_api_base_url)
+        .map_err(|_| internal("slack: HTTP client could not be built"))?;
+    Ok(assemble(Deps {
+        mailer: mailers::from_config(&config).map_err(internal)?,
+        config,
+        uow: Arc::new(Pg::new(db.clone())),
+        db,
+        scheduler_uow: Arc::new(Pg::new(scheduler)),
+        limiter: Arc::new(RedisRateLimiter::new(redis.clone())),
+        redis,
+        kek,
+        registry,
+        slack: Arc::new(slack),
+        clock: Arc::new(SystemClock),
+        queue,
+    }))
+}
+
+/// The state over `deps`, with every action built from them.
+pub fn assemble(deps: Deps) -> AppState {
+    let actions = Arc::new(build_actions(&deps));
+    AppState(Arc::new(Inner { deps, actions }))
 }
 
 pub fn build_actions(d: &Deps) -> Actions {
@@ -38,7 +125,7 @@ pub fn build_actions(d: &Deps) -> Actions {
     let connectors: Arc<dyn ConnectorSource> = Arc::new(d.registry.clone());
     let full_scan = runs::FullScan::new(
         d.uow.clone(),
-        d.ledger_redis.clone(),
+        d.redis.clone(),
         d.kek.clone(),
         connectors.clone(),
         d.clock.clone(),
@@ -51,7 +138,7 @@ pub fn build_actions(d: &Deps) -> Actions {
                 d.uow.clone(),
                 d.limiter.clone(),
                 d.mailer.clone(),
-                d.settings.web_base_url.clone(),
+                d.config.web_base_url.clone(),
                 d.clock.clone(),
             ),
             redeem_magic_link: auth::RedeemMagicLink::new(d.uow.clone(), d.clock.clone()),
@@ -72,7 +159,7 @@ pub fn build_actions(d: &Deps) -> Actions {
             invite_member: members::InviteMember::new(
                 d.uow.clone(),
                 d.mailer.clone(),
-                d.settings.web_base_url.clone(),
+                d.config.web_base_url.clone(),
                 d.clock.clone(),
             ),
             accept_invite: members::AcceptInvite::new(d.uow.clone(), d.clock.clone()),
@@ -117,13 +204,13 @@ pub fn build_actions(d: &Deps) -> Actions {
             get_run: runs::GetRun::new(d.uow.clone()),
             verify_connection: runs::VerifyConnection::new(
                 d.uow.clone(),
-                d.ledger_redis.clone(),
+                d.redis.clone(),
                 d.kek.clone(),
                 connectors,
                 dispatcher.clone(),
                 d.clock.clone(),
             ),
-            scheduler_tick: runs::SchedulerTick::new(d.db_url.clone(), dispatcher.clone()),
+            scheduler_tick: runs::SchedulerTick::new(d.scheduler_uow.clone(), dispatcher.clone()),
             dispatcher,
             scan_now: runs::ScanNow::new(d.uow.clone(), full_scan.clone(), d.clock.clone()),
             full_scan,
@@ -141,7 +228,7 @@ fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipi
             d.uow.clone(),
             guard.clone(),
             d.mailer.clone(),
-            &d.settings.web_base_url,
+            &d.config.web_base_url,
             d.clock.clone(),
         ),
         delete_recipient: recipients::DeleteRecipient::new(d.uow.clone()),
@@ -152,7 +239,7 @@ fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipi
         ),
         unsubscribe: recipients::Unsubscribe::new(
             d.uow.clone(),
-            d.settings.unsubscribe_key(),
+            d.config.unsubscribe_key(),
             d.clock.clone(),
         ),
         mail_guard: guard,
@@ -161,12 +248,12 @@ fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipi
 
 fn integrations(d: &Deps) -> integrations::Integrations {
     integrations::Integrations {
-        start_slack_install: integrations::StartSlackInstall::new(d.settings.clone()),
+        start_slack_install: integrations::StartSlackInstall::new(d.config.clone()),
         finish_slack_install: integrations::FinishSlackInstall::new(
             d.uow.clone(),
             d.kek.clone(),
             d.slack.clone(),
-            d.settings.clone(),
+            d.config.clone(),
         ),
         list_slack_channels: integrations::ListSlackChannels::new(
             d.uow.clone(),
@@ -186,20 +273,20 @@ fn integrations(d: &Deps) -> integrations::Integrations {
 fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Deliveries {
     let kit = deliveries::Kit {
         uow: d.uow.clone(),
-        redis: d.ledger_redis.clone(),
+        redis: d.redis.clone(),
         kek: d.kek.clone(),
         mailer: d.mailer.clone(),
         slack: d.slack.clone(),
         guard,
         clock: d.clock.clone(),
-        settings: d.settings.clone(),
+        settings: d.config.clone(),
     };
     deliveries::Deliveries {
         list_deliveries: deliveries::ListDeliveries::new(d.uow.clone()),
         get_delivery: deliveries::GetDelivery::new(d.uow.clone()),
         preview_briefing: deliveries::PreviewBriefing::new(
             d.uow.clone(),
-            d.settings.web_base_url.clone(),
+            d.config.web_base_url.clone(),
             d.clock.clone(),
         ),
         deliver_briefing: deliveries::DeliverBriefing::new(kit.clone()),

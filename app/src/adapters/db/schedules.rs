@@ -16,20 +16,6 @@ fn get<T: sea_orm::TryGetable>(r: &QueryResult, col: &str) -> RepoResult<T> {
 }
 
 impl<C: Conn> Pg<C> {
-    /// Takes the scheduler's transaction-level advisory lock if no other scheduler holds it;
-    /// commit, rollback or disconnect releases it. Call on a transaction.
-    pub async fn try_lock_scheduler(&self) -> RepoResult<bool> {
-        let r = self
-            .db()
-            .query_one_raw(stmt(
-                "SELECT pg_try_advisory_xact_lock(hashtext('opsagent-scheduler')) AS ok",
-                vec![],
-            ))
-            .await
-            .map_err(db_err)?;
-        Ok(r.map(|r| get(&r, "ok")).transpose()?.unwrap_or(false))
-    }
-
     async fn org_timezone(&self, organisation_id: Uuid) -> RepoResult<String> {
         let r = self
             .db()
@@ -253,5 +239,19 @@ impl<C: Conn> SchedulesRepo for Pg<C> {
                 })
             })
             .collect()
+    }
+
+    /// Takes the scheduler's transaction-level advisory lock if no other scheduler holds it;
+    /// commit, rollback or disconnect releases it. Call on a transaction.
+    async fn try_lock_scheduler(&self) -> RepoResult<bool> {
+        let r = self
+            .db()
+            .query_one_raw(stmt(
+                "SELECT pg_try_advisory_xact_lock(hashtext('opsagent-scheduler')) AS ok",
+                vec![],
+            ))
+            .await
+            .map_err(db_err)?;
+        Ok(r.map(|r| get(&r, "ok")).transpose()?.unwrap_or(false))
     }
 }

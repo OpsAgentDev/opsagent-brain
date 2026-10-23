@@ -69,9 +69,8 @@ pub async fn slack_on(ctx: &AppContext, w: &World, server: &MockServer) {
     let finish = &actions(ctx).unwrap().integrations.finish_slack_install;
     finish.save(w.org, w.owner, &install).await.unwrap();
     let c: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(server.uri()).unwrap());
-    ctx.shared_store.insert(c);
     // Actions hold the Slack client they were built with.
-    opsagent_brain::app::install_actions(ctx).unwrap();
+    opsagent_brain::app::replace_deps(ctx, |d| d.slack = c).unwrap();
     sql(
         ctx,
         "UPDATE connections SET slack_channel_id = $2 WHERE id = $1",

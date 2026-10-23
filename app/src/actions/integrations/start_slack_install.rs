@@ -3,18 +3,18 @@ use axum::http::StatusCode;
 use super::{configured, redirect_uri, SLACK_NOT_CONFIGURED};
 use crate::{
     adapters::slack::{AUTHORIZE_URL, BOT_SCOPES},
+    config::Config,
     error::{AppError, AppResult},
-    settings::Settings,
 };
 
 /// The Slack consent URL carrying `state`; 503 `slack_not_configured` without client
 /// credentials. The caller keeps `state` (in the session) to check the callback against.
 pub struct StartSlackInstall {
-    settings: Settings,
+    settings: Config,
 }
 
 impl StartSlackInstall {
-    pub fn new(settings: Settings) -> Self {
+    pub fn new(settings: Config) -> Self {
         Self { settings }
     }
 

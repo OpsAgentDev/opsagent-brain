@@ -17,9 +17,9 @@ use super::{OrgIdPath, OrgPath};
 use crate::{
     adapters::slack::Channel,
     api_error::{ApiError, Problem},
-    app::actions,
+    app::{actions, state},
+    config::Config,
     middleware::org_scope::{AuthUser, OrgScope},
-    settings::Settings,
     tokens::new_token,
 };
 
@@ -61,7 +61,7 @@ pub struct SlackCallback {
     pub error: Option<String>,
 }
 
-fn to_web(s: &Settings, query: &str) -> Response {
+fn to_web(s: &Config, query: &str) -> Response {
     let to = format!(
         "{}/settings/delivery?{query}",
         s.web_base_url.trim_end_matches('/')
@@ -104,7 +104,7 @@ async fn slack_callback(
     user: Result<AuthUser, ApiError>,
     Query(q): Query<SlackCallback>,
 ) -> Result<Response, ApiError> {
-    let s = Settings::get(&ctx);
+    let s = state(&ctx)?.config.clone();
     let Ok(AuthUser(user_id)) = user else {
         return Ok(to_web(&s, "slack=error&code=signed_out"));
     };

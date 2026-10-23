@@ -10,7 +10,7 @@ pub fn email_hash(email: &str) -> String {
     format!("{:x}", Sha256::digest(email.to_lowercase()))
 }
 
-/// The HMAC key for unsubscribe tokens, derived from `Settings::unsubscribe_key`.
+/// The HMAC key for unsubscribe tokens, derived from `Config::unsubscribe_key`.
 fn unsubscribe_mac(secret: &str, id: Uuid) -> Hmac<Sha256> {
     let mut key = [0u8; 32];
     Hkdf::<Sha256>::new(None, secret.as_bytes())

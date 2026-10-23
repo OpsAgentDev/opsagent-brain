@@ -8,10 +8,10 @@ use uuid::Uuid;
 
 use super::Kit;
 use crate::{
+    actions::runs::classify::{lerr, LResult},
     actions::{integrations::open_token, uow::UnitOfWork},
     adapters::slack::SlackError,
     mailers::Mail,
-    workers::common::{lerr, LResult},
 };
 
 /// The run delivering, and what its rows are about.

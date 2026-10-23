@@ -11,85 +11,49 @@ use loco_rs::{
     Result,
 };
 use migration::Migrator;
-use opsagent_connectors::{aws::AwsOutbound, Registry};
-use opsagent_core::repo::SystemClock;
-use opsagent_secrets::{CachingKek, EnvKek, Kek};
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc};
 
 use crate::{
     actions::Actions,
-    adapters::{db::Pg, loco_queue::LocoQueue},
-    boot::{build_actions, Deps},
+    adapters::loco_queue::LocoQueue,
+    boot::{self, Deps},
+    config::{init_tracing, Config as AppConfig},
     controllers,
     middleware::{self, AuthInitializer},
-    settings::Settings,
+    state::AppState,
     tasks::{
         deliver_briefing::DeliverBriefingNow, openapi_dump::OpenapiDump, scan_now::ScanNow,
         scheduler_tick::SchedulerTick,
     },
     workers::{
-        common::redis_client, full_scan::FullScanWorker, verify::VerifyWorker,
-        DeliverBriefingWorker, DeliverWeeklyWorker,
+        full_scan::FullScanWorker, verify::VerifyWorker, DeliverBriefingWorker, DeliverWeeklyWorker,
     },
 };
 
-/// security.md: unwrapped DEKs stay in memory for at most 10 minutes.
-const DEK_TTL: Duration = Duration::from_secs(600);
-
-/// `OPSAGENT_CONNECTORS`: `fake` serves every provider from fixtures (tests, local runs) and
-/// is refused in production; `aws` (the default) uses the real connectors.
-fn fake_connectors(value: Option<&str>, production: bool) -> Result<bool> {
-    match value.unwrap_or("aws") {
-        "fake" if production => Err(loco_rs::Error::string(
-            "OPSAGENT_CONNECTORS=fake is not allowed in production",
-        )),
-        "fake" => Ok(true),
-        "aws" => Ok(false),
-        other => Err(loco_rs::Error::string(&format!(
-            "OPSAGENT_CONNECTORS must be aws or fake, got {other}"
-        ))),
-    }
-}
-
-/// The process-wide KEK (with the DEK cache), installed at boot.
-pub fn kek(ctx: &AppContext) -> Result<Arc<dyn Kek>> {
+/// The state `boot` built, from the shared store.
+pub fn state(ctx: &AppContext) -> Result<AppState> {
     ctx.shared_store
-        .get::<Arc<dyn Kek>>()
-        .ok_or_else(|| loco_rs::Error::string("KEK not installed"))
+        .get::<AppState>()
+        .ok_or_else(|| loco_rs::Error::string("app state not installed"))
 }
 
-/// The connector registry, installed at boot.
-pub fn registry(ctx: &AppContext) -> Result<Registry> {
-    ctx.shared_store
-        .get::<Registry>()
-        .ok_or_else(|| loco_rs::Error::string("connector registry not installed"))
+/// The process-wide KEK (with the DEK cache).
+pub fn kek(ctx: &AppContext) -> Result<Arc<dyn opsagent_secrets::Kek>> {
+    Ok(state(ctx)?.kek.clone())
 }
 
-/// Builds every action from the installed adapters and stores `Arc<Actions>`. Tests that
-/// replace an adapter in the shared store (the mailer) call it again.
-pub fn install_actions(ctx: &AppContext) -> Result<()> {
-    let deps = Deps {
-        uow: Arc::new(Pg::new(ctx.db.clone())),
-        limiter: middleware::rate_limiter(ctx),
-        kek: kek(ctx)?,
-        registry: registry(ctx)?,
-        mailer: middleware::mailer(ctx),
-        slack: middleware::slack(ctx),
-        clock: Arc::new(SystemClock),
-        settings: Settings::get(ctx),
-        queue: Arc::new(LocoQueue(ctx.clone())),
-        ledger_redis: redis_client(ctx)?,
-        db_url: ctx.config.database.uri.clone(),
-    };
-    ctx.shared_store.insert(Arc::new(build_actions(&deps)));
-    Ok(())
-}
-
-/// The actions, installed at boot.
+/// The actions, built once by `boot`.
 pub fn actions(ctx: &AppContext) -> Result<Arc<Actions>> {
-    ctx.shared_store
-        .get::<Arc<Actions>>()
-        .ok_or_else(|| loco_rs::Error::string("actions not installed"))
+    Ok(state(ctx)?.actions.clone())
+}
+
+/// Test seam until Task 15's `TestApp` hands its doubles to `boot`: replaces the state with
+/// `f` applied to its adapters, so every action is rebuilt over them.
+pub fn replace_deps(ctx: &AppContext, f: impl FnOnce(&mut Deps)) -> Result<()> {
+    let mut deps = state(ctx)?.deps.clone();
+    f(&mut deps);
+    ctx.shared_store.insert(boot::assemble(deps));
+    Ok(())
 }
 
 pub struct App;
@@ -117,24 +81,31 @@ impl Hooks for App {
         create_app::<Self, Migrator>(mode, environment, config).await
     }
 
-    /// Builds the adapters every mode (server, workers, tasks) shares, once.
+    /// Builds the state every mode (server, workers, tasks) shares, once. Loco has already
+    /// resolved the environment (and forces `test` under its test harness), so it wins over
+    /// `APP_ENV`.
     async fn after_context(ctx: AppContext) -> Result<AppContext> {
-        let env_kek = EnvKek::from_env().map_err(|e| loco_rs::Error::string(&e.to_string()))?;
-        let kek: Arc<dyn Kek> = Arc::new(CachingKek::new(env_kek, DEK_TTL));
-        ctx.shared_store.insert(kek);
-        let production = ctx.environment == Environment::Production;
-        let fake = fake_connectors(
-            std::env::var("OPSAGENT_CONNECTORS").ok().as_deref(),
-            production,
-        )?;
-        let outbound = AwsOutbound {
-            principal_arn: std::env::var("OPSAGENT_AWS_OUTBOUND_ROLE_ARN").ok(),
-            ..Default::default()
+        let env = ctx.environment.to_string();
+        let vars = |k: &str| match k {
+            "APP_ENV" => Some(env.clone()),
+            _ => std::env::var(k).ok(),
         };
-        ctx.shared_store.insert(Registry::new(outbound, fake));
-        middleware::install_adapters(&ctx)?;
-        install_actions(&ctx)?;
+        let config =
+            AppConfig::from_vars(vars).map_err(|e| loco_rs::Error::string(&e.to_string()))?;
+        let queue = Arc::new(LocoQueue(ctx.clone()));
+        // shortcut: Loco owns the app pool and migrations while it boots the process, so the
+        // state reuses `ctx.db` (one pool, as before); `boot` connects its own from Task 16.
+        let state = boot::boot_on(config, ctx.db.clone(), queue)
+            .await
+            .map_err(|e| loco_rs::Error::string(&e.to_string()))?;
+        ctx.shared_store.insert(state);
         Ok(ctx)
+    }
+
+    /// Our subscriber instead of Loco's (same filter and formats).
+    fn init_logger(ctx: &AppContext) -> Result<bool> {
+        init_tracing(&state(ctx)?.config);
+        Ok(true)
     }
 
     async fn initializers(_ctx: &AppContext) -> Result<Vec<Box<dyn Initializer>>> {
@@ -175,19 +146,5 @@ impl Hooks for App {
 
     async fn seed(_ctx: &AppContext, _base: &Path) -> Result<()> {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::fake_connectors;
-
-    #[test]
-    fn production_refuses_fake_connectors() {
-        assert!(fake_connectors(Some("fake"), true).is_err());
-        assert!(fake_connectors(Some("fake"), false).unwrap());
-        assert!(!fake_connectors(Some("aws"), true).unwrap());
-        assert!(!fake_connectors(None, true).unwrap());
-        assert!(fake_connectors(Some("bogus"), false).is_err());
     }
 }

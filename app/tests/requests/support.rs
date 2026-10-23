@@ -61,9 +61,8 @@ pub fn prepare(ctx: &AppContext) -> Arc<CaptureMailer> {
     }
     let mail = Arc::new(CaptureMailer::default());
     let dynamic: Arc<dyn Mailer> = mail.clone();
-    ctx.shared_store.insert(dynamic);
     // Actions hold the mailer they were built with.
-    opsagent_brain::app::install_actions(ctx).unwrap();
+    opsagent_brain::app::replace_deps(ctx, |d| d.mailer = dynamic).unwrap();
     mail
 }
 

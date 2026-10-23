@@ -44,6 +44,7 @@ utoipa-axum = "0.3"
 lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "tokio1", "builder", "hostname"] }
 tower-http = { version = "0.6", features = ["cors"] }
 thiserror = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [[bin]]
 name = "opsagent-brain"
@@ -58,7 +59,6 @@ loco-rs = { workspace = true, features = ["testing"] }
 opsagent-brain = { path = ".", features = ["test-support"] }
 opsagent-ledger = { path = "../crates/ledger", features = ["test-support"] }
 serial_test = "3.1.1"
-tracing-subscriber = "0.3"
 axum-test = "17"
 wiremock = "0.6"
 

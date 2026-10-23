@@ -198,4 +198,9 @@ impl SchedulesRepo for MemStore {
         due.sort_by_key(|d| d.marker);
         Ok(due)
     }
+
+    /// One scheduler per test: the lock is always free (lock behaviour is tested on Pg).
+    async fn try_lock_scheduler(&self) -> RepoResult<bool> {
+        Ok(true)
+    }
 }

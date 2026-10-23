@@ -19,9 +19,8 @@ use uuid::Uuid;
 use crate::{
     actions::auth::{GithubProfile, MagicLinkInput},
     api_error::{ApiError, ApiJson, Problem},
-    app::actions,
+    app::{actions, state},
     middleware::{csrf, org_scope::AuthUser, session::USER_KEY},
-    settings::Settings,
 };
 
 const GH_KEY: &str = "github_oauth";
@@ -101,7 +100,7 @@ async fn redeem_link(
     headers: HeaderMap,
     ApiJson(body): ApiJson<RedeemRequest>,
 ) -> Result<Json<Redirect>, ApiError> {
-    let web = Settings::get(&ctx).web_base_url;
+    let web = state(&ctx)?.config.web_base_url.clone();
     check_origin(&headers, &web)?;
     let redeem = &actions(&ctx)?.auth.redeem_magic_link;
     let user_id = redeem.run(&body.token).await?;
@@ -153,7 +152,7 @@ async fn github_start(
     State(ctx): State<AppContext>,
     session: Session,
 ) -> Result<Json<AuthorizeUrl>, ApiError> {
-    let s = Settings::get(&ctx);
+    let s = state(&ctx)?.config.clone();
     let client = github_client!(s);
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
     let (url, state) = client
@@ -244,7 +243,7 @@ async fn github_callback(
     session: Session,
     Query(q): Query<CallbackQuery>,
 ) -> Result<Response, ApiError> {
-    let s = Settings::get(&ctx);
+    let s = state(&ctx)?.config.clone();
     let client = github_client!(s);
     let stored = session.remove::<(String, String)>(GH_KEY).await?;
     let Some((_, verifier)) = stored.filter(|(st, _)| *st == q.state) else {
@@ -291,7 +290,7 @@ async fn csrf_token(
 ) -> Result<Json<Csrf>, ApiError> {
     let sid = session.id().ok_or_else(ApiError::unauthenticated)?;
     Ok(Json(Csrf {
-        token: csrf::token(&Settings::get(&ctx).session_secret, &sid.to_string()),
+        token: csrf::token(&state(&ctx)?.config.session_secret, &sid.to_string()),
     }))
 }
 

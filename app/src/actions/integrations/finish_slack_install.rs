@@ -12,8 +12,8 @@ use crate::{
     actions::uow::UnitOfWork,
     adapters::slack::{Install, SlackClient, SlackError},
     api_error::ApiError,
+    config::Config,
     error::{AppError, AppResult},
-    settings::Settings,
 };
 
 /// Why an install did not finish; the callback redirects with `redirect_code`.
@@ -56,7 +56,7 @@ pub struct FinishSlackInstall {
     uow: Arc<dyn UnitOfWork>,
     kek: Arc<dyn Kek>,
     slack: Arc<dyn SlackClient>,
-    settings: Settings,
+    settings: Config,
 }
 
 impl FinishSlackInstall {
@@ -64,7 +64,7 @@ impl FinishSlackInstall {
         uow: Arc<dyn UnitOfWork>,
         kek: Arc<dyn Kek>,
         slack: Arc<dyn SlackClient>,
-        settings: Settings,
+        settings: Config,
     ) -> Self {
         Self {
             uow,

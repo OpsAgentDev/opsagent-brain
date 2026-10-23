@@ -21,8 +21,8 @@ use super::{
 };
 use crate::{
     actions::recipients::tokens::unsubscribe_url,
+    actions::runs::classify::{lerr, LResult},
     mailers::{magic_link::mail_safe_name, Mail},
-    workers::common::{lerr, LResult},
 };
 
 const EMAIL: &str = "email";

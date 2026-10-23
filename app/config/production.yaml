@@ -97,7 +97,7 @@ database:
   dangerously_recreate: false
 
 
-# Auth, sessions and mail links (read by src/settings.rs).
+# Auth, sessions and mail links. Unread: src/config.rs reads these variables (same defaults, tests/config_parity.rs); deleted in Task 19.
 settings:
   web_base_url: "<%= get_env(name="WEB_BASE_URL") %>"
   api_base_url: "<%= get_env(name="APP_BASE_URL") %>"

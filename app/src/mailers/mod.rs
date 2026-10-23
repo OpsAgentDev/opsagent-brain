@@ -8,7 +8,8 @@ use lettre::{
     message::{Mailbox, MultiPart},
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
-use loco_rs::{Error, Result};
+
+use crate::config::{AppEnv, Config, ConfigError};
 
 #[derive(Clone, Debug, Default)]
 pub struct Mail {
@@ -150,27 +151,34 @@ pub fn choose(
     smtp_url: Option<String>,
     resend_key: Option<String>,
     production: bool,
-) -> Result<MailerChoice> {
+) -> Result<MailerChoice, ConfigError> {
     let set = |v: Option<String>| v.filter(|s| !s.is_empty());
     match (set(smtp_url), set(resend_key)) {
-        (Some(url), _) if production && !is_loopback(&url) => Err(Error::string(
-            "MAILER_SMTP_URL must point at a loopback host in production (plain SMTP, no TLS)",
-        )),
+        (Some(url), _) if production && !is_loopback(&url) => Err(ConfigError::Invalid {
+            name: "MAILER_SMTP_URL",
+            reason: "must point at a loopback host in production (plain SMTP, no TLS)".into(),
+        }),
         (Some(url), _) => Ok(MailerChoice::Smtp(url)),
         (None, Some(key)) => Ok(MailerChoice::Resend(key)),
-        _ if production => Err(Error::string("RESEND_API_KEY is required in production")),
+        _ if production => Err(ConfigError::Missing(vec!["RESEND_API_KEY"])),
         _ => Ok(MailerChoice::Log),
     }
 }
 
-pub fn from_env(production: bool) -> Result<Arc<dyn Mailer>> {
+/// The mailer for `config`'s environment. Its own variables (`MAIL_FROM`, `MAILER_SMTP_URL`,
+/// `RESEND_API_KEY`) are read here, not in `Config`.
+pub fn from_config(config: &Config) -> Result<Arc<dyn Mailer>, ConfigError> {
+    let production = config.env == AppEnv::Production;
     let env = |k: &str| std::env::var(k).ok();
     let from = env("MAIL_FROM").unwrap_or_else(|| "OpsAgent <login@opsagent.dev>".into());
     Ok(
         match choose(env("MAILER_SMTP_URL"), env("RESEND_API_KEY"), production)? {
-            MailerChoice::Smtp(url) => {
-                Arc::new(SmtpMailer::new(&url, &from).map_err(|e| Error::string(&e))?)
-            }
+            MailerChoice::Smtp(url) => Arc::new(SmtpMailer::new(&url, &from).map_err(
+                |reason| ConfigError::Invalid {
+                    name: "MAILER_SMTP_URL",
+                    reason,
+                },
+            )?),
             MailerChoice::Resend(key) => Arc::new(ResendMailer {
                 key,
                 from,
