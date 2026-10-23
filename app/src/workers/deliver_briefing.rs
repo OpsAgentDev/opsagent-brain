@@ -127,8 +127,13 @@ async fn deliver(ctx: &AppContext, storage: &PgStorage, run: &RunRow) -> LResult
             text: body.clone(),
             ..Default::default()
         };
-        out.email(&format!("fallback:{}", o.id), mail, FALLBACK_EMAIL)
-            .await?;
+        out.email(
+            &format!("fallback:{}", o.id),
+            mail,
+            o.member,
+            FALLBACK_EMAIL,
+        )
+        .await?;
     }
     Ok(outcome("delivered", "fallback_email"))
 }

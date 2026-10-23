@@ -1,7 +1,8 @@
 //! Who may receive mail. Two questions, answered separately:
 //!
-//! - `may_deliver(org, address)`: deliveries to a confirmed recipient. Blocked by a global
-//!   `unsubscribed` row or an unexpired `ignored` row for that organisation.
+//! - `may_deliver(org, address, member)`: deliveries to a confirmed recipient. Blocked by a
+//!   global `unsubscribed` row (not for members and owners, whose mail has no unsubscribe link)
+//!   or an unexpired `ignored` row for that organisation.
 //! - `may_send_confirm(org, address)`: confirm mails. Also blocked by an unexpired global
 //!   `confirm_blocked` row, and capped per (organisation, address), per address and per
 //!   organisation each day. Fails closed when Redis is unavailable.
@@ -143,18 +144,14 @@ async fn expiring(
     .map(|_| ())
 }
 
-/// Whether a live suppression row matches: global `unsubscribed`, this organisation's
-/// unexpired `ignored`, and (for confirm mails only) the unexpired global `confirm_blocked`.
+/// Whether a live suppression row for one of `reasons` matches: global rows, or this
+/// organisation's.
 async fn suppressed(
     db: &impl ConnectionTrait,
     organisation_id: Uuid,
     email: &str,
-    confirm: bool,
+    reasons: &[&str],
 ) -> Result<bool, DbErr> {
-    let mut reasons = vec!["unsubscribed", "ignored"];
-    if confirm {
-        reasons.push("confirm_blocked");
-    }
     let live = Condition::any()
         .add(S::ExpiresAt.is_null())
         .add(S::ExpiresAt.gt(now()));
@@ -165,7 +162,7 @@ async fn suppressed(
                 .add(S::OrganisationId.is_null())
                 .add(S::OrganisationId.eq(organisation_id)),
         )
-        .filter(S::Reason.is_in(reasons))
+        .filter(S::Reason.is_in(reasons.iter().copied()))
         .filter(live)
         .one(db)
         .await?;
@@ -173,13 +170,20 @@ async fn suppressed(
 }
 
 /// Whether a delivery (briefing, weekly, alert) from `organisation_id` may go to a confirmed
-/// recipient at `email`. `confirm_blocked` does not apply.
+/// recipient at `email`. `confirm_blocked` does not apply. A `member` (or owner) skips only
+/// `unsubscribed`: another organisation's footer must not silence their own organisation's mail.
 pub async fn may_deliver(
     db: &impl ConnectionTrait,
     organisation_id: Uuid,
     email: &str,
+    member: bool,
 ) -> Result<bool, DbErr> {
-    Ok(!suppressed(db, organisation_id, email, false).await?)
+    let reasons: &[&str] = if member {
+        &["ignored"]
+    } else {
+        &["unsubscribed", "ignored"]
+    };
+    Ok(!suppressed(db, organisation_id, email, reasons).await?)
 }
 
 /// The Redis-side verdict on one confirm mail.
@@ -259,7 +263,14 @@ pub async fn may_send_confirm(
     organisation_id: Uuid,
     email: &str,
 ) -> Result<bool, ApiError> {
-    if suppressed(db, organisation_id, email, true).await? {
+    if suppressed(
+        db,
+        organisation_id,
+        email,
+        &["unsubscribed", "ignored", "confirm_blocked"],
+    )
+    .await?
+    {
         return Ok(false);
     }
     let hash = email_hash(email);

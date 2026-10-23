@@ -369,7 +369,7 @@ async fn revoked_token_falls_back_once_and_slack_is_not_retried_next_day() {
 
 #[tokio::test]
 #[serial]
-async fn no_slack_route_is_an_email_fallback_and_suppressed_owner_gets_nothing() {
+async fn no_slack_route_is_an_email_fallback_and_only_unsubscribe_spares_the_owner() {
     serve(|req, ctx| async move {
         let w = world(&req, &ctx, "noslack@example.com").await;
         let mail = prepare(&ctx);
@@ -380,18 +380,31 @@ async fn no_slack_route_is_an_email_fallback_and_suppressed_owner_gets_nothing()
         assert_eq!((r[0].channel.as_str(), r[0].status.as_str()), ("email", "fallback_email"));
         assert_eq!(mail.sent().len(), 1);
 
-        // An owner address that unsubscribed everywhere is never mailed.
+        // An owner address unsubscribed from another organisation's footer is still mailed.
         let hash = opsagent_brain::services::mail_guard::email_hash("noslack@example.com");
         sql(
             &ctx,
             "INSERT INTO email_suppressions (id, email_hash, reason) VALUES ($1, $2, 'unsubscribed')",
-            vec![Uuid::new_v4().into(), hash.into()],
+            vec![Uuid::new_v4().into(), hash.clone().into()],
         )
         .await;
         let run = scan(&ctx, &w, Utc::now()).await;
         finding(&ctx, &w, run, "high", "new high", Utc::now()).await;
         brief(&ctx, &w, Utc::now() + Duration::days(1)).await;
-        assert_eq!(mail.sent().len(), 1);
+        assert_eq!(mail.sent().len(), 2);
+
+        // Any other suppression still blocks the owner.
+        sql(
+            &ctx,
+            "INSERT INTO email_suppressions (id, organisation_id, email_hash, reason, expires_at) \
+             VALUES ($1, $2, $3, 'ignored', now() + interval '1 day')",
+            vec![Uuid::new_v4().into(), w.org.into(), hash.into()],
+        )
+        .await;
+        let run = scan(&ctx, &w, Utc::now() + Duration::days(1)).await;
+        finding(&ctx, &w, run, "high", "another high", Utc::now() + Duration::days(1)).await;
+        brief(&ctx, &w, Utc::now() + Duration::days(2)).await;
+        assert_eq!(mail.sent().len(), 2);
         let st: Vec<_> = rows(&ctx, &w).await.into_iter().map(|d| d.status).collect();
         assert!(st.contains(&"suppressed".to_owned()), "{st:?}");
     })

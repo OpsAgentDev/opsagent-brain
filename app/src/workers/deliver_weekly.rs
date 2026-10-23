@@ -126,7 +126,8 @@ async fn step(
         let s = Settings::get(ctx);
         for rc in &to {
             let mail = weekly_mail(&w, rc, &s);
-            out.email(&format!("weekly:{}", rc.id), mail, SENT).await?;
+            out.email(&format!("weekly:{}", rc.id), mail, rc.member, SENT)
+                .await?;
         }
         return Ok(outcome(EMAIL, "done"));
     }
@@ -219,7 +220,8 @@ async fn summary(out: &Out<'_>) -> LResult<ChunkOutcome> {
             text: text.clone(),
             ..Default::default()
         };
-        out.email(&format!("summary:{}", o.id), mail, SENT).await?;
+        out.email(&format!("summary:{}", o.id), mail, o.member, SENT)
+            .await?;
     }
     Ok(outcome(SUMMARY, "done"))
 }

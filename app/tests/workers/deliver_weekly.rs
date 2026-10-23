@@ -3,7 +3,10 @@ use chrono::Utc;
 use loco_rs::app::AppContext;
 use opsagent_brain::{
     models::members as member_model,
-    services::{mail_guard::email_hash, recipients::unsubscribe_url},
+    services::{
+        mail_guard::email_hash,
+        recipients::{unsubscribe, unsubscribe_token, unsubscribe_url},
+    },
     settings::Settings,
     workers::deliver_weekly,
 };
@@ -194,6 +197,90 @@ async fn non_member_mail_has_the_unsubscribe_link_and_members_do_not() {
             .collect();
         assert!(
             st.contains(&("gone@example.com".into(), "suppressed".into())),
+            "{st:?}"
+        );
+    })
+    .await;
+}
+
+/// Org A's footer unsubscribes the address (a global `unsubscribed` row); it is a member of
+/// org B (`w`), so B's member weekly and owner summary still reach it.
+#[tokio::test]
+#[serial]
+async fn member_mail_ignores_an_unsubscribe_from_another_organisation() {
+    serve(|req, ctx| async move {
+        let w = world(&req, &ctx, "lead@example.com").await;
+        let mail = prepare(&ctx);
+        let a = Uuid::new_v4();
+        sql(
+            &ctx,
+            "INSERT INTO organisations (id, name, slug) VALUES ($1, 'A', $2)",
+            vec![a.into(), format!("a-{}", a.simple()).into()],
+        )
+        .await;
+        let in_a = Uuid::new_v4();
+        sql(
+            &ctx,
+            "INSERT INTO recipients (id, organisation_id, email, status) \
+             VALUES ($1, $2, 'dev@example.com', 'active')",
+            vec![in_a.into(), a.into()],
+        )
+        .await;
+        let s = Settings::get(&ctx);
+        let token = unsubscribe_token(&s.session_secret, in_a);
+        unsubscribe(&ctx.db, &s.session_secret, &token)
+            .await
+            .unwrap();
+        let u = user(&ctx, "dev@example.com").await;
+        let m = member_model::add(&ctx.db, w.org, u, "member")
+            .await
+            .unwrap();
+        recipient(&ctx, &w, "dev@example.com", Some(m.id)).await;
+        scan(&ctx, &w, Utc::now()).await;
+
+        weekly(&ctx, &w, Some(w.conn)).await;
+        let to: Vec<_> = mail.sent().iter().map(|m| m.to.clone()).collect();
+        assert_eq!(to, ["dev@example.com"]);
+    })
+    .await;
+}
+
+/// Only `unsubscribed` is waived for members: any other suppression still blocks them.
+#[tokio::test]
+#[serial]
+async fn other_suppressions_still_block_a_member() {
+    serve(|req, ctx| async move {
+        let w = world(&req, &ctx, "lead@example.com").await;
+        let mail = prepare(&ctx);
+        let u = user(&ctx, "dev@example.com").await;
+        let m = member_model::add(&ctx.db, w.org, u, "member")
+            .await
+            .unwrap();
+        recipient(&ctx, &w, "dev@example.com", Some(m.id)).await;
+        // shortcut: no bounce reason exists yet (CHECK allows unsubscribed/ignored/confirm_blocked),
+        // so `ignored` stands in; add a bounce case when bounces are recorded.
+        sql(
+            &ctx,
+            "INSERT INTO email_suppressions (id, organisation_id, email_hash, reason, expires_at) \
+             VALUES ($1, $2, $3, 'ignored', now() + interval '1 day')",
+            vec![
+                Uuid::new_v4().into(),
+                w.org.into(),
+                email_hash("dev@example.com").into(),
+            ],
+        )
+        .await;
+        scan(&ctx, &w, Utc::now()).await;
+
+        weekly(&ctx, &w, Some(w.conn)).await;
+        assert!(mail.sent().is_empty());
+        let st: Vec<_> = rows(&ctx, &w)
+            .await
+            .into_iter()
+            .map(|d| (d.target, d.status))
+            .collect();
+        assert!(
+            st.contains(&("dev@example.com".into(), "suppressed".into())),
             "{st:?}"
         );
     })

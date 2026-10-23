@@ -957,9 +957,11 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
             .await
             .unwrap()
             .unwrap();
-        assert!(mail_guard::may_deliver(&ctx.db, z.id, "target@example.com")
-            .await
-            .unwrap());
+        assert!(
+            mail_guard::may_deliver(&ctx.db, z.id, "target@example.com", false)
+                .await
+                .unwrap()
+        );
         let redis = redis_of(&ctx);
         assert!(
             !mail_guard::may_send_confirm(&ctx.db, &redis, z.id, "target@example.com")
@@ -990,7 +992,7 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
             ("unsubscribed", None)
         );
         assert!(
-            !mail_guard::may_deliver(&ctx.db, z.id, "target@example.com")
+            !mail_guard::may_deliver(&ctx.db, z.id, "target@example.com", false)
                 .await
                 .unwrap()
         );
@@ -1045,7 +1047,7 @@ async fn six_owners_who_each_confirm_never_trip_confirm_blocked() {
             .unwrap()
             .unwrap();
         assert!(
-            mail_guard::may_deliver(&ctx.db, org.id, "target@example.com")
+            mail_guard::may_deliver(&ctx.db, org.id, "target@example.com", false)
                 .await
                 .unwrap()
         );
