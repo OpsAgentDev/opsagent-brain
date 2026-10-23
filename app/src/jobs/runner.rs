@@ -72,7 +72,9 @@ impl WorkerRunner {
                 match self.source.complete(&job).await {
                     Ok(true) => {}
                     Ok(false) => tracing::warn!(job = %id, kind, %run, "job done, lock lost"),
-                    Err(_) => tracing::error!(job = %id, kind, %run, "job done but not completed"),
+                    Err(e) => {
+                        tracing::error!(job = %id, kind, %run, error = %e, "job done but not completed")
+                    }
                 }
                 return;
             }
@@ -84,7 +86,9 @@ impl WorkerRunner {
                 tracing::warn!(job = %id, kind, %run, "job failed, lock lost")
             }
             Ok(outcome) => tracing::warn!(job = %id, kind, %run, ?outcome, "job failed"),
-            Err(_) => tracing::error!(job = %id, kind, %run, "job failed and not recorded"),
+            Err(e) => {
+                tracing::error!(job = %id, kind, %run, error = %e, "job failed and not recorded")
+            }
         }
     }
 
@@ -121,7 +125,7 @@ impl WorkerRunner {
                     continue;
                 }
                 Ok(None) => {}
-                Err(_) => tracing::error!(worker = %this.worker_id, "dequeue failed"),
+                Err(e) => tracing::error!(worker = %this.worker_id, error = %e, "dequeue failed"),
             }
             drop(slot);
             tokio::select! {
