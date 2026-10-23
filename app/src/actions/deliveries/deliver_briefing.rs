@@ -16,10 +16,10 @@ use super::{
     Kit,
 };
 use crate::{
+    actions::runs::classify::{lerr, LResult},
     adapters::slack::SlackError,
     error::{AppError, AppResult},
     mailers::{magic_link::mail_safe_name, Mail},
-    workers::common::{lerr, LResult},
 };
 
 const CHUNK: &str = "deliver";

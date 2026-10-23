@@ -20,9 +20,9 @@ pub use start_slack_install::StartSlackInstall;
 
 use crate::{
     actions::uow::Repos,
+    config::Config,
     creds::Dek,
     error::{AppError, AppResult},
-    settings::Settings,
 };
 
 /// Another organisation already holds this Slack workspace (one workspace, one organisation).
@@ -45,11 +45,11 @@ fn aad(organisation_id: Uuid) -> Aad {
     }
 }
 
-fn configured(s: &Settings) -> bool {
+fn configured(s: &Config) -> bool {
     !s.slack_client_id.is_empty() && !s.slack_client_secret.is_empty()
 }
 
-fn redirect_uri(s: &Settings) -> String {
+fn redirect_uri(s: &Config) -> String {
     format!(
         "{}/v1/integrations/slack/callback",
         s.api_base_url.trim_end_matches('/')

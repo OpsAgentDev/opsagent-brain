@@ -3,16 +3,11 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use opsagent_deliver::{repo::SchedulesRepo, schedule::next_after};
-use opsagent_ledger::Storage;
-use sea_orm::{ConnectOptions, Database, DatabaseConnection, TransactionTrait};
+use opsagent_deliver::schedule::next_after;
 use uuid::Uuid;
 
 use super::RunDispatcher;
-use crate::{
-    adapters::db::{db_err, Pg},
-    error::AppResult,
-};
+use crate::{actions::uow::UnitOfWork, error::AppResult};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct TickReport {
@@ -22,32 +17,26 @@ pub struct TickReport {
 }
 
 pub struct SchedulerTick {
-    db_url: String,
+    /// The scheduler's own pool (boot): one connection holds the lock transaction for the
+    /// whole tick, the other does the per-schedule work.
+    uow: Arc<dyn UnitOfWork>,
     dispatcher: Arc<RunDispatcher>,
 }
 
 impl SchedulerTick {
-    pub fn new(db_url: String, dispatcher: Arc<RunDispatcher>) -> Self {
-        Self { db_url, dispatcher }
+    pub fn new(uow: Arc<dyn UnitOfWork>, dispatcher: Arc<RunDispatcher>) -> Self {
+        Self { uow, dispatcher }
     }
 
     /// One tick at `now`. `None` when another scheduler holds the advisory lock.
     pub async fn run(&self, now: DateTime<Utc>) -> AppResult<Option<TickReport>> {
-        // shortcut: the tick builds its own Pg adapter (a dedicated pool) rather than taking a
-        // UnitOfWork, because the lock needs one connection held for the whole tick; revisit
-        // when the shell owns the pools (Task 13).
-        // Dedicated pool, apart from the app pool (size 1 in dev/test, and used by inline
-        // workers): one connection holds the lock transaction, the other does the per-schedule work.
-        let mut opts = ConnectOptions::new(self.db_url.clone());
-        opts.max_connections(2).min_connections(1);
-        let db = Database::connect(opts).await.map_err(db_err)?;
         // The transaction-level lock is released by commit/rollback/disconnect, never by us.
-        let lock = Pg::new(db.begin().await.map_err(db_err)?);
-        if !lock.try_lock_scheduler().await? {
+        let lock = self.uow.begin().await?;
+        if !lock.schedules().try_lock_scheduler().await? {
             return Ok(None);
         }
-        let report = self.locked(&db, now).await;
-        lock.into_inner().commit().await.map_err(db_err)?;
+        let report = self.locked(now).await;
+        lock.commit().await?;
         report.map(Some)
     }
 
@@ -55,40 +44,39 @@ impl SchedulerTick {
     /// Returns the run only when this call created it.
     async fn due_schedule(
         &self,
-        db: &DatabaseConnection,
         id: Uuid,
         now: DateTime<Utc>,
     ) -> AppResult<Option<(Uuid, String)>> {
-        let txn = Pg::new(db.begin().await.map_err(db_err)?);
-        let Some((key, cron, tz)) = txn.lock_due(id, now).await? else {
+        let tx = self.uow.begin().await?;
+        let Some((key, cron, tz)) = tx.schedules().lock_due(id, now).await? else {
             return Ok(None);
         };
         // Missed ticks collapse into this one run; the next slot is after `now` (PRD 7.3).
         let next = next_after(&cron, &tz, now);
         if next.is_none() {
             tracing::error!(schedule = %id, cron, tz, "invalid schedule, disabling");
-            txn.advance(id, None).await?;
-            txn.into_inner().commit().await.map_err(db_err)?;
+            tx.schedules().advance(id, None).await?;
+            tx.commit().await?;
             return Ok(None);
         }
         let job = key.job_type.clone();
-        let out = self.dispatcher.create_marked(&txn, key, now).await?;
-        txn.advance(id, next).await?;
-        txn.into_inner().commit().await.map_err(db_err)?;
+        let out = self.dispatcher.create_marked(&*tx, key, now).await?;
+        tx.schedules().advance(id, next).await?;
+        tx.commit().await?;
         Ok(out.created.then_some((out.run.id, job)))
     }
 
-    async fn locked(&self, db: &DatabaseConnection, now: DateTime<Utc>) -> AppResult<TickReport> {
+    async fn locked(&self, now: DateTime<Utc>) -> AppResult<TickReport> {
         let d = &self.dispatcher;
         let mut report = TickReport::default();
         // Connections verified before delivery schedules existed get them here, before the due scan.
-        let repo = Pg::new(db);
+        let repo = self.uow.schedules();
         if let Err(e) = repo.backfill_defaults(now).await {
             tracing::error!(error = %e, "schedule backfill failed");
         }
         for id in repo.due_ids(now).await? {
             // One bad schedule must not block the others; its transaction rolled back, so it is due again next tick.
-            match self.due_schedule(db, id, now).await {
+            match self.due_schedule(id, now).await {
                 Ok(Some((run, job))) => match d.dispatch(run, &job, now).await {
                     Ok(sent) => report.schedules_run += usize::from(sent),
                     Err(e) => {
@@ -99,7 +87,7 @@ impl SchedulerTick {
                 Err(e) => tracing::error!(schedule = %id, error = %e, "schedule failed"),
             }
         }
-        report.retries_run = self.retry_pass(db, now).await?;
+        report.retries_run = self.retry_pass(now).await?;
         Ok(report)
     }
 
@@ -108,14 +96,14 @@ impl SchedulerTick {
     /// organisations get no more work: their due parked runs end `Skipped` (fenced, so a
     /// worker already holding a lease cannot revive one) instead of waiting forever. Returns
     /// how many were handed to a worker.
-    async fn retry_pass(&self, db: &DatabaseConnection, now: DateTime<Utc>) -> AppResult<usize> {
-        let due = Pg::new(db).due_runs(now).await?;
+    async fn retry_pass(&self, now: DateTime<Utc>) -> AppResult<usize> {
+        let due = self.uow.schedules().due_runs(now).await?;
         let (gone, live): (Vec<_>, Vec<_>) = due.into_iter().partition(|r| r.organisation_deleted);
-        let txn = Pg::new(db.begin().await.map_err(db_err)?);
+        let tx = self.uow.begin().await?;
         for r in gone {
-            txn.skip_run(r.run_id, "org_deleted").await?;
+            tx.ledger().skip_run(r.run_id, "org_deleted").await?;
         }
-        txn.into_inner().commit().await.map_err(db_err)?;
+        tx.commit().await?;
         let mut sent_total = 0;
         for r in live {
             match self
@@ -133,12 +121,15 @@ impl SchedulerTick {
 
 #[cfg(test)]
 mod tests {
-    use sea_orm::ConnectionTrait;
+    use sea_orm::{ConnectionTrait, Database, TransactionTrait};
 
     use super::*;
     use crate::{
         actions::runs::test_support::FakeQueue,
-        adapters::{db::ledger_storage::stmt, memory::MemStore},
+        adapters::{
+            db::{ledger_storage::stmt, Pg},
+            memory::MemStore,
+        },
     };
 
     #[tokio::test]
@@ -154,7 +145,8 @@ mod tests {
         .unwrap();
         let store = Arc::new(MemStore::default());
         let dispatcher = Arc::new(RunDispatcher::new(store, Arc::new(FakeQueue::default())));
-        let tick = SchedulerTick::new(url, dispatcher);
+        let pool = Database::connect(url).await.unwrap();
+        let tick = SchedulerTick::new(Arc::new(Pg::new(pool)), dispatcher);
         assert_eq!(tick.run(Utc::now()).await.unwrap(), None);
         held.commit().await.unwrap();
     }

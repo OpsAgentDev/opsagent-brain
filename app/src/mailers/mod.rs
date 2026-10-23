@@ -8,7 +8,8 @@ use lettre::{
     message::{Mailbox, MultiPart},
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
-use loco_rs::{Error, Result};
+
+use crate::config::{AppEnv, Config, ConfigError};
 
 #[derive(Clone, Debug, Default)]
 pub struct Mail {
@@ -150,27 +151,37 @@ pub fn choose(
     smtp_url: Option<String>,
     resend_key: Option<String>,
     production: bool,
-) -> Result<MailerChoice> {
+) -> Result<MailerChoice, ConfigError> {
     let set = |v: Option<String>| v.filter(|s| !s.is_empty());
     match (set(smtp_url), set(resend_key)) {
-        (Some(url), _) if production && !is_loopback(&url) => Err(Error::string(
-            "MAILER_SMTP_URL must point at a loopback host in production (plain SMTP, no TLS)",
-        )),
+        (Some(url), _) if production && !is_loopback(&url) => Err(ConfigError::Invalid {
+            name: "MAILER_SMTP_URL",
+            reason: "must point at a loopback host in production (plain SMTP, no TLS)".into(),
+        }),
         (Some(url), _) => Ok(MailerChoice::Smtp(url)),
         (None, Some(key)) => Ok(MailerChoice::Resend(key)),
-        _ if production => Err(Error::string("RESEND_API_KEY is required in production")),
+        _ if production => Err(ConfigError::Missing(vec!["RESEND_API_KEY"])),
         _ => Ok(MailerChoice::Log),
     }
 }
 
-pub fn from_env(production: bool) -> Result<Arc<dyn Mailer>> {
+/// `SmtpMailer::new`, with each error reported under its own variable.
+fn smtp(url: &str, from: &str) -> Result<SmtpMailer, ConfigError> {
+    let invalid = |name, reason| ConfigError::Invalid { name, reason };
+    from.parse::<Mailbox>()
+        .map_err(|e| invalid("MAIL_FROM", e.to_string()))?;
+    SmtpMailer::new(url, from).map_err(|reason| invalid("MAILER_SMTP_URL", reason))
+}
+
+/// The mailer for `config`'s environment. Its own variables (`MAIL_FROM`, `MAILER_SMTP_URL`,
+/// `RESEND_API_KEY`) are read here, not in `Config`.
+pub fn from_config(config: &Config) -> Result<Arc<dyn Mailer>, ConfigError> {
+    let production = config.env == AppEnv::Production;
     let env = |k: &str| std::env::var(k).ok();
     let from = env("MAIL_FROM").unwrap_or_else(|| "OpsAgent <login@opsagent.dev>".into());
     Ok(
         match choose(env("MAILER_SMTP_URL"), env("RESEND_API_KEY"), production)? {
-            MailerChoice::Smtp(url) => {
-                Arc::new(SmtpMailer::new(&url, &from).map_err(|e| Error::string(&e))?)
-            }
+            MailerChoice::Smtp(url) => Arc::new(smtp(&url, &from)?),
             MailerChoice::Resend(key) => Arc::new(ResendMailer {
                 key,
                 from,
@@ -263,6 +274,29 @@ mod tests {
         assert_eq!(
             choose(s(remote), None, false).unwrap(),
             MailerChoice::Smtp(remote.into())
+        );
+    }
+
+    #[test]
+    fn bad_mail_from_is_reported_as_mail_from() {
+        let err = |r: Result<SmtpMailer, ConfigError>| match r {
+            Err(ConfigError::Invalid { name, .. }) => name,
+            _ => "ok",
+        };
+        assert_eq!(
+            err(smtp("smtp://localhost:1025", "not an address")),
+            "MAIL_FROM"
+        );
+        assert_eq!(
+            err(smtp("ftp://x", "OpsAgent <login@opsagent.dev>")),
+            "MAILER_SMTP_URL"
+        );
+        assert_eq!(
+            err(smtp(
+                "smtp://localhost:1025",
+                "OpsAgent <login@opsagent.dev>"
+            )),
+            "ok"
         );
     }
 

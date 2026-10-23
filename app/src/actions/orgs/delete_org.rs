@@ -117,6 +117,9 @@ mod tests {
         async fn due_runs(&self, _: DateTime<Utc>) -> RepoResult<Vec<DueRun>> {
             Err(broken())
         }
+        async fn try_lock_scheduler(&self) -> RepoResult<bool> {
+            Err(broken())
+        }
     }
 
     fn broken() -> RepoError {

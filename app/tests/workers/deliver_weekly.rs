@@ -5,7 +5,6 @@ use opsagent_brain::{
     actions::recipients::tokens::{email_hash, unsubscribe_token, unsubscribe_url},
     adapters::db::Pg,
     app::actions,
-    settings::Settings,
 };
 use opsagent_core::org::{OrganisationsRepo, Role};
 use opsagent_core::run::RunStatus;
@@ -193,7 +192,7 @@ async fn non_member_mail_has_the_unsubscribe_link_and_members_do_not() {
         let sent = mail.sent();
         let to: Vec<_> = sent.iter().map(|m| m.to.as_str()).collect();
         assert_eq!(to, ["dev@example.com", "client@example.com"]);
-        let s = Settings::get(&ctx);
+        let s = opsagent_brain::app::state(&ctx).unwrap().config.clone();
         let url = unsubscribe_url(&s.web_base_url, s.unsubscribe_key(), outside);
         assert!(sent[1].text.contains(&url), "{}", sent[1].text);
         assert!(sent[1].html.as_deref().unwrap().contains(&url));
@@ -235,7 +234,7 @@ async fn member_mail_ignores_an_unsubscribe_from_another_organisation() {
             vec![in_a.into(), a.into()],
         )
         .await;
-        let s = Settings::get(&ctx);
+        let s = opsagent_brain::app::state(&ctx).unwrap().config.clone();
         let token = unsubscribe_token(s.unsubscribe_key(), in_a);
         let unsubscribe = &actions(&ctx).unwrap().recipients.unsubscribe;
         unsubscribe.run(&token).await.unwrap();

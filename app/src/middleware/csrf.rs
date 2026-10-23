@@ -12,7 +12,7 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use super::session::USER_KEY;
-use crate::{api_error::ApiError, settings::Settings};
+use crate::{api_error::ApiError, app::state};
 
 fn mac(secret: &str, session_id: &str) -> Hmac<Sha256> {
     let mut m = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("hmac accepts any key");
@@ -39,14 +39,18 @@ pub async fn guard(State(ctx): State<AppContext>, req: Request, next: Next) -> R
         if let Some(session) = req.extensions().get::<Session>() {
             let signed_in = matches!(session.get::<Uuid>(USER_KEY).await, Ok(Some(_)));
             if signed_in {
-                let secret = Settings::get(&ctx).session_secret;
+                let state = match state(&ctx) {
+                    Ok(s) => s,
+                    Err(e) => return ApiError::internal(e).into_response(),
+                };
+                let secret = &state.config.session_secret;
                 let sid = session.id().map(|i| i.to_string()).unwrap_or_default();
                 let ok = req
                     .headers()
                     .get("x-csrf-token")
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| B64.decode(v).ok())
-                    .is_some_and(|given| mac(&secret, &sid).verify_slice(&given).is_ok());
+                    .is_some_and(|given| mac(secret, &sid).verify_slice(&given).is_ok());
                 if !ok {
                     return ApiError::new(
                         axum::http::StatusCode::FORBIDDEN,

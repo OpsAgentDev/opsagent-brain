@@ -24,7 +24,7 @@ pub use list_deliveries::ListDeliveries;
 pub use preview_briefing::{Preview, PreviewBriefing};
 
 use super::{recipients::MailGuard, uow::Repos, uow::UnitOfWork};
-use crate::{adapters::slack::SlackClient, mailers::Mailer, settings::Settings};
+use crate::{adapters::slack::SlackClient, config::Config, mailers::Mailer};
 
 const LEASE_TTL: Duration = Duration::from_secs(60);
 
@@ -48,7 +48,7 @@ pub struct Kit {
     pub slack: Arc<dyn SlackClient>,
     pub guard: Arc<MailGuard>,
     pub clock: Arc<dyn Clock>,
-    pub settings: Settings,
+    pub settings: Config,
 }
 
 /// A delivery row with the id of the recipient it went to (email rows only; owner fallback

@@ -13,7 +13,7 @@ use crate::{
 /// Idempotent; 410 for a forged token or a deleted recipient.
 pub struct Unsubscribe {
     uow: Arc<dyn UnitOfWork>,
-    /// `Settings::unsubscribe_key`: the unsubscribe secret, else the session secret.
+    /// `Config::unsubscribe_key`: the unsubscribe secret, else the session secret.
     secret: String,
     clock: Arc<dyn Clock>,
 }

@@ -14,8 +14,8 @@ use opsagent_deliver::{
 use opsagent_ledger::{LedgerError, RunRow};
 
 use crate::{
+    actions::runs::classify::{lerr, LResult},
     actions::uow::Repos,
-    workers::common::{lerr, LResult},
 };
 
 /// Start of the briefing window: the last briefing sent (to Slack or as the email fallback)

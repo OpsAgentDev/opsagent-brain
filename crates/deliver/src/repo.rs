@@ -320,4 +320,7 @@ pub trait SchedulesRepo: Send + Sync {
     /// Queued runs whose `next_attempt_at` is due at `now`, earliest first.
     /// tenancy: scheduler pass; each run names its organisation.
     async fn due_runs(&self, now: DateTime<Utc>) -> RepoResult<Vec<DueRun>>;
+    /// Takes the scheduler's transaction-level lock if no other scheduler holds it; the end of
+    /// the transaction releases it. Call on a transaction.
+    async fn try_lock_scheduler(&self) -> RepoResult<bool>;
 }

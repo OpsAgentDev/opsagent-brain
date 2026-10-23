@@ -15,7 +15,8 @@ use super::{OrgIdPath, OrgPath, RunAccepted};
 use crate::{
     actions::connections::{PatchInput, TEMPLATE_VERSION},
     api_error::{ApiError, ApiJson, Problem},
-    app::actions,
+    app::{actions, state},
+    config::Config,
     middleware::org_scope::OrgScope,
     views::connections::{view, Connection},
 };
@@ -29,14 +30,18 @@ pub(super) fn parse_id(id: &str) -> Result<Uuid, ApiError> {
     id.parse().map_err(|_| ApiError::not_found())
 }
 
-fn quick_create_url(organisation_id: Uuid, external_id: &str) -> Result<String, ApiError> {
-    let principal = std::env::var("OPSAGENT_AWS_OUTBOUND_ROLE_ARN")
-        .map_err(|_| ApiError::internal("OPSAGENT_AWS_OUTBOUND_ROLE_ARN is not set"))?;
-    let base = std::env::var("OPSAGENT_TEMPLATE_BASE_URL")
-        .unwrap_or_else(|_| "https://templates.opsagent.dev".into());
+fn quick_create_url(
+    c: &Config,
+    organisation_id: Uuid,
+    external_id: &str,
+) -> Result<String, ApiError> {
+    let principal = c
+        .aws_outbound_role_arn
+        .as_deref()
+        .ok_or_else(|| ApiError::internal("OPSAGENT_AWS_OUTBOUND_ROLE_ARN is not set"))?;
     let template = format!(
         "{}/aws/opsagent-read-role-v{TEMPLATE_VERSION}.yaml",
-        base.trim_end_matches('/')
+        c.template_base_url.trim_end_matches('/')
     );
     let e = |s: &str| urlencoding::encode(s).into_owned();
     Ok(format!(
@@ -45,7 +50,7 @@ fn quick_create_url(organisation_id: Uuid, external_id: &str) -> Result<String, 
         e(&template),
         stack_name(organisation_id),
         e(external_id),
-        e(&principal),
+        e(principal),
         short_id(&organisation_id),
     ))
 }
@@ -81,10 +86,11 @@ async fn create(
     let created = create
         .run(org_id, scope.member.user_id, &body.provider, name)
         .await?;
+    let app = state(&ctx)?;
     let url = created
         .spec
         .uses_template
-        .then(|| quick_create_url(org_id, &created.creds.external_id))
+        .then(|| quick_create_url(&app.config, org_id, &created.creds.external_id))
         .transpose()?;
     Ok((
         StatusCode::CREATED,

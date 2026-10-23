@@ -13,13 +13,11 @@ use opsagent_brain::{
         db::Pg,
         slack::{HttpSlack, SlackClient},
     },
-    app::actions,
-    app::kek,
+    app::{self, actions, kek},
     mailers::CaptureMailer,
     models::_entities::{
         audit_events, email_suppressions, integrations, organisations, recipients, users,
     },
-    settings::Settings,
 };
 use opsagent_core::org::{OrganisationsRepo, Role};
 use serde_json::{json, Value};
@@ -33,14 +31,14 @@ use super::support::*;
 
 /// Points the app at `slack` and configures Slack client credentials.
 fn use_slack(ctx: &AppContext, slack: &MockServer) {
-    let mut s = Settings::get(ctx);
-    s.slack_client_id = "cid".into();
-    s.slack_client_secret = "csecret".into();
-    ctx.shared_store.insert(s);
     let c: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(slack.uri()).unwrap());
-    ctx.shared_store.insert(c);
     // Actions hold the adapters they were built with.
-    opsagent_brain::app::install_actions(ctx).unwrap();
+    opsagent_brain::app::replace_deps(ctx, |d| {
+        d.config.slack_client_id = "cid".into();
+        d.config.slack_client_secret = "csecret".into();
+        d.slack = c;
+    })
+    .unwrap();
 }
 
 async fn start(req: &TestServer, csrf: &str, org: &str) -> axum_test::TestResponse {
@@ -500,7 +498,11 @@ async fn unsubscribe_link_is_stable_and_suppresses_the_address() {
             .await
             .unwrap()
             .unwrap();
-        let secret = Settings::get(&ctx).unsubscribe_key().to_owned();
+        let secret = app::state(&ctx)
+            .unwrap()
+            .config
+            .unsubscribe_key()
+            .to_owned();
         // Two mails carry the same link, and both work (idempotent).
         let web = "http://localhost:3000";
         let first = recipient_service::unsubscribe_url(web, &secret, row.id);
@@ -989,7 +991,10 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
             .await
             .unwrap()
             .unwrap();
-        let tok = recipient_service::unsubscribe_token(Settings::get(&ctx).unsubscribe_key(), r.id);
+        let tok = recipient_service::unsubscribe_token(
+            app::state(&ctx).unwrap().config.unsubscribe_key(),
+            r.id,
+        );
         assert_eq!(
             req.post(&format!("/v1/unsubscribe/{tok}"))
                 .await

@@ -68,17 +68,17 @@ mod tests {
             recipients::test_support::{kek, member, org},
         },
         adapters::memory::MemStore,
-        settings::Settings,
+        config::Config,
     };
 
-    fn settings() -> Settings {
-        serde_json::from_value(serde_json::json!({
-            "web_base_url": "", "api_base_url": "https://api.test", "cookie_secure": true,
-            "cookie_domain": "", "github_client_id": "", "github_client_secret": "",
-            "session_secret": "session-secret-0123456789",
-            "slack_client_id": "cid", "slack_client_secret": "csecret",
-        }))
-        .unwrap()
+    fn settings() -> Config {
+        let vars = |k: &str| match k {
+            "APP_BASE_URL" => Some("https://api.test".to_owned()),
+            "SLACK_CLIENT_ID" => Some("cid".to_owned()),
+            "SLACK_CLIENT_SECRET" => Some("csecret".to_owned()),
+            _ => None,
+        };
+        Config::from_vars(vars).unwrap_or_else(|e| panic!("{e}"))
     }
 
     #[tokio::test]
