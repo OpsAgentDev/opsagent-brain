@@ -5,6 +5,7 @@
 # SMOKE_CONNECTION_ID, SMOKE_ROLE_ARN (the connection's verified read-role ARN) and
 # SMOKE_SESSION_COOKIE (full "name=value" of a signed-in owner session). A service token
 # replaces the cookie (and the CSRF fetch) once service tokens exist.
+# Optional: SMOKE_BRIEFING_CONNECTION_ID (with SMOKE_ORG_SLUG and SMOKE_SESSION_COOKIE) checks the briefing preview; skipped otherwise.
 # Exit: 0 ok, 1 health failed, 2 verify failed, 3 usage.
 set -uo pipefail
 [ $# -eq 1 ] || { echo "usage: $0 BASE_URL" >&2; exit 3; }
@@ -18,19 +19,31 @@ for path in /healthz /readyz; do
   [ "$code" = 200 ] || { echo "FAIL $path -> ${code:-000}" >&2; exit 1; }
   echo "ok $path"
 done
-[ "$n" = 4 ] || exit 0
+bc="${SMOKE_BRIEFING_CONNECTION_ID:-}"
+run_briefing=0; [ -n "$bc" ] && [ -n "$org" ] && [ -n "$cookie" ] && run_briefing=1
+[ "$n" = 4 ] || [ "$run_briefing" = 1 ] || exit 0
 
 api="$base/v1"
 curlc() { curl -s --max-time 10 -H "Cookie: $cookie" "$@"; }
 csrf=$(curlc "$api/auth/csrf" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 [ -n "$csrf" ] || { echo "FAIL could not fetch CSRF token (bad session cookie?)" >&2; exit 2; }
-code=$(curlc -o /dev/null -w '%{http_code}' -X POST -H "X-CSRF-Token: $csrf" \
-  -H "Content-Type: application/json" --data "{\"role_arn\":\"$role\"}" \
-  "$api/orgs/$org/connections/$conn/verify")
-[ "$code" = 202 ] || { echo "FAIL verify request -> $code" >&2; exit 2; }
-for _ in $(seq 1 60); do
-  curlc "$api/orgs/$org/connections/$conn" | grep -q '"status":"connected"' && { echo "ok verify: connected"; exit 0; }
-  sleep 2
-done
-echo "FAIL connection not connected after 120s" >&2
-exit 2
+if [ "$n" = 4 ]; then
+  code=$(curlc -o /dev/null -w '%{http_code}' -X POST -H "X-CSRF-Token: $csrf" \
+    -H "Content-Type: application/json" --data "{\"role_arn\":\"$role\"}" \
+    "$api/orgs/$org/connections/$conn/verify")
+  [ "$code" = 202 ] || { echo "FAIL verify request -> $code" >&2; exit 2; }
+  ok=0
+  for _ in $(seq 1 60); do
+    curlc "$api/orgs/$org/connections/$conn" | grep -q '"status":"connected"' && { ok=1; break; }
+    sleep 2
+  done
+  [ "$ok" = 1 ] || { echo "FAIL connection not connected after 120s" >&2; exit 2; }
+  echo "ok verify: connected"
+fi
+if [ "$run_briefing" = 1 ]; then
+  code=$(curlc -o /dev/null -w '%{http_code}' -X POST -H "X-CSRF-Token: $csrf" \
+    "$api/orgs/$org/connections/$bc/briefing/preview")
+  [ "$code" = 200 ] || { echo "FAIL briefing preview -> $code" >&2; exit 2; }
+  echo "ok briefing preview"
+fi
+exit 0

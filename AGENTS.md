@@ -19,6 +19,12 @@ cargo run -- start --server-and-worker                 # API on :3000 (dev)
 docker compose --profile brain up -d && scripts/smoke.sh http://localhost:3000
 ```
 
+## Delivery (Plan 2)
+- Workers: `deliver_briefing` (per-connection briefing to Slack and email recipients) and `deliver_weekly` (weekly digest); both idempotent via the deliveries ledger.
+- Tasks: `cargo run -- task deliver:briefing connection:<id>` delivers now; `cargo run -- task scheduler:tick` runs one scheduler pass (enqueues due schedules). Also `scan:now`, `openapi:dump`.
+- Controllers: `integrations` (Slack OAuth start/callback, channels, list/delete), `recipients` (CRUD, `/recipients/confirm`, `/unsubscribe/{token}`), `deliveries` (history, `briefing/preview`).
+- Env: `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `MAIL_FROM`, `WEB_BASE_URL`; prod CLI needs `RESEND_API_KEY` at boot (see `deploy/README.md`).
+
 ## Layout
 - `app/` Loco shell: controllers (parse and respond), services (rules and transactions), models (SeaORM), workers, tasks, mailers.
 - `crates/` Loco-free domain: `core`, `secrets`, `ledger`, `connectors`, `checks`. Never depend on `loco-rs` or `sea-orm` here.
