@@ -5,6 +5,7 @@ mod connections;
 mod deliveries;
 mod findings;
 mod integrations;
+mod oauth;
 mod orgs;
 mod rate_limiter;
 mod recipients;
@@ -24,6 +25,7 @@ use opsagent_core::{
     audit::{AuditEntry, AuditLog},
     connection::{Connection, ConnectionsRepo, SealedCreds, Verification},
     finding::FindingsRepo,
+    oauth::{AccessToken, ConsentRequest, Grant, OAuthClient, OAuthRepo, RefreshToken},
     org::{Invite, Organisation, OrganisationsRepo, Role},
     repo::{Cursor, PageOf, PageRequest, RepoResult},
     resource::ResourcesRepo,
@@ -119,6 +121,11 @@ pub struct MemState {
     integrations: Vec<Integration>,
     deliveries: Vec<DeliveryRow>,
     schedules: Vec<ScheduleRow>,
+    oauth_clients: Vec<OAuthClient>,
+    oauth_consents: Vec<ConsentRequest>,
+    oauth_grants: Vec<Grant>,
+    oauth_refresh: Vec<RefreshToken>,
+    oauth_access: Vec<AccessToken>,
     /// `(connection_id, verification)`, in record order.
     verifications: Vec<(Uuid, Verification)>,
     /// Enqueued jobs, one per run.
@@ -170,6 +177,9 @@ impl Repos for MemStore {
         self
     }
     fn schedules(&self) -> &dyn SchedulesRepo {
+        self
+    }
+    fn oauth(&self) -> &dyn OAuthRepo {
         self
     }
 }
@@ -227,6 +237,9 @@ impl Repos for MemTx {
         &self.work
     }
     fn schedules(&self) -> &dyn SchedulesRepo {
+        &self.work
+    }
+    fn oauth(&self) -> &dyn OAuthRepo {
         &self.work
     }
 }

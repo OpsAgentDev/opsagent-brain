@@ -14,7 +14,8 @@ import pathlib, re, sys
 # email_suppressions mixes global rows (unsubscribes, organisation_id NULL) and per-organisation
 # rows (ignored); its queries must still name organisation_id, as the NULL-or-org filter does.
 TENANT = ["audit_events", "connections", "deliveries", "email_suppressions", "findings", "integrations",
-          "invites", "members", "recipients", "resources", "runs", "schedules"]
+          "invites", "members", "oauth_access_tokens", "oauth_grants", "oauth_refresh_tokens", "recipients",
+          "resources", "runs", "schedules"]
 tables = "|".join(TENANT)
 raw = re.compile(rf"\b(?:FROM|UPDATE|INTO|JOIN)\s+({tables})\b", re.I)
 builder = re.compile(rf"\b({tables})::Entity::(find|find_by_id|update_many|delete_many|delete_by_id)\b")

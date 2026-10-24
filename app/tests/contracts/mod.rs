@@ -13,6 +13,7 @@ mod connections;
 mod deliveries;
 mod findings;
 mod integrations;
+mod oauth;
 mod orgs;
 mod recipients;
 mod resources;

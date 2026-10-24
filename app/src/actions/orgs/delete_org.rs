@@ -169,6 +169,9 @@ mod tests {
                 fn schedules(&self) -> &dyn SchedulesRepo {
                     &BrokenSchedules
                 }
+                fn oauth(&self) -> &dyn opsagent_core::oauth::OAuthRepo {
+                    self.0.oauth()
+                }
             }
         };
     }
