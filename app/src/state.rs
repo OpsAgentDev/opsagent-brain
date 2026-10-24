@@ -1,7 +1,28 @@
 //! `AppState`: the process-wide adapters and the actions built from them, once, by `boot`.
 use std::{ops::Deref, sync::Arc};
 
-use crate::{actions::Actions, boot::Deps};
+use crate::{
+    actions::Actions,
+    boot::Deps,
+    tools::{PromptRegistry, ResourceRegistry, ToolRegistry},
+};
+
+/// The authorisation server's issuer and the protected resource, from `APP_BASE_URL`.
+#[derive(Clone, Debug)]
+pub struct OAuthUrls {
+    pub issuer: String,
+    pub resource: String,
+}
+
+impl OAuthUrls {
+    pub fn new(api_base_url: &str) -> Self {
+        let issuer = api_base_url.trim_end_matches('/').to_owned();
+        Self {
+            resource: format!("{issuer}/mcp"),
+            issuer,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState(pub(crate) Arc<Inner>);
@@ -9,7 +30,11 @@ pub struct AppState(pub(crate) Arc<Inner>);
 /// `state.config`, `state.db`, `state.kek`, … read through to `Deps`.
 pub struct Inner {
     pub deps: Deps,
+    pub oauth_urls: OAuthUrls,
     pub actions: Arc<Actions>,
+    pub tools: Arc<ToolRegistry>,
+    pub resources: Arc<ResourceRegistry>,
+    pub prompts: Arc<PromptRegistry>,
     #[cfg(feature = "test-support")]
     pub swaps: crate::adapters::test_doubles::Swaps,
 }

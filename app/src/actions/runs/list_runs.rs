@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::{actions::uow::UnitOfWork, error::AppResult};
 
 /// The organisation's runs, newest first.
+#[derive(Clone)]
 pub struct ListRuns {
     uow: Arc<dyn UnitOfWork>,
 }

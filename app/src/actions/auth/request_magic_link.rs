@@ -1,16 +1,13 @@
 //! Magic-link requests, capped per address and per client IP. The caller always answers 202,
 //! so a capped request looks exactly like a sent one (no enumeration).
-use std::{
-    net::{IpAddr, Ipv6Addr},
-    sync::Arc,
-};
+use std::{net::IpAddr, sync::Arc};
 
 use chrono::Duration;
-use opsagent_core::{repo::Clock, user::Email};
+use opsagent_core::{oauth::rules::consent_return_to, repo::Clock, user::Email};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    actions::{uow::UnitOfWork, RateLimiter, HOUR_SECS},
+    actions::{ip_bucket, uow::UnitOfWork, RateLimiter, HOUR_SECS},
     error::AppResult,
     mailers::{magic_link as mail, Mailer},
     tokens::{hash_token, new_token},
@@ -25,6 +22,8 @@ pub struct MagicLinkInput {
     pub email: String,
     /// The client address as reported by the trusted proxy, when there is one.
     pub client_ip: Option<IpAddr>,
+    /// A requested post-sign-in destination; kept only if `consent_return_to` accepts it.
+    pub return_to: Option<String>,
 }
 
 pub struct RequestMagicLink {
@@ -33,14 +32,6 @@ pub struct RequestMagicLink {
     mailer: Arc<dyn Mailer>,
     web_base_url: String,
     clock: Arc<dyn Clock>,
-}
-
-/// The IP cap's bucket: an IPv6 client owns at least a /64, so the /64 is one client.
-fn ip_bucket(ip: IpAddr) -> IpAddr {
-    match ip.to_canonical() {
-        IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from(u128::from(v6) & (u128::MAX << 64))),
-        v4 => v4,
-    }
 }
 
 impl RequestMagicLink {
@@ -92,10 +83,17 @@ impl RequestMagicLink {
         }
         let users = self.users.users();
         let user = users.find_or_create_by_email(&email).await?;
+        let return_to = input.return_to.as_deref().and_then(consent_return_to);
         let token = new_token();
         let expires = self.clock.now() + Duration::minutes(15);
         users
-            .issue_magic_link(user.id, &email, &hash_token(&token), expires)
+            .issue_magic_link(
+                user.id,
+                &email,
+                &hash_token(&token),
+                return_to.as_deref(),
+                expires,
+            )
             .await?;
         // The web page POSTs the token to `/auth/magic-link/redeem` after a click (login-CSRF safe).
         let link = format!(
@@ -130,6 +128,7 @@ mod tests {
         MagicLinkInput {
             email: email.into(),
             client_ip: None,
+            return_to: None,
         }
     }
 

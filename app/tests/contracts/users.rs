@@ -38,12 +38,16 @@ contract_suite! {
         let e = email("ada@example.com");
         let u = s.users().find_or_create_by_email(&e).await.unwrap();
         let now = Utc::now();
-        s.users().issue_magic_link(u.id, &e, "h1", now + Duration::minutes(15)).await.unwrap();
-        assert_eq!(s.users().consume_magic_link("h1", now).await.unwrap(), Some(u.id));
+        s.users().issue_magic_link(u.id, &e, "h1", None, now + Duration::minutes(15)).await.unwrap();
+        assert_eq!(s.users().consume_magic_link("h1", now).await.unwrap(), Some((u.id, None)));
         assert_eq!(s.users().consume_magic_link("h1", now).await.unwrap(), None);
-        s.users().issue_magic_link(u.id, &e, "h2", now + Duration::minutes(1)).await.unwrap();
+        s.users().issue_magic_link(u.id, &e, "h2", Some("/oauth/consent?request_id=x"), now + Duration::minutes(1)).await.unwrap();
         let later = now + Duration::minutes(2);
         assert_eq!(s.users().consume_magic_link("h2", later).await.unwrap(), None);
         assert_eq!(s.users().consume_magic_link("unknown", now).await.unwrap(), None);
+        // The stored destination comes back with the user.
+        s.users().issue_magic_link(u.id, &e, "h3", Some("/oauth/consent?request_id=x"), now + Duration::minutes(1)).await.unwrap();
+        let back = s.users().consume_magic_link("h3", now).await.unwrap();
+        assert_eq!(back, Some((u.id, Some("/oauth/consent?request_id=x".into()))));
     }
 }

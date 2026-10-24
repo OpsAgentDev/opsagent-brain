@@ -1,3 +1,4 @@
+use axum_test::TestServer;
 use opsagent_brain::models::_entities::{sessions, users};
 use sea_orm::{entity::prelude::*, QueryOrder};
 use serde_json::{json, Value};
@@ -328,6 +329,7 @@ async fn concurrent_magic_links_for_one_address_send_exactly_the_cap() {
                     let input = MagicLinkInput {
                         email: "race@example.com".into(),
                         client_ip: None,
+                        return_to: None,
                     };
                     actions.auth.request_magic_link.run(input).await.unwrap();
                 })
@@ -342,6 +344,89 @@ async fn concurrent_magic_links_for_one_address_send_exactly_the_cap() {
             .await
             .unwrap();
         assert_eq!(n, 5);
+    })
+    .await;
+}
+
+const CONSENT: &str = "/oauth/consent?request_id=0192f3a4-7b1c-7d2e-8f3a-4b5c6d7e8f90";
+
+/// Requests a link with `return_to` and redeems it: the `redirect` the web page follows.
+async fn redirect_after(req: &TestServer, ctx: &TestApp, return_to: &str) -> String {
+    let mail = prepare(ctx);
+    let res = req
+        .post("/v1/auth/magic-link")
+        .json(&json!({ "email": "rt@example.com", "return_to": return_to }))
+        .await;
+    assert_eq!(res.status_code(), 202);
+    let res = redeem(req, &token_of(&last_link(&mail))).await;
+    assert_eq!(res.status_code(), 200);
+    res.json::<Value>()["redirect"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+#[serial]
+async fn magic_link_return_to_round_trips() {
+    serve(|req, ctx| async move {
+        let got = redirect_after(&req, &ctx, CONSENT).await;
+        assert_eq!(got, format!("{WEB_ORIGIN}{CONSENT}"));
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn magic_link_bad_return_to_falls_back_to_dashboard() {
+    serve(|mut req, ctx| async move {
+        for bad in ["//evil.example", "https://evil.example/x", "/dashboard"] {
+            let got = redirect_after(&req, &ctx, bad).await;
+            assert_eq!(got, format!("{WEB_ORIGIN}/dashboard"), "{bad}");
+            req.clear_cookies();
+        }
+    })
+    .await;
+}
+
+/// The callback needs GitHub itself, so this covers the start half (the validated value is
+/// kept beside the state) and the callback's state check; `landing` is unit tested.
+#[tokio::test]
+#[serial]
+async fn github_return_to_round_trips() {
+    std::env::set_var("GITHUB_CLIENT_ID", "cid");
+    std::env::set_var("GITHUB_CLIENT_SECRET", "secret");
+    serve(|req, _ctx| async move {
+        for to in [CONSENT, "//evil.example"] {
+            let res = req
+                .post("/v1/auth/sign-in/github/start")
+                .add_query_param("return_to", to)
+                .await;
+            assert_eq!(res.status_code(), 200, "{to}");
+        }
+        let res = req
+            .get("/v1/auth/sign-in/github/callback?code=x&state=forged")
+            .await;
+        assert_eq!(res.json::<Value>()["code"], "oauth_state");
+    })
+    .await;
+    std::env::remove_var("GITHUB_CLIENT_ID");
+    std::env::remove_var("GITHUB_CLIENT_SECRET");
+}
+
+/// An attacker starts a consent request in their own browser and mails the victim a sign-in
+/// link whose `return_to` points at it: the victim's browser lacks the binding cookie.
+#[tokio::test]
+#[serial]
+async fn magic_link_return_to_cannot_reach_foreign_consent() {
+    use super::oauth_authorize::{client, request_id, REDIRECT};
+    serve(|mut req, ctx| async move {
+        client(&ctx).await;
+        let id = request_id(&req, REDIRECT).await;
+        req.clear_cookies(); // the victim's browser
+        let to = format!("/oauth/consent?request_id={id}");
+        let landed = redirect_after(&req, &ctx, &to).await;
+        assert_eq!(landed, format!("{WEB_ORIGIN}{to}"));
+        let res = req.get(&format!("/v1/oauth/consent/{id}")).await;
+        assert_eq!(res.status_code(), 403);
+        assert_eq!(res.json::<Value>()["code"], "consent_wrong_browser");
     })
     .await;
 }

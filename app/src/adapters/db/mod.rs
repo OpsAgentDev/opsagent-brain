@@ -6,6 +6,7 @@ mod deliveries;
 mod findings;
 mod integrations;
 pub mod ledger_storage;
+mod oauth;
 mod orgs;
 mod page;
 mod recipients;
@@ -22,6 +23,7 @@ use opsagent_core::{
     audit::AuditLog,
     connection::ConnectionsRepo,
     finding::FindingsRepo,
+    oauth::OAuthRepo,
     org::{OrganisationsRepo, Role},
     repo::{RepoError, RepoResult},
     resource::ResourcesRepo,
@@ -135,6 +137,9 @@ impl<C: Conn> Repos for Pg<C> {
         self
     }
     fn schedules(&self) -> &dyn SchedulesRepo {
+        self
+    }
+    fn oauth(&self) -> &dyn OAuthRepo {
         self
     }
 }

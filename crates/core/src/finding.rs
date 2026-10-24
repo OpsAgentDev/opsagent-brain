@@ -116,6 +116,11 @@ pub struct FindingFilter {
     pub status: Option<String>,
     pub severity: Option<Severity>,
     pub check_id: Option<String>,
+    pub variant: Option<String>,
+    /// Findings touched (seen, or changed by the customer) at or after this instant.
+    /// shortcut: `updated_at` stands for "last seen", there is no `last_seen_at` column; add
+    /// one when a customer action on an old finding must not count as a sighting.
+    pub last_seen_since: Option<DateTime<Utc>>,
 }
 
 /// One lifecycle or customer event; `run_id` is `None` for customer actions.

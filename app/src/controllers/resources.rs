@@ -1,50 +1,20 @@
 use axum::{extract::State, Json};
-use chrono::{DateTime, FixedOffset};
-use opsagent_core::resource::{self as core, ResourceKind, ResourceRow};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use utoipa::{IntoParams, ToSchema};
+use opsagent_core::resource::{self as core, ResourceKind};
+use serde::Deserialize;
+use utoipa::IntoParams;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
-use super::page::{page_request, Page, PageParams};
 use crate::{
     api_error::{ApiError, ApiQuery, Problem},
     middleware::org_scope::OrgScope,
-    models::{enum_of, enum_str},
+    models::enum_of,
     state::AppState,
+    views::{
+        page::{page_request, Page, PageParams},
+        resources::{summary, ResourceSummary},
+    },
 };
-
-#[derive(Serialize, ToSchema)]
-pub struct ResourceSummary {
-    pub id: Uuid,
-    pub connection_id: Uuid,
-    pub kind: String,
-    pub identity: String,
-    pub name: Option<String>,
-    pub region: Option<String>,
-    #[schema(value_type = Object)]
-    pub tags: Value,
-    pub first_seen_at: DateTime<FixedOffset>,
-    pub last_seen_at: DateTime<FixedOffset>,
-    /// Set when the resource was missing from a complete inventory.
-    pub gone_at: Option<DateTime<FixedOffset>>,
-}
-
-fn summary(r: ResourceRow) -> ResourceSummary {
-    ResourceSummary {
-        id: r.id,
-        connection_id: r.connection_id,
-        kind: enum_str(r.kind),
-        identity: r.identity,
-        name: r.name,
-        region: r.region,
-        tags: serde_json::json!(r.tags),
-        first_seen_at: r.first_seen_at.fixed_offset(),
-        last_seen_at: r.last_seen_at.fixed_offset(),
-        gone_at: r.gone_at.map(|t| t.fixed_offset()),
-    }
-}
 
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]

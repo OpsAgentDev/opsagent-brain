@@ -13,6 +13,8 @@ mod m20261022_000008_deliveries;
 mod m20261022_000009_email_suppressions;
 mod m20261022_000010_delivery_status;
 mod m20261023_000011_jobs;
+mod m20261024_000012_oauth;
+mod m20261024_000013_magic_link_return_to;
 
 pub struct Migrator;
 
@@ -31,6 +33,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20261022_000009_email_suppressions::Migration),
             Box::new(m20261022_000010_delivery_status::Migration),
             Box::new(m20261023_000011_jobs::Migration),
+            Box::new(m20261024_000012_oauth::Migration),
+            Box::new(m20261024_000013_magic_link_return_to::Migration),
             // inject-above (do not remove this comment)
         ]
     }

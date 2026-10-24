@@ -1,6 +1,7 @@
 //! Outbound adapters: the database, in-memory fakes, and third-party APIs the app shell
 //! talks to directly.
 pub mod client_ip;
+pub mod client_metadata;
 pub mod db;
 #[cfg(feature = "test-support")]
 pub mod memory;

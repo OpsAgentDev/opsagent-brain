@@ -53,19 +53,22 @@ pub trait UsersRepo: Send + Sync {
         name: Option<String>,
     ) -> RepoResult<User>;
     /// Stores a link for `user_id` (sent to `email`); only the token's hash is kept.
+    /// `return_to` is where sign-in lands afterwards; the caller has validated it.
     async fn issue_magic_link(
         &self,
         user_id: Uuid,
         email: &Email,
         token_hash: &str,
+        return_to: Option<&str>,
         expires_at: DateTime<Utc>,
     ) -> RepoResult<()>;
-    /// Marks the link used, once; its user if it was unused and unexpired at `now`.
+    /// Marks the link used, once; its user and `return_to` if it was unused and unexpired at
+    /// `now`.
     async fn consume_magic_link(
         &self,
         token_hash: &str,
         now: DateTime<Utc>,
-    ) -> RepoResult<Option<Uuid>>;
+    ) -> RepoResult<Option<(Uuid, Option<String>)>>;
 }
 
 #[cfg(test)]

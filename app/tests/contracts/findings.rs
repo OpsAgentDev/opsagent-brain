@@ -199,6 +199,39 @@ contract_suite! {
         assert_eq!(seen.iter().collect::<std::collections::HashSet<_>>().len(), 3);
     }
 
+    async fn filter_by_variant_and_last_seen_since(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let mut anomaly = draft(conn, "01", "cost", Severity::High);
+        anomaly.key.variant = "cost_anomaly".into();
+        let run = seed.run(org, conn).await;
+        let now = Utc::now();
+        s.findings().upsert_seen(org, conn, run, &[anomaly, draft(conn, "01", "other", Severity::Low)], now).await.unwrap();
+        let count = |f: FindingFilter| async move { s.findings().list(org, f, all()).await.unwrap().items.len() };
+        let variant = |v: &str| FindingFilter { variant: Some(v.into()), ..Default::default() };
+        assert_eq!(count(variant("cost_anomaly")).await, 1);
+        assert_eq!(count(variant("nope")).await, 0);
+        let since = |h| FindingFilter { last_seen_since: Some(now + Duration::hours(h)), ..Default::default() };
+        assert_eq!(count(since(-1)).await, 2);
+        assert_eq!(count(since(1)).await, 0);
+    }
+
+    async fn seen_again_in_a_later_run_stays_in_last_seen_since(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let d = [draft(conn, "01", "x", Severity::High)];
+        let t0 = Utc::now();
+        let first = seed.run(org, conn).await;
+        s.findings().upsert_seen(org, conn, first, &d, t0).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let second = seed.run(org, conn).await;
+        let t1 = Utc::now();
+        s.findings().upsert_seen(org, conn, second, &d, t1).await.unwrap();
+        let since = |t| FindingFilter { last_seen_since: Some(t), ..Default::default() };
+        let count = |f: FindingFilter| async move { s.findings().list(org, f, all()).await.unwrap().items.len() };
+        // Just after the first sighting: the second one keeps it in.
+        assert_eq!(count(since(t0 + Duration::milliseconds(100))).await, 1);
+        assert_eq!(count(since(t1 + Duration::hours(1))).await, 0);
+    }
+
     async fn other_org_finding_invisible(s, seed) {
         let (org, conn) = world(s, seed).await;
         let (other, _) = world(s, seed).await;

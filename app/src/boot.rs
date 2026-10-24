@@ -8,14 +8,16 @@ use opsagent_ledger::redis;
 use opsagent_secrets::{CachingKek, EnvKek, Kek};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 
-use axum::Router;
+use axum::{middleware::from_fn_with_state, Router};
 
 use crate::{
     actions::{
-        auth, connections, deliveries, findings, integrations, members, orgs, recipients,
-        resources, runs, uow::UnitOfWork, Actions, ConnectorSource, RateLimiter,
+        auth, connections, deliveries, findings, integrations, members, oauth, orgs, recipients,
+        resources, runs, uow::UnitOfWork, Actions, ClientMetadataSource, ConnectorSource,
+        RateLimiter,
     },
     adapters::{
+        client_metadata::HttpClientMetadata,
         db::Pg,
         pg_queue::PgQueue,
         rate_limiter::RedisRateLimiter,
@@ -29,8 +31,9 @@ use crate::{
         WorkerRunner,
     },
     mailers::{self, Mailer},
-    middleware,
-    state::{AppState, Inner},
+    mcp, middleware,
+    state::{AppState, Inner, OAuthUrls},
+    tools::{self, Prompt, PromptRegistry, ResourceRegistry, ResourceSource, Tool, ToolRegistry},
 };
 
 /// security.md: unwrapped DEKs stay in memory for at most 10 minutes.
@@ -53,6 +56,8 @@ pub struct Deps {
     pub mailer: Arc<dyn Mailer>,
     pub slack: Arc<dyn SlackClient>,
     pub clock: Arc<dyn Clock>,
+    /// Fetches Client ID Metadata Documents.
+    pub client_metadata: Arc<dyn ClientMetadataSource>,
 }
 
 fn internal(e: impl std::fmt::Display) -> AppError {
@@ -126,6 +131,7 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
         registry,
         slack: Arc::new(slack),
         clock: Arc::new(SystemClock),
+        client_metadata: Arc::new(HttpClientMetadata),
     })
 }
 
@@ -143,8 +149,13 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
         deps.slack = swaps.slack.clone();
         swaps
     };
-    let actions = Arc::new(build_actions(&deps));
+    let urls = OAuthUrls::new(&deps.config.api_base_url);
+    let actions = Arc::new(build_actions(&deps, &urls));
     AppState(Arc::new(Inner {
+        tools: Arc::new(build_tools(&deps, &actions)),
+        resources: Arc::new(build_resources(&deps, &actions)),
+        prompts: Arc::new(build_prompts(&deps, &actions)),
+        oauth_urls: urls,
         deps,
         actions,
         #[cfg(feature = "test-support")]
@@ -152,7 +163,8 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
     }))
 }
 
-pub fn build_actions(d: &Deps) -> Actions {
+pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
+    let resolve_client = oauth::ResolveClient::new(d.uow.clone(), d.client_metadata.clone());
     let dispatcher = Arc::new(runs::RunDispatcher::new(d.uow.clone()));
     let connectors: Arc<dyn ConnectorSource> = Arc::new(d.registry.clone());
     let full_scan = runs::FullScan::new(
@@ -195,7 +207,7 @@ pub fn build_actions(d: &Deps) -> Actions {
                 d.clock.clone(),
             ),
             accept_invite: members::AcceptInvite::new(d.uow.clone(), d.clock.clone()),
-            remove_member: members::RemoveMember::new(d.uow.clone()),
+            remove_member: members::RemoveMember::new(d.uow.clone(), d.clock.clone()),
         },
         findings: findings::Findings {
             list_findings: findings::ListFindings::new(d.uow.clone()),
@@ -253,7 +265,87 @@ pub fn build_actions(d: &Deps) -> Actions {
         recipients: recipients(d, guard.clone()),
         integrations: integrations(d),
         deliveries: deliveries(d, guard),
+        oauth: oauth::OAuth {
+            register_client: oauth::RegisterClient::new(
+                d.uow.clone(),
+                d.limiter.clone(),
+                d.clock.clone(),
+            ),
+            start_authorization: oauth::StartAuthorization::new(
+                d.uow.clone(),
+                resolve_client.clone(),
+                d.limiter.clone(),
+                urls.resource.clone(),
+            ),
+            get_consent: oauth::GetConsent::new(d.uow.clone()),
+            decide_consent: oauth::DecideConsent::new(d.uow.clone(), urls.issuer.clone()),
+            exchange_code: oauth::ExchangeCode::new(d.uow.clone()),
+            refresh_grant: oauth::RefreshGrant::new(d.uow.clone()),
+            revoke_token: oauth::RevokeToken::new(d.uow.clone()),
+            list_agents: oauth::ListAgents::new(d.uow.clone()),
+            revoke_agent: oauth::RevokeAgent::new(d.uow.clone()),
+            authenticate_bearer: oauth::AuthenticateBearer::new(
+                d.uow.clone(),
+                orgs::ResolveOrgScope::new(d.uow.clone()),
+            ),
+            touch_grant: oauth::TouchGrant::new(d.uow.clone()),
+            resolve_client,
+        },
     }
+}
+
+/// Every tool, the only registry of tool names: a new tool is one file and one line here.
+pub fn build_tools(d: &Deps, a: &Actions) -> ToolRegistry {
+    let tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(tools::ListConnectionsTool::new(
+            a.connections.list_connections.clone(),
+            a.runs.list_runs.clone(),
+        )),
+        Arc::new(tools::ListFindingsTool::new(
+            a.findings.list_findings.clone(),
+        )),
+        Arc::new(tools::GetFindingTool::new(a.findings.get_finding.clone())),
+        Arc::new(tools::ListResourcesTool::new(
+            a.resources.list_resources.clone(),
+        )),
+        Arc::new(tools::GetScanTool::new(a.runs.get_run.clone())),
+        Arc::new(tools::RunCheckTool::new(
+            a.runs.request_manual_scan.clone(),
+            d.clock.clone(),
+        )),
+        Arc::new(tools::GetCostAnomaliesTool::new(
+            a.findings.list_findings.clone(),
+            d.clock.clone(),
+        )),
+    ];
+    ToolRegistry::new(tools, d.uow.clone())
+}
+
+/// Every resource, the only registry of URIs.
+pub fn build_resources(d: &Deps, a: &Actions) -> ResourceRegistry {
+    let sources: Vec<Arc<dyn ResourceSource>> = vec![
+        Arc::new(tools::resources::LatestScans::new(a.runs.list_runs.clone())),
+        Arc::new(tools::resources::LatestInventory::new(
+            a.resources.list_resources.clone(),
+        )),
+        Arc::new(tools::resources::OpenFindings::new(
+            a.findings.list_findings.clone(),
+        )),
+    ];
+    ResourceRegistry::new(sources, d.uow.clone())
+}
+
+/// Every prompt, the only registry of prompt names.
+pub fn build_prompts(d: &Deps, a: &Actions) -> PromptRegistry {
+    let list = || a.connections.list_connections.clone();
+    let prompts: Vec<Arc<dyn Prompt>> = vec![
+        Arc::new(tools::prompts::TriageOvernight::new(list())),
+        Arc::new(tools::prompts::WeeklyPosture::new(list())),
+        Arc::new(tools::prompts::FixFinding::new(
+            a.findings.get_finding.clone(),
+        )),
+    ];
+    PromptRegistry::new(prompts, d.uow.clone())
 }
 
 fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipients {
@@ -362,12 +454,21 @@ pub fn scheduler(state: &AppState) -> Scheduler {
     }
 }
 
-/// Health, `/v1` and `/openapi.json` on the shell's middleware stack (`middleware::stack`).
+/// Health, `/v1` and `/openapi.json` on the shell's middleware stack (`middleware::stack`),
+/// merged with OAuth, discovery and `/mcp` (behind its bearer layer) on the public one
+/// (`middleware::public_stack`).
 pub fn router(state: AppState) -> AppResult<Router> {
     let routes = controllers::health::routes().merge(controllers::openapi::routes());
     #[cfg(feature = "test-support")]
     let routes = routes.merge(controllers::test_routes::routes());
-    middleware::stack(routes.with_state(state.clone()), &state)
+    let shell = middleware::stack(routes.with_state(state.clone()), &state)?;
+    let mcp = Router::new()
+        .nest_service("/mcp", mcp::service(&state))
+        .route_layer(from_fn_with_state(state.clone(), mcp::auth::layer));
+    let public = controllers::oauth::routes()
+        .with_state(state.clone())
+        .merge(mcp);
+    Ok(shell.merge(middleware::public_stack(public, &state)?))
 }
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+mod agents;
 mod auth;
 mod connections;
 mod deliveries;
@@ -5,6 +6,13 @@ mod findings;
 mod health;
 mod integrations;
 mod logging;
+mod mcp_auth;
+mod mcp_prompts;
+mod mcp_tools;
+mod oauth_authorize;
+mod oauth_cimd;
+mod oauth_discovery;
+mod oauth_token;
 mod openapi;
 mod orgs;
 mod resources;

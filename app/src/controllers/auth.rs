@@ -8,7 +8,7 @@ use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
-use opsagent_core::user::Email;
+use opsagent_core::{oauth::rules::consent_return_to, user::Email};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use utoipa::{IntoParams, ToSchema};
@@ -29,6 +29,9 @@ const UA: &str = "opsagent-brain";
 #[derive(Deserialize, ToSchema)]
 pub struct MagicLinkRequest {
     pub email: String,
+    /// Where sign-in lands afterwards: only `/oauth/consent?request_id=<uuid>` is kept, anything
+    /// else is dropped and the user lands on the dashboard.
+    pub return_to: Option<String>,
 }
 
 /// Always 202, so the response never reveals whether an address is valid or known, or whether
@@ -44,6 +47,7 @@ async fn request_link(
     let input = MagicLinkInput {
         email: body.email,
         client_ip: ip,
+        return_to: body.return_to,
     };
     app.actions.auth.request_magic_link.run(input).await?;
     Ok(StatusCode::ACCEPTED)
@@ -64,6 +68,16 @@ pub struct RedeemRequest {
 #[derive(Serialize, ToSchema)]
 pub struct Redirect {
     pub redirect: String,
+}
+
+/// The web URL after sign-in: the validated `return_to`, else the dashboard.
+fn landing(web_base_url: &str, return_to: Option<&str>) -> String {
+    let path = return_to.and_then(consent_return_to);
+    format!(
+        "{}{}",
+        web_base_url.trim_end_matches('/'),
+        path.as_deref().unwrap_or("/dashboard")
+    )
 }
 
 /// Anonymous, so CSRF-token-exempt; protected by an origin check instead. If `Origin` is
@@ -99,10 +113,10 @@ async fn redeem_link(
     let web = app.config.web_base_url.clone();
     check_origin(&headers, &web)?;
     let redeem = &app.actions.auth.redeem_magic_link;
-    let user_id = redeem.run(&body.token).await?;
+    let (user_id, return_to) = redeem.run(&body.token).await?;
     start_session(&session, user_id).await?;
     Ok(Json(Redirect {
-        redirect: format!("{}/dashboard", web.trim_end_matches('/')),
+        redirect: landing(&web, return_to.as_deref()),
     }))
 }
 
@@ -137,16 +151,32 @@ macro_rules! github_client {
     }};
 }
 
+/// What the session keeps between GitHub start and callback.
+#[derive(Serialize, Deserialize)]
+struct GhPending {
+    state: String,
+    verifier: String,
+    return_to: Option<String>,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct AuthorizeUrl {
     pub url: String,
 }
 
-#[utoipa::path(post, path = "/auth/sign-in/github/start", tag = "auth",
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct StartQuery {
+    /// Where sign-in lands afterwards; same rule as the magic link's `return_to`.
+    pub return_to: Option<String>,
+}
+
+#[utoipa::path(post, path = "/auth/sign-in/github/start", tag = "auth", params(StartQuery),
     responses((status = 200, body = AuthorizeUrl), (status = 503, body = Problem)))]
 async fn github_start(
     State(app): State<AppState>,
     session: Session,
+    Query(q): Query<StartQuery>,
 ) -> Result<Json<AuthorizeUrl>, ApiError> {
     let s = app.config.clone();
     let client = github_client!(s);
@@ -158,7 +188,14 @@ async fn github_start(
         .set_pkce_challenge(challenge)
         .url();
     session
-        .insert(GH_KEY, (state.secret().clone(), verifier.secret().clone()))
+        .insert(
+            GH_KEY,
+            GhPending {
+                state: state.secret().clone(),
+                verifier: verifier.secret().clone(),
+                return_to: q.return_to.as_deref().and_then(consent_return_to),
+            },
+        )
         .await?;
     Ok(Json(AuthorizeUrl {
         url: url.to_string(),
@@ -232,7 +269,7 @@ async fn github_identity(
 }
 
 #[utoipa::path(get, path = "/auth/sign-in/github/callback", tag = "auth", params(CallbackQuery),
-    responses((status = 302, description = "Session cookie set; redirects to the web dashboard"),
+    responses((status = 302, description = "Session cookie set; redirects to the validated return_to, else the web dashboard"),
         (status = 400, body = Problem), (status = 502, body = Problem)))]
 async fn github_callback(
     State(app): State<AppState>,
@@ -241,8 +278,13 @@ async fn github_callback(
 ) -> Result<Response, ApiError> {
     let s = app.config.clone();
     let client = github_client!(s);
-    let stored = session.remove::<(String, String)>(GH_KEY).await?;
-    let Some((_, verifier)) = stored.filter(|(st, _)| *st == q.state) else {
+    let stored = session.remove::<GhPending>(GH_KEY).await?;
+    let Some(GhPending {
+        verifier,
+        return_to,
+        ..
+    }) = stored.filter(|p| p.state == q.state)
+    else {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "oauth_state",
@@ -267,7 +309,7 @@ async fn github_callback(
     };
     let user_id = app.actions.auth.sign_in_github.run(profile).await?;
     start_session(&session, user_id).await?;
-    let to = format!("{}/dashboard", s.web_base_url);
+    let to = landing(&s.web_base_url, return_to.as_deref());
     Ok((StatusCode::FOUND, [(header::LOCATION, to)]).into_response())
 }
 
@@ -323,4 +365,25 @@ pub fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(csrf_token))
         .routes(routes!(sign_out))
         .routes(routes!(me))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::landing;
+
+    #[test]
+    fn landing_follows_a_valid_return_to_else_the_dashboard() {
+        let id = "0192f3a4-7b1c-7d2e-8f3a-4b5c6d7e8f90";
+        let to = format!("/oauth/consent?request_id={id}");
+        assert_eq!(
+            landing("https://web.example/", Some(&to)),
+            format!("https://web.example{to}")
+        );
+        for bad in [None, Some("//evil.example"), Some("https://evil.example")] {
+            assert_eq!(
+                landing("https://web.example", bad),
+                "https://web.example/dashboard"
+            );
+        }
+    }
 }

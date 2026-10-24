@@ -37,6 +37,19 @@ pub enum AppError {
     Internal(String),
 }
 
+impl AppError {
+    /// The connection's status forbids a scan (`connection_not_scannable`).
+    pub fn is_not_scannable(&self) -> bool {
+        matches!(
+            self,
+            Self::Refused {
+                code: "connection_not_scannable",
+                ..
+            }
+        )
+    }
+}
+
 pub type AppResult<T> = Result<T, AppError>;
 
 impl From<AppError> for ApiError {

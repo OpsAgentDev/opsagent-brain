@@ -164,7 +164,7 @@
         ],
         "responses": {
           "302": {
-            "description": "Session cookie set; redirects to the web dashboard"
+            "description": "Session cookie set; redirects to the validated return_to, else the web dashboard"
           },
           "400": {
             "content": {
@@ -193,6 +193,17 @@
           "auth"
         ],
         "operationId": "auth_github_start",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "description": "Where sign-in lands afterwards; same rule as the magic link's `return_to`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -321,6 +332,146 @@
             }
           },
           "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oauth/consent/{request_id}": {
+      "get": {
+        "tags": [
+          "oauth"
+        ],
+        "operationId": "oauth_show",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentView"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "oauth"
+        ],
+        "operationId": "oauth_decide",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentRedirect"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
             "content": {
               "application/json": {
                 "schema": {
@@ -548,6 +699,88 @@
             }
           },
           "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/agents": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "agents_list",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AgentView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/agents/{id}": {
+      "delete": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "agents_revoke",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
             "content": {
               "application/json": {
                 "schema": {
@@ -2486,6 +2719,43 @@
           }
         }
       },
+      "AgentView": {
+        "type": "object",
+        "required": [
+          "grant_id",
+          "client_name",
+          "client_kind",
+          "member_email",
+          "created_at"
+        ],
+        "properties": {
+          "client_kind": {
+            "type": "string",
+            "description": "`dynamic` or `metadata_document`."
+          },
+          "client_name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "grant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "member_email": {
+            "type": "string"
+          }
+        }
+      },
       "AuthorizeUrl": {
         "type": "object",
         "required": [
@@ -2679,6 +2949,83 @@
               "null"
             ],
             "description": "Slack channel id (`C…` or `G…`) for this connection's deliveries; `\"\"` clears it.\nEmail recipients are managed through `/orgs/{org}/recipients` with `connection_id`."
+          }
+        }
+      },
+      "ConsentDecision": {
+        "type": "object",
+        "properties": {
+          "deny": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "organisation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Slug of the organisation to grant access to; required unless `deny`."
+          }
+        }
+      },
+      "ConsentOrganisation": {
+        "type": "object",
+        "required": [
+          "slug",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "ConsentRedirect": {
+        "type": "object",
+        "required": [
+          "redirect_to"
+        ],
+        "properties": {
+          "redirect_to": {
+            "type": "string",
+            "description": "The client's redirect URI with `code` or `error`, `state` and `iss`."
+          }
+        }
+      },
+      "ConsentView": {
+        "type": "object",
+        "required": [
+          "client_name",
+          "redirect_uri",
+          "verified",
+          "loopback",
+          "organisations"
+        ],
+        "properties": {
+          "client_name": {
+            "type": "string"
+          },
+          "loopback": {
+            "type": "boolean",
+            "description": "The redirect goes to this computer: warn the member."
+          },
+          "organisations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConsentOrganisation"
+            }
+          },
+          "redirect_uri": {
+            "type": "string"
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "Always false: dynamic and metadata-document clients are unverified."
           }
         }
       },
@@ -3103,6 +3450,13 @@
         "properties": {
           "email": {
             "type": "string"
+          },
+          "return_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where sign-in lands afterwards: only `/oauth/consent?request_id=<uuid>` is kept, anything\nelse is dropped and the user lands on the dashboard."
           }
         }
       },

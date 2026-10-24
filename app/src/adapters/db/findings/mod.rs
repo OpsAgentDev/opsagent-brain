@@ -113,7 +113,9 @@ impl<C: Conn> FindingsRepo for Pg<C> {
             .apply_if(f.connection_id, |q, v| q.filter(F::ConnectionId.eq(v)))
             .apply_if(f.status, |q, v| q.filter(F::Status.eq(v)))
             .apply_if(f.severity, |q, v| q.filter(F::Severity.eq(enum_str(v))))
-            .apply_if(f.check_id, |q, v| q.filter(F::CheckId.eq(v)));
+            .apply_if(f.check_id, |q, v| q.filter(F::CheckId.eq(v)))
+            .apply_if(f.variant, |q, v| q.filter(F::Variant.eq(v)))
+            .apply_if(f.last_seen_since, |q, v| q.filter(F::UpdatedAt.gte(v)));
         let rows = page(
             self.db(),
             q,
