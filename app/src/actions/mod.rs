@@ -47,6 +47,28 @@ pub trait RateLimiter: Send + Sync {
     async fn forget(&self, key: &str, member: &str) -> AppResult<()>;
 }
 
+/// A rate-limit bucket for one client: an IPv6 client owns at least a /64.
+pub fn ip_bucket(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip.to_canonical() {
+        std::net::IpAddr::V6(v6) => {
+            std::net::IpAddr::V6(std::net::Ipv6Addr::from(u128::from(v6) & (u128::MAX << 64)))
+        }
+        v4 => v4,
+    }
+}
+
+/// A rate-limit bucket for one network: IPv4 /24, IPv6 /48.
+pub fn net_bucket(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip.to_canonical() {
+        std::net::IpAddr::V6(v6) => {
+            std::net::IpAddr::V6(std::net::Ipv6Addr::from(u128::from(v6) & (u128::MAX << 80)))
+        }
+        std::net::IpAddr::V4(v4) => {
+            std::net::IpAddr::V4(std::net::Ipv4Addr::from(u32::from(v4) & 0xffff_ff00))
+        }
+    }
+}
+
 pub const HOUR_SECS: i64 = 3600;
 pub const DAY_SECS: i64 = 86_400;
 
@@ -76,4 +98,24 @@ pub struct MetadataError(pub String);
 #[async_trait]
 pub trait ClientMetadataSource: Send + Sync {
     async fn fetch(&self, url: &str) -> Result<FetchedDocument, MetadataError>;
+}
+
+#[cfg(test)]
+mod bucket_tests {
+    use super::*;
+
+    #[test]
+    fn mapped_ipv4_shares_the_ipv4_buckets() {
+        let mapped: std::net::IpAddr = "::ffff:203.0.113.7".parse().unwrap();
+        let v4: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        assert_eq!(ip_bucket(mapped), v4);
+        assert_eq!(
+            net_bucket(mapped),
+            "203.0.113.0".parse::<std::net::IpAddr>().unwrap()
+        );
+        let a: std::net::IpAddr = "2001:db8:1:2:aaaa::1".parse().unwrap();
+        let b: std::net::IpAddr = "2001:db8:1:ffff::9".parse().unwrap();
+        assert_ne!(ip_bucket(a), ip_bucket(b));
+        assert_eq!(net_bucket(a), net_bucket(b));
+    }
 }

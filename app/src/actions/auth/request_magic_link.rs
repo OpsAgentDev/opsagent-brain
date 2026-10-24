@@ -1,16 +1,13 @@
 //! Magic-link requests, capped per address and per client IP. The caller always answers 202,
 //! so a capped request looks exactly like a sent one (no enumeration).
-use std::{
-    net::{IpAddr, Ipv6Addr},
-    sync::Arc,
-};
+use std::{net::IpAddr, sync::Arc};
 
 use chrono::Duration;
 use opsagent_core::{repo::Clock, user::Email};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    actions::{uow::UnitOfWork, RateLimiter, HOUR_SECS},
+    actions::{ip_bucket, uow::UnitOfWork, RateLimiter, HOUR_SECS},
     error::AppResult,
     mailers::{magic_link as mail, Mailer},
     tokens::{hash_token, new_token},
@@ -33,14 +30,6 @@ pub struct RequestMagicLink {
     mailer: Arc<dyn Mailer>,
     web_base_url: String,
     clock: Arc<dyn Clock>,
-}
-
-/// The IP cap's bucket: an IPv6 client owns at least a /64, so the /64 is one client.
-fn ip_bucket(ip: IpAddr) -> IpAddr {
-    match ip.to_canonical() {
-        IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from(u128::from(v6) & (u128::MAX << 64))),
-        v4 => v4,
-    }
 }
 
 impl RequestMagicLink {

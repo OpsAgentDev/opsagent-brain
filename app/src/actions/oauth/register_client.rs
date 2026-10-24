@@ -1,7 +1,4 @@
-use std::{
-    net::{IpAddr, Ipv6Addr},
-    sync::Arc,
-};
+use std::{net::IpAddr, sync::Arc};
 
 use chrono::Duration;
 use opsagent_core::{
@@ -11,13 +8,15 @@ use opsagent_core::{
 use serde::Deserialize;
 
 use crate::{
-    actions::{uow::UnitOfWork, RateLimiter, HOUR_SECS},
+    actions::{ip_bucket, net_bucket, uow::UnitOfWork, RateLimiter, HOUR_SECS},
     controllers::oauth::OAuthError,
     tokens::new_token,
 };
 
 const PER_IP_PER_HOUR: i64 = 60;
-const GLOBAL_PER_HOUR: i64 = 100;
+const PER_NET_PER_HOUR: i64 = 300;
+// High enough that a lockout needs many networks; it bounds row growth, not abuse per client.
+const GLOBAL_PER_HOUR: i64 = 5_000;
 const MAX_REDIRECT_URIS: usize = 10;
 const MAX_NAME_CHARS: usize = 100;
 
@@ -29,17 +28,6 @@ pub struct RegistrationRequest {
     pub client_name: Option<String>,
     pub token_endpoint_auth_method: Option<String>,
     pub grant_types: Option<Vec<String>>,
-}
-
-/// IPv6 clients share a /64 (one subnet is one customer); IPv4 as is.
-fn ip_bucket(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V6(v6) => {
-            let s = v6.segments();
-            IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
-        }
-        v4 => v4,
-    }
 }
 
 /// Dynamic client registration (public clients only).
@@ -95,7 +83,13 @@ impl RegisterClient {
     /// Fails closed: a limiter outage is a 500, not an open door.
     async fn limit(&self, ip: Option<IpAddr>) -> Result<(), OAuthError> {
         let who = ip.map_or_else(|| "unknown".to_owned(), |ip| ip_bucket(ip).to_string());
+        let net = ip.map_or_else(|| "unknown".to_owned(), |ip| net_bucket(ip).to_string());
         for (key, cap, window) in [
+            (
+                format!("oauth:register:net:{net}"),
+                PER_NET_PER_HOUR,
+                HOUR_SECS,
+            ),
             (
                 format!("oauth:register:ip:{who}"),
                 PER_IP_PER_HOUR,
@@ -188,7 +182,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ipv6_in_one_64_share_a_bucket_and_global_cap_is_hourly() {
+    async fn ipv6_in_one_64_share_a_bucket() {
         let a = action();
         let ip = |s: &str| Some(s.parse::<IpAddr>().unwrap());
         let u = || req(&["https://a.example/cb"]);
@@ -198,11 +192,35 @@ mod tests {
         }
         let e = a.run(u(), ip("2001:db8:1:2:5::7")).await.unwrap_err();
         assert_eq!(e.error, "slow_down");
-        // 60 were counted globally; 40 more from distinct IPs fill the 100/hour cap.
-        for n in 0..40 {
-            a.run(u(), ip(&format!("198.51.100.{n}"))).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn one_ipv4_24_is_capped_at_300_an_hour() {
+        let a = action();
+        let u = || req(&["https://a.example/cb"]);
+        for n in 0..300 {
+            let ip = format!("198.51.100.{}", n / 60).parse::<IpAddr>().unwrap();
+            a.run(u(), Some(ip)).await.unwrap();
         }
-        let e = a.run(u(), ip("198.51.100.200")).await.unwrap_err();
+        let e = a
+            .run(u(), Some("198.51.100.250".parse().unwrap()))
+            .await
+            .unwrap_err();
+        assert_eq!(e.error, "slow_down");
+    }
+
+    #[tokio::test]
+    async fn global_cap_is_5000_an_hour() {
+        let a = action();
+        let u = || req(&["https://a.example/cb"]);
+        for n in 0u32..5_000 {
+            let ip = std::net::Ipv4Addr::from((10u32 << 24) | (n << 8));
+            a.run(u(), Some(IpAddr::V4(ip))).await.unwrap();
+        }
+        let e = a
+            .run(u(), Some("203.0.113.1".parse().unwrap()))
+            .await
+            .unwrap_err();
         assert_eq!(e.error, "slow_down");
     }
 
