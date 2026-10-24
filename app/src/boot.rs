@@ -275,6 +275,9 @@ pub fn build_actions(d: &Deps) -> Actions {
             ),
             get_consent: oauth::GetConsent::new(d.uow.clone()),
             decide_consent: oauth::DecideConsent::new(d.uow.clone(), urls.issuer.clone()),
+            exchange_code: oauth::ExchangeCode::new(d.uow.clone()),
+            refresh_grant: oauth::RefreshGrant::new(d.uow.clone()),
+            revoke_token: oauth::RevokeToken::new(d.uow.clone()),
         },
     }
 }

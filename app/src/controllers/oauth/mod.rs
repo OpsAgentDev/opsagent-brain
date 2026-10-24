@@ -3,6 +3,7 @@ mod authorize;
 mod discovery;
 pub mod error;
 mod register;
+mod token;
 
 use axum::Router;
 
@@ -14,4 +15,5 @@ pub fn routes() -> Router<AppState> {
     discovery::routes()
         .merge(register::routes())
         .merge(authorize::routes())
+        .merge(token::routes())
 }

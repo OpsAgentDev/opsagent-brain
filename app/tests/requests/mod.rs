@@ -8,6 +8,7 @@ mod logging;
 mod oauth_authorize;
 mod oauth_cimd;
 mod oauth_discovery;
+mod oauth_token;
 mod openapi;
 mod orgs;
 mod resources;
