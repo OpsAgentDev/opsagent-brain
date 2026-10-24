@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Post-deploy smoke: /healthz and /readyz must return 200; optionally verify one connection.
-# Usage: scripts/smoke.sh BASE_URL
+# Post-deploy smoke: /healthz and /readyz must return 200, MCP discovery answers and /mcp challenges; optionally verify one connection.
+# Usage: scripts/smoke.sh BASE_URL (brain's own URL, e.g. https://brain.opsagent.dev)
 # Optional env (all four, to run the verify step): SMOKE_ORG_SLUG (the org's URL slug),
 # SMOKE_CONNECTION_ID, SMOKE_ROLE_ARN (the connection's verified read-role ARN) and
 # SMOKE_SESSION_COOKIE (full "name=value" of a signed-in owner session). A service token
@@ -19,6 +19,14 @@ for path in /healthz /readyz; do
   [ "$code" = 200 ] || { echo "FAIL $path -> ${code:-000}" >&2; exit 1; }
   echo "ok $path"
 done
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$base/.well-known/oauth-protected-resource/mcp") || true
+[ "$code" = 200 ] || { echo "FAIL MCP resource metadata -> ${code:-000}" >&2; exit 1; }
+echo "ok MCP resource metadata"
+hdr=$(curl -s -o /dev/null -D - --max-time 10 -X POST -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" --data '{}' "$base/mcp") || true
+printf '%s' "$hdr" | head -1 | grep -q ' 401' && printf '%s' "$hdr" | grep -qi '^www-authenticate:.*resource_metadata=' \
+  || { echo "FAIL unauthenticated /mcp did not answer 401 with resource_metadata" >&2; exit 1; }
+echo "ok MCP 401 challenge"
 bc="${SMOKE_BRIEFING_CONNECTION_ID:-}"
 run_briefing=0; [ -n "$bc" ] && [ -n "$org" ] && [ -n "$cookie" ] && run_briefing=1
 [ "$n" = 4 ] || [ "$run_briefing" = 1 ] || exit 0

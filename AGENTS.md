@@ -25,6 +25,11 @@ docker compose --profile brain up -d && scripts/smoke.sh http://localhost:3000
 - Controllers: `integrations` (Slack OAuth start/callback, channels, list/delete), `recipients` (CRUD, `/recipients/confirm`, `/unsubscribe/{token}`), `deliveries` (history, `briefing/preview`).
 - Env: `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `MAIL_FROM`, `WEB_BASE_URL`; prod CLI needs `RESEND_API_KEY` at boot (see `deploy/README.md`).
 
+## MCP (Plan 4)
+- `/mcp` (streamable HTTP, rmcp) behind OAuth 2.1 at `/oauth/*` and `/.well-known/*`; consent page lives on web (`/oauth/consent`).
+- Tools, prompts and resources are transport-neutral units in `app/src/tools/` (one file each, registered in `boot.rs`); `app/src/mcp/` is only the adapter and bearer layer.
+- Local check: run brain and web, then `npx @modelcontextprotocol/inspector` and connect to `http://localhost:5150/mcp` (sign in on web when the consent page opens).
+
 ## Layout
 - `app/` axum shell: controllers (parse and respond), actions (rules and transactions), adapters, models (SeaORM), jobs (`WorkerRunner` on the Postgres `jobs` table, `Scheduler` loop), mailers.
 - `crates/` framework-free domain: `core`, `secrets`, `ledger`, `connectors`, `checks`. Never depend on `sea-orm` (or any web framework) here; `scripts/check-crate-isolation.sh` also fails if `loco` appears in any workspace `Cargo.toml` or the dependency graph.
