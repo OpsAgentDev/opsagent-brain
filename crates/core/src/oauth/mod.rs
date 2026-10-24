@@ -8,6 +8,9 @@ use uuid::Uuid;
 
 use crate::repo::RepoResult;
 
+/// The one scope a token can carry.
+pub const SCOPE: &str = "opsagent.read";
+
 /// A dynamic client expires this long after it was last used (never while it has a live grant).
 pub const DYNAMIC_CLIENT_TTL_DAYS: i64 = 90;
 
@@ -111,7 +114,8 @@ pub trait OAuthRepo: Send + Sync {
 
     async fn insert_consent(&self, request: &ConsentRequest) -> RepoResult<()>;
     async fn consent(&self, id: Uuid) -> RepoResult<Option<ConsentRequest>>;
-    /// Records the member's approval and the hashed code; `NotFound` for an unknown request.
+    /// Records the member's approval and the hashed code; `NotFound` for an unknown or
+    /// already decided request.
     async fn decide_consent(
         &self,
         id: Uuid,

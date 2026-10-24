@@ -332,6 +332,137 @@
         }
       }
     },
+    "/oauth/consent/{request_id}": {
+      "get": {
+        "tags": [
+          "oauth"
+        ],
+        "operationId": "oauth_show",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentView"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "oauth"
+        ],
+        "operationId": "oauth_decide",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentRedirect"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs": {
       "get": {
         "tags": [
@@ -2679,6 +2810,83 @@
               "null"
             ],
             "description": "Slack channel id (`C…` or `G…`) for this connection's deliveries; `\"\"` clears it.\nEmail recipients are managed through `/orgs/{org}/recipients` with `connection_id`."
+          }
+        }
+      },
+      "ConsentDecision": {
+        "type": "object",
+        "properties": {
+          "deny": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "organisation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Slug of the organisation to grant access to; required unless `deny`."
+          }
+        }
+      },
+      "ConsentOrganisation": {
+        "type": "object",
+        "required": [
+          "slug",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "ConsentRedirect": {
+        "type": "object",
+        "required": [
+          "redirect_to"
+        ],
+        "properties": {
+          "redirect_to": {
+            "type": "string",
+            "description": "The client's redirect URI with `code` or `error`, `state` and `iss`."
+          }
+        }
+      },
+      "ConsentView": {
+        "type": "object",
+        "required": [
+          "client_name",
+          "redirect_uri",
+          "verified",
+          "loopback",
+          "organisations"
+        ],
+        "properties": {
+          "client_name": {
+            "type": "string"
+          },
+          "loopback": {
+            "type": "boolean",
+            "description": "The redirect goes to this computer: warn the member."
+          },
+          "organisations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConsentOrganisation"
+            }
+          },
+          "redirect_uri": {
+            "type": "string"
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "Always false: dynamic and metadata-document clients are unverified."
           }
         }
       },

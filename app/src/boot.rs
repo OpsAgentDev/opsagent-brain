@@ -159,6 +159,7 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
 }
 
 pub fn build_actions(d: &Deps) -> Actions {
+    let urls = OAuthUrls::new(&d.config.api_base_url);
     let dispatcher = Arc::new(runs::RunDispatcher::new(d.uow.clone()));
     let connectors: Arc<dyn ConnectorSource> = Arc::new(d.registry.clone());
     let full_scan = runs::FullScan::new(
@@ -266,6 +267,14 @@ pub fn build_actions(d: &Deps) -> Actions {
                 d.clock.clone(),
             ),
             resolve_client: oauth::ResolveClient::new(d.uow.clone(), d.client_metadata.clone()),
+            start_authorization: oauth::StartAuthorization::new(
+                d.uow.clone(),
+                oauth::ResolveClient::new(d.uow.clone(), d.client_metadata.clone()),
+                d.limiter.clone(),
+                urls.resource.clone(),
+            ),
+            get_consent: oauth::GetConsent::new(d.uow.clone()),
+            decide_consent: oauth::DecideConsent::new(d.uow.clone(), urls.issuer.clone()),
         },
     }
 }

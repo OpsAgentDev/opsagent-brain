@@ -5,6 +5,7 @@ mod findings;
 mod health;
 mod integrations;
 mod logging;
+mod oauth_authorize;
 mod oauth_cimd;
 mod oauth_discovery;
 mod openapi;

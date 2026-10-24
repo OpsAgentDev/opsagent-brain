@@ -215,6 +215,7 @@ impl<C: Conn> OAuthRepo for Pg<C> {
             .col_expr(Col::CodeHash, Some(code_hash.to_owned()).into())
             .col_expr(Col::CodeExpiresAt, Some(ts(code_expires_at)).into())
             .filter(Col::Id.eq(id))
+            .filter(Col::CodeHash.is_null())
             .exec(self.db())
             .await
             .map_err(db_err)?;

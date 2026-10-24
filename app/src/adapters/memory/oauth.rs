@@ -85,7 +85,7 @@ impl OAuthRepo for MemStore {
         let c = s
             .oauth_consents
             .iter_mut()
-            .find(|c| c.id == id)
+            .find(|c| c.id == id && c.code_hash.is_none())
             .ok_or(RepoError::NotFound)?;
         c.member_id = Some(member_id);
         c.organisation_id = Some(organisation_id);

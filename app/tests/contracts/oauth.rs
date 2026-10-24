@@ -79,6 +79,18 @@ contract_suite! {
         assert!(s.oauth().consent_by_code_hash("nope").await.unwrap().is_none());
     }
 
+    async fn decide_consent_twice_is_refused(s) {
+        client(s).await;
+        let c = consent(None);
+        s.oauth().insert_consent(&c).await.unwrap();
+        let (m, o) = (Uuid::new_v4(), org_id(s, "acme").await);
+        s.oauth().decide_consent(c.id, m, o, "h1", at(60)).await.unwrap();
+        let again = s.oauth().decide_consent(c.id, m, o, "h2", at(60)).await;
+        assert!(matches!(again, Err(opsagent_core::repo::RepoError::NotFound)), "{again:?}");
+        let kept = s.oauth().consent(c.id).await.unwrap().unwrap();
+        assert_eq!(kept.code_hash.as_deref(), Some("h1"));
+    }
+
     async fn expired_code_is_not_consumed(s) {
         client(s).await;
         let c = consent(None);

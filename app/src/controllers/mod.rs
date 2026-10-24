@@ -6,6 +6,7 @@ pub mod health;
 pub mod integrations;
 pub mod members;
 pub mod oauth;
+pub mod oauth_consent;
 pub mod openapi;
 pub mod orgs;
 pub mod page;

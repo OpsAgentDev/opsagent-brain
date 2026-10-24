@@ -7,8 +7,8 @@ use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 
 use super::{
-    auth, connections, deliveries, findings, integrations, members, orgs, recipients, resources,
-    runs,
+    auth, connections, deliveries, findings, integrations, members, oauth_consent, orgs,
+    recipients, resources, runs,
 };
 use crate::{api_error::ApiError, middleware::org_scope::AuthUser, state::AppState};
 
@@ -36,6 +36,7 @@ fn api() -> OpenApiRouter<AppState> {
         .merge(deliveries::api())
         .merge(resources::api())
         .merge(runs::api())
+        .merge(oauth_consent::api())
 }
 
 /// utoipa names operations after handler fns (`list`, `show`), which repeat across controllers;

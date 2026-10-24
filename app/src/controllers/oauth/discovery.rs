@@ -1,10 +1,9 @@
 //! RFC 9728 protected-resource and RFC 8414 authorization-server metadata.
 use axum::{extract::State, routing::get, Json, Router};
+use opsagent_core::oauth::SCOPE;
 use serde_json::{json, Value};
 
 use crate::state::AppState;
-
-pub const SCOPE: &str = "opsagent.read";
 
 async fn resource(State(s): State<AppState>) -> Json<Value> {
     Json(json!({

@@ -53,11 +53,38 @@ impl ResolveOrgScope {
             .ok_or(AppError::NotFound)?;
         Ok(OrgScope::new(organisation, member))
     }
+
+    /// `run` for an organisation named by id (a grant's), with the same 404 rule.
+    pub async fn run_by_id(&self, user_id: Uuid, organisation_id: Uuid) -> AppResult<OrgScope> {
+        let org = self
+            .uow
+            .orgs()
+            .get(organisation_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        self.run(user_id, &org.slug).await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{actions::orgs::test_support::*, adapters::memory::MemStore};
+
+    #[tokio::test]
+    async fn run_by_id_is_404_for_non_members() {
+        use std::sync::Arc;
+        let store = MemStore::default();
+        let (owner, org) = owned_org(&store, "i@example.com", "Ids").await;
+        let other = user(&store, "o@example.com").await;
+        let resolve = super::ResolveOrgScope::new(Arc::new(store.clone()));
+        let got = resolve.run_by_id(owner.id, org.id).await.unwrap();
+        assert_eq!(got.organisation.id, org.id);
+        assert!(resolve.run_by_id(other.id, org.id).await.is_err());
+        assert!(resolve
+            .run_by_id(owner.id, uuid::Uuid::new_v4())
+            .await
+            .is_err());
+    }
 
     #[tokio::test]
     async fn debug_output_leaves_out_the_wrapped_dek() {
