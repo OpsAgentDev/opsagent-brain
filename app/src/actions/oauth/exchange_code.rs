@@ -63,6 +63,7 @@ impl ExchangeCode {
         let valid = c.client_id == x.client_id
             // Exact: the loopback port leniency applies at authorize only (RFC 6749 4.1.3).
             && c.redirect_uri == x.redirect_uri
+            // RFC 8707: `resource` is optional here; authorize already bound it to the code.
             && x.resource
                 .as_deref()
                 .is_none_or(|r| resource_matches(&c.resource, r))

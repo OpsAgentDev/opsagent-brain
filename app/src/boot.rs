@@ -149,12 +149,13 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
         deps.slack = swaps.slack.clone();
         swaps
     };
-    let actions = Arc::new(build_actions(&deps));
+    let urls = OAuthUrls::new(&deps.config.api_base_url);
+    let actions = Arc::new(build_actions(&deps, &urls));
     AppState(Arc::new(Inner {
-        tools: Arc::new(build_tools(&deps)),
-        resources: Arc::new(build_resources(&deps)),
-        prompts: Arc::new(build_prompts(&deps)),
-        oauth_urls: OAuthUrls::new(&deps.config.api_base_url),
+        tools: Arc::new(build_tools(&deps, &actions)),
+        resources: Arc::new(build_resources(&deps, &actions)),
+        prompts: Arc::new(build_prompts(&deps, &actions)),
+        oauth_urls: urls,
         deps,
         actions,
         #[cfg(feature = "test-support")]
@@ -162,8 +163,8 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
     }))
 }
 
-pub fn build_actions(d: &Deps) -> Actions {
-    let urls = OAuthUrls::new(&d.config.api_base_url);
+pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
+    let resolve_client = oauth::ResolveClient::new(d.uow.clone(), d.client_metadata.clone());
     let dispatcher = Arc::new(runs::RunDispatcher::new(d.uow.clone()));
     let connectors: Arc<dyn ConnectorSource> = Arc::new(d.registry.clone());
     let full_scan = runs::FullScan::new(
@@ -270,10 +271,9 @@ pub fn build_actions(d: &Deps) -> Actions {
                 d.limiter.clone(),
                 d.clock.clone(),
             ),
-            resolve_client: oauth::ResolveClient::new(d.uow.clone(), d.client_metadata.clone()),
             start_authorization: oauth::StartAuthorization::new(
                 d.uow.clone(),
-                oauth::ResolveClient::new(d.uow.clone(), d.client_metadata.clone()),
+                resolve_client.clone(),
                 d.limiter.clone(),
                 urls.resource.clone(),
             ),
@@ -289,35 +289,32 @@ pub fn build_actions(d: &Deps) -> Actions {
                 orgs::ResolveOrgScope::new(d.uow.clone()),
             ),
             touch_grant: oauth::TouchGrant::new(d.uow.clone()),
+            resolve_client,
         },
     }
 }
 
 /// Every tool, the only registry of tool names: a new tool is one file and one line here.
-pub fn build_tools(d: &Deps) -> ToolRegistry {
-    let scan = runs::RequestManualScan::new(
-        d.uow.clone(),
-        Arc::new(runs::RunDispatcher::new(d.uow.clone())),
-        d.clock.clone(),
-    );
+pub fn build_tools(d: &Deps, a: &Actions) -> ToolRegistry {
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(tools::ListConnectionsTool::new(
-            connections::ListConnections::new(d.uow.clone()),
-            runs::ListRuns::new(d.uow.clone()),
+            a.connections.list_connections.clone(),
+            a.runs.list_runs.clone(),
         )),
-        Arc::new(tools::ListFindingsTool::new(findings::ListFindings::new(
-            d.uow.clone(),
-        ))),
-        Arc::new(tools::GetFindingTool::new(findings::GetFinding::new(
-            d.uow.clone(),
-        ))),
+        Arc::new(tools::ListFindingsTool::new(
+            a.findings.list_findings.clone(),
+        )),
+        Arc::new(tools::GetFindingTool::new(a.findings.get_finding.clone())),
         Arc::new(tools::ListResourcesTool::new(
-            resources::ListResources::new(d.uow.clone()),
+            a.resources.list_resources.clone(),
         )),
-        Arc::new(tools::GetScanTool::new(runs::GetRun::new(d.uow.clone()))),
-        Arc::new(tools::RunCheckTool::new(scan, d.clock.clone())),
+        Arc::new(tools::GetScanTool::new(a.runs.get_run.clone())),
+        Arc::new(tools::RunCheckTool::new(
+            a.runs.request_manual_scan.clone(),
+            d.clock.clone(),
+        )),
         Arc::new(tools::GetCostAnomaliesTool::new(
-            findings::ListFindings::new(d.uow.clone()),
+            a.findings.list_findings.clone(),
             d.clock.clone(),
         )),
     ];
@@ -325,30 +322,28 @@ pub fn build_tools(d: &Deps) -> ToolRegistry {
 }
 
 /// Every resource, the only registry of URIs.
-pub fn build_resources(d: &Deps) -> ResourceRegistry {
+pub fn build_resources(d: &Deps, a: &Actions) -> ResourceRegistry {
     let sources: Vec<Arc<dyn ResourceSource>> = vec![
-        Arc::new(tools::resources::LatestScans::new(runs::ListRuns::new(
-            d.uow.clone(),
-        ))),
+        Arc::new(tools::resources::LatestScans::new(a.runs.list_runs.clone())),
         Arc::new(tools::resources::LatestInventory::new(
-            resources::ListResources::new(d.uow.clone()),
+            a.resources.list_resources.clone(),
         )),
         Arc::new(tools::resources::OpenFindings::new(
-            findings::ListFindings::new(d.uow.clone()),
+            a.findings.list_findings.clone(),
         )),
     ];
     ResourceRegistry::new(sources, d.uow.clone())
 }
 
 /// Every prompt, the only registry of prompt names.
-pub fn build_prompts(d: &Deps) -> PromptRegistry {
-    let list = || connections::ListConnections::new(d.uow.clone());
+pub fn build_prompts(d: &Deps, a: &Actions) -> PromptRegistry {
+    let list = || a.connections.list_connections.clone();
     let prompts: Vec<Arc<dyn Prompt>> = vec![
         Arc::new(tools::prompts::TriageOvernight::new(list())),
         Arc::new(tools::prompts::WeeklyPosture::new(list())),
-        Arc::new(tools::prompts::FixFinding::new(findings::GetFinding::new(
-            d.uow.clone(),
-        ))),
+        Arc::new(tools::prompts::FixFinding::new(
+            a.findings.get_finding.clone(),
+        )),
     ];
     PromptRegistry::new(prompts, d.uow.clone())
 }

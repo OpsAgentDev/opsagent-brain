@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     actions::findings::ListFindings,
-    controllers::{findings::full, page::MAX_LIMIT},
+    views::{findings::full, page::MAX_LIMIT},
 };
 
 /// Check 01 (cost) as stored in `findings.check_id`.

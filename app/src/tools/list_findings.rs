@@ -8,7 +8,7 @@ use super::{
     enum_arg, filter_id, page_json, page_request, parse_args, schema_of, Access, Caller, Tool,
     ToolError, ToolSpec,
 };
-use crate::{actions::findings::ListFindings, controllers::findings::summary};
+use crate::{actions::findings::ListFindings, views::findings::summary};
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

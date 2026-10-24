@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::{actions::uow::UnitOfWork, error::AppResult};
 
 /// The organisation's inventory, newest first.
+#[derive(Clone)]
 pub struct ListResources {
     uow: Arc<dyn UnitOfWork>,
 }

@@ -84,7 +84,7 @@ impl PromptRegistry {
         audited(
             &*self.uow,
             caller,
-            "mcp.prompt.get",
+            &format!("{}.prompt.get", caller.via.channel()),
             ("prompt", name),
             started,
             out,

@@ -26,9 +26,9 @@ use uuid::Uuid;
 
 use crate::{
     actions::{orgs::OrgScope, uow::UnitOfWork},
-    controllers::page::{decode, Page, DEFAULT_LIMIT, MAX_LIMIT},
     error::AppError,
     models::enum_of,
+    views::page::{decode, Page, DEFAULT_LIMIT, MAX_LIMIT},
 };
 
 pub use get_cost_anomalies::GetCostAnomaliesTool;
@@ -55,6 +55,22 @@ pub enum Via {
         client_id: String,
         token_id: Uuid,
     },
+}
+
+impl Via {
+    /// Audit action prefix and log label for this door.
+    pub fn channel(&self) -> &'static str {
+        match self {
+            Via::Mcp { .. } => "mcp",
+        }
+    }
+
+    /// The grant acting through this door; the audit actor.
+    pub fn grant_id(&self) -> Uuid {
+        match self {
+            Via::Mcp { grant_id, .. } => *grant_id,
+        }
+    }
 }
 
 /// What a tool may do. Read only in this release: a write tool needs a new variant and an
@@ -217,7 +233,7 @@ impl ToolRegistry {
         audited(
             &*self.uow,
             caller,
-            "mcp.tool.call",
+            &format!("{}.tool.call", caller.via.channel()),
             ("tool", name),
             started,
             result,
@@ -232,7 +248,7 @@ impl ToolRegistry {
 pub(crate) async fn audited<T>(
     uow: &dyn UnitOfWork,
     caller: &Caller,
-    action: &'static str,
+    action: &str,
     (key, subject): (&'static str, &str),
     started: Instant,
     result: Result<T, ToolError>,
@@ -240,14 +256,13 @@ pub(crate) async fn audited<T>(
     let outcome = result.as_ref().map_or_else(ToolError::code, |_| "success");
     let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     tracing::info!(action, subject, outcome, latency_ms, "mcp request");
-    let Via::Mcp {
-        grant_id,
-        client_id,
-        ..
-    } = &caller.via;
     let org = caller.scope.organisation.id;
-    let entry = AuditEntry::mcp_client(org, *grant_id, action, outcome)
-        .with_meta(json!({ "client_id": client_id, key: subject, "outcome": outcome }));
+    let entry = match &caller.via {
+        Via::Mcp { client_id, .. } => {
+            AuditEntry::mcp_client(org, caller.via.grant_id(), action, outcome)
+                .with_meta(json!({ "client_id": client_id, key: subject, "outcome": outcome }))
+        }
+    };
     if let Err(e) = uow.audit().record(entry).await {
         tracing::error!(error = %e, action, "mcp audit write failed");
         return Err(ToolError::Internal("audit failed".into()));

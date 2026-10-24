@@ -20,6 +20,7 @@ pub struct FindingDetail {
 }
 
 /// One finding with its evidence and recent events; another org's id is `NotFound`.
+#[derive(Clone)]
 pub struct GetFinding {
     uow: Arc<dyn UnitOfWork>,
 }

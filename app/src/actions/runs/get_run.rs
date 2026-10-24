@@ -9,6 +9,7 @@ use crate::{
 };
 
 /// One run of the organisation; `NotFound` for another organisation's.
+#[derive(Clone)]
 pub struct GetRun {
     uow: Arc<dyn UnitOfWork>,
 }

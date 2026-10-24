@@ -6,6 +6,7 @@ use uuid::Uuid;
 use crate::{actions::uow::UnitOfWork, error::AppResult};
 
 /// Every connection of the organisation, oldest first (unpaged: the route returns an array).
+#[derive(Clone)]
 pub struct ListConnections {
     uow: Arc<dyn UnitOfWork>,
 }

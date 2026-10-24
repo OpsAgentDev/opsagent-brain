@@ -14,9 +14,9 @@ use super::{OrgIdPath, OrgPath};
 use crate::{
     actions::recipients as action,
     api_error::{ApiError, ApiJson, ApiQuery, Problem},
-    controllers::page::{page_request, Page, PageParams},
     middleware::org_scope::OrgScope,
     state::AppState,
+    views::page::{page_request, Page, PageParams},
 };
 
 #[derive(Serialize, ToSchema)]

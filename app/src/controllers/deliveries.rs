@@ -15,9 +15,9 @@ use super::{parse_id, OrgIdPath, OrgPath};
 use crate::{
     actions::deliveries::DeliveryItem,
     api_error::{ApiError, ApiQuery, Problem},
-    controllers::page::{page_request, Page, PageParams},
     middleware::org_scope::OrgScope,
     state::AppState,
+    views::page::{page_request, Page, PageParams},
 };
 
 const KINDS: [&str; 4] = ["briefing", "weekly", "alert", "notice"];

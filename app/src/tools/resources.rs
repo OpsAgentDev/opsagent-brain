@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use super::{audited, page_request, to_json, Caller, ToolError};
 use crate::{
     actions::{findings::ListFindings, resources::ListResources, runs::ListRuns, uow::UnitOfWork},
-    controllers::{findings, page::Page, resources, runs},
+    views::{findings, page::Page, resources, runs},
 };
 
 #[derive(Debug, Clone)]
@@ -59,7 +59,7 @@ impl ResourceRegistry {
         audited(
             &*self.uow,
             caller,
-            "mcp.resource.read",
+            &format!("{}.resource.read", caller.via.channel()),
             ("uri", uri),
             started,
             result,

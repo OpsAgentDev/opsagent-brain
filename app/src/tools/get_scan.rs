@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{parse_args, record_id, schema_of, to_json, Access, Caller, Tool, ToolError, ToolSpec};
-use crate::{actions::runs::GetRun, controllers::runs::run_view};
+use crate::{actions::runs::GetRun, views::runs::run_view};
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

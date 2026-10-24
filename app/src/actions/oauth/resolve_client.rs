@@ -17,6 +17,7 @@ const MAX_NAME_CHARS: usize = 100;
 
 /// Finds the client a `client_id` names: a Client ID Metadata Document (an `https` URL,
 /// fetched and cached) or a dynamically registered client.
+#[derive(Clone)]
 pub struct ResolveClient {
     uow: Arc<dyn UnitOfWork>,
     source: Arc<dyn ClientMetadataSource>,

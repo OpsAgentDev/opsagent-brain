@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{parse_args, record_id, schema_of, to_json, Access, Caller, Tool, ToolError, ToolSpec};
-use crate::{actions::findings::GetFinding, controllers::findings::detail};
+use crate::{actions::findings::GetFinding, views::findings::detail};
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

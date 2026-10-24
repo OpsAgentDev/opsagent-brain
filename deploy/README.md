@@ -65,3 +65,5 @@ PITR is on for the Railway Postgres service. A fifth service `pg-backup` runs `d
 ## MCP server (Plan 4)
 
 No new variables. `APP_BASE_URL` must be exactly `https://brain.opsagent.dev` in production: the OAuth issuer, the MCP resource (`{APP_BASE_URL}/mcp`) and the MCP allowed host all derive from it, and boot fails if it is not an absolute URL. `SESSION_SECRET` also keys the consent browser-binding cookie. After deploy, `scripts/smoke.sh https://brain.opsagent.dev` checks MCP discovery and the 401 challenge.
+
+Consent works only on the custom domains (opsagent.dev and brain.opsagent.dev are same-site); on *.up.railway.app previews the SameSite=Lax consent cookie is not sent and consent returns 403.

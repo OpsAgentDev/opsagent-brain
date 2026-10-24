@@ -3,59 +3,22 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use chrono::{DateTime, FixedOffset};
 use opsagent_core::run;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use utoipa::{IntoParams, ToSchema};
+use serde::Deserialize;
+use utoipa::IntoParams;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use super::{OrgIdPath, RunAccepted};
 use crate::{
     api_error::{ApiError, ApiQuery, Problem},
-    controllers::page::{page_request, Page, PageParams},
     middleware::org_scope::OrgScope,
-    models::enum_str,
     state::AppState,
+    views::{
+        page::{page_request, Page, PageParams},
+        runs::{run_view, summary, Run, RunSummary},
+    },
 };
-
-#[derive(Serialize, ToSchema)]
-pub struct RunSummary {
-    pub id: Uuid,
-    pub connection_id: Option<Uuid>,
-    /// `full_scan`, `verify`, ...
-    pub job_type: String,
-    /// `queued`, `running`, `done`, `partial`, `failed` or `skipped`.
-    pub status: String,
-    pub scheduled_at: DateTime<FixedOffset>,
-    pub started_at: Option<DateTime<FixedOffset>>,
-    pub finished_at: Option<DateTime<FixedOffset>>,
-    pub partial_reason: Option<String>,
-}
-
-#[derive(Serialize, ToSchema)]
-pub struct Run {
-    #[serde(flatten)]
-    pub run: RunSummary,
-    pub attempts: i32,
-    /// Job statistics from the checkpoint (for `full_scan`: score, counts, partial); null if none.
-    #[schema(value_type = Option<Object>)]
-    pub stats: Option<Value>,
-}
-
-pub(crate) fn summary(r: run::Run) -> RunSummary {
-    RunSummary {
-        id: r.id,
-        connection_id: r.connection_id,
-        job_type: r.job_type,
-        status: enum_str(r.status),
-        scheduled_at: r.scheduled_at.fixed_offset(),
-        started_at: r.started_at.map(|t| t.fixed_offset()),
-        finished_at: r.finished_at.map(|t| t.fixed_offset()),
-        partial_reason: r.partial_reason,
-    }
-}
 
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -102,15 +65,6 @@ async fn show(
         .run(scope.organisation.id, id)
         .await?;
     Ok(Json(run_view(r)))
-}
-
-/// The wire view of one run (REST and MCP).
-pub(crate) fn run_view(r: run::Run) -> Run {
-    Run {
-        attempts: r.attempts,
-        stats: Some(r.stats.clone()),
-        run: summary(r),
-    }
 }
 
 #[utoipa::path(post, path = "/orgs/{org}/connections/{id}/scan", tag = "runs", params(OrgIdPath),

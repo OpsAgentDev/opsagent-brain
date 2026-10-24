@@ -24,6 +24,7 @@ fn retry_after(last: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Option<u64> {
     (left > Duration::zero()).then(|| u64::try_from(left.num_seconds().max(1)).unwrap_or(1))
 }
 
+#[derive(Clone)]
 pub struct RequestManualScan {
     uow: Arc<dyn UnitOfWork>,
     dispatcher: Arc<RunDispatcher>,

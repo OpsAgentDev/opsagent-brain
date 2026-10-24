@@ -10,7 +10,6 @@ pub mod oauth;
 pub mod oauth_consent;
 pub mod openapi;
 pub mod orgs;
-pub mod page;
 pub mod recipients;
 pub mod resources;
 pub mod runs;
