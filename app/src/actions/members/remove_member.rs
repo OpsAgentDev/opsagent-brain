@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use opsagent_core::{audit::AuditEntry, org::Role};
+use opsagent_core::{audit::AuditEntry, org::Role, repo::Clock};
 use uuid::Uuid;
 
 use crate::{
@@ -12,11 +12,12 @@ use crate::{
 /// Removes a member; refused with `last_owner` if it would leave no owner. Owners only.
 pub struct RemoveMember {
     uow: Arc<dyn UnitOfWork>,
+    clock: Arc<dyn Clock>,
 }
 
 impl RemoveMember {
-    pub fn new(uow: Arc<dyn UnitOfWork>) -> Self {
-        Self { uow }
+    pub fn new(uow: Arc<dyn UnitOfWork>, clock: Arc<dyn Clock>) -> Self {
+        Self { uow, clock }
     }
 
     pub async fn run(&self, scope: &OrgScope, actor: Uuid, member_id: Uuid) -> AppResult<()> {
@@ -41,6 +42,11 @@ impl RemoveMember {
         }
         // Also cancels the user's pending invites, so they cannot rejoin through one.
         tx.orgs().remove_member(organisation_id, member_id).await?;
+        // Grants name the membership row, so its id is the key.
+        let now = self.clock.now();
+        tx.oauth()
+            .revoke_member_grants(organisation_id, member_id, now)
+            .await?;
         let target = Some(("member", member_id.to_string()));
         let entry = AuditEntry::member(Some(organisation_id), actor, "member.remove", target);
         tx.audit().record(entry).await?;
@@ -61,7 +67,10 @@ mod tests {
         let store = MemStore::default();
         let (owner, org) = owned_org(&store, "only@example.com", "Solo").await;
         let scope = scope(&store, &org, &owner).await;
-        let remove = RemoveMember::new(Arc::new(store.clone()));
+        let remove = RemoveMember::new(
+            Arc::new(store.clone()),
+            Arc::new(opsagent_core::repo::SystemClock),
+        );
         let err = remove
             .run(&scope, owner.id, scope.member.id)
             .await

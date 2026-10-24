@@ -34,6 +34,9 @@ impl DeleteOrg {
             end_connection(tx.as_ref(), organisation_id, c.id, "organisation_deleted").await?;
         }
         tx.schedules().disable_for_org(organisation_id).await?;
+        tx.oauth()
+            .revoke_org_grants(organisation_id, self.clock.now())
+            .await?;
         let target = Some(("organisation", organisation_id.to_string()));
         let entry = AuditEntry::member(Some(organisation_id), actor, "org.delete", target);
         tx.audit().record(entry).await?;

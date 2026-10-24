@@ -202,7 +202,7 @@ pub fn build_actions(d: &Deps) -> Actions {
                 d.clock.clone(),
             ),
             accept_invite: members::AcceptInvite::new(d.uow.clone(), d.clock.clone()),
-            remove_member: members::RemoveMember::new(d.uow.clone()),
+            remove_member: members::RemoveMember::new(d.uow.clone(), d.clock.clone()),
         },
         findings: findings::Findings {
             list_findings: findings::ListFindings::new(d.uow.clone()),
@@ -278,6 +278,8 @@ pub fn build_actions(d: &Deps) -> Actions {
             exchange_code: oauth::ExchangeCode::new(d.uow.clone()),
             refresh_grant: oauth::RefreshGrant::new(d.uow.clone()),
             revoke_token: oauth::RevokeToken::new(d.uow.clone()),
+            list_agents: oauth::ListAgents::new(d.uow.clone()),
+            revoke_agent: oauth::RevokeAgent::new(d.uow.clone()),
         },
     }
 }

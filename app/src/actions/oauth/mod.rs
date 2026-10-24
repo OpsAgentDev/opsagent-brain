@@ -2,9 +2,11 @@
 mod decide_consent;
 mod exchange_code;
 mod get_consent;
+mod list_agents;
 mod refresh_grant;
 mod register_client;
 mod resolve_client;
+mod revoke_agent;
 mod revoke_token;
 mod start_authorization;
 
@@ -26,8 +28,10 @@ use crate::{
 
 pub use decide_consent::{DecideConsent, Decision};
 pub use get_consent::{ConsentView, GetConsent};
+pub use list_agents::{Agent, ListAgents};
 pub use register_client::{RegisterClient, RegistrationRequest};
 pub use resolve_client::ResolveClient;
+pub use revoke_agent::RevokeAgent;
 pub use start_authorization::{AuthorizeError, AuthorizeParams, StartAuthorization};
 
 pub use exchange_code::{CodeExchange, ExchangeCode};
@@ -49,6 +53,8 @@ pub struct OAuth {
     pub exchange_code: ExchangeCode,
     pub refresh_grant: RefreshGrant,
     pub revoke_token: RevokeToken,
+    pub list_agents: ListAgents,
+    pub revoke_agent: RevokeAgent,
 }
 
 /// The RFC 6749 section 5.1 success body.

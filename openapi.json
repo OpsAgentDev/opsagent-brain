@@ -690,6 +690,88 @@
         }
       }
     },
+    "/orgs/{org}/agents": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "agents_list",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AgentView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/agents/{id}": {
+      "delete": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "agents_revoke",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs/{org}/connections": {
       "get": {
         "tags": [
@@ -2614,6 +2696,43 @@
             ],
             "format": "date-time",
             "description": "Default now + 90 days; at most 365 days ahead."
+          }
+        }
+      },
+      "AgentView": {
+        "type": "object",
+        "required": [
+          "grant_id",
+          "client_name",
+          "client_kind",
+          "member_email",
+          "created_at"
+        ],
+        "properties": {
+          "client_kind": {
+            "type": "string",
+            "description": "`dynamic` or `metadata_document`."
+          },
+          "client_name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "grant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "member_email": {
+            "type": "string"
           }
         }
       },
