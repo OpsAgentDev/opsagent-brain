@@ -101,11 +101,16 @@ async fn show(
         .get_run
         .run(scope.organisation.id, id)
         .await?;
-    Ok(Json(Run {
+    Ok(Json(run_view(r)))
+}
+
+/// The wire view of one run (REST and MCP).
+pub(crate) fn run_view(r: run::Run) -> Run {
+    Run {
         attempts: r.attempts,
         stats: Some(r.stats.clone()),
         run: summary(r),
-    }))
+    }
 }
 
 #[utoipa::path(post, path = "/orgs/{org}/connections/{id}/scan", tag = "runs", params(OrgIdPath),

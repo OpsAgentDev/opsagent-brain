@@ -15,16 +15,21 @@ const META: &str =
     "Bearer resource_metadata=\"http://localhost:5150/.well-known/oauth-protected-resource/mcp\", scope=\"opsagent.read\"";
 
 /// An organisation, its owner's member id, and an access token for a grant on it.
-struct Agent {
-    slug: String,
-    org: Uuid,
-    member: Uuid,
-    grant: Uuid,
-    token: String,
+pub(super) struct Agent {
+    pub(super) slug: String,
+    pub(super) org: Uuid,
+    pub(super) member: Uuid,
+    pub(super) grant: Uuid,
+    pub(super) token: String,
 }
 
 /// Signs in `email` (session kept on `req`), creates `org_name`, and mints a token.
-async fn agent(req: &TestServer, app: &TestApp, email: &str, org_name: &str) -> (Agent, String) {
+pub(super) async fn agent(
+    req: &TestServer,
+    app: &TestApp,
+    email: &str,
+    org_name: &str,
+) -> (Agent, String) {
     let mail = prepare(app);
     let csrf = sign_in(req, &mail, email).await;
     let org = create_org(req, &csrf, org_name).await;
@@ -48,7 +53,7 @@ async fn agent(req: &TestServer, app: &TestApp, email: &str, org_name: &str) -> 
 }
 
 /// A grant for `member` and an access token expiring after `ttl`.
-async fn mint(app: &TestApp, org: Uuid, member: Uuid, ttl: Duration) -> (Uuid, String) {
+pub(super) async fn mint(app: &TestApp, org: Uuid, member: Uuid, ttl: Duration) -> (Uuid, String) {
     let o = app.state.uow.oauth();
     let g = Grant {
         id: Uuid::new_v4(),
@@ -73,7 +78,12 @@ async fn mint(app: &TestApp, org: Uuid, member: Uuid, ttl: Duration) -> (Uuid, S
     (g.id, token)
 }
 
-async fn rpc(req: &TestServer, token: Option<&str>, method: &str, params: Value) -> TestResponse {
+pub(super) async fn rpc(
+    req: &TestServer,
+    token: Option<&str>,
+    method: &str,
+    params: Value,
+) -> TestResponse {
     let mut r = req
         .post("/mcp")
         .add_header("Host", "localhost:5150")
@@ -86,7 +96,7 @@ async fn rpc(req: &TestServer, token: Option<&str>, method: &str, params: Value)
         .await
 }
 
-async fn call(req: &TestServer, token: &str, tool: &str, args: Value) -> Value {
+pub(super) async fn call(req: &TestServer, token: &str, tool: &str, args: Value) -> Value {
     let res = rpc(
         req,
         Some(token),
@@ -227,7 +237,7 @@ async fn list_connections_is_org_scoped() {
     .await;
 }
 
-async fn member_of(app: &TestApp, org: Uuid) -> Uuid {
+pub(super) async fn member_of(app: &TestApp, org: Uuid) -> Uuid {
     app.state.uow.orgs().members(org).await.unwrap()[0].id
 }
 

@@ -20,7 +20,7 @@ pub use full_scan::FullScan;
 pub use full_scan_chunks::Chunk;
 pub use get_run::GetRun;
 pub use list_runs::ListRuns;
-pub use request_manual_scan::RequestManualScan;
+pub use request_manual_scan::{RequestManualScan, WINDOW as SCAN_WINDOW};
 pub use scan_now::ScanNow;
 pub use scheduler_tick::{SchedulerTick, TickReport};
 pub use verify_connection::VerifyConnection;

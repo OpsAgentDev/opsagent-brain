@@ -293,10 +293,32 @@ pub fn build_actions(d: &Deps) -> Actions {
 
 /// Every tool, the only registry of tool names: a new tool is one file and one line here.
 pub fn build_tools(d: &Deps) -> ToolRegistry {
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(tools::ListConnectionsTool::new(
-        connections::ListConnections::new(d.uow.clone()),
-        runs::ListRuns::new(d.uow.clone()),
-    ))];
+    let scan = runs::RequestManualScan::new(
+        d.uow.clone(),
+        Arc::new(runs::RunDispatcher::new(d.uow.clone())),
+        d.clock.clone(),
+    );
+    let tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(tools::ListConnectionsTool::new(
+            connections::ListConnections::new(d.uow.clone()),
+            runs::ListRuns::new(d.uow.clone()),
+        )),
+        Arc::new(tools::ListFindingsTool::new(findings::ListFindings::new(
+            d.uow.clone(),
+        ))),
+        Arc::new(tools::GetFindingTool::new(findings::GetFinding::new(
+            d.uow.clone(),
+        ))),
+        Arc::new(tools::ListResourcesTool::new(
+            resources::ListResources::new(d.uow.clone()),
+        )),
+        Arc::new(tools::GetScanTool::new(runs::GetRun::new(d.uow.clone()))),
+        Arc::new(tools::RunCheckTool::new(scan, d.clock.clone())),
+        Arc::new(tools::GetCostAnomaliesTool::new(
+            findings::ListFindings::new(d.uow.clone()),
+            d.clock.clone(),
+        )),
+    ];
     ToolRegistry::new(tools, d.uow.clone())
 }
 

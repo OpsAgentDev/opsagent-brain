@@ -1,24 +1,41 @@
 //! Transport-neutral tools: each a struct over the Actions it needs, registered once in
 //! `boot.rs`. No transport types here; MCP (`crate::mcp`) and Plan 5's model harness are
 //! adapters over the `ToolRegistry`.
+pub mod get_cost_anomalies;
+pub mod get_finding;
+pub mod get_scan;
 pub mod list_connections;
+pub mod list_findings;
+pub mod list_resources;
+pub mod run_check;
 
 use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use opsagent_core::{audit::AuditEntry, repo::RepoError};
+use opsagent_core::{
+    audit::AuditEntry,
+    repo::{PageOf, PageRequest, RepoError},
+};
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{
     actions::{orgs::OrgScope, uow::UnitOfWork},
+    controllers::page::{decode, Page, DEFAULT_LIMIT, MAX_LIMIT},
     error::AppError,
+    models::enum_of,
 };
 
+pub use get_cost_anomalies::GetCostAnomaliesTool;
+pub use get_finding::GetFindingTool;
+pub use get_scan::GetScanTool;
 pub use list_connections::ListConnectionsTool;
+pub use list_findings::ListFindingsTool;
+pub use list_resources::ListResourcesTool;
+pub use run_check::RunCheckTool;
 
 /// Who is calling a tool: the organisation scope and the door they came through.
 #[derive(Debug, Clone)]
@@ -111,6 +128,47 @@ pub fn schema_of<T: JsonSchema>() -> Value {
 /// `args` as `T` (declare it `deny_unknown_fields`); a mismatch is `Invalid`.
 pub fn parse_args<T: DeserializeOwned>(args: Value) -> Result<T, ToolError> {
     serde_json::from_value(args).map_err(|e| ToolError::Invalid(e.to_string()))
+}
+
+/// The tool result as JSON.
+pub fn to_json<T: Serialize>(v: &T) -> Result<Value, ToolError> {
+    serde_json::to_value(v).map_err(|e| ToolError::Internal(e.to_string()))
+}
+
+/// The page request for `cursor` and `limit` (default 50, clamped to 1..=200 like REST).
+pub fn page_request(cursor: Option<&str>, limit: Option<u64>) -> Result<PageRequest, ToolError> {
+    let after = cursor
+        .map(decode)
+        .transpose()
+        .map_err(|_| ToolError::Invalid("cursor is not valid".into()))?;
+    Ok(PageRequest {
+        after,
+        limit: limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT),
+    })
+}
+
+/// `{items, next_cursor}` with each row through `view`.
+pub fn page_json<T, U: Serialize>(
+    got: PageOf<T>,
+    view: impl FnMut(T) -> U,
+) -> Result<Value, ToolError> {
+    to_json(&Page::of(got).map(view))
+}
+
+/// An id naming a record: a malformed one is `NotFound`, as in REST.
+pub fn record_id(s: &str) -> Result<Uuid, ToolError> {
+    s.parse().map_err(|_| ToolError::NotFound)
+}
+
+/// An id used as a filter: a malformed one is `Invalid`.
+pub fn filter_id(s: &str) -> Result<Uuid, ToolError> {
+    s.parse()
+        .map_err(|_| ToolError::Invalid(format!("{s:?} is not a valid id")))
+}
+
+/// The enum value named `s` (`what` names the argument in the error).
+pub fn enum_arg<T: DeserializeOwned>(what: &str, s: &str) -> Result<T, ToolError> {
+    enum_of(s).ok_or_else(|| ToolError::Invalid(format!("unknown {what} {s:?}")))
 }
 
 /// Every tool, by unique name, and the one place a call is audited and logged.
@@ -218,5 +276,47 @@ mod tests {
         assert_eq!(r.get("b").map(|t| t.spec().name), Some("b"));
         assert!(r.get("c").is_none());
         assert_eq!(r.specs().len(), 2);
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use chrono::Utc;
+    use opsagent_core::{
+        org::{Member, Organisation, Role},
+        user::Email,
+    };
+
+    use super::*;
+
+    /// An MCP caller for organisation `org`.
+    pub fn caller(org: Uuid) -> Caller {
+        let organisation = Organisation {
+            id: org,
+            slug: "o".into(),
+            name: "O".into(),
+            timezone: "UTC".into(),
+            kek_version: None,
+            wrapped_dek: None,
+            created_at: Utc::now(),
+            deleted_at: None,
+        };
+        let member = Member {
+            id: Uuid::new_v4(),
+            organisation_id: org,
+            user_id: Uuid::new_v4(),
+            email: Email::parse("a@example.com").unwrap(),
+            name: None,
+            role: Role::Owner,
+            created_at: Utc::now(),
+        };
+        Caller {
+            scope: OrgScope::new(organisation, member),
+            via: Via::Mcp {
+                grant_id: Uuid::new_v4(),
+                client_id: "test".into(),
+                token_id: Uuid::new_v4(),
+            },
+        }
     }
 }

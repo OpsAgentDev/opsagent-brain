@@ -88,7 +88,7 @@ pub struct FindingDetail {
     pub explanation: Option<Value>,
 }
 
-fn summary(f: core::Finding) -> FindingSummary {
+pub(crate) fn summary(f: core::Finding) -> FindingSummary {
     FindingSummary {
         id: f.id,
         connection_id: f.connection_id,
@@ -104,7 +104,7 @@ fn summary(f: core::Finding) -> FindingSummary {
     }
 }
 
-fn full(f: core::Finding) -> Finding {
+pub(crate) fn full(f: core::Finding) -> Finding {
     Finding {
         summary: f.summary.clone(),
         next_step: f.next_step.clone(),
@@ -174,6 +174,7 @@ async fn list(
         status: f.status,
         severity,
         check_id: f.check,
+        ..Default::default()
     };
     let got = app
         .actions
@@ -197,12 +198,17 @@ async fn show(
         .get_finding
         .run(scope.organisation.id, super::parse_id(&id)?)
         .await?;
-    Ok(Json(FindingDetail {
+    Ok(Json(detail(d)))
+}
+
+/// The wire view of one finding with its evidence and events (REST and MCP).
+pub(crate) fn detail(d: crate::actions::findings::FindingDetail) -> FindingDetail {
+    FindingDetail {
         finding: full(d.finding),
         evidence: d.evidence.into_iter().map(evidence_item).collect(),
         events: d.events.into_iter().map(event).collect(),
         explanation: None,
-    }))
+    }
 }
 
 async fn act(

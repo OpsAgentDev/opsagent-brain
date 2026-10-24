@@ -31,7 +31,7 @@ pub struct ResourceSummary {
     pub gone_at: Option<DateTime<FixedOffset>>,
 }
 
-fn summary(r: ResourceRow) -> ResourceSummary {
+pub(crate) fn summary(r: ResourceRow) -> ResourceSummary {
     ResourceSummary {
         id: r.id,
         connection_id: r.connection_id,

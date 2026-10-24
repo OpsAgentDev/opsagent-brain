@@ -52,6 +52,7 @@ impl FindingRow {
             (f.resolved_at, f.resolved_reason) = (None, None);
         }
         (f.severity, f.title, f.last_seen_run_id) = (d.severity, d.title.clone(), Some(run_id));
+        f.updated_at = now;
         (f.summary, f.next_step) = (Some(d.summary.clone()), Some(d.next_step.clone()));
         f.cost_monthly_usd = cost(d);
         if let Some(k) = kind {
@@ -120,6 +121,8 @@ impl FindingsRepo for MemStore {
                     && q.status.as_ref().is_none_or(|s| &f.status == s)
                     && q.severity.is_none_or(|s| f.severity == s)
                     && q.check_id.as_ref().is_none_or(|c| &f.key.check_id == c)
+                    && q.variant.as_ref().is_none_or(|v| &f.key.variant == v)
+                    && q.last_seen_since.is_none_or(|t| f.updated_at >= t)
             })
             .cloned()
             .collect();
