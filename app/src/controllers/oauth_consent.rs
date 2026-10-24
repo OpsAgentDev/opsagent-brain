@@ -5,7 +5,10 @@ use axum::{
     response::{AppendHeaders, IntoResponse},
     Json,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
@@ -20,31 +23,40 @@ use crate::{
 
 const COOKIE_PREFIX: &str = "oa_consent_";
 
+fn binding_mac(c: &Config, id: Uuid) -> Hmac<Sha256> {
+    let mut m =
+        Hmac::<Sha256>::new_from_slice(c.session_secret.as_bytes()).expect("hmac accepts any key");
+    m.update(format!("{COOKIE_PREFIX}{id}").as_bytes());
+    m
+}
+
 /// The `Set-Cookie` value that binds consent request `id` to the browser that started it
-/// (`max_age` 0 removes it). Scoped to the consent endpoints, same domain as the session.
+/// (`max_age` 0 removes it). Host-only (no Domain) and keyed by the server secret, so neither a
+/// sibling subdomain nor an attacker who knows the id can plant a valid one.
 pub fn consent_cookie(c: &Config, id: Uuid, max_age: i64) -> String {
+    let value = B64.encode(binding_mac(c, id).finalize().into_bytes());
     let mut v = format!(
-        "{COOKIE_PREFIX}{id}=1; Path=/v1/oauth/consent; HttpOnly; SameSite=Lax; Max-Age={max_age}"
+        "{COOKIE_PREFIX}{id}={value}; Path=/v1/oauth/consent; HttpOnly; SameSite=Lax; Max-Age={max_age}"
     );
     if c.cookie_secure {
         v.push_str("; Secure");
-    }
-    if !c.cookie_domain.is_empty() {
-        v.push_str(&format!("; Domain={}", c.cookie_domain));
     }
     v
 }
 
 /// 403 unless the request carries the cookie authorize set: a consent link opened in another
 /// browser (for instance through a forged sign-in `return_to`) cannot be approved.
-fn require_browser(headers: &HeaderMap, id: Uuid) -> Result<(), ApiError> {
-    let want = format!("{COOKIE_PREFIX}{id}=1");
+fn require_browser(c: &Config, headers: &HeaderMap, id: Uuid) -> Result<(), ApiError> {
+    let name = format!("{COOKIE_PREFIX}{id}=");
     let found = headers
         .get_all(header::COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(';'))
-        .any(|c| c.trim() == want);
+        .filter_map(|c| c.trim().strip_prefix(name.as_str()))
+        .filter_map(|v| B64.decode(v).ok())
+        // Constant-time comparison.
+        .any(|tag| binding_mac(c, id).verify_slice(&tag).is_ok());
     if found {
         Ok(())
     } else {
@@ -89,7 +101,7 @@ async fn show(
     Path(id): Path<String>,
 ) -> Result<Json<ConsentView>, ApiError> {
     let id = id.parse().map_err(|_| ApiError::gone("consent_expired"))?;
-    require_browser(&headers, id)?;
+    require_browser(&app.config, &headers, id)?;
     let v = app
         .actions
         .oauth
@@ -135,7 +147,7 @@ async fn decide(
     ApiJson(body): ApiJson<ConsentDecision>,
 ) -> Result<impl IntoResponse, ApiError> {
     let id = id.parse().map_err(|_| ApiError::gone("consent_expired"))?;
-    require_browser(&headers, id)?;
+    require_browser(&app.config, &headers, id)?;
     let decision = match (body.deny, body.organisation) {
         (Some(true), _) => Decision::Deny,
         (_, Some(slug)) => Decision::Approve(slug),
@@ -153,4 +165,32 @@ async fn decide(
 
 pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new().routes(routes!(show, decide))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> Config {
+        Config::from_vars(|k| (k == "APP_ENV").then(|| "test".into())).unwrap()
+    }
+
+    fn with_cookie(v: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(header::COOKIE, v.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn only_the_signed_cookie_binds_the_browser() {
+        let (c, id) = (config(), Uuid::new_v4());
+        let set = consent_cookie(&c, id, 600);
+        let pair = set.split(';').next().unwrap();
+        assert!(require_browser(&c, &with_cookie(&format!("a=b; {pair}")), id).is_ok());
+        assert!(require_browser(&c, &with_cookie(&format!("oa_consent_{id}=1")), id).is_err());
+        let other = consent_cookie(&c, Uuid::new_v4(), 600);
+        let other_value = other.split(';').next().unwrap().split_once('=').unwrap().1;
+        let forged = format!("oa_consent_{id}={other_value}");
+        assert!(require_browser(&c, &with_cookie(&forged), id).is_err());
+    }
 }

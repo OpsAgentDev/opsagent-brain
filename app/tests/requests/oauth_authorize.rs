@@ -393,7 +393,7 @@ async fn consent_with_cookie_succeeds() {
         let cookie = res.header("set-cookie").to_str().unwrap().to_owned();
         let id = query_of(res.header("location").to_str().unwrap())["request_id"].clone();
         assert!(
-            cookie.starts_with(&format!("oa_consent_{id}=1;")),
+            cookie.starts_with(&format!("oa_consent_{id}=")) && !cookie.contains("Domain="),
             "{cookie}"
         );
         for part in [
