@@ -1,11 +1,14 @@
 //! Resources and prompts over MCP.
 use chrono::Duration;
+use opsagent_brain::models::_entities::audit_events;
+use sea_orm::entity::prelude::*;
 use serde_json::{json, Value};
 use serial_test::serial;
 
 use super::{
     mcp_auth::{member_of, mint, rpc},
     mcp_tools::{draft, seed, world},
+    oauth_authorize::CLIENT,
     support::*,
 };
 
@@ -166,6 +169,44 @@ async fn prompt_with_unknown_finding_is_not_found() {
         assert_eq!(got["error"]["data"]["code"], "not_found", "{got}");
         let got = prompt(&req, &a.token, "fix_finding", json!({})).await;
         assert_eq!(got["error"]["data"]["code"], "invalid", "{got}");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn resource_read_and_prompt_get_are_audited_without_payloads() {
+    serve(|req, app| async move {
+        let (a, conn, _) = world(&req, &app, "aud@example.com").await;
+        seed(&app, a.org, conn, &[draft(conn, "no_mfa", "", "u", "x")]).await;
+        let uri = "opsagent://findings/open";
+        ok(rpc(&req, Some(&a.token), "resources/read", json!({"uri": uri})).await).await;
+        let got = prompt(&req, &a.token, "weekly_posture_summary", json!({})).await;
+        assert!(got["result"].is_object(), "{got}");
+        let rows = |action: &'static str| {
+            let (db, org) = (app.db.clone(), a.org);
+            async move {
+                audit_events::Entity::find()
+                    .filter(audit_events::Column::OrganisationId.eq(org))
+                    .filter(audit_events::Column::Action.eq(action))
+                    .all(&db)
+                    .await
+                    .unwrap()
+            }
+        };
+        let r = rows("mcp.resource.read").await;
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].actor_type, "mcp_client");
+        assert_eq!(
+            r[0].metadata,
+            json!({"client_id": CLIENT, "uri": uri, "outcome": "success"})
+        );
+        let p = rows("mcp.prompt.get").await;
+        assert_eq!(p.len(), 1);
+        assert_eq!(
+            p[0].metadata,
+            json!({"client_id": CLIENT, "prompt": "weekly_posture_summary", "outcome": "success"})
+        );
     })
     .await;
 }

@@ -7,9 +7,9 @@ use opsagent_core::{repo::PageOf, resource::ResourceFilter, run::RunFilter};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::{page_request, to_json, Caller, ToolError};
+use super::{audited, page_request, to_json, Caller, ToolError};
 use crate::{
-    actions::{findings::ListFindings, resources::ListResources, runs::ListRuns},
+    actions::{findings::ListFindings, resources::ListResources, runs::ListRuns, uow::UnitOfWork},
     controllers::{findings, page::Page, resources, runs},
 };
 
@@ -30,24 +30,25 @@ pub trait ResourceSource: Send + Sync {
 /// Every resource, by unique URI.
 pub struct ResourceRegistry {
     sources: Vec<Arc<dyn ResourceSource>>,
+    uow: Arc<dyn UnitOfWork>,
 }
 
 impl ResourceRegistry {
     /// Panics on a duplicate URI: a startup bug.
-    pub fn new(sources: Vec<Arc<dyn ResourceSource>>) -> Self {
+    pub fn new(sources: Vec<Arc<dyn ResourceSource>>, uow: Arc<dyn UnitOfWork>) -> Self {
         let mut uris: Vec<_> = sources.iter().map(|s| s.spec().uri).collect();
         uris.sort_unstable();
         if let Some(w) = uris.windows(2).find(|w| w[0] == w[1]) {
             panic!("resource registered twice: {}", w[0]);
         }
-        Self { sources }
+        Self { sources, uow }
     }
 
     pub fn specs(&self) -> Vec<ResourceSpec> {
         self.sources.iter().map(|s| s.spec()).collect()
     }
 
-    /// `Unknown` for a URI nobody serves. Logs the URI and latency, never the content.
+    /// `Unknown` for a URI nobody serves (not audited); else audited (`audited`).
     pub async fn read(&self, caller: &Caller, uri: &str) -> Result<Value, ToolError> {
         let Some(source) = self.sources.iter().find(|s| s.spec().uri == uri) else {
             tracing::warn!(uri, "unknown resource");
@@ -55,10 +56,15 @@ impl ResourceRegistry {
         };
         let started = Instant::now();
         let result = source.read(caller).await;
-        let outcome = result.as_ref().map_or_else(ToolError::code, |_| "success");
-        let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        tracing::info!(uri, outcome, latency_ms, "resource read");
-        result
+        audited(
+            &*self.uow,
+            caller,
+            "mcp.resource.read",
+            ("uri", uri),
+            started,
+            result,
+        )
+        .await
     }
 }
 
@@ -204,9 +210,12 @@ mod tests {
         let store = MemStore::default();
         let (org, other) = (Uuid::new_v4(), Uuid::new_v4());
         seeded(&store, org, "x").await;
-        let reg = ResourceRegistry::new(vec![Arc::new(OpenFindings::new(ListFindings::new(
+        let reg = ResourceRegistry::new(
+            vec![Arc::new(OpenFindings::new(ListFindings::new(Arc::new(
+                store.clone(),
+            ))))],
             Arc::new(store),
-        )))]);
+        );
         let uri = "opsagent://findings/open";
         let got = reg.read(&caller(org), uri).await.unwrap();
         assert_eq!(got["items"].as_array().unwrap().len(), 1);

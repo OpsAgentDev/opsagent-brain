@@ -1,11 +1,11 @@
 //! Transport-neutral prompts: text templates, no model call. A prompt names the tools and
 //! resources to read and never embeds customer data. `crate::mcp` maps them to MCP.
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 
-use super::{filter_id, record_id, Caller, ToolError};
-use crate::actions::{connections::ListConnections, findings::GetFinding};
+use super::{audited, filter_id, record_id, Caller, ToolError};
+use crate::actions::{connections::ListConnections, findings::GetFinding, uow::UnitOfWork};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -50,24 +50,26 @@ pub trait Prompt: Send + Sync {
 /// Every prompt, by unique name.
 pub struct PromptRegistry {
     prompts: Vec<Arc<dyn Prompt>>,
+    uow: Arc<dyn UnitOfWork>,
 }
 
 impl PromptRegistry {
     /// Panics on a duplicate name: a startup bug.
-    pub fn new(prompts: Vec<Arc<dyn Prompt>>) -> Self {
+    pub fn new(prompts: Vec<Arc<dyn Prompt>>, uow: Arc<dyn UnitOfWork>) -> Self {
         let mut names: Vec<_> = prompts.iter().map(|p| p.spec().name).collect();
         names.sort_unstable();
         if let Some(w) = names.windows(2).find(|w| w[0] == w[1]) {
             panic!("prompt registered twice: {}", w[0]);
         }
-        Self { prompts }
+        Self { prompts, uow }
     }
 
     pub fn specs(&self) -> Vec<PromptSpec> {
         self.prompts.iter().map(|p| p.spec()).collect()
     }
 
-    /// `Unknown` for an unknown name; `Invalid` for an undeclared or missing argument.
+    /// `Unknown` for an unknown name (not audited); `Invalid` for an undeclared or missing
+    /// argument; every other outcome is audited (`audited`).
     pub async fn render(
         &self,
         caller: &Caller,
@@ -77,6 +79,25 @@ impl PromptRegistry {
         let Some(prompt) = self.prompts.iter().find(|p| p.spec().name == name) else {
             return Err(ToolError::Unknown(name.to_owned()));
         };
+        let started = Instant::now();
+        let out = self.render_checked(caller, prompt.as_ref(), args).await;
+        audited(
+            &*self.uow,
+            caller,
+            "mcp.prompt.get",
+            ("prompt", name),
+            started,
+            out,
+        )
+        .await
+    }
+
+    async fn render_checked(
+        &self,
+        caller: &Caller,
+        prompt: &dyn Prompt,
+        args: &PromptArgs,
+    ) -> Result<Vec<PromptMessage>, ToolError> {
         let spec = prompt.spec();
         if let Some(k) = args
             .keys()
@@ -91,13 +112,7 @@ impl PromptRegistry {
         {
             return Err(ToolError::Invalid(format!("{} is required", a.name)));
         }
-        let out = prompt.render(caller, args).await;
-        tracing::info!(
-            prompt = name,
-            outcome = out.as_ref().map_or_else(ToolError::code, |_| "success"),
-            "prompt rendered"
-        );
-        out
+        prompt.render(caller, args).await
     }
 }
 
@@ -278,9 +293,8 @@ mod tests {
         let store = MemStore::default();
         let (org, other) = (Uuid::new_v4(), Uuid::new_v4());
         let (id, _) = seeded(&store, org, "secret-evidence").await;
-        let reg = PromptRegistry::new(vec![Arc::new(FixFinding::new(GetFinding::new(Arc::new(
-            store,
-        ))))]);
+        let get = GetFinding::new(Arc::new(store.clone()));
+        let reg = PromptRegistry::new(vec![Arc::new(FixFinding::new(get))], Arc::new(store));
         let a = args(&[("finding_id", &id.to_string())]);
         let m = reg.render(&caller(org), "fix_finding", &a).await.unwrap();
         let text = &m[0].text;

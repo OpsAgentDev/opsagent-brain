@@ -60,13 +60,13 @@ pub fn service(state: &AppState) -> StreamableHttpService<McpServer, NeverSessio
     )
 }
 
-/// The `APP_BASE_URL` host; loopback too outside production.
+/// The `APP_BASE_URL` host (validated at config load); loopback too outside production.
 fn allowed_hosts(c: &Config) -> Vec<String> {
-    let base = reqwest::Url::parse(&c.api_base_url).ok();
-    let mut hosts: Vec<String> = base
+    let host = reqwest::Url::parse(&c.api_base_url)
+        .ok()
         .and_then(|u| u.host_str().map(str::to_owned))
-        .into_iter()
-        .collect();
+        .expect("APP_BASE_URL is validated in Config::from_vars");
+    let mut hosts = vec![host];
     if c.env != AppEnv::Production {
         hosts.extend(["localhost".into(), "127.0.0.1".into()]);
     }

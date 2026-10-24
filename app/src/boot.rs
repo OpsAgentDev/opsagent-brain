@@ -337,7 +337,7 @@ pub fn build_resources(d: &Deps) -> ResourceRegistry {
             findings::ListFindings::new(d.uow.clone()),
         )),
     ];
-    ResourceRegistry::new(sources)
+    ResourceRegistry::new(sources, d.uow.clone())
 }
 
 /// Every prompt, the only registry of prompt names.
@@ -350,7 +350,7 @@ pub fn build_prompts(d: &Deps) -> PromptRegistry {
             d.uow.clone(),
         ))),
     ];
-    PromptRegistry::new(prompts)
+    PromptRegistry::new(prompts, d.uow.clone())
 }
 
 fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipients {

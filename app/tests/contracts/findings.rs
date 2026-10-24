@@ -215,6 +215,23 @@ contract_suite! {
         assert_eq!(count(since(1)).await, 0);
     }
 
+    async fn seen_again_in_a_later_run_stays_in_last_seen_since(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let d = [draft(conn, "01", "x", Severity::High)];
+        let t0 = Utc::now();
+        let first = seed.run(org, conn).await;
+        s.findings().upsert_seen(org, conn, first, &d, t0).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let second = seed.run(org, conn).await;
+        let t1 = Utc::now();
+        s.findings().upsert_seen(org, conn, second, &d, t1).await.unwrap();
+        let since = |t| FindingFilter { last_seen_since: Some(t), ..Default::default() };
+        let count = |f: FindingFilter| async move { s.findings().list(org, f, all()).await.unwrap().items.len() };
+        // Just after the first sighting: the second one keeps it in.
+        assert_eq!(count(since(t0 + Duration::milliseconds(100))).await, 1);
+        assert_eq!(count(since(t1 + Duration::hours(1))).await, 0);
+    }
+
     async fn other_org_finding_invisible(s, seed) {
         let (org, conn) = world(s, seed).await;
         let (other, _) = world(s, seed).await;

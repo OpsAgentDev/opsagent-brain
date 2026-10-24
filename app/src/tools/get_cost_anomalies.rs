@@ -48,7 +48,8 @@ impl Tool for GetCostAnomaliesTool {
         ToolSpec {
             name: "get_cost_anomalies",
             title: "Get cost anomalies",
-            description: "Open cost-anomaly findings (check 01) seen within the last N days. Each \
+            description:
+                "Open cost anomalies (check 01 findings) seen within the last N days. Each \
                           summary carries the spend and its baseline.",
             input_schema: schema_of::<Args>(),
             access: Access::Read,

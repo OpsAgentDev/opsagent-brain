@@ -200,9 +200,8 @@ impl ToolRegistry {
         self.tools.iter().find(|t| t.spec().name == name)
     }
 
-    /// Runs the tool, writes its `audit_events` row (tool and outcome, never arguments or
-    /// results) and logs outcome and latency. An unknown name is `Unknown`, not audited; a
-    /// failed audit write fails the call (no unaudited access).
+    /// Runs the tool and audits it (`audited`). An unknown name is `Unknown`, not audited;
+    /// failed audit write fails the call.
     pub async fn invoke(
         &self,
         caller: &Caller,
@@ -215,23 +214,45 @@ impl ToolRegistry {
         };
         let started = Instant::now();
         let result = tool.call(caller, args).await;
-        let outcome = result.as_ref().map_or_else(ToolError::code, |_| "success");
-        let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        tracing::info!(tool = name, outcome, latency_ms, "tool call");
-        let Via::Mcp {
-            grant_id,
-            client_id,
-            ..
-        } = &caller.via;
-        let org = caller.scope.organisation.id;
-        let entry = AuditEntry::mcp_client(org, *grant_id, "mcp.tool.call", outcome)
-            .with_meta(json!({ "client_id": client_id, "tool": name, "outcome": outcome }));
-        if let Err(e) = self.uow.audit().record(entry).await {
-            tracing::error!(error = %e, tool = name, "tool call audit failed");
-            return Err(ToolError::Internal("audit failed".into()));
-        }
-        result
+        audited(
+            &*self.uow,
+            caller,
+            "mcp.tool.call",
+            ("tool", name),
+            started,
+            result,
+        )
+        .await
     }
+}
+
+/// Logs outcome and latency of one MCP request and writes its `audit_events` row (the
+/// subject and outcome, never arguments or content). A failed audit write fails the request
+/// (no unaudited access). Shared by tools, resources and prompts.
+pub(crate) async fn audited<T>(
+    uow: &dyn UnitOfWork,
+    caller: &Caller,
+    action: &'static str,
+    (key, subject): (&'static str, &str),
+    started: Instant,
+    result: Result<T, ToolError>,
+) -> Result<T, ToolError> {
+    let outcome = result.as_ref().map_or_else(ToolError::code, |_| "success");
+    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    tracing::info!(action, subject, outcome, latency_ms, "mcp request");
+    let Via::Mcp {
+        grant_id,
+        client_id,
+        ..
+    } = &caller.via;
+    let org = caller.scope.organisation.id;
+    let entry = AuditEntry::mcp_client(org, *grant_id, action, outcome)
+        .with_meta(json!({ "client_id": client_id, key: subject, "outcome": outcome }));
+    if let Err(e) = uow.audit().record(entry).await {
+        tracing::error!(error = %e, action, "mcp audit write failed");
+        return Err(ToolError::Internal("audit failed".into()));
+    }
+    result
 }
 
 #[cfg(test)]

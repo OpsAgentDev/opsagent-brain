@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::http::StatusCode;
 use chrono::Duration;
 use opsagent_core::repo::Clock;
 use schemars::JsonSchema;
@@ -43,11 +42,7 @@ impl RunCheckTool {
                     last_scan_at: self.clock.now() + left - SCAN_WINDOW,
                 }
             }
-            AppError::Refused {
-                status: StatusCode::CONFLICT,
-                code: "connection_not_scannable",
-                ..
-            } => ToolError::ConnectionBlocked,
+            e if e.is_not_scannable() => ToolError::ConnectionBlocked,
             e => e.into(),
         }
     }
