@@ -44,7 +44,7 @@ pub struct Run {
     pub stats: Option<Value>,
 }
 
-fn summary(r: run::Run) -> RunSummary {
+pub(crate) fn summary(r: run::Run) -> RunSummary {
     RunSummary {
         id: r.id,
         connection_id: r.connection_id,

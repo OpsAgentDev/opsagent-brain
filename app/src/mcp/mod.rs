@@ -7,8 +7,12 @@ use std::sync::Arc;
 use axum::http::request::Parts;
 use rmcp::{
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, Implementation, ListToolsResult,
-        PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool as McpTool, ToolAnnotations,
+        CallToolRequestParams, CallToolResponse, CallToolResult, GetPromptRequestParams,
+        GetPromptResponse, GetPromptResult, Implementation, ListPromptsResult, ListResourcesResult,
+        ListToolsResult, PaginatedRequestParams, Prompt as McpPrompt, PromptArgument,
+        PromptMessage, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
+        Resource as McpResource, ResourceContents, Role, ServerCapabilities, ServerConfig,
+        Tool as McpTool, ToolAnnotations,
     },
     service::RequestContext,
     transport::{
@@ -23,12 +27,17 @@ use crate::{
     config::{AppEnv, Config},
     middleware::PUBLIC_BODY_LIMIT,
     state::AppState,
-    tools::{Access, Caller, ToolError, ToolRegistry, ToolSpec},
+    tools::{
+        prompts::{PromptMessage as OurMessage, Role as OurRole},
+        Access, Caller, PromptRegistry, ResourceRegistry, ToolError, ToolRegistry, ToolSpec,
+    },
 };
 
 #[derive(Clone)]
 pub struct McpServer {
     tools: Arc<ToolRegistry>,
+    resources: Arc<ResourceRegistry>,
+    prompts: Arc<PromptRegistry>,
 }
 
 /// The service mounted at `/mcp` (behind `auth::layer`): stateless for every protocol era,
@@ -36,6 +45,8 @@ pub struct McpServer {
 pub fn service(state: &AppState) -> StreamableHttpService<McpServer, NeverSessionManager> {
     let server = McpServer {
         tools: state.tools.clone(),
+        resources: state.resources.clone(),
+        prompts: state.prompts.clone(),
     };
     let config = StreamableHttpServerConfig::default()
         .with_allowed_hosts(allowed_hosts(&state.config))
@@ -96,10 +107,59 @@ fn error_result(e: &ToolError) -> CallToolResult {
     CallToolResult::structured_error(body)
 }
 
+fn caller_of(context: &RequestContext<RoleServer>) -> Result<Caller, ErrorData> {
+    context
+        .extensions
+        .get::<Parts>()
+        .and_then(|p| p.extensions.get::<Caller>())
+        .cloned()
+        .ok_or_else(|| ErrorData::internal_error("no caller", None))
+}
+
+/// A resource or prompt failure as a JSON-RPC error; the catalogue code rides in `data`.
+fn protocol_error(e: &ToolError) -> ErrorData {
+    let data = Some(json!({ "code": e.code() }));
+    match e {
+        ToolError::Internal(detail) => {
+            tracing::error!(error = %detail, "mcp request failed");
+            ErrorData::internal_error("Something went wrong. Try again later.", None)
+        }
+        ToolError::Unknown(what) => ErrorData::resource_not_found(format!("Unknown: {what}"), data),
+        e => ErrorData::invalid_params(e.to_string(), data),
+    }
+}
+
+fn to_mcp_prompt(s: crate::tools::prompts::PromptSpec) -> McpPrompt {
+    let args = s
+        .args
+        .iter()
+        .map(|a| {
+            PromptArgument::new(a.name)
+                .with_description(a.description)
+                .with_required(a.required)
+        })
+        .collect();
+    McpPrompt::new(s.name, Some(s.description), Some(args)).with_title(s.title)
+}
+
+fn to_mcp_message(m: OurMessage) -> PromptMessage {
+    let role = match m.role {
+        OurRole::User => Role::User,
+        OurRole::Assistant => Role::Assistant,
+    };
+    PromptMessage::new_text(role, m.text)
+}
+
 impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("opsagent", env!("CARGO_PKG_VERSION")))
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_prompts()
+                .build(),
+        )
+        .with_server_info(Implementation::new("opsagent", env!("CARGO_PKG_VERSION")))
     }
 
     async fn list_tools(
@@ -120,12 +180,7 @@ impl ServerHandler for McpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let caller = context
-            .extensions
-            .get::<Parts>()
-            .and_then(|p| p.extensions.get::<Caller>())
-            .cloned()
-            .ok_or_else(|| ErrorData::internal_error("no caller", None))?;
+        let caller = caller_of(&context)?;
         let args = Value::Object(request.arguments.unwrap_or_default());
         let result = self
             .tools
@@ -137,5 +192,67 @@ impl ServerHandler for McpServer {
             Err(e) => error_result(&e),
         }
         .into())
+    }
+
+    async fn list_resources(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        let resources = self.resources.specs().into_iter().map(|r| {
+            McpResource::new(r.uri, r.name)
+                .with_description(r.description)
+                .with_mime_type("application/json")
+        });
+        Ok(ListResourcesResult::with_all_items(resources.collect()))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        let caller = caller_of(&context)?;
+        let doc = self
+            .resources
+            .read(&caller, &request.uri)
+            .await
+            .map_err(|e| protocol_error(&e))?;
+        let contents =
+            ResourceContents::text(doc.to_string(), request.uri).with_mime_type("application/json");
+        Ok(ReadResourceResult::new(vec![contents]).into())
+    }
+
+    async fn list_prompts(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        let prompts = self.prompts.specs().into_iter().map(to_mcp_prompt);
+        Ok(ListPromptsResult::with_all_items(prompts.collect()))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, ErrorData> {
+        let caller = caller_of(&context)?;
+        let args = request
+            .arguments
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, v)| match v {
+                Value::String(s) => (k, s),
+                other => (k, other.to_string()),
+            })
+            .collect();
+        let messages = self
+            .prompts
+            .render(&caller, &request.name, &args)
+            .await
+            .map_err(|e| protocol_error(&e))?;
+        let result = GetPromptResult::new(messages.into_iter().map(to_mcp_message).collect());
+        Ok(result.into())
     }
 }

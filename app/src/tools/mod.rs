@@ -7,6 +7,8 @@ pub mod get_scan;
 pub mod list_connections;
 pub mod list_findings;
 pub mod list_resources;
+pub mod prompts;
+pub mod resources;
 pub mod run_check;
 
 use std::{sync::Arc, time::Instant};
@@ -35,6 +37,8 @@ pub use get_scan::GetScanTool;
 pub use list_connections::ListConnectionsTool;
 pub use list_findings::ListFindingsTool;
 pub use list_resources::ListResourcesTool;
+pub use prompts::{Prompt, PromptRegistry};
+pub use resources::{ResourceRegistry, ResourceSource};
 pub use run_check::RunCheckTool;
 
 /// Who is calling a tool: the organisation scope and the door they came through.

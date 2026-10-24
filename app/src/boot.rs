@@ -33,7 +33,7 @@ use crate::{
     mailers::{self, Mailer},
     mcp, middleware,
     state::{AppState, Inner, OAuthUrls},
-    tools::{self, Tool, ToolRegistry},
+    tools::{self, Prompt, PromptRegistry, ResourceRegistry, ResourceSource, Tool, ToolRegistry},
 };
 
 /// security.md: unwrapped DEKs stay in memory for at most 10 minutes.
@@ -152,6 +152,8 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
     let actions = Arc::new(build_actions(&deps));
     AppState(Arc::new(Inner {
         tools: Arc::new(build_tools(&deps)),
+        resources: Arc::new(build_resources(&deps)),
+        prompts: Arc::new(build_prompts(&deps)),
         oauth_urls: OAuthUrls::new(&deps.config.api_base_url),
         deps,
         actions,
@@ -320,6 +322,35 @@ pub fn build_tools(d: &Deps) -> ToolRegistry {
         )),
     ];
     ToolRegistry::new(tools, d.uow.clone())
+}
+
+/// Every resource, the only registry of URIs.
+pub fn build_resources(d: &Deps) -> ResourceRegistry {
+    let sources: Vec<Arc<dyn ResourceSource>> = vec![
+        Arc::new(tools::resources::LatestScans::new(runs::ListRuns::new(
+            d.uow.clone(),
+        ))),
+        Arc::new(tools::resources::LatestInventory::new(
+            resources::ListResources::new(d.uow.clone()),
+        )),
+        Arc::new(tools::resources::OpenFindings::new(
+            findings::ListFindings::new(d.uow.clone()),
+        )),
+    ];
+    ResourceRegistry::new(sources)
+}
+
+/// Every prompt, the only registry of prompt names.
+pub fn build_prompts(d: &Deps) -> PromptRegistry {
+    let list = || connections::ListConnections::new(d.uow.clone());
+    let prompts: Vec<Arc<dyn Prompt>> = vec![
+        Arc::new(tools::prompts::TriageOvernight::new(list())),
+        Arc::new(tools::prompts::WeeklyPosture::new(list())),
+        Arc::new(tools::prompts::FixFinding::new(findings::GetFinding::new(
+            d.uow.clone(),
+        ))),
+    ];
+    PromptRegistry::new(prompts)
 }
 
 fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipients {

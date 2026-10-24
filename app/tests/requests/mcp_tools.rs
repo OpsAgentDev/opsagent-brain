@@ -14,14 +14,20 @@ use super::{
 };
 
 /// The agent's organisation with a pending connection; returns the agent and the connection.
-async fn world(req: &TestServer, app: &TestApp, email: &str) -> (Agent, Uuid, String) {
+pub(super) async fn world(req: &TestServer, app: &TestApp, email: &str) -> (Agent, Uuid, String) {
     let (a, csrf) = agent(req, app, email, "Tools").await;
     let conn = create_connection(req, &csrf, &a.slug, "aws", "Prod").await;
     let id = conn["id"].as_str().unwrap().to_owned();
     (a, id.parse().unwrap(), csrf)
 }
 
-fn draft(conn: Uuid, check: &str, variant: &str, identity: &str, excerpt: &str) -> FindingDraft {
+pub(super) fn draft(
+    conn: Uuid,
+    check: &str,
+    variant: &str,
+    identity: &str,
+    excerpt: &str,
+) -> FindingDraft {
     FindingDraft {
         key: FindingKey {
             connection_id: conn,
@@ -42,7 +48,7 @@ fn draft(conn: Uuid, check: &str, variant: &str, identity: &str, excerpt: &str) 
 }
 
 /// One scan run of `conn` that saw `drafts`.
-async fn seed(app: &TestApp, org: Uuid, conn: Uuid, drafts: &[FindingDraft]) {
+pub(super) async fn seed(app: &TestApp, org: Uuid, conn: Uuid, drafts: &[FindingDraft]) {
     let run = Uuid::now_v7();
     app.db
         .execute_unprepared(&format!(
@@ -57,7 +63,7 @@ async fn seed(app: &TestApp, org: Uuid, conn: Uuid, drafts: &[FindingDraft]) {
         .unwrap();
 }
 
-fn result(got: &Value) -> &Value {
+pub(super) fn result(got: &Value) -> &Value {
     &got["result"]["structuredContent"]
 }
 
