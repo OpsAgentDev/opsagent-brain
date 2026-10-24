@@ -410,3 +410,23 @@ async fn github_return_to_round_trips() {
     std::env::remove_var("GITHUB_CLIENT_ID");
     std::env::remove_var("GITHUB_CLIENT_SECRET");
 }
+
+/// An attacker starts a consent request in their own browser and mails the victim a sign-in
+/// link whose `return_to` points at it: the victim's browser lacks the binding cookie.
+#[tokio::test]
+#[serial]
+async fn magic_link_return_to_cannot_reach_foreign_consent() {
+    use super::oauth_authorize::{client, request_id, REDIRECT};
+    serve(|mut req, ctx| async move {
+        client(&ctx).await;
+        let id = request_id(&req, REDIRECT).await;
+        req.clear_cookies(); // the victim's browser
+        let to = format!("/oauth/consent?request_id={id}");
+        let landed = redirect_after(&req, &ctx, &to).await;
+        assert_eq!(landed, format!("{WEB_ORIGIN}{to}"));
+        let res = req.get(&format!("/v1/oauth/consent/{id}")).await;
+        assert_eq!(res.status_code(), 403);
+        assert_eq!(res.json::<Value>()["code"], "consent_wrong_browser");
+    })
+    .await;
+}

@@ -311,7 +311,8 @@ async fn consent_twice_is_gone() {
         let unknown = req
             .get(&format!("/v1/oauth/consent/{}", uuid::Uuid::new_v4()))
             .await;
-        assert_eq!(unknown.status_code(), 410);
+        // No browser cookie for an id that was never started here.
+        assert_eq!(unknown.status_code(), 403);
     })
     .await;
 }
@@ -355,6 +356,67 @@ async fn consent_post_requires_csrf() {
             .await;
         assert_eq!(res.status_code(), 403);
         assert_eq!(res.json::<Value>()["code"], "csrf");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn consent_without_browser_cookie_is_403() {
+    serve(|mut req, app| async move {
+        let mail = prepare(&app);
+        client(&app).await;
+        let id = request_id(&req, REDIRECT).await;
+        // Another browser: a fresh jar, signed in, but never ran authorize.
+        req.clear_cookies();
+        let csrf = sign_in(&req, &mail, "owner@example.com").await;
+        let org = create_org(&req, &csrf, "Acme").await;
+        let view = req.get(&format!("/v1/oauth/consent/{id}")).await;
+        assert_eq!(view.status_code(), 403);
+        assert_eq!(view.json::<Value>()["code"], "consent_wrong_browser");
+        let res = decide(&req, &csrf, &id, json!({"organisation": slug(&org)})).await;
+        assert_eq!(res.status_code(), 403);
+        assert_eq!(res.json::<Value>()["code"], "consent_wrong_browser");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn consent_with_cookie_succeeds() {
+    serve(|req, app| async move {
+        let mail = prepare(&app);
+        let csrf = sign_in(&req, &mail, "owner@example.com").await;
+        let org = create_org(&req, &csrf, "Acme").await;
+        client(&app).await;
+        let res = authorize(&req, &params(REDIRECT)).await;
+        let cookie = res.header("set-cookie").to_str().unwrap().to_owned();
+        let id = query_of(res.header("location").to_str().unwrap())["request_id"].clone();
+        assert!(
+            cookie.starts_with(&format!("oa_consent_{id}=1;")),
+            "{cookie}"
+        );
+        for part in [
+            "Path=/v1/oauth/consent",
+            "HttpOnly",
+            "SameSite=Lax",
+            "Max-Age=600",
+        ] {
+            assert!(cookie.contains(part), "{part} missing in {cookie}");
+        }
+        assert_eq!(
+            req.get(&format!("/v1/oauth/consent/{id}"))
+                .await
+                .status_code(),
+            200
+        );
+        let res = decide(&req, &csrf, &id, json!({"organisation": slug(&org)})).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        assert!(res
+            .header("set-cookie")
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0"));
     })
     .await;
 }

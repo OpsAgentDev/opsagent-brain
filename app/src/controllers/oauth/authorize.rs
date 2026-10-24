@@ -10,8 +10,9 @@ use axum::{
 
 use super::OAuthError;
 use crate::{
-    actions::oauth::{redirect_with, AuthorizeError, AuthorizeParams},
+    actions::oauth::{redirect_with, AuthorizeError, AuthorizeParams, CONSENT_TTL_SECS},
     adapters::client_ip::ClientIp,
+    controllers::oauth_consent::consent_cookie,
     state::AppState,
 };
 
@@ -42,10 +43,17 @@ async fn authorize(
         .run(params, ip.0, now)
         .await
     {
-        Ok(id) => found(format!(
-            "{}/oauth/consent?request_id={id}",
-            s.config.web_base_url.trim_end_matches('/')
-        )),
+        Ok(id) => {
+            let mut res = found(format!(
+                "{}/oauth/consent?request_id={id}",
+                s.config.web_base_url.trim_end_matches('/')
+            ));
+            let cookie = consent_cookie(&s.config, id, CONSENT_TTL_SECS);
+            if let Ok(v) = cookie.parse() {
+                res.headers_mut().append(header::SET_COOKIE, v);
+            }
+            res
+        }
         Err(AuthorizeError::NoRedirect(e)) => e.into_response(),
         Err(AuthorizeError::Redirect {
             redirect_uri,
