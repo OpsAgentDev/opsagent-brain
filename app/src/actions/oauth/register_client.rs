@@ -84,15 +84,16 @@ impl RegisterClient {
     async fn limit(&self, ip: Option<IpAddr>) -> Result<(), OAuthError> {
         let who = ip.map_or_else(|| "unknown".to_owned(), |ip| ip_bucket(ip).to_string());
         let net = ip.map_or_else(|| "unknown".to_owned(), |ip| net_bucket(ip).to_string());
+        // Narrowest first: a hit rejected per IP never counts against its network or the world.
         for (key, cap, window) in [
-            (
-                format!("oauth:register:net:{net}"),
-                PER_NET_PER_HOUR,
-                HOUR_SECS,
-            ),
             (
                 format!("oauth:register:ip:{who}"),
                 PER_IP_PER_HOUR,
+                HOUR_SECS,
+            ),
+            (
+                format!("oauth:register:net:{net}"),
+                PER_NET_PER_HOUR,
                 HOUR_SECS,
             ),
             (
