@@ -12,6 +12,7 @@ const UP: &str = r#"CREATE TABLE oauth_clients (
   name text NOT NULL,
   redirect_uris jsonb NOT NULL,
   document_fetched_at timestamptz,
+  document_cache_until timestamptz,
   last_used_at timestamptz,
   expires_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now());

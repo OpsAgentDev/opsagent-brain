@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    oauth::{AccessToken, ConsentRequest, Grant, OAuthClient, OAuthRepo, RefreshToken},
+    oauth::{
+        AccessToken, ClientKind, ConsentRequest, Grant, OAuthClient, OAuthRepo, RefreshToken,
+        DYNAMIC_CLIENT_TTL_DAYS,
+    },
     repo::{RepoError, RepoResult},
 };
 use uuid::Uuid;
@@ -45,6 +48,9 @@ impl OAuthRepo for MemStore {
             .find(|c| c.client_id == client_id)
         {
             c.last_used_at = Some(now);
+            if c.kind == ClientKind::Dynamic {
+                c.expires_at = Some(now + chrono::Duration::days(DYNAMIC_CLIENT_TTL_DAYS));
+            }
         }
         Ok(())
     }

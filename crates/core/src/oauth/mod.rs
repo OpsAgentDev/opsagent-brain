@@ -8,6 +8,9 @@ use uuid::Uuid;
 
 use crate::repo::RepoResult;
 
+/// A dynamic client expires this long after it was last used (never while it has a live grant).
+pub const DYNAMIC_CLIENT_TTL_DAYS: i64 = 90;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientKind {
     Dynamic,
@@ -38,7 +41,10 @@ pub struct OAuthClient {
     pub name: String,
     pub redirect_uris: Vec<String>,
     pub document_fetched_at: Option<DateTime<Utc>>,
+    /// Metadata documents only: when the cached document must be fetched again.
+    pub document_cache_until: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Dynamic clients only; slides to `touch + DYNAMIC_CLIENT_TTL_DAYS`.
     pub expires_at: Option<DateTime<Utc>>,
 }
 

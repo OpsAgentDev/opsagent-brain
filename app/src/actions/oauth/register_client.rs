@@ -1,22 +1,23 @@
-use std::{net::IpAddr, sync::Arc};
+use std::{
+    net::{IpAddr, Ipv6Addr},
+    sync::Arc,
+};
 
 use chrono::Duration;
 use opsagent_core::{
-    oauth::{rules::redirect_uri_allowed, ClientKind, OAuthClient},
+    oauth::{rules::redirect_uri_allowed, ClientKind, OAuthClient, DYNAMIC_CLIENT_TTL_DAYS},
     repo::Clock,
 };
 use serde::Deserialize;
 
 use crate::{
-    actions::{uow::UnitOfWork, RateLimiter, DAY_SECS, HOUR_SECS},
+    actions::{uow::UnitOfWork, RateLimiter, HOUR_SECS},
     controllers::oauth::OAuthError,
     tokens::new_token,
 };
 
 const PER_IP_PER_HOUR: i64 = 60;
-const GLOBAL_PER_DAY: i64 = 2000;
-/// A dynamic client expires after 90 days unused (never while it has a live grant).
-const CLIENT_TTL_DAYS: i64 = 90;
+const GLOBAL_PER_HOUR: i64 = 100;
 const MAX_REDIRECT_URIS: usize = 10;
 const MAX_NAME_CHARS: usize = 100;
 
@@ -28,6 +29,17 @@ pub struct RegistrationRequest {
     pub client_name: Option<String>,
     pub token_endpoint_auth_method: Option<String>,
     pub grant_types: Option<Vec<String>>,
+}
+
+/// IPv6 clients share a /64 (one subnet is one customer); IPv4 as is.
+fn ip_bucket(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
+        }
+        v4 => v4,
+    }
 }
 
 /// Dynamic client registration (public clients only).
@@ -53,7 +65,7 @@ impl RegisterClient {
     pub async fn run(
         &self,
         req: RegistrationRequest,
-        client_ip: IpAddr,
+        client_ip: Option<IpAddr>,
     ) -> Result<OAuthClient, OAuthError> {
         validate(&req)?;
         self.limit(client_ip).await?;
@@ -69,8 +81,9 @@ impl RegisterClient {
             name,
             redirect_uris: req.redirect_uris,
             document_fetched_at: None,
+            document_cache_until: None,
             last_used_at: None,
-            expires_at: Some(now + Duration::days(CLIENT_TTL_DAYS)),
+            expires_at: Some(now + Duration::days(DYNAMIC_CLIENT_TTL_DAYS)),
         };
         self.uow.oauth().upsert_client(&client).await.map_err(|e| {
             tracing::error!(error = %e, "client registration failed");
@@ -80,14 +93,19 @@ impl RegisterClient {
     }
 
     /// Fails closed: a limiter outage is a 500, not an open door.
-    async fn limit(&self, ip: IpAddr) -> Result<(), OAuthError> {
+    async fn limit(&self, ip: Option<IpAddr>) -> Result<(), OAuthError> {
+        let who = ip.map_or_else(|| "unknown".to_owned(), |ip| ip_bucket(ip).to_string());
         for (key, cap, window) in [
             (
-                format!("oauth:register:ip:{ip}"),
+                format!("oauth:register:ip:{who}"),
                 PER_IP_PER_HOUR,
                 HOUR_SECS,
             ),
-            ("oauth:register:global".to_owned(), GLOBAL_PER_DAY, DAY_SECS),
+            (
+                "oauth:register:global".to_owned(),
+                GLOBAL_PER_HOUR,
+                HOUR_SECS,
+            ),
         ] {
             match self.limiter.hit(&key, cap, window).await {
                 Ok(true) => {}
@@ -162,7 +180,7 @@ mod tests {
     #[tokio::test]
     async fn registers_a_dynamic_client_expiring_in_90_days() {
         let c = action()
-            .run(req(&["https://a.example/cb"]), IP)
+            .run(req(&["https://a.example/cb"]), Some(IP))
             .await
             .unwrap();
         assert_eq!(c.kind, ClientKind::Dynamic);
@@ -170,24 +188,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ipv6_in_one_64_share_a_bucket_and_global_cap_is_hourly() {
+        let a = action();
+        let ip = |s: &str| Some(s.parse::<IpAddr>().unwrap());
+        let u = || req(&["https://a.example/cb"]);
+        for _ in 0..30 {
+            a.run(u(), ip("2001:db8:1:2::1")).await.unwrap();
+            a.run(u(), ip("2001:db8:1:2:ffff::9")).await.unwrap();
+        }
+        let e = a.run(u(), ip("2001:db8:1:2:5::7")).await.unwrap_err();
+        assert_eq!(e.error, "slow_down");
+        // 60 were counted globally; 40 more from distinct IPs fill the 100/hour cap.
+        for n in 0..40 {
+            a.run(u(), ip(&format!("198.51.100.{n}"))).await.unwrap();
+        }
+        let e = a.run(u(), ip("198.51.100.200")).await.unwrap_err();
+        assert_eq!(e.error, "slow_down");
+    }
+
+    #[tokio::test]
     async fn rejects_bad_metadata() {
         let a = action();
-        let e = a.run(req(&["javascript:alert(1)"]), IP).await.unwrap_err();
+        let e = a
+            .run(req(&["javascript:alert(1)"]), Some(IP))
+            .await
+            .unwrap_err();
         assert_eq!(e.error, "invalid_redirect_uri");
         let mut r = req(&["https://a.example/cb"]);
         r.token_endpoint_auth_method = Some("client_secret_basic".into());
         assert_eq!(
-            a.run(r, IP).await.unwrap_err().error,
+            a.run(r, Some(IP)).await.unwrap_err().error,
             "invalid_client_metadata"
         );
         let mut r = req(&["https://a.example/cb"]);
         r.grant_types = Some(vec!["password".into()]);
         assert_eq!(
-            a.run(r, IP).await.unwrap_err().error,
+            a.run(r, Some(IP)).await.unwrap_err().error,
             "invalid_client_metadata"
         );
         assert_eq!(
-            a.run(req(&[]), IP).await.unwrap_err().error,
+            a.run(req(&[]), Some(IP)).await.unwrap_err().error,
             "invalid_redirect_uri"
         );
     }

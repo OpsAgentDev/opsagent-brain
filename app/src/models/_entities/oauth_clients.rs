@@ -15,6 +15,7 @@ pub struct Model {
     #[sea_orm(column_type = "JsonBinary")]
     pub redirect_uris: Json,
     pub document_fetched_at: Option<DateTimeWithTimeZone>,
+    pub document_cache_until: Option<DateTimeWithTimeZone>,
     pub last_used_at: Option<DateTimeWithTimeZone>,
     pub expires_at: Option<DateTimeWithTimeZone>,
     pub created_at: DateTimeWithTimeZone,

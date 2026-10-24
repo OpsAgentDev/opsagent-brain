@@ -20,6 +20,7 @@ async fn client(s: &dyn Repos) {
         name: "Example".into(),
         redirect_uris: vec!["https://app.example/cb".into()],
         document_fetched_at: Some(at(0)),
+        document_cache_until: Some(at(3600)),
         last_used_at: None,
         expires_at: None,
     };
@@ -161,6 +162,28 @@ contract_suite! {
         let got = s.oauth().refresh_by_hash("r1").await.unwrap().unwrap();
         assert_eq!(got.successor_id, Some(second.id));
         assert!(s.oauth().refresh_by_hash("nope").await.unwrap().is_none());
+    }
+
+    async fn touch_slides_dynamic_expiry(s) {
+        let day = 86_400;
+        let c = OAuthClient {
+            client_id: "dyn".into(),
+            kind: ClientKind::Dynamic,
+            name: "D".into(),
+            redirect_uris: vec!["https://a.example/cb".into()],
+            document_fetched_at: None,
+            document_cache_until: None,
+            last_used_at: None,
+            expires_at: Some(at(90 * day)),
+        };
+        s.oauth().upsert_client(&c).await.unwrap();
+        s.oauth().touch_client("dyn", at(89 * day)).await.unwrap();
+        let d = s.oauth().client("dyn").await.unwrap().unwrap();
+        assert_eq!(d.expires_at, Some(at(179 * day)));
+        // A metadata document's expires_at stays NULL.
+        client(s).await;
+        s.oauth().touch_client(CLIENT, at(5)).await.unwrap();
+        assert_eq!(s.oauth().client(CLIENT).await.unwrap().unwrap().expires_at, None);
     }
 
     async fn client_upsert_keeps_last_used(s) {

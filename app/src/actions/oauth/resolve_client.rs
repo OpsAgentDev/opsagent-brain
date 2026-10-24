@@ -79,9 +79,11 @@ impl ResolveClient {
 
     async fn document(&self, url: &str, now: DateTime<Utc>) -> Result<OAuthClient, OAuthError> {
         let repo = self.uow.oauth();
-        // For a document row `expires_at` is the cache deadline: fetched_at + min(max-age, 24 h).
+        // `document_cache_until` is fetched_at + min(max-age, 24 h).
         if let Some(c) = repo.client(url).await.map_err(internal)? {
-            if c.kind == ClientKind::MetadataDocument && c.expires_at.is_some_and(|e| e > now) {
+            if c.kind == ClientKind::MetadataDocument
+                && c.document_cache_until.is_some_and(|e| e > now)
+            {
                 return Ok(c);
             }
         }
@@ -143,8 +145,9 @@ fn parse(
         name,
         redirect_uris: uris,
         document_fetched_at: Some(now),
+        document_cache_until: Some(now + ttl),
         last_used_at: None,
-        expires_at: Some(now + ttl),
+        expires_at: None,
     })
 }
 
@@ -264,6 +267,7 @@ mod tests {
             name: "n".into(),
             redirect_uris: vec!["https://a.example/cb".into()],
             document_fetched_at: None,
+            document_cache_until: None,
             last_used_at: None,
             expires_at: Some(now + Duration::days(expires_in_days)),
         }

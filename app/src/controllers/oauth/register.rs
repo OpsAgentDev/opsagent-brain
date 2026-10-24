@@ -1,6 +1,4 @@
 //! `POST /oauth/register` (RFC 7591).
-use std::net::{IpAddr, Ipv4Addr};
-
 use axum::{
     body::Bytes,
     extract::State,
@@ -22,13 +20,7 @@ async fn register(State(s): State<AppState>, ip: ClientIp, body: Bytes) -> Respo
                 .into_response()
         }
     };
-    match s
-        .actions
-        .oauth
-        .register_client
-        .run(req, ip.0.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)))
-        .await
-    {
+    match s.actions.oauth.register_client.run(req, ip.0).await {
         Ok(c) => (
             StatusCode::CREATED,
             Json(json!({

@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    oauth::{AccessToken, ClientKind, ConsentRequest, Grant, OAuthClient, OAuthRepo, RefreshToken},
+    oauth::{
+        AccessToken, ClientKind, ConsentRequest, Grant, OAuthClient, OAuthRepo, RefreshToken,
+        DYNAMIC_CLIENT_TTL_DAYS,
+    },
     repo::{RepoError, RepoResult},
 };
 use sea_orm::{
@@ -30,6 +33,7 @@ fn client(m: clients::Model) -> RepoResult<OAuthClient> {
         client_id: m.client_id,
         name: m.name,
         document_fetched_at: m.document_fetched_at.map(utc),
+        document_cache_until: m.document_cache_until.map(utc),
         last_used_at: m.last_used_at.map(utc),
         expires_at: m.expires_at.map(utc),
     })
@@ -98,6 +102,7 @@ impl<C: Conn> OAuthRepo for Pg<C> {
             name: Set(c.name.clone()),
             redirect_uris: Set(serde_json::json!(c.redirect_uris)),
             document_fetched_at: Set(c.document_fetched_at.map(ts)),
+            document_cache_until: Set(c.document_cache_until.map(ts)),
             last_used_at: Set(c.last_used_at.map(ts)),
             expires_at: Set(c.expires_at.map(ts)),
             created_at: Set(crate::models::now()),
@@ -111,6 +116,7 @@ impl<C: Conn> OAuthRepo for Pg<C> {
                         Col::Name,
                         Col::RedirectUris,
                         Col::DocumentFetchedAt,
+                        Col::DocumentCacheUntil,
                         Col::ExpiresAt,
                     ])
                     .to_owned(),
@@ -133,6 +139,17 @@ impl<C: Conn> OAuthRepo for Pg<C> {
         clients::Entity::update_many()
             .col_expr(clients::Column::LastUsedAt, Some(ts(now)).into())
             .filter(clients::Column::ClientId.eq(client_id))
+            .exec(self.db())
+            .await
+            .map_err(db_err)?;
+        // A dynamic client's expiry slides with use.
+        clients::Entity::update_many()
+            .col_expr(
+                clients::Column::ExpiresAt,
+                Some(ts(now + chrono::Duration::days(DYNAMIC_CLIENT_TTL_DAYS))).into(),
+            )
+            .filter(clients::Column::ClientId.eq(client_id))
+            .filter(clients::Column::Kind.eq(ClientKind::Dynamic.as_str()))
             .exec(self.db())
             .await
             .map(|_| ())
