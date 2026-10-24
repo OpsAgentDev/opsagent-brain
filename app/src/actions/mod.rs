@@ -5,6 +5,7 @@ pub mod deliveries;
 pub mod findings;
 pub mod integrations;
 pub mod members;
+pub mod oauth;
 pub mod orgs;
 pub mod recipients;
 pub mod resources;
@@ -30,6 +31,7 @@ pub struct Actions {
     pub recipients: recipients::Recipients,
     pub integrations: integrations::Integrations,
     pub deliveries: deliveries::Deliveries,
+    pub oauth: oauth::OAuth,
 }
 
 /// Fixed-window counters shared by every rate limit.

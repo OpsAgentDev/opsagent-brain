@@ -3,12 +3,30 @@ use std::{ops::Deref, sync::Arc};
 
 use crate::{actions::Actions, boot::Deps};
 
+/// The authorisation server's issuer and the protected resource, from `APP_BASE_URL`.
+#[derive(Clone, Debug)]
+pub struct OAuthUrls {
+    pub issuer: String,
+    pub resource: String,
+}
+
+impl OAuthUrls {
+    pub fn new(api_base_url: &str) -> Self {
+        let issuer = api_base_url.trim_end_matches('/').to_owned();
+        Self {
+            resource: format!("{issuer}/mcp"),
+            issuer,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState(pub(crate) Arc<Inner>);
 
 /// `state.config`, `state.db`, `state.kek`, … read through to `Deps`.
 pub struct Inner {
     pub deps: Deps,
+    pub oauth_urls: OAuthUrls,
     pub actions: Arc<Actions>,
     #[cfg(feature = "test-support")]
     pub swaps: crate::adapters::test_doubles::Swaps,

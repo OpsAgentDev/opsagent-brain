@@ -12,7 +12,7 @@ use axum::Router;
 
 use crate::{
     actions::{
-        auth, connections, deliveries, findings, integrations, members, orgs, recipients,
+        auth, connections, deliveries, findings, integrations, members, oauth, orgs, recipients,
         resources, runs, uow::UnitOfWork, Actions, ConnectorSource, RateLimiter,
     },
     adapters::{
@@ -30,7 +30,7 @@ use crate::{
     },
     mailers::{self, Mailer},
     middleware,
-    state::{AppState, Inner},
+    state::{AppState, Inner, OAuthUrls},
 };
 
 /// security.md: unwrapped DEKs stay in memory for at most 10 minutes.
@@ -145,6 +145,7 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
     };
     let actions = Arc::new(build_actions(&deps));
     AppState(Arc::new(Inner {
+        oauth_urls: OAuthUrls::new(&deps.config.api_base_url),
         deps,
         actions,
         #[cfg(feature = "test-support")]
@@ -253,6 +254,13 @@ pub fn build_actions(d: &Deps) -> Actions {
         recipients: recipients(d, guard.clone()),
         integrations: integrations(d),
         deliveries: deliveries(d, guard),
+        oauth: oauth::OAuth {
+            register_client: oauth::RegisterClient::new(
+                d.uow.clone(),
+                d.limiter.clone(),
+                d.clock.clone(),
+            ),
+        },
     }
 }
 
@@ -362,12 +370,15 @@ pub fn scheduler(state: &AppState) -> Scheduler {
     }
 }
 
-/// Health, `/v1` and `/openapi.json` on the shell's middleware stack (`middleware::stack`).
+/// Health, `/v1` and `/openapi.json` on the shell's middleware stack (`middleware::stack`),
+/// merged with OAuth and discovery on the public one (`middleware::public_stack`).
 pub fn router(state: AppState) -> AppResult<Router> {
     let routes = controllers::health::routes().merge(controllers::openapi::routes());
     #[cfg(feature = "test-support")]
     let routes = routes.merge(controllers::test_routes::routes());
-    middleware::stack(routes.with_state(state.clone()), &state)
+    let shell = middleware::stack(routes.with_state(state.clone()), &state)?;
+    let public = controllers::oauth::routes().with_state(state.clone());
+    Ok(shell.merge(middleware::public_stack(public, &state)?))
 }
 
 #[cfg(test)]
