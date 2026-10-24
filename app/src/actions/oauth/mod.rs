@@ -1,4 +1,5 @@
 //! OAuth use cases (nothing here names MCP; the resource URL comes from config).
+mod authenticate_bearer;
 mod decide_consent;
 mod exchange_code;
 mod get_consent;
@@ -26,6 +27,7 @@ use crate::{
     tokens::{hash_token, new_token},
 };
 
+pub use authenticate_bearer::{AuthenticateBearer, Bearer, TouchGrant};
 pub use decide_consent::{DecideConsent, Decision};
 pub use get_consent::{ConsentView, GetConsent};
 pub use list_agents::{Agent, ListAgents};
@@ -55,6 +57,8 @@ pub struct OAuth {
     pub revoke_token: RevokeToken,
     pub list_agents: ListAgents,
     pub revoke_agent: RevokeAgent,
+    pub authenticate_bearer: AuthenticateBearer,
+    pub touch_grant: TouchGrant,
 }
 
 /// The RFC 6749 section 5.1 success body.

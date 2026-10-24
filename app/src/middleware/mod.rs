@@ -33,7 +33,7 @@ use crate::{
 /// Today's value (the old framework's default).
 const BODY_LIMIT: usize = 2_000_000;
 /// MCP arguments (8 KB) plus the JSON-RPC envelope.
-const PUBLIC_BODY_LIMIT: usize = 16_384;
+pub const PUBLIC_BODY_LIMIT: usize = 16_384;
 const HSTS: &str = "max-age=31536000; includeSubDomains";
 
 /// Wraps `routes`; each `.layer` wraps everything above it, so the last one meets the request

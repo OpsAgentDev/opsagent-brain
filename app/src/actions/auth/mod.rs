@@ -48,7 +48,10 @@ pub(crate) mod test_support {
             .filter(|e| e.action == "auth.sign_in")
             .collect();
         assert_eq!(entries.len(), 1, "{entries:?}");
-        assert_eq!(entries[0].actor, Some(user_id));
+        assert_eq!(
+            entries[0].actor,
+            opsagent_core::audit::Actor::Member(user_id)
+        );
         assert_eq!(entries[0].target, Some(("user", user_id.to_string())));
     }
 

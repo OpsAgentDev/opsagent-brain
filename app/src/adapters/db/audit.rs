@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use opsagent_core::{
-    audit::{AuditEntry, AuditLog},
+    audit::{Actor, AuditEntry, AuditLog},
     repo::RepoResult,
 };
 use sea_orm::{ActiveModelTrait, ConnectionTrait, Set};
@@ -13,8 +13,9 @@ use crate::models::{_entities::audit_events, now};
 impl<C: Conn> AuditLog for Pg<C> {
     async fn record(&self, e: AuditEntry) -> RepoResult<()> {
         let (actor_type, actor_id) = match e.actor {
-            Some(id) => ("member", Some(id.to_string())),
-            None => ("system", None),
+            Actor::Member(id) => ("member", Some(id.to_string())),
+            Actor::System => ("system", None),
+            Actor::McpClient(grant) => ("mcp_client", Some(grant.to_string())),
         };
         let (target_type, target_id) = e.target.unzip();
         audit_events::ActiveModel {

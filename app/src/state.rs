@@ -1,7 +1,7 @@
 //! `AppState`: the process-wide adapters and the actions built from them, once, by `boot`.
 use std::{ops::Deref, sync::Arc};
 
-use crate::{actions::Actions, boot::Deps};
+use crate::{actions::Actions, boot::Deps, tools::ToolRegistry};
 
 /// The authorisation server's issuer and the protected resource, from `APP_BASE_URL`.
 #[derive(Clone, Debug)]
@@ -28,6 +28,7 @@ pub struct Inner {
     pub deps: Deps,
     pub oauth_urls: OAuthUrls,
     pub actions: Arc<Actions>,
+    pub tools: Arc<ToolRegistry>,
     #[cfg(feature = "test-support")]
     pub swaps: crate::adapters::test_doubles::Swaps,
 }

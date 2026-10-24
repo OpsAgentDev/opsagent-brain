@@ -4,11 +4,21 @@ use uuid::Uuid;
 
 use crate::repo::RepoResult;
 
+/// Who acted: `audit_events.actor_type` and `actor_id`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Actor {
+    /// A user, by user id.
+    Member(Uuid),
+    /// Work done by the system (workers).
+    System,
+    /// An MCP client, by OAuth grant id.
+    McpClient(Uuid),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuditEntry {
     pub organisation_id: Option<Uuid>,
-    /// The acting user; `None` for work done by the system (workers).
-    pub actor: Option<Uuid>,
+    pub actor: Actor,
     pub action: String,
     /// `(kind, id)`, e.g. `("connection", <uuid>)`; ids are not always uuids (`integration`).
     pub target: Option<(&'static str, String)>,
@@ -26,7 +36,7 @@ impl AuditEntry {
     ) -> Self {
         Self {
             organisation_id,
-            actor: Some(actor),
+            actor: Actor::Member(actor),
             action: action.into(),
             target,
             outcome: "success".into(),
@@ -43,9 +53,26 @@ impl AuditEntry {
     ) -> Self {
         Self {
             organisation_id: Some(organisation_id),
-            actor: None,
+            actor: Actor::System,
             action: action.into(),
             target: Some(target),
+            outcome: outcome.into(),
+            meta: serde_json::json!({}),
+        }
+    }
+
+    /// A tool call by the MCP client holding grant `grant_id`.
+    pub fn mcp_client(
+        organisation_id: Uuid,
+        grant_id: Uuid,
+        action: impl Into<String>,
+        outcome: impl Into<String>,
+    ) -> Self {
+        Self {
+            organisation_id: Some(organisation_id),
+            actor: Actor::McpClient(grant_id),
+            action: action.into(),
+            target: None,
             outcome: outcome.into(),
             meta: serde_json::json!({}),
         }

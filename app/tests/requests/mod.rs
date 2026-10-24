@@ -6,6 +6,7 @@ mod findings;
 mod health;
 mod integrations;
 mod logging;
+mod mcp_auth;
 mod oauth_authorize;
 mod oauth_cimd;
 mod oauth_discovery;

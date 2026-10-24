@@ -305,7 +305,10 @@ mod tests {
         assert_eq!(audit.len(), 1);
         assert_eq!(
             (audit[0].action.as_str(), audit[0].actor),
-            ("finding.snoozed", Some(actor))
+            (
+                "finding.snoozed",
+                opsagent_core::audit::Actor::Member(actor)
+            )
         );
         let e = act
             .run(Uuid::new_v4(), actor, id, FindingAction::Reopen)

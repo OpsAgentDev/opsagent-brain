@@ -8,7 +8,7 @@ use opsagent_ledger::redis;
 use opsagent_secrets::{CachingKek, EnvKek, Kek};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 
-use axum::Router;
+use axum::{middleware::from_fn_with_state, Router};
 
 use crate::{
     actions::{
@@ -31,8 +31,9 @@ use crate::{
         WorkerRunner,
     },
     mailers::{self, Mailer},
-    middleware,
+    mcp, middleware,
     state::{AppState, Inner, OAuthUrls},
+    tools::{self, Tool, ToolRegistry},
 };
 
 /// security.md: unwrapped DEKs stay in memory for at most 10 minutes.
@@ -150,6 +151,7 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
     };
     let actions = Arc::new(build_actions(&deps));
     AppState(Arc::new(Inner {
+        tools: Arc::new(build_tools(&deps)),
         oauth_urls: OAuthUrls::new(&deps.config.api_base_url),
         deps,
         actions,
@@ -280,8 +282,22 @@ pub fn build_actions(d: &Deps) -> Actions {
             revoke_token: oauth::RevokeToken::new(d.uow.clone()),
             list_agents: oauth::ListAgents::new(d.uow.clone()),
             revoke_agent: oauth::RevokeAgent::new(d.uow.clone()),
+            authenticate_bearer: oauth::AuthenticateBearer::new(
+                d.uow.clone(),
+                orgs::ResolveOrgScope::new(d.uow.clone()),
+            ),
+            touch_grant: oauth::TouchGrant::new(d.uow.clone()),
         },
     }
+}
+
+/// Every tool, the only registry of tool names: a new tool is one file and one line here.
+pub fn build_tools(d: &Deps) -> ToolRegistry {
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(tools::ListConnectionsTool::new(
+        connections::ListConnections::new(d.uow.clone()),
+        runs::ListRuns::new(d.uow.clone()),
+    ))];
+    ToolRegistry::new(tools)
 }
 
 fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipients {
@@ -391,13 +407,19 @@ pub fn scheduler(state: &AppState) -> Scheduler {
 }
 
 /// Health, `/v1` and `/openapi.json` on the shell's middleware stack (`middleware::stack`),
-/// merged with OAuth and discovery on the public one (`middleware::public_stack`).
+/// merged with OAuth, discovery and `/mcp` (behind its bearer layer) on the public one
+/// (`middleware::public_stack`).
 pub fn router(state: AppState) -> AppResult<Router> {
     let routes = controllers::health::routes().merge(controllers::openapi::routes());
     #[cfg(feature = "test-support")]
     let routes = routes.merge(controllers::test_routes::routes());
     let shell = middleware::stack(routes.with_state(state.clone()), &state)?;
-    let public = controllers::oauth::routes().with_state(state.clone());
+    let mcp = Router::new()
+        .nest_service("/mcp", mcp::service(&state))
+        .route_layer(from_fn_with_state(state.clone(), mcp::auth::layer));
+    let public = controllers::oauth::routes()
+        .with_state(state.clone())
+        .merge(mcp);
     Ok(shell.merge(middleware::public_stack(public, &state)?))
 }
 
