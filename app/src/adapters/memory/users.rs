@@ -67,11 +67,13 @@ impl UsersRepo for MemStore {
         user_id: Uuid,
         _email: &Email,
         token_hash: &str,
+        return_to: Option<&str>,
         expires_at: DateTime<Utc>,
     ) -> RepoResult<()> {
         self.state().magic_links.push(MagicLinkRow {
             user_id,
             token_hash: token_hash.into(),
+            return_to: return_to.map(Into::into),
             expires_at,
             used: false,
         });
@@ -82,7 +84,7 @@ impl UsersRepo for MemStore {
         &self,
         token_hash: &str,
         now: DateTime<Utc>,
-    ) -> RepoResult<Option<Uuid>> {
+    ) -> RepoResult<Option<(Uuid, Option<String>)>> {
         let mut s = self.state();
         let link = s
             .magic_links
@@ -90,7 +92,7 @@ impl UsersRepo for MemStore {
             .find(|l| l.token_hash == token_hash && !l.used && l.expires_at > now);
         Ok(link.map(|l| {
             l.used = true;
-            l.user_id
+            (l.user_id, l.return_to.clone())
         }))
     }
 }

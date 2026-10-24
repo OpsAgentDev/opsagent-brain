@@ -20,17 +20,18 @@ impl RedeemMagicLink {
         Self { uow, clock }
     }
 
-    /// The link's user; `Gone("link_invalid")` if it is unknown, expired or already used.
-    pub async fn run(&self, token: &str) -> AppResult<Uuid> {
+    /// The link's user and its stored `return_to`; `Gone("link_invalid")` if it is unknown,
+    /// expired or already used.
+    pub async fn run(&self, token: &str) -> AppResult<(Uuid, Option<String>)> {
         let tx = self.uow.begin().await?;
-        let user_id = tx
+        let (user_id, return_to) = tx
             .users()
             .consume_magic_link(&hash_token(token), self.clock.now())
             .await?
             .ok_or(AppError::Gone("link_invalid"))?;
         tx.audit().record(sign_in_entry(user_id)).await?;
         tx.commit().await?;
-        Ok(user_id)
+        Ok((user_id, return_to))
     }
 }
 
@@ -63,11 +64,12 @@ mod tests {
         let input = MagicLinkInput {
             email: "once@example.com".into(),
             client_ip: None,
+            return_to: None,
         };
         request_link(&store, &mail).run(input).await.unwrap();
         let token = last_token(&mail);
         let redeem = RedeemMagicLink::new(Arc::new(store.clone()), Arc::new(SystemClock));
-        let user_id = redeem.run(&token).await.unwrap();
+        let (user_id, _) = redeem.run(&token).await.unwrap();
         assert_one_sign_in(&store, user_id);
         let again = redeem.run(&token).await.unwrap_err();
         assert!(matches!(again, AppError::Gone("link_invalid")), "{again:?}");
@@ -93,6 +95,7 @@ mod tests {
         let input = MagicLinkInput {
             email: "late@example.com".into(),
             client_ip: None,
+            return_to: None,
         };
         request.run(input).await.unwrap();
         let token = last_token(&mail);

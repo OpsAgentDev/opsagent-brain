@@ -3,7 +3,7 @@
 use std::{net::IpAddr, sync::Arc};
 
 use chrono::Duration;
-use opsagent_core::{repo::Clock, user::Email};
+use opsagent_core::{oauth::rules::consent_return_to, repo::Clock, user::Email};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -22,6 +22,8 @@ pub struct MagicLinkInput {
     pub email: String,
     /// The client address as reported by the trusted proxy, when there is one.
     pub client_ip: Option<IpAddr>,
+    /// A requested post-sign-in destination; kept only if `consent_return_to` accepts it.
+    pub return_to: Option<String>,
 }
 
 pub struct RequestMagicLink {
@@ -81,10 +83,17 @@ impl RequestMagicLink {
         }
         let users = self.users.users();
         let user = users.find_or_create_by_email(&email).await?;
+        let return_to = input.return_to.as_deref().and_then(consent_return_to);
         let token = new_token();
         let expires = self.clock.now() + Duration::minutes(15);
         users
-            .issue_magic_link(user.id, &email, &hash_token(&token), expires)
+            .issue_magic_link(
+                user.id,
+                &email,
+                &hash_token(&token),
+                return_to.as_deref(),
+                expires,
+            )
             .await?;
         // The web page POSTs the token to `/auth/magic-link/redeem` after a click (login-CSRF safe).
         let link = format!(
@@ -119,6 +128,7 @@ mod tests {
         MagicLinkInput {
             email: email.into(),
             client_ip: None,
+            return_to: None,
         }
     }
 

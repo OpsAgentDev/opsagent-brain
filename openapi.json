@@ -164,7 +164,7 @@
         ],
         "responses": {
           "302": {
-            "description": "Session cookie set; redirects to the web dashboard"
+            "description": "Session cookie set; redirects to the validated return_to, else the web dashboard"
           },
           "400": {
             "content": {
@@ -193,6 +193,17 @@
           "auth"
         ],
         "operationId": "auth_github_start",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "description": "Where sign-in lands afterwards; same rule as the magic link's `return_to`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -3430,6 +3441,13 @@
         "properties": {
           "email": {
             "type": "string"
+          },
+          "return_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where sign-in lands afterwards: only `/oauth/consent?request_id=<uuid>` is kept, anything\nelse is dropped and the user lands on the dashboard."
           }
         }
       },

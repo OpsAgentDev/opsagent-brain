@@ -14,6 +14,8 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub token_hash: String,
     pub expires_at: DateTimeWithTimeZone,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub return_to: Option<String>,
     pub used_at: Option<DateTimeWithTimeZone>,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,

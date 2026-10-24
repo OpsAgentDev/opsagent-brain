@@ -124,6 +124,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
         user_id: Uuid,
         email: &Email,
         token_hash: &str,
+        return_to: Option<&str>,
         expires_at: DateTime<Utc>,
     ) -> RepoResult<()> {
         magic_links::ActiveModel {
@@ -131,6 +132,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
             user_id: Set(Some(user_id)),
             email: Set(Some(email.as_str().into())),
             token_hash: Set(token_hash.into()),
+            return_to: Set(return_to.map(Into::into)),
             expires_at: Set(expires_at.into()),
             used_at: Set(None),
             created_at: Set(now()),
@@ -146,7 +148,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
         &self,
         token_hash: &str,
         now: DateTime<Utc>,
-    ) -> RepoResult<Option<Uuid>> {
+    ) -> RepoResult<Option<(Uuid, Option<String>)>> {
         let at = DateTimeWithTimeZone::from(now);
         let res = magic_links::Entity::update_many()
             .col_expr(magic_links::Column::UsedAt, at.into())
@@ -164,6 +166,6 @@ impl<C: Conn> UsersRepo for Pg<C> {
             .one(self.db())
             .await
             .map_err(db_err)?
-            .and_then(|l| l.user_id))
+            .and_then(|l| Some((l.user_id?, l.return_to))))
     }
 }

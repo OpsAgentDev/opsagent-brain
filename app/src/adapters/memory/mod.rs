@@ -72,6 +72,7 @@ struct InviteRow {
 struct MagicLinkRow {
     user_id: Uuid,
     token_hash: String,
+    return_to: Option<String>,
     expires_at: DateTime<Utc>,
     used: bool,
 }
