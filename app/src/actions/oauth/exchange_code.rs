@@ -4,13 +4,13 @@ use chrono::{DateTime, Utc};
 use opsagent_core::{
     audit::AuditEntry,
     oauth::{
-        rules::{pkce_s256_matches, redirect_uri_matches, resource_matches},
+        rules::{pkce_s256_matches, resource_matches},
         Grant,
     },
 };
 use uuid::Uuid;
 
-use super::{internal, mint, TokenResponse};
+use super::{internal, live_member, mint, revoke_audited, TokenResponse};
 use crate::{actions::uow::UnitOfWork, controllers::oauth::OAuthError, tokens::hash_token};
 
 /// What the client sends with `grant_type=authorization_code`.
@@ -27,6 +27,10 @@ pub struct ExchangeCode {
     uow: Arc<dyn UnitOfWork>,
 }
 
+fn bad() -> OAuthError {
+    OAuthError::invalid_grant("The code is invalid, expired or already used.")
+}
+
 impl ExchangeCode {
     pub fn new(uow: Arc<dyn UnitOfWork>) -> Self {
         Self { uow }
@@ -37,46 +41,57 @@ impl ExchangeCode {
         x: CodeExchange,
         now: DateTime<Utc>,
     ) -> Result<TokenResponse, OAuthError> {
-        let bad = || OAuthError::invalid_grant("The code is invalid, expired or already used.");
         let code_hash = hash_token(&x.code);
-        let repo = self.uow.oauth();
-        let Some(c) = repo.consume_code(&code_hash, now).await.map_err(internal)? else {
+        // Consumed inside the grant's transaction: a concurrent replay waits on the row lock,
+        // then finds the code used with its grant recorded, and revokes it.
+        let tx = self.uow.begin().await.map_err(internal)?;
+        let Some(c) = tx
+            .oauth()
+            .consume_code(&code_hash, now)
+            .await
+            .map_err(internal)?
+        else {
+            drop(tx);
             self.revoke_replayed(&code_hash, now).await?;
             return Err(bad());
         };
-        let (Some(member_id), Some(organisation_id)) = (c.member_id, c.organisation_id) else {
+        // A failed check still commits the consumption, so a wrong guess burns the code.
+        let member = match (c.member_id, c.organisation_id) {
+            (Some(m), Some(o)) => live_member(tx.as_ref(), o, m).await.map_err(internal)?,
+            _ => None,
+        };
+        let valid = c.client_id == x.client_id
+            // Exact: the loopback port leniency applies at authorize only (RFC 6749 4.1.3).
+            && c.redirect_uri == x.redirect_uri
+            && x.resource
+                .as_deref()
+                .is_none_or(|r| resource_matches(&c.resource, r))
+            && pkce_s256_matches(&c.code_challenge, &x.code_verifier);
+        let (Some(member), true) = (member, valid) else {
+            tx.commit().await.map_err(internal)?;
             return Err(bad());
         };
-        // The code is spent before these checks, so a wrong guess burns it.
-        if c.client_id != x.client_id
-            || !redirect_uri_matches(&c.redirect_uri, &x.redirect_uri)
-            || x.resource
-                .as_deref()
-                .is_some_and(|r| !resource_matches(&c.resource, r))
-            || !pkce_s256_matches(&c.code_challenge, &x.code_verifier)
-        {
-            return Err(bad());
-        }
         let grant = Grant {
             id: Uuid::new_v4(),
             client_id: c.client_id,
-            member_id,
-            organisation_id,
+            member_id: member.id,
+            organisation_id: member.organisation_id,
             created_at: now,
             last_used_at: None,
             revoked_at: None,
         };
-        let tx = self.uow.begin().await.map_err(internal)?;
         tx.oauth().insert_grant(&grant).await.map_err(internal)?;
-        let (tokens, _) = mint(tx.as_ref(), &grant, now).await.map_err(internal)?;
+        let tokens = mint(tx.as_ref(), &grant, Uuid::new_v4(), now)
+            .await
+            .map_err(internal)?;
         tx.oauth()
             .set_consent_grant(c.id, grant.id)
             .await
             .map_err(internal)?;
         let target = Some(("oauth_grant", grant.id.to_string()));
         let entry = AuditEntry::member(
-            Some(organisation_id),
-            member_id,
+            Some(grant.organisation_id),
+            member.user_id,
             "oauth.token.issued",
             target,
         )
@@ -88,17 +103,22 @@ impl ExchangeCode {
 
     /// A used code presented again: revoke everything issued from it (RFC 6749 section 4.1.2).
     async fn revoke_replayed(&self, code_hash: &str, now: DateTime<Utc>) -> Result<(), OAuthError> {
-        let repo = self.uow.oauth();
-        let used = repo
+        let tx = self.uow.begin().await.map_err(internal)?;
+        let used = tx
+            .oauth()
             .consent_by_code_hash(code_hash)
             .await
-            .map_err(internal)?;
-        if let Some(c) = used.filter(|c| c.code_used_at.is_some()) {
-            if let (Some(org), Some(grant)) = (c.organisation_id, c.grant_id) {
-                tracing::warn!(grant_id = %grant, "authorization code replayed; grant revoked");
-                repo.revoke_grant(org, grant, now).await.map_err(internal)?;
+            .map_err(internal)?
+            .filter(|c| c.code_used_at.is_some());
+        if let Some(c) = used {
+            if let (Some(org), Some(grant), Some(member)) =
+                (c.organisation_id, c.grant_id, c.member_id)
+            {
+                revoke_audited(tx.as_ref(), org, grant, member, "code_replay", now)
+                    .await
+                    .map_err(internal)?;
             }
         }
-        Ok(())
+        tx.commit().await.map_err(internal)
     }
 }

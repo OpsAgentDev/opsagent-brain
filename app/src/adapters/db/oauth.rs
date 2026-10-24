@@ -79,6 +79,7 @@ fn refresh_token(m: refresh::Model) -> RefreshToken {
         expires_at: utc(m.expires_at),
         spent_at: m.spent_at.map(utc),
         successor_id: m.successor_id,
+        grace_reissued_at: m.grace_reissued_at.map(utc),
     }
 }
 
@@ -207,6 +208,7 @@ impl<C: Conn> OAuthRepo for Pg<C> {
         organisation_id: Uuid,
         code_hash: &str,
         code_expires_at: DateTime<Utc>,
+        now: DateTime<Utc>,
     ) -> RepoResult<()> {
         use consents::Column as Col;
         let done = consents::Entity::update_many()
@@ -216,6 +218,22 @@ impl<C: Conn> OAuthRepo for Pg<C> {
             .col_expr(Col::CodeExpiresAt, Some(ts(code_expires_at)).into())
             .filter(Col::Id.eq(id))
             .filter(Col::CodeHash.is_null())
+            .filter(Col::ExpiresAt.gt(ts(now)))
+            .exec(self.db())
+            .await
+            .map_err(db_err)?;
+        (done.rows_affected == 1)
+            .then_some(())
+            .ok_or(RepoError::NotFound)
+    }
+
+    async fn close_consent(&self, id: Uuid, now: DateTime<Utc>) -> RepoResult<()> {
+        use consents::Column as Col;
+        let done = consents::Entity::update_many()
+            .col_expr(Col::ExpiresAt, ts(now).into())
+            .filter(Col::Id.eq(id))
+            .filter(Col::CodeHash.is_null())
+            .filter(Col::ExpiresAt.gt(ts(now)))
             .exec(self.db())
             .await
             .map_err(db_err)?;
@@ -309,6 +327,7 @@ impl<C: Conn> OAuthRepo for Pg<C> {
             expires_at: Set(ts(t.expires_at)),
             spent_at: Set(t.spent_at.map(ts)),
             successor_id: Set(t.successor_id),
+            grace_reissued_at: Set(t.grace_reissued_at.map(ts)),
             created_at: Set(crate::models::now()),
         };
         refresh::Entity::insert(m)
@@ -342,6 +361,26 @@ impl<C: Conn> OAuthRepo for Pg<C> {
             .filter(Col::OrganisationId.eq(organisation_id))
             .filter(Col::Id.eq(id))
             .filter(Col::SpentAt.is_null())
+            .exec(self.db())
+            .await
+            .map_err(db_err)?;
+        (done.rows_affected == 1)
+            .then_some(())
+            .ok_or(RepoError::NotFound)
+    }
+
+    async fn mark_grace_reissued(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<()> {
+        use refresh::Column as Col;
+        let done = refresh::Entity::update_many()
+            .col_expr(Col::GraceReissuedAt, Some(ts(now)).into())
+            .filter(Col::OrganisationId.eq(organisation_id))
+            .filter(Col::Id.eq(id))
+            .filter(Col::GraceReissuedAt.is_null())
             .exec(self.db())
             .await
             .map_err(db_err)?;

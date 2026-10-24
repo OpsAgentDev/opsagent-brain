@@ -51,6 +51,7 @@ CREATE TABLE oauth_refresh_tokens (
   expires_at timestamptz NOT NULL,
   spent_at timestamptz,
   successor_id uuid,
+  grace_reissued_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now());
 CREATE UNIQUE INDEX oauth_refresh_tokens_hash_idx ON oauth_refresh_tokens (token_hash);
 CREATE INDEX oauth_refresh_tokens_grant_idx ON oauth_refresh_tokens (grant_id);

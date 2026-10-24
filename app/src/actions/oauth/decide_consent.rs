@@ -47,8 +47,11 @@ impl DecideConsent {
         let target = Some(("oauth_client", request.client_id.clone()));
         let slug = match decision {
             Decision::Deny => {
+                let tx = self.uow.begin().await?;
+                gone_if_missing(tx.oauth().close_consent(request_id, now).await)?;
                 let entry = AuditEntry::member(None, user_id, "oauth.consent.denied", target);
-                self.uow.audit().record(entry).await?;
+                tx.audit().record(entry).await?;
+                tx.commit().await?;
                 let pairs = [("error", Some("access_denied")), ("state", state)];
                 return Ok(redirect_with(&request.redirect_uri, &pairs, iss));
             }
@@ -59,24 +62,31 @@ impl DecideConsent {
         let code = new_token();
         let tx = self.uow.begin().await?;
         let expires = now + Duration::seconds(CODE_TTL_SECS);
-        match tx
+        let code_hash = hash_token(&code);
+        let decided = tx
             .oauth()
             .decide_consent(
                 request_id,
                 scope.member.id,
                 org_id,
-                &hash_token(&code),
+                &code_hash,
                 expires,
+                now,
             )
-            .await
-        {
-            Err(RepoError::NotFound) => return Err(AppError::Gone("consent_expired")),
-            other => other?,
-        }
+            .await;
+        gone_if_missing(decided)?;
         let entry = AuditEntry::member(Some(org_id), user_id, "oauth.consent.approved", target);
         tx.audit().record(entry).await?;
         tx.commit().await?;
         let pairs = [("code", Some(code.as_str())), ("state", state)];
         Ok(redirect_with(&request.redirect_uri, &pairs, iss))
+    }
+}
+
+/// A request decided or expired since it was read is `Gone`, like one found that way.
+fn gone_if_missing(r: Result<(), RepoError>) -> AppResult<()> {
+    match r {
+        Err(RepoError::NotFound) => Err(AppError::Gone("consent_expired")),
+        other => Ok(other?),
     }
 }

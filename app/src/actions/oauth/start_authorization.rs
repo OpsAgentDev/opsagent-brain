@@ -153,6 +153,7 @@ impl StartAuthorization {
 
     /// Fails closed: a limiter outage is a 500, not an open door.
     async fn limit(&self, ip: Option<IpAddr>) -> Result<(), OAuthError> {
+        // `unknown` only without X-Forwarded-For: behind Railway's edge ClientIp always has one.
         let who = ip.map_or_else(|| "unknown".to_owned(), |ip| ip_bucket(ip).to_string());
         let key = format!("oauth:authorize:ip:{who}");
         match self.limiter.hit(&key, PER_IP_PER_HOUR, HOUR_SECS).await {

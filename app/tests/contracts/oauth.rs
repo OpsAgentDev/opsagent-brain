@@ -66,7 +66,7 @@ contract_suite! {
         let c = consent(None);
         s.oauth().insert_consent(&c).await.unwrap();
         let (m, o) = (Uuid::new_v4(), org_id(s, "acme").await);
-        s.oauth().decide_consent(c.id, m, o, "h1", at(60)).await.unwrap();
+        s.oauth().decide_consent(c.id, m, o, "h1", at(60), at(0)).await.unwrap();
         let got = s.oauth().consume_code("h1", at(10)).await.unwrap().unwrap();
         assert_eq!((got.id, got.member_id, got.organisation_id), (c.id, Some(m), Some(o)));
         assert_eq!(got.code_used_at, Some(at(10)));
@@ -84,8 +84,8 @@ contract_suite! {
         let c = consent(None);
         s.oauth().insert_consent(&c).await.unwrap();
         let (m, o) = (Uuid::new_v4(), org_id(s, "acme").await);
-        s.oauth().decide_consent(c.id, m, o, "h1", at(60)).await.unwrap();
-        let again = s.oauth().decide_consent(c.id, m, o, "h2", at(60)).await;
+        s.oauth().decide_consent(c.id, m, o, "h1", at(60), at(0)).await.unwrap();
+        let again = s.oauth().decide_consent(c.id, m, o, "h2", at(60), at(0)).await;
         assert!(matches!(again, Err(opsagent_core::repo::RepoError::NotFound)), "{again:?}");
         let kept = s.oauth().consent(c.id).await.unwrap().unwrap();
         assert_eq!(kept.code_hash.as_deref(), Some("h1"));
@@ -96,7 +96,7 @@ contract_suite! {
         let c = consent(None);
         s.oauth().insert_consent(&c).await.unwrap();
         let o = org_id(s, "acme").await;
-        s.oauth().decide_consent(c.id, Uuid::new_v4(), o, "h1", at(60)).await.unwrap();
+        s.oauth().decide_consent(c.id, Uuid::new_v4(), o, "h1", at(60), at(0)).await.unwrap();
         assert!(s.oauth().consume_code("h1", at(60)).await.unwrap().is_none());
         assert!(s.oauth().consume_code("h1", at(61)).await.unwrap().is_none());
         // Not burned by the failed attempts: it was never used.
@@ -160,6 +160,7 @@ contract_suite! {
         let mk = |hash: &str| RefreshToken {
             id: Uuid::new_v4(), grant_id: g.id, organisation_id: o,
             token_hash: hash.into(), expires_at: at(86_400), spent_at: None, successor_id: None,
+            grace_reissued_at: None,
         };
         let (first, second) = (mk("r1"), mk("r2"));
         s.oauth().insert_refresh(&first).await.unwrap();
@@ -174,6 +175,31 @@ contract_suite! {
         let got = s.oauth().refresh_by_hash("r1").await.unwrap().unwrap();
         assert_eq!(got.successor_id, Some(second.id));
         assert!(s.oauth().refresh_by_hash("nope").await.unwrap().is_none());
+        // The grace reissue is recorded once.
+        s.oauth().mark_grace_reissued(o, first.id, at(9)).await.unwrap();
+        assert!(s.oauth().mark_grace_reissued(o, first.id, at(10)).await.is_err());
+        let got = s.oauth().refresh_by_hash("r1").await.unwrap().unwrap();
+        assert_eq!(got.grace_reissued_at, Some(at(9)));
+    }
+
+    async fn close_consent_ends_an_open_request_once(s) {
+        use opsagent_core::repo::RepoError;
+        client(s).await;
+        let c = consent(None);
+        s.oauth().insert_consent(&c).await.unwrap();
+        s.oauth().close_consent(c.id, at(5)).await.unwrap();
+        assert_eq!(s.oauth().consent(c.id).await.unwrap().unwrap().expires_at, at(5));
+        assert!(matches!(s.oauth().close_consent(c.id, at(5)).await, Err(RepoError::NotFound)));
+        let (m, o) = (Uuid::new_v4(), org_id(s, "acme").await);
+        let decided = s.oauth().decide_consent(c.id, m, o, "h1", at(60), at(5)).await;
+        assert!(matches!(decided, Err(RepoError::NotFound)));
+        // An expired request cannot be decided either, and a decided one cannot be closed.
+        let d = consent(None);
+        s.oauth().insert_consent(&d).await.unwrap();
+        let late = s.oauth().decide_consent(d.id, m, o, "h2", at(660), at(600)).await;
+        assert!(matches!(late, Err(RepoError::NotFound)));
+        s.oauth().decide_consent(d.id, m, o, "h2", at(60), at(1)).await.unwrap();
+        assert!(matches!(s.oauth().close_consent(d.id, at(2)).await, Err(RepoError::NotFound)));
     }
 
     async fn touch_slides_dynamic_expiry(s) {

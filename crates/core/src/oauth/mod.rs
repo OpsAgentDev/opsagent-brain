@@ -92,6 +92,8 @@ pub struct RefreshToken {
     pub expires_at: DateTime<Utc>,
     pub spent_at: Option<DateTime<Utc>>,
     pub successor_id: Option<Uuid>,
+    /// Set when a second successor was minted inside the grace window (at most once).
+    pub grace_reissued_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,8 +116,8 @@ pub trait OAuthRepo: Send + Sync {
 
     async fn insert_consent(&self, request: &ConsentRequest) -> RepoResult<()>;
     async fn consent(&self, id: Uuid) -> RepoResult<Option<ConsentRequest>>;
-    /// Records the member's approval and the hashed code; `NotFound` for an unknown or
-    /// already decided request.
+    /// Records the member's approval and the hashed code; `NotFound` for an unknown, expired
+    /// or already decided request.
     async fn decide_consent(
         &self,
         id: Uuid,
@@ -123,7 +125,10 @@ pub trait OAuthRepo: Send + Sync {
         organisation_id: Uuid,
         code_hash: &str,
         code_expires_at: DateTime<Utc>,
+        now: DateTime<Utc>,
     ) -> RepoResult<()>;
+    /// Ends an undecided, unexpired request (denied) by expiring it now; `NotFound` otherwise.
+    async fn close_consent(&self, id: Uuid, now: DateTime<Utc>) -> RepoResult<()>;
     /// Marks the code used and returns its request, only if it was unused and unexpired.
     async fn consume_code(
         &self,
@@ -147,6 +152,13 @@ pub trait OAuthRepo: Send + Sync {
         organisation_id: Uuid,
         id: Uuid,
         successor_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<()>;
+    /// Records the one grace-window reissue of a spent token; `NotFound` if already recorded.
+    async fn mark_grace_reissued(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
         now: DateTime<Utc>,
     ) -> RepoResult<()>;
     async fn insert_access(&self, token: &AccessToken) -> RepoResult<()>;

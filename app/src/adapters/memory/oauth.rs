@@ -80,17 +80,29 @@ impl OAuthRepo for MemStore {
         organisation_id: Uuid,
         code_hash: &str,
         code_expires_at: DateTime<Utc>,
+        now: DateTime<Utc>,
     ) -> RepoResult<()> {
         let mut s = self.state();
         let c = s
             .oauth_consents
             .iter_mut()
-            .find(|c| c.id == id && c.code_hash.is_none())
+            .find(|c| c.id == id && c.code_hash.is_none() && c.expires_at > now)
             .ok_or(RepoError::NotFound)?;
         c.member_id = Some(member_id);
         c.organisation_id = Some(organisation_id);
         c.code_hash = Some(code_hash.into());
         c.code_expires_at = Some(code_expires_at);
+        Ok(())
+    }
+
+    async fn close_consent(&self, id: Uuid, now: DateTime<Utc>) -> RepoResult<()> {
+        let mut s = self.state();
+        let c = s
+            .oauth_consents
+            .iter_mut()
+            .find(|c| c.id == id && c.code_hash.is_none() && c.expires_at > now)
+            .ok_or(RepoError::NotFound)?;
+        c.expires_at = now;
         Ok(())
     }
 
@@ -184,6 +196,24 @@ impl OAuthRepo for MemStore {
             .ok_or(RepoError::NotFound)?;
         t.spent_at = Some(now);
         t.successor_id = Some(successor_id);
+        Ok(())
+    }
+
+    async fn mark_grace_reissued(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<()> {
+        let mut s = self.state();
+        let t = s
+            .oauth_refresh
+            .iter_mut()
+            .find(|r| {
+                (r.organisation_id, r.id) == (organisation_id, id) && r.grace_reissued_at.is_none()
+            })
+            .ok_or(RepoError::NotFound)?;
+        t.grace_reissued_at = Some(now);
         Ok(())
     }
 

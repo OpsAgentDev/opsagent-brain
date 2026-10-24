@@ -318,6 +318,30 @@ async fn consent_twice_is_gone() {
 
 #[tokio::test]
 #[serial]
+async fn approve_after_deny_is_gone() {
+    serve(|req, app| async move {
+        let mail = prepare(&app);
+        let csrf = sign_in(&req, &mail, "owner@example.com").await;
+        let org = create_org(&req, &csrf, "Acme").await;
+        client(&app).await;
+        let id = request_id(&req, REDIRECT).await;
+        assert_eq!(
+            decide(&req, &csrf, &id, json!({"deny": true}))
+                .await
+                .status_code(),
+            200
+        );
+        let res = decide(&req, &csrf, &id, json!({"organisation": slug(&org)})).await;
+        assert_eq!(res.status_code(), 410);
+        assert_eq!(res.json::<Value>()["code"], "consent_expired");
+        let again = decide(&req, &csrf, &id, json!({"deny": true})).await;
+        assert_eq!(again.status_code(), 410);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn consent_post_requires_csrf() {
     serve(|req, app| async move {
         let mail = prepare(&app);

@@ -10,7 +10,9 @@ mod start_authorization;
 
 use chrono::{DateTime, Duration, Utc};
 use opsagent_core::{
+    audit::AuditEntry,
     oauth::{AccessToken, Grant, RefreshToken, SCOPE},
+    org::Member,
     repo::RepoResult,
 };
 use serde::Serialize;
@@ -64,14 +66,14 @@ fn internal(e: impl std::fmt::Display) -> OAuthError {
     OAuthError::server_error()
 }
 
-/// A fresh access and refresh token for `grant`; also returns the refresh token's id.
+/// A fresh access token and a refresh token with id `refresh_id` for `grant`.
 async fn mint(
     repos: &dyn Repos,
     grant: &Grant,
+    refresh_id: Uuid,
     now: DateTime<Utc>,
-) -> RepoResult<(TokenResponse, Uuid)> {
+) -> RepoResult<TokenResponse> {
     let (access, refresh) = (new_token(), new_token());
-    let refresh_id = Uuid::new_v4();
     repos
         .oauth()
         .insert_refresh(&RefreshToken {
@@ -82,6 +84,7 @@ async fn mint(
             expires_at: now + Duration::days(REFRESH_TTL_DAYS),
             spent_at: None,
             successor_id: None,
+            grace_reissued_at: None,
         })
         .await?;
     repos
@@ -94,14 +97,53 @@ async fn mint(
             expires_at: now + Duration::seconds(ACCESS_TTL_SECS),
         })
         .await?;
-    let body = TokenResponse {
+    Ok(TokenResponse {
         access_token: access,
         token_type: "Bearer",
         expires_in: ACCESS_TTL_SECS,
         refresh_token: refresh,
         scope: SCOPE,
+    })
+}
+
+/// The member a grant names, while they still belong to its live organisation.
+async fn live_member(
+    repos: &dyn Repos,
+    organisation_id: Uuid,
+    member_id: Uuid,
+) -> RepoResult<Option<Member>> {
+    if repos.orgs().is_deleted(organisation_id).await? {
+        return Ok(None);
+    }
+    let members = repos.orgs().members(organisation_id).await?;
+    Ok(members.into_iter().find(|m| m.id == member_id))
+}
+
+/// Revokes a grant and records `oauth.grant.revoked` with `outcome` (why), in `repos`. The
+/// actor is the grant's user while they are a member; otherwise the system.
+async fn revoke_audited(
+    repos: &dyn Repos,
+    organisation_id: Uuid,
+    grant_id: Uuid,
+    member_id: Uuid,
+    outcome: &str,
+    now: DateTime<Utc>,
+) -> RepoResult<()> {
+    tracing::warn!(grant_id = %grant_id, outcome, "oauth grant revoked");
+    repos
+        .oauth()
+        .revoke_grant(organisation_id, grant_id, now)
+        .await?;
+    let target = ("oauth_grant", grant_id.to_string());
+    let action = "oauth.grant.revoked";
+    let entry = match live_member(repos, organisation_id, member_id).await? {
+        Some(m) => AuditEntry {
+            outcome: outcome.into(),
+            ..AuditEntry::member(Some(organisation_id), m.user_id, action, Some(target))
+        },
+        None => AuditEntry::system(organisation_id, action, target, outcome),
     };
-    Ok((body, refresh_id))
+    repos.audit().record(entry).await
 }
 
 /// `redirect_uri` with the present `pairs` and `iss` (RFC 9207) appended to its query.

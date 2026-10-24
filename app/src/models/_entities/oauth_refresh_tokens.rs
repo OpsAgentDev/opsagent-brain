@@ -15,6 +15,7 @@ pub struct Model {
     pub expires_at: DateTimeWithTimeZone,
     pub spent_at: Option<DateTimeWithTimeZone>,
     pub successor_id: Option<Uuid>,
+    pub grace_reissued_at: Option<DateTimeWithTimeZone>,
     pub created_at: DateTimeWithTimeZone,
 }
 

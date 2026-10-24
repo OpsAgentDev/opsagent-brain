@@ -82,6 +82,7 @@ impl RegisterClient {
 
     /// Fails closed: a limiter outage is a 500, not an open door.
     async fn limit(&self, ip: Option<IpAddr>) -> Result<(), OAuthError> {
+        // `unknown` only without X-Forwarded-For: behind Railway's edge ClientIp always has one.
         let who = ip.map_or_else(|| "unknown".to_owned(), |ip| ip_bucket(ip).to_string());
         let net = ip.map_or_else(|| "unknown".to_owned(), |ip| net_bucket(ip).to_string());
         // Narrowest first: a hit rejected per IP never counts against its network or the world.

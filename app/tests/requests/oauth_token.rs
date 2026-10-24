@@ -1,6 +1,7 @@
 use axum_test::TestServer;
 use chrono::{Duration, Utc};
-use opsagent_brain::tokens::hash_token;
+use opsagent_brain::{models::_entities::audit_events, tokens::hash_token};
+use sea_orm::entity::prelude::*;
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -8,11 +9,15 @@ use super::{oauth_authorize::*, support::*};
 
 /// Signs in, creates an org, authorizes and approves: the issued code.
 async fn code(req: &TestServer, app: &TestApp) -> String {
+    code_for(req, app, REDIRECT).await
+}
+
+async fn code_for(req: &TestServer, app: &TestApp, redirect: &str) -> String {
     let mail = prepare(app);
     let csrf = sign_in(req, &mail, "owner@example.com").await;
     let org = create_org(req, &csrf, "Acme").await;
     client(app).await;
-    let id = request_id(req, REDIRECT).await;
+    let id = request_id(req, redirect).await;
     let res = decide(req, &csrf, &id, json!({"organisation": slug(&org)})).await;
     assert_eq!(res.status_code(), 200, "{}", res.text());
     query_of(res.json::<Value>()["redirect_to"].as_str().unwrap())["code"].clone()
@@ -131,6 +136,101 @@ async fn redirect_uri_mismatch_is_invalid_grant() {
 
 #[tokio::test]
 #[serial]
+async fn loopback_port_changed_at_exchange_is_invalid_grant() {
+    serve(|req, app| async move {
+        let c = code_for(&req, &app, "http://127.0.0.1:60000/callback").await;
+        invalid_grant(&exchange(&req, &c, VERIFIER, "http://127.0.0.1:60001/callback").await);
+    })
+    .await;
+}
+
+/// `(actor_id, outcome)` of every `action` audit row.
+async fn audits(app: &TestApp, action: &str) -> Vec<(Option<String>, Option<String>)> {
+    audit_events::Entity::find()
+        .filter(audit_events::Column::Action.eq(action))
+        .all(&app.db)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.actor_id, r.outcome))
+        .collect()
+}
+
+async fn user_id(app: &TestApp, access_token: &str) -> String {
+    let (_, g) = app
+        .state
+        .uow
+        .oauth()
+        .access_by_hash(&hash_token(access_token))
+        .await
+        .unwrap()
+        .unwrap();
+    let members = app
+        .state
+        .uow
+        .orgs()
+        .members(g.organisation_id)
+        .await
+        .unwrap();
+    members
+        .iter()
+        .find(|m| m.id == g.member_id)
+        .unwrap()
+        .user_id
+        .to_string()
+}
+
+#[tokio::test]
+#[serial]
+async fn token_issued_and_replay_audit_name_the_user() {
+    serve(|req, app| async move {
+        let c = code(&req, &app).await;
+        let first: Value = exchange(&req, &c, VERIFIER, REDIRECT).await.json();
+        let user = user_id(&app, first["access_token"].as_str().unwrap()).await;
+        assert_eq!(
+            audits(&app, "oauth.token.issued").await,
+            [(Some(user.clone()), Some("success".into()))]
+        );
+        invalid_grant(&exchange(&req, &c, VERIFIER, REDIRECT).await);
+        assert_eq!(
+            audits(&app, "oauth.grant.revoked").await,
+            [(Some(user), Some("code_replay".into()))]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn removed_member_refresh_is_invalid_grant_and_revokes() {
+    serve(|req, app| async move {
+        let t = tokens(&req, &app).await;
+        let (_, g) = app
+            .state
+            .uow
+            .oauth()
+            .access_by_hash(&hash_token(t["access_token"].as_str().unwrap()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(app
+            .state
+            .uow
+            .orgs()
+            .remove_member(g.organisation_id, g.member_id)
+            .await
+            .unwrap());
+        invalid_grant(&refresh(&req, &rt(&t), CLIENT).await);
+        assert!(grant_revoked(&app, t["access_token"].as_str().unwrap()).await);
+        let rows = audits(&app, "oauth.grant.revoked").await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1.as_deref(), Some("member_gone"));
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn refresh_rotates() {
     serve(|req, app| async move {
         let t = tokens(&req, &app).await;
@@ -158,6 +258,25 @@ async fn refresh_reuse_within_grace_gets_second_successor() {
         assert_eq!(refresh(&req, &rt(&a), CLIENT).await.status_code(), 200);
         assert_eq!(refresh(&req, &rt(&b), CLIENT).await.status_code(), 200);
         assert!(!grant_revoked(&app, t["access_token"].as_str().unwrap()).await);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn third_presentation_inside_grace_revokes() {
+    serve(|req, app| async move {
+        let t = tokens(&req, &app).await;
+        let a: Value = refresh(&req, &rt(&t), CLIENT).await.json();
+        assert_eq!(refresh(&req, &rt(&t), CLIENT).await.status_code(), 200);
+        invalid_grant(&refresh(&req, &rt(&t), CLIENT).await);
+        assert!(grant_revoked(&app, t["access_token"].as_str().unwrap()).await);
+        invalid_grant(&refresh(&req, &rt(&a), CLIENT).await);
+        let user = user_id(&app, t["access_token"].as_str().unwrap()).await;
+        assert_eq!(
+            audits(&app, "oauth.grant.revoked").await,
+            [(Some(user), Some("refresh_reuse".into()))]
+        );
     })
     .await;
 }
