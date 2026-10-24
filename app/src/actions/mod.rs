@@ -60,3 +60,20 @@ impl ConnectorSource for Registry {
         Registry::connector(self, provider).map(Arc::from)
     }
 }
+
+/// A Client ID Metadata Document as fetched.
+pub struct FetchedDocument {
+    pub body: serde_json::Value,
+    /// From `Cache-Control: max-age`; `None` when absent.
+    pub max_age_secs: Option<u64>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct MetadataError(pub String);
+
+/// Fetches the document a metadata-document `client_id` URL names.
+#[async_trait]
+pub trait ClientMetadataSource: Send + Sync {
+    async fn fetch(&self, url: &str) -> Result<FetchedDocument, MetadataError>;
+}

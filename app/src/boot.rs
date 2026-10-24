@@ -13,9 +13,11 @@ use axum::Router;
 use crate::{
     actions::{
         auth, connections, deliveries, findings, integrations, members, oauth, orgs, recipients,
-        resources, runs, uow::UnitOfWork, Actions, ConnectorSource, RateLimiter,
+        resources, runs, uow::UnitOfWork, Actions, ClientMetadataSource, ConnectorSource,
+        RateLimiter,
     },
     adapters::{
+        client_metadata::HttpClientMetadata,
         db::Pg,
         pg_queue::PgQueue,
         rate_limiter::RedisRateLimiter,
@@ -53,6 +55,8 @@ pub struct Deps {
     pub mailer: Arc<dyn Mailer>,
     pub slack: Arc<dyn SlackClient>,
     pub clock: Arc<dyn Clock>,
+    /// Fetches Client ID Metadata Documents.
+    pub client_metadata: Arc<dyn ClientMetadataSource>,
 }
 
 fn internal(e: impl std::fmt::Display) -> AppError {
@@ -126,6 +130,7 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
         registry,
         slack: Arc::new(slack),
         clock: Arc::new(SystemClock),
+        client_metadata: Arc::new(HttpClientMetadata),
     })
 }
 
@@ -260,6 +265,7 @@ pub fn build_actions(d: &Deps) -> Actions {
                 d.limiter.clone(),
                 d.clock.clone(),
             ),
+            resolve_client: oauth::ResolveClient::new(d.uow.clone(), d.client_metadata.clone()),
         },
     }
 }
