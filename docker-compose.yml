@@ -27,10 +27,13 @@ services:
     <<: *brain
     command: ["opsagent-brain", "start", "--worker"]
     ports: []
+    # Only brain-api migrates: concurrent `Migrator::up` runs race on a fresh database.
+    environment: { DB_AUTO_MIGRATE: "false" }
   brain-scheduler:
     <<: *brain
     command: ["opsagent-brain", "scheduler"]
     ports: []
+    environment: { DB_AUTO_MIGRATE: "false" } # see brain-worker
 
 volumes:
   pg-data:

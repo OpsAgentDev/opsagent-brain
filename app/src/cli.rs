@@ -2,6 +2,7 @@
 use std::{collections::BTreeMap, future::Future, process::ExitCode};
 
 use futures::FutureExt;
+use tokio::sync::Notify;
 
 use chrono::Utc;
 use clap::{Parser, Subcommand};
@@ -156,8 +157,35 @@ pub async fn start_with(
         return serve(listener, state, stop).await;
     }
     let runner = boot::worker(&state);
-    // Either part failing ends the process.
-    tokio::try_join!(serve(listener, state, stop.clone()), runner.run(stop)).map(drop)
+    let failed = Notify::new();
+    let worker_stop = stop.clone();
+    let runner_stop = async {
+        tokio::select! { () = worker_stop => {}, () = failed.notified() => {} }
+    };
+    together(
+        serve(listener, state, stop),
+        runner.run(runner_stop),
+        &failed,
+    )
+    .await
+}
+
+/// `server` beside `worker`. A server error notifies `failed`, which `worker`'s stop future
+/// waits on too, so the runner still gets its grace and `release_mine` before the process ends.
+async fn together(
+    server: impl Future<Output = AppResult<()>>,
+    worker: impl Future<Output = AppResult<()>>,
+    failed: &Notify,
+) -> AppResult<()> {
+    let server = async {
+        let out = server.await;
+        if out.is_err() {
+            failed.notify_one();
+        }
+        out
+    };
+    let (served, ran) = tokio::join!(server, worker);
+    served.and(ran)
 }
 
 /// The API on `listener` until `stop`; in-flight requests finish first.
@@ -239,6 +267,25 @@ async fn db(op: DbOp) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn server_error_stops_the_worker_through_its_shutdown() {
+        let failed = Notify::new();
+        let stopped = std::sync::atomic::AtomicBool::new(false);
+        let worker = async {
+            failed.notified().await;
+            stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        let server = async { Err(AppError::Internal("serve failed".into())) };
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            together(server, worker, &failed),
+        );
+        let out = out.await.expect("the worker stopped");
+        assert!(matches!(out, Err(AppError::Internal(_))), "{out:?}");
+        assert!(stopped.into_inner());
+    }
 
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(std::iter::once("opsagent-brain").chain(args.iter().copied()))
