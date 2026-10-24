@@ -1,9 +1,12 @@
-//! Briefing and weekly documents. Pure: snapshots in, text out; no I/O, no logging.
+//! Briefing and weekly documents (pure: snapshots in, text out), schedule maths, and the
+//! delivery repository ports. No I/O, no logging.
 pub mod briefing;
 pub mod model;
 pub mod render_html;
 pub mod render_text;
+pub mod repo;
 pub mod route;
+pub mod schedule;
 pub mod weekly;
 
 pub use render_html::render_html;

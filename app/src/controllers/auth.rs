@@ -4,12 +4,11 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use loco_rs::{app::AppContext, controller::middleware::remote_ip::RemoteIP};
 use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
-use sea_orm::EntityTrait;
+use opsagent_core::user::Email;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use utoipa::{IntoParams, ToSchema};
@@ -17,12 +16,11 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use crate::{
+    actions::auth::{GithubProfile, MagicLinkInput},
+    adapters::client_ip::ClientIp,
     api_error::{ApiError, ApiJson, Problem},
-    middleware::{csrf, mailer, org_scope::AuthUser, session::USER_KEY},
-    models::{_entities::users, audit, magic_links, users as user_model},
-    services::sign_in,
-    settings::Settings,
-    workers::common::redis_client,
+    middleware::{csrf, org_scope::AuthUser, session::USER_KEY},
+    state::AppState,
 };
 
 const GH_KEY: &str = "github_oauth";
@@ -38,39 +36,23 @@ pub struct MagicLinkRequest {
 #[utoipa::path(post, path = "/auth/magic-link", tag = "auth", request_body = MagicLinkRequest,
     responses((status = 202, description = "Sent if the address is valid and under the rate limit")))]
 async fn request_link(
-    State(ctx): State<AppContext>,
-    ip: RemoteIP,
+    State(app): State<AppState>,
+    ClientIp(ip): ClientIp,
     ApiJson(body): ApiJson<MagicLinkRequest>,
 ) -> Result<StatusCode, ApiError> {
     // Only a proxy-reported address is a client; without one (local runs) there is no IP cap.
-    let ip = match ip {
-        RemoteIP::Forwarded(ip) => Some(ip),
-        RemoteIP::Socket(_) | RemoteIP::None => None,
+    let input = MagicLinkInput {
+        email: body.email,
+        client_ip: ip,
     };
-    sign_in::request_link(
-        &ctx.db,
-        &redis_client(&ctx)?,
-        mailer(&ctx).as_ref(),
-        &Settings::get(&ctx).web_base_url,
-        &body.email,
-        ip,
-    )
-    .await?;
+    app.actions.auth.request_magic_link.run(input).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
 /// Rotates the session id and binds the session to `user_id`.
-async fn start_session(ctx: &AppContext, session: &Session, user_id: Uuid) -> Result<(), ApiError> {
+async fn start_session(session: &Session, user_id: Uuid) -> Result<(), ApiError> {
     session.cycle_id().await?;
     session.insert(USER_KEY, user_id).await?;
-    audit::record(
-        &ctx.db,
-        None,
-        user_id,
-        "auth.sign_in",
-        Some(("user", user_id.to_string())),
-    )
-    .await?;
     Ok(())
 }
 
@@ -109,17 +91,16 @@ fn check_origin(headers: &HeaderMap, web_base_url: &str) -> Result<(), ApiError>
     responses((status = 200, body = Redirect, description = "Session cookie set"),
         (status = 403, body = Problem), (status = 410, body = Problem)))]
 async fn redeem_link(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     session: Session,
     headers: HeaderMap,
     ApiJson(body): ApiJson<RedeemRequest>,
 ) -> Result<Json<Redirect>, ApiError> {
-    let web = Settings::get(&ctx).web_base_url;
+    let web = app.config.web_base_url.clone();
     check_origin(&headers, &web)?;
-    let user_id = magic_links::consume(&ctx.db, &body.token)
-        .await?
-        .ok_or_else(|| ApiError::gone("link_invalid"))?;
-    start_session(&ctx, &session, user_id).await?;
+    let redeem = &app.actions.auth.redeem_magic_link;
+    let user_id = redeem.run(&body.token).await?;
+    start_session(&session, user_id).await?;
     Ok(Json(Redirect {
         redirect: format!("{}/dashboard", web.trim_end_matches('/')),
     }))
@@ -164,10 +145,10 @@ pub struct AuthorizeUrl {
 #[utoipa::path(post, path = "/auth/sign-in/github/start", tag = "auth",
     responses((status = 200, body = AuthorizeUrl), (status = 503, body = Problem)))]
 async fn github_start(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     session: Session,
 ) -> Result<Json<AuthorizeUrl>, ApiError> {
-    let s = Settings::get(&ctx);
+    let s = app.config.clone();
     let client = github_client!(s);
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
     let (url, state) = client
@@ -218,7 +199,7 @@ fn bad_gateway(e: impl std::fmt::Display) -> ApiError {
 async fn github_identity(
     http: &reqwest::Client,
     access: &str,
-) -> Result<(GhUser, String), ApiError> {
+) -> Result<(GhUser, Email), ApiError> {
     let get = |url: &str| http.get(url).bearer_auth(access).header("User-Agent", UA);
     let gh: GhUser = get("https://api.github.com/user")
         .send()
@@ -239,7 +220,7 @@ async fn github_identity(
     let email = emails
         .into_iter()
         .find(|e| e.primary && e.verified)
-        .and_then(|e| user_model::normalize_email(&e.email))
+        .and_then(|e| Email::parse(&e.email))
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::BAD_REQUEST,
@@ -254,11 +235,11 @@ async fn github_identity(
     responses((status = 302, description = "Session cookie set; redirects to the web dashboard"),
         (status = 400, body = Problem), (status = 502, body = Problem)))]
 async fn github_callback(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     session: Session,
     Query(q): Query<CallbackQuery>,
 ) -> Result<Response, ApiError> {
-    let s = Settings::get(&ctx);
+    let s = app.config.clone();
     let client = github_client!(s);
     let stored = session.remove::<(String, String)>(GH_KEY).await?;
     let Some((_, verifier)) = stored.filter(|(st, _)| *st == q.state) else {
@@ -279,14 +260,13 @@ async fn github_callback(
         .await
         .map_err(bad_gateway)?;
     let (gh, email) = github_identity(&http, token.access_token().secret()).await?;
-    let user = user_model::find_or_create_github(
-        &ctx.db,
-        &gh.id.to_string(),
-        &email,
-        gh.name.or(Some(gh.login)),
-    )
-    .await?;
-    start_session(&ctx, &session, user.id).await?;
+    let profile = GithubProfile {
+        github_id: gh.id,
+        email,
+        name: gh.name.or(Some(gh.login)),
+    };
+    let user_id = app.actions.auth.sign_in_github.run(profile).await?;
+    start_session(&session, user_id).await?;
     let to = format!("{}/dashboard", s.web_base_url);
     Ok((StatusCode::FOUND, [(header::LOCATION, to)]).into_response())
 }
@@ -300,13 +280,13 @@ pub struct Csrf {
 #[utoipa::path(get, path = "/auth/csrf", tag = "auth",
     responses((status = 200, body = Csrf), (status = 401, body = Problem)))]
 async fn csrf_token(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     session: Session,
     _user: AuthUser,
 ) -> Result<Json<Csrf>, ApiError> {
     let sid = session.id().ok_or_else(ApiError::unauthenticated)?;
     Ok(Json(Csrf {
-        token: csrf::token(&Settings::get(&ctx).session_secret, &sid.to_string()),
+        token: csrf::token(&app.config.session_secret, &sid.to_string()),
     }))
 }
 
@@ -325,19 +305,16 @@ pub struct Me {
 
 #[utoipa::path(get, path = "/auth/me", tag = "auth",
     responses((status = 200, body = Me), (status = 401, body = Problem)))]
-async fn me(State(ctx): State<AppContext>, AuthUser(id): AuthUser) -> Result<Json<Me>, ApiError> {
-    let u = users::Entity::find_by_id(id)
-        .one(&ctx.db)
-        .await?
-        .ok_or_else(ApiError::unauthenticated)?;
+async fn me(State(app): State<AppState>, AuthUser(id): AuthUser) -> Result<Json<Me>, ApiError> {
+    let u = app.actions.auth.current_user.run(id).await?;
     Ok(Json(Me {
         id: u.id,
-        email: u.email,
+        email: u.email.as_str().into(),
         name: u.name,
     }))
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(request_link))
         .routes(routes!(redeem_link))

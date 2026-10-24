@@ -1,6 +1,5 @@
 use chrono::Utc;
-use loco_rs::prelude::*;
-use opsagent_brain::models::ledger_storage::stmt;
+use opsagent_brain::adapters::db::ledger_storage::stmt;
 use sea_orm::ConnectionTrait;
 use serde_json::Value;
 use serial_test::serial;
@@ -9,7 +8,7 @@ use uuid::Uuid;
 use super::support::*;
 use crate::workers::full_scan::{noisy, scan, without_snapshot};
 
-async fn org_id(ctx: &AppContext, conn: Uuid) -> Uuid {
+async fn org_id(ctx: &TestApp, conn: Uuid) -> Uuid {
     let r = ctx
         .db
         .query_one_raw(stmt(
@@ -22,7 +21,7 @@ async fn org_id(ctx: &AppContext, conn: Uuid) -> Uuid {
     r.try_get("", "organisation_id").unwrap()
 }
 
-async fn deliver(ctx: &AppContext, conn: Uuid, kind: &str, channel: &str, target: &str) -> Uuid {
+async fn deliver(ctx: &TestApp, conn: Uuid, kind: &str, channel: &str, target: &str) -> Uuid {
     let id = Uuid::new_v4();
     ctx.db
         .execute_raw(stmt(
@@ -43,7 +42,7 @@ async fn deliver(ctx: &AppContext, conn: Uuid, kind: &str, channel: &str, target
     id
 }
 
-async fn count(ctx: &AppContext) -> i64 {
+async fn count(ctx: &TestApp) -> i64 {
     let r = ctx
         .db
         .query_one_raw(stmt("SELECT count(*) AS n FROM deliveries", vec![]))
@@ -153,7 +152,7 @@ async fn other_orgs_delivery_and_connection_are_404() {
     .await;
 }
 
-async fn recipient(ctx: &AppContext, conn: Uuid, email: &str, age_secs: i64) -> Uuid {
+async fn recipient(ctx: &TestApp, conn: Uuid, email: &str, age_secs: i64) -> Uuid {
     let id = Uuid::new_v4();
     ctx.db
         .execute_raw(stmt(

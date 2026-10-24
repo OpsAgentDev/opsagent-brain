@@ -1,19 +1,49 @@
-//! Replaces Loco's `logger` middleware, whose span records the full URI (`http.uri`) and so
-//! leaks OAuth codes, states and path tokens into logs. This span names the route template
+//! Request id and the request span. The old framework's logger recorded the full URI (`http.uri`) and so
+//! leaked OAuth codes, states and path tokens into logs. This span names the route template
 //! (`/v1/unsubscribe/{token}`) instead; status and latency come from the response event.
+use std::sync::OnceLock;
+
 use axum::{
     extract::{MatchedPath, Request},
-    Router as AxumRouter,
+    http::HeaderValue,
+    middleware::Next,
+    response::Response,
 };
-use loco_rs::{
-    app::AppContext,
-    controller::middleware::{request_id::LocoRequestId, MiddlewareLayer},
-    Result,
-};
-use tower_http::trace::{DefaultOnResponse, TraceLayer};
-use tracing::Level;
+use regex::Regex;
 
-pub struct RequestSpan;
+const X_REQUEST_ID: &str = "x-request-id";
+
+/// The request's id: the sanitised `x-request-id` it came with, else a new UUID v4.
+#[derive(Clone)]
+pub struct RequestId(pub String);
+
+/// The pre-switch rules, kept: only word characters, `-` and `@`, at most 255 of them.
+fn sanitise(given: Option<&HeaderValue>) -> String {
+    static STRIP: OnceLock<Regex> = OnceLock::new();
+    let strip = STRIP.get_or_init(|| Regex::new(r"[^\w\-@]").expect("valid regex"));
+    given
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            strip
+                .replace_all(s, "")
+                .chars()
+                .take(255)
+                .collect::<String>()
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+}
+
+/// Sets the `RequestId` extension and echoes it on the response.
+pub async fn request_id(mut req: Request, next: Next) -> Response {
+    let id = sanitise(req.headers().get(X_REQUEST_ID));
+    req.extensions_mut().insert(RequestId(id.clone()));
+    let mut res = next.run(req).await;
+    if let Ok(v) = HeaderValue::from_str(&id) {
+        res.headers_mut().insert(X_REQUEST_ID, v);
+    }
+    res
+}
 
 /// The span for one request: method, route template, request id. Never the raw URI or query.
 pub fn span(req: &Request) -> tracing::Span {
@@ -21,9 +51,7 @@ pub fn span(req: &Request) -> tracing::Span {
     let route = ext
         .get::<MatchedPath>()
         .map_or("unmatched", MatchedPath::as_str);
-    let request_id = ext
-        .get::<LocoRequestId>()
-        .map_or("req-id-none", |r| r.get());
+    let request_id = ext.get::<RequestId>().map_or("req-id-none", |r| &r.0);
     tracing::error_span!(
         "http-request",
         "http.method" = %req.method(),
@@ -32,34 +60,18 @@ pub fn span(req: &Request) -> tracing::Span {
     )
 }
 
-impl MiddlewareLayer for RequestSpan {
-    fn name(&self) -> &'static str {
-        "request_span"
-    }
+#[cfg(test)]
+mod tests {
+    use axum::http::HeaderValue;
 
-    fn config(&self) -> serde_json::Result<serde_json::Value> {
-        Ok(serde_json::Value::Null)
-    }
+    use super::sanitise;
 
-    fn apply(&self, app: AxumRouter<AppContext>) -> Result<AxumRouter<AppContext>> {
-        // The response event (INFO) carries `status` and `latency`, inside the span above.
-        let trace = TraceLayer::new_for_http()
-            .make_span_with(span)
-            .on_response(DefaultOnResponse::new().level(Level::INFO));
-        Ok(app.layer(trace))
+    #[test]
+    fn request_id_is_sanitised_like_before() {
+        let v = |s: &str| sanitise(Some(&HeaderValue::from_str(s).unwrap()));
+        assert_eq!(v("foo-bar=baz"), "foo-barbaz");
+        assert_eq!(v(&"x".repeat(1000)).len(), 255);
+        assert_eq!(v("==========").len(), 36);
+        assert_eq!(sanitise(None).len(), 36);
     }
-}
-
-/// Loco's default stack with its `logger` swapped for `RequestSpan` in the same position.
-pub fn stack(ctx: &AppContext) -> Vec<Box<dyn MiddlewareLayer>> {
-    loco_rs::controller::middleware::default_middleware_stack(ctx)
-        .into_iter()
-        .map(|m| -> Box<dyn MiddlewareLayer> {
-            if m.name() == "logger" {
-                Box::new(RequestSpan)
-            } else {
-                m
-            }
-        })
-        .collect()
 }

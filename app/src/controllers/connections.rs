@@ -3,27 +3,20 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use chrono::NaiveTime;
-use loco_rs::app::AppContext;
 use opsagent_connectors::aws::client::short_id;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use opsagent_core::org::valid_name;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
-use super::{OrgIdPath, OrgPath, RunAccepted};
+use super::{parse_id, OrgIdPath, OrgPath, RunAccepted};
 use crate::{
+    actions::connections::{PatchInput, TEMPLATE_VERSION},
     api_error::{ApiError, ApiJson, Problem},
-    app::{kek, registry},
+    config::Config,
     middleware::org_scope::OrgScope,
-    models::{
-        _entities::{connection_verifications, connections},
-        connections::TEMPLATE_VERSION,
-        find_in_org,
-        organisations::valid_name,
-    },
-    services::connections as service,
+    state::AppState,
     views::connections::{view, Connection},
 };
 
@@ -31,28 +24,18 @@ fn stack_name(organisation_id: Uuid) -> String {
     format!("OpsAgent-Read-{}", short_id(&organisation_id))
 }
 
-async fn find(
-    ctx: &AppContext,
-    scope: &OrgScope,
-    id: &str,
-) -> Result<connections::Model, ApiError> {
-    find_in_org::<connections::Entity>(
-        &ctx.db,
-        connections::Column::OrganisationId,
-        scope.organisation_id,
-        id,
-    )
-    .await
-}
-
-fn quick_create_url(organisation_id: Uuid, external_id: &str) -> Result<String, ApiError> {
-    let principal = std::env::var("OPSAGENT_AWS_OUTBOUND_ROLE_ARN")
-        .map_err(|_| ApiError::internal("OPSAGENT_AWS_OUTBOUND_ROLE_ARN is not set"))?;
-    let base = std::env::var("OPSAGENT_TEMPLATE_BASE_URL")
-        .unwrap_or_else(|_| "https://templates.opsagent.dev".into());
+fn quick_create_url(
+    c: &Config,
+    organisation_id: Uuid,
+    external_id: &str,
+) -> Result<String, ApiError> {
+    let principal = c
+        .aws_outbound_role_arn
+        .as_deref()
+        .ok_or_else(|| ApiError::internal("OPSAGENT_AWS_OUTBOUND_ROLE_ARN is not set"))?;
     let template = format!(
         "{}/aws/opsagent-read-role-v{TEMPLATE_VERSION}.yaml",
-        base.trim_end_matches('/')
+        c.template_base_url.trim_end_matches('/')
     );
     let e = |s: &str| urlencoding::encode(s).into_owned();
     Ok(format!(
@@ -61,7 +44,7 @@ fn quick_create_url(organisation_id: Uuid, external_id: &str) -> Result<String, 
         e(&template),
         stack_name(organisation_id),
         e(external_id),
-        e(&principal),
+        e(principal),
         short_id(&organisation_id),
     ))
 }
@@ -86,27 +69,21 @@ pub struct CreatedConnection {
     responses((status = 201, body = CreatedConnection), (status = 403, body = Problem),
         (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn create(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiJson(body): ApiJson<NewConnection>,
 ) -> Result<(StatusCode, Json<CreatedConnection>), ApiError> {
     scope.require_owner()?;
-    let name = valid_name(&body.display_name)?;
-    let org_id = scope.organisation_id;
-    let created = service::create(
-        &ctx.db,
-        kek(&ctx)?.as_ref(),
-        &registry(&ctx)?,
-        org_id,
-        scope.user_id,
-        &body.provider,
-        name,
-    )
-    .await?;
+    let name = valid_name(&body.display_name).map_err(ApiError::invalid)?;
+    let org_id = scope.organisation.id;
+    let create = &app.actions.connections.create_connection;
+    let created = create
+        .run(org_id, scope.member.user_id, &body.provider, name)
+        .await?;
     let url = created
         .spec
         .uses_template
-        .then(|| quick_create_url(org_id, &created.creds.external_id))
+        .then(|| quick_create_url(&app.config, org_id, &created.creds.external_id))
         .transpose()?;
     Ok((
         StatusCode::CREATED,
@@ -121,30 +98,23 @@ async fn create(
 #[utoipa::path(get, path = "/orgs/{org}/connections", tag = "connections", params(OrgPath),
     responses((status = 200, body = Vec<Connection>), (status = 404, body = Problem)))]
 async fn list(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
 ) -> Result<Json<Vec<Connection>>, ApiError> {
-    let rows = connections::Entity::find()
-        .filter(connections::Column::OrganisationId.eq(scope.organisation_id))
-        .order_by_asc(connections::Column::CreatedAt)
-        .all(&ctx.db)
-        .await?;
+    let list = &app.actions.connections.list_connections;
+    let rows = list.run(scope.organisation.id).await?;
     Ok(Json(rows.iter().map(|c| view(c, None)).collect()))
 }
 
 #[utoipa::path(get, path = "/orgs/{org}/connections/{id}", tag = "connections", params(OrgIdPath),
     responses((status = 200, body = Connection), (status = 404, body = Problem)))]
 async fn show(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Connection>, ApiError> {
-    let c = find(&ctx, &scope, &id).await?;
-    let last = connection_verifications::Entity::find()
-        .filter(connection_verifications::Column::ConnectionId.eq(c.id))
-        .order_by_desc(connection_verifications::Column::CreatedAt)
-        .one(&ctx.db)
-        .await?;
+    let get = &app.actions.connections.get_connection;
+    let (c, last) = get.run(scope.organisation.id, parse_id(&id)?).await?;
     Ok(Json(view(&c, last.as_ref())))
 }
 
@@ -162,55 +132,30 @@ pub struct ConnectionPatch {
     pub slack_channel_id: Option<String>,
 }
 
-/// `""` clears; otherwise a Slack conversation id.
-fn valid_channel(s: &str) -> Result<Option<String>, ApiError> {
-    if s.is_empty() {
-        return Ok(None);
-    }
-    let ok = (9..=21).contains(&s.len())
-        && matches!(s.as_bytes()[0], b'C' | b'G')
-        && s.bytes()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
-    ok.then(|| Some(s.to_owned()))
-        .ok_or_else(|| ApiError::invalid("slack_channel_id must be a Slack channel id"))
-}
-
-fn valid_hhmm(field: &str, s: &str) -> Result<NaiveTime, ApiError> {
-    (s.len() == 5)
-        .then(|| NaiveTime::parse_from_str(s, "%H:%M").ok())
-        .flatten()
-        .ok_or_else(|| ApiError::invalid(format!("{field} must be HH:MM")))
-}
-
 #[utoipa::path(patch, path = "/orgs/{org}/connections/{id}", tag = "connections", params(OrgIdPath),
     request_body = ConnectionPatch,
     responses((status = 200, body = Connection), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 409, body = Problem), (status = 422, body = Problem)))]
 async fn update(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
     ApiJson(body): ApiJson<ConnectionPatch>,
 ) -> Result<Json<Connection>, ApiError> {
     scope.require_owner()?;
-    let c = find(&ctx, &scope, &id).await?;
-    let hhmm =
-        |field: &str, v: &Option<String>| v.as_deref().map(|t| valid_hhmm(field, t)).transpose();
-    if body.api_rate_ceiling.is_some_and(|r| r < 1) {
-        return Err(ApiError::invalid("api_rate_ceiling must be at least 1"));
-    }
-    let patch = service::Patch {
-        display_name: body.display_name.as_deref().map(valid_name).transpose()?,
-        scan_time_local: hhmm("scan_time_local", &body.scan_time_local)?,
-        briefing_time_local: hhmm("briefing_time_local", &body.briefing_time_local)?,
+    let id = parse_id(&id)?;
+    let input = PatchInput {
+        display_name: body.display_name,
+        scan_time_local: body.scan_time_local,
+        briefing_time_local: body.briefing_time_local,
         api_rate_ceiling: body.api_rate_ceiling,
-        slack_channel_id: body
-            .slack_channel_id
-            .as_deref()
-            .map(valid_channel)
-            .transpose()?,
+        slack_channel_id: body.slack_channel_id,
     };
-    Ok(Json(view(&service::update(&ctx.db, c, patch).await?, None)))
+    let update = &app.actions.connections.update_connection;
+    Ok(Json(view(
+        &update.run(scope.organisation.id, id, input).await?,
+        None,
+    )))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -225,16 +170,17 @@ pub struct VerifyBody {
     responses((status = 202, body = RunAccepted), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 409, body = Problem), (status = 422, body = Problem)))]
 async fn verify(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
     ApiJson(body): ApiJson<VerifyBody>,
 ) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
     scope.require_owner()?;
-    let c = find(&ctx, &scope, &id).await?;
-    let run_id =
-        service::request_verify(&ctx, kek(&ctx)?.as_ref(), &c, scope.user_id, &body.role_arn)
-            .await?;
+    let verify = &app.actions.connections.request_verify;
+    let (org_id, id) = (scope.organisation.id, parse_id(&id)?);
+    let run_id = verify
+        .run(org_id, scope.member.user_id, id, &body.role_arn)
+        .await?;
     Ok((StatusCode::ACCEPTED, Json(RunAccepted { run_id })))
 }
 
@@ -248,14 +194,16 @@ pub struct Disconnected {
 #[utoipa::path(delete, path = "/orgs/{org}/connections/{id}", tag = "connections", params(OrgIdPath),
     responses((status = 200, body = Disconnected), (status = 403, body = Problem), (status = 404, body = Problem)))]
 async fn disconnect(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<Disconnected>, ApiError> {
     scope.require_owner()?;
-    let c = find(&ctx, &scope, &id).await?;
-    let org_id = c.organisation_id;
-    service::disconnect(&ctx.db, c, scope.user_id).await?;
+    let org_id = scope.organisation.id;
+    let disconnect = &app.actions.connections.disconnect_connection;
+    disconnect
+        .run(org_id, scope.member.user_id, parse_id(&id)?)
+        .await?;
     Ok(Json(Disconnected {
         status: "disconnected".into(),
         next_step: format!(
@@ -265,7 +213,7 @@ async fn disconnect(
     }))
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(create, list))
         .routes(routes!(show, update, disconnect))

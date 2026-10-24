@@ -7,7 +7,7 @@ use tower_sessions::{
     Expiry, SessionManagerLayer,
 };
 
-use crate::{models::_entities::sessions, models::now, settings::Settings};
+use crate::{config::Config, models::_entities::sessions, models::now};
 
 pub const COOKIE_NAME: &str = "opsagent_session";
 pub const USER_KEY: &str = "user_id";
@@ -104,7 +104,7 @@ impl SessionStore for DbStore {
     }
 }
 
-pub fn layer(db: DatabaseConnection, s: &Settings) -> SessionManagerLayer<DbStore> {
+pub fn layer(db: DatabaseConnection, s: &Config) -> SessionManagerLayer<DbStore> {
     let mut l = SessionManagerLayer::new(DbStore(db))
         .with_name(COOKIE_NAME)
         .with_http_only(true)

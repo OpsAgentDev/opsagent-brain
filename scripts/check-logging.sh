@@ -4,7 +4,7 @@
 #    `#[cfg(test)]` module. The cut-off applies only when `#[cfg(test)]` is followed by `mod ` on the
 #    next non-blank line; everything after it in that file is treated as test code.
 # 2. Fails if a workspace crate lists `log` or `env_logger` as a normal (non-dev) dependency.
-#    Transitive `log` (via loco, tracing) is not ours to remove, so only direct deps count.
+#    Transitive `log` (via tracing and others) is not ours to remove, so only direct deps count.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 bad=$(find app crates -name '*.rs' -not -path '*/tests/*' -not -path '*/target/*' -print0 |

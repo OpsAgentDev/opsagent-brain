@@ -6,8 +6,9 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use opsagent_connectors::aws::policy_diff::grant_names;
+use opsagent_core::connection;
 
-use crate::models::_entities::{connection_verifications, connections};
+use crate::models::enum_str;
 
 fn hhmm(t: Option<NaiveTime>) -> Option<String> {
     t.map(|t| t.format("%H:%M").to_string())
@@ -56,12 +57,12 @@ pub struct Connection {
     pub last_verification: Option<Verification>,
 }
 
-pub fn view(c: &connections::Model, last: Option<&connection_verifications::Model>) -> Connection {
+pub fn view(c: &connection::Connection, last: Option<&connection::Verification>) -> Connection {
     Connection {
         id: c.id,
         provider: c.provider.clone(),
         display_name: c.display_name.clone(),
-        status: c.status.clone(),
+        status: enum_str(c.status),
         status_reason: c.status_reason.clone(),
         external_account_id: c.external_account_id.clone(),
         template_version: c.template_version.clone(),
@@ -69,12 +70,12 @@ pub fn view(c: &connections::Model, last: Option<&connection_verifications::Mode
         briefing_time_local: hhmm(c.briefing_time_local),
         api_rate_ceiling: c.api_rate_ceiling,
         slack_channel_id: c.slack_channel_id.clone(),
-        first_connected_at: c.first_connected_at,
-        billable_from: c.billable_from,
-        created_at: c.created_at,
+        first_connected_at: c.first_connected_at.map(|t| t.fixed_offset()),
+        billable_from: c.billable_from.map(|t| t.fixed_offset()),
+        created_at: c.created_at.fixed_offset(),
         last_verification: last.map(|v| Verification {
             outcome: v.outcome.clone(),
-            at: v.created_at,
+            at: v.at.fixed_offset(),
             assume_with_ok: v.assume_with_ok,
             assume_without_denied: v.assume_without_denied,
             policy_matches: v.policy_matches,

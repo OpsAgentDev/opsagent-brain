@@ -1,8 +1,11 @@
-use loco_rs::cli;
-use migration::Migrator;
-use opsagent_brain::app::App;
+use std::process::ExitCode;
+
+use clap::Parser;
+use opsagent_brain::cli::{self, Cli};
 
 #[tokio::main]
-async fn main() -> loco_rs::Result<()> {
-    cli::main::<App, Migrator>().await
+async fn main() -> ExitCode {
+    let args = Cli::parse();
+    cli::install_tracing();
+    cli::main(args).await
 }

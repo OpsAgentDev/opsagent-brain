@@ -1,19 +1,15 @@
+use opsagent_brain::adapters::db::ledger_storage::PgStorage;
 use std::{
     collections::{BTreeSet, HashMap},
     sync::atomic::{AtomicUsize, Ordering::SeqCst},
 };
 
 use async_trait::async_trait;
-use loco_rs::prelude::*;
 use opsagent_brain::{
-    models::{
-        _entities::{
-            connections, evidence, finding_events, findings, resource_history, resources, runs,
-        },
-        ledger_storage::PgStorage,
+    actions::runs::{Chunk, FullScan},
+    models::_entities::{
+        connections, evidence, finding_events, findings, resource_history, resources, runs,
     },
-    services::inventory_upsert,
-    workers::full_scan,
 };
 use opsagent_checks::{Check, CheckCtx, MetricStore};
 use opsagent_connectors::{
@@ -30,6 +26,7 @@ use opsagent_core::{
     run::{RunKey, RunStatus},
 };
 use opsagent_ledger::{harness, Checkpoint, LedgerError, RunChunkedOptions, Storage};
+use sea_orm::{entity::prelude::*, Set};
 use serde_json::{json, Value};
 use serial_test::serial;
 use uuid::Uuid;
@@ -172,19 +169,20 @@ fn api(code: &str) -> ConnectorError {
 pub const SECRET_ARN: &str = "arn:aws:iam::123456789012:role/CustomerSecretRole";
 
 /// Fixture connector with a faulty `rds`, counting inventory and simulate calls.
+#[derive(Clone)]
 struct Rigged {
     inner: FakeConnector,
     fault: Option<Fault>,
-    calls: AtomicUsize,
-    sims: AtomicUsize,
+    calls: std::sync::Arc<AtomicUsize>,
+    sims: std::sync::Arc<AtomicUsize>,
 }
 
 fn rigged(fault: Option<Fault>) -> Rigged {
     Rigged {
         inner: noisy(),
         fault,
-        calls: AtomicUsize::new(0),
-        sims: AtomicUsize::new(0),
+        calls: Default::default(),
+        sims: Default::default(),
     }
 }
 
@@ -334,11 +332,11 @@ fn with_twice() -> Vec<Box<dyn Check>> {
 }
 
 /// A connected fake connection; returns its id.
-async fn connection(req: &axum_test::TestServer, ctx: &AppContext, email: &str) -> Uuid {
+async fn connection(req: &axum_test::TestServer, ctx: &TestApp, email: &str) -> Uuid {
     connected(req, ctx, email, "noisy").await.2
 }
 
-async fn new_run(ctx: &AppContext, conn: Uuid, n: i64) -> Uuid {
+async fn new_run(ctx: &TestApp, conn: Uuid, n: i64) -> Uuid {
     let c = connections::Entity::find_by_id(conn)
         .one(&ctx.db)
         .await
@@ -357,15 +355,24 @@ async fn new_run(ctx: &AppContext, conn: Uuid, n: i64) -> Uuid {
         .id
 }
 
-pub async fn scan(ctx: &AppContext, conn: Uuid, n: i64, k: &dyn Connector) -> Uuid {
+/// A connector the action can own a copy of (copies share `Rigged`'s counters).
+pub trait Shared: Connector + Clone + 'static {}
+impl<T: Connector + Clone + 'static> Shared for T {}
+
+/// The full-scan action over a copy of `k`.
+pub fn full_scan(ctx: &TestApp, k: &impl Shared) -> FullScan {
+    let actions = actions(ctx).unwrap();
+    (actions.runs.full_scan.clone()).with_connector(std::sync::Arc::new(k.clone()))
+}
+
+pub async fn scan(ctx: &TestApp, conn: Uuid, n: i64, k: &impl Shared) -> Uuid {
     let run = new_run(ctx, conn, n).await;
-    full_scan::scan(ctx, run, k, RunChunkedOptions::default())
-        .await
-        .unwrap();
+    let fs = full_scan(ctx, k);
+    fs.run(run, RunChunkedOptions::default()).await.unwrap();
     run
 }
 
-async fn run_row(ctx: &AppContext, id: Uuid) -> runs::Model {
+async fn run_row(ctx: &TestApp, id: Uuid) -> runs::Model {
     runs::Entity::find_by_id(id)
         .one(&ctx.db)
         .await
@@ -373,7 +380,7 @@ async fn run_row(ctx: &AppContext, id: Uuid) -> runs::Model {
         .unwrap()
 }
 
-async fn all_findings(ctx: &AppContext, conn: Uuid) -> Vec<findings::Model> {
+async fn all_findings(ctx: &TestApp, conn: Uuid) -> Vec<findings::Model> {
     findings::Entity::find()
         .filter(findings::Column::ConnectionId.eq(conn))
         .all(&ctx.db)
@@ -381,7 +388,7 @@ async fn all_findings(ctx: &AppContext, conn: Uuid) -> Vec<findings::Model> {
         .unwrap()
 }
 
-async fn finding(ctx: &AppContext, conn: Uuid, identity: &str) -> findings::Model {
+async fn finding(ctx: &TestApp, conn: Uuid, identity: &str) -> findings::Model {
     findings::Entity::find()
         .filter(findings::Column::ConnectionId.eq(conn))
         .filter(findings::Column::ResourceIdentity.eq(identity))
@@ -392,7 +399,7 @@ async fn finding(ctx: &AppContext, conn: Uuid, identity: &str) -> findings::Mode
 }
 
 /// Event types for one finding in one run, sorted.
-async fn events(ctx: &AppContext, run: Uuid, finding: Uuid) -> Vec<String> {
+async fn events(ctx: &TestApp, run: Uuid, finding: Uuid) -> Vec<String> {
     let mut v: Vec<String> = finding_events::Entity::find()
         .filter(finding_events::Column::RunId.eq(run))
         .filter(finding_events::Column::FindingId.eq(finding))
@@ -406,7 +413,7 @@ async fn events(ctx: &AppContext, run: Uuid, finding: Uuid) -> Vec<String> {
     v
 }
 
-async fn resource(ctx: &AppContext, conn: Uuid, identity: &str) -> resources::Model {
+async fn resource(ctx: &TestApp, conn: Uuid, identity: &str) -> resources::Model {
     resources::Entity::find()
         .filter(resources::Column::ConnectionId.eq(conn))
         .filter(resources::Column::Identity.eq(identity))
@@ -417,7 +424,7 @@ async fn resource(ctx: &AppContext, conn: Uuid, identity: &str) -> resources::Mo
 }
 
 /// `identity` with the connection's account id put back to the fixture's (`cloudtrail:<account>`).
-async fn norm(ctx: &AppContext, conn: Uuid, identity: String) -> String {
+async fn norm(ctx: &TestApp, conn: Uuid, identity: String) -> String {
     let c = connections::Entity::find_by_id(conn)
         .one(&ctx.db)
         .await
@@ -642,7 +649,7 @@ async fn partial_inventory_resolves_nothing() {
 }
 
 /// Comparable projection of a connection's rows (no ids, timestamps or connection id).
-async fn snapshot(ctx: &AppContext, conn: Uuid, run: Uuid) -> (Vec<Value>, Vec<Value>) {
+async fn snapshot(ctx: &TestApp, conn: Uuid, run: Uuid) -> (Vec<Value>, Vec<Value>) {
     let mut res: Vec<Value> = resources::Entity::find()
         .filter(resources::Column::ConnectionId.eq(conn))
         .all(&ctx.db)
@@ -701,7 +708,7 @@ async fn kill_and_resume_after_every_chunk_matches_uninterrupted() {
                     after_checkpoint: Some(ks),
                     ..Default::default()
                 };
-                full_scan::scan(&ctx, rb, k, opts).await
+                full_scan(&ctx, k).run(rb, opts).await
             }
         })
         .await
@@ -776,20 +783,16 @@ async fn stale_fence_writes_are_rejected() {
             .await
             .unwrap()
             .unwrap();
-        let res = inventory_upsert::upsert_chunk(
-            &ctx.db,
-            inventory_upsert::Chunk {
-                run_id: run,
-                fence: old,
-                organisation_id: c.organisation_id,
-                connection_id: conn,
-                provider: "fake",
-                service: "ec2",
-                region: "local",
-            },
-            &inv,
-        )
-        .await;
+        let chunk = Chunk {
+            run_id: run,
+            fence: old,
+            organisation_id: c.organisation_id,
+            connection_id: conn,
+            provider: "fake",
+            service: "ec2",
+            region: "local",
+        };
+        let res = full_scan(&ctx, &k).store_chunk(chunk, &inv).await;
         assert!(matches!(res, Err(LedgerError::StaleFence)), "{res:?}");
         let n = resources::Entity::find()
             .filter(resources::Column::ConnectionId.eq(conn))
@@ -833,15 +836,11 @@ async fn panicking_check_is_isolated() {
     serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         let run = new_run(&ctx, conn, 0).await;
-        let st = full_scan::scan_with(
-            &ctx,
-            run,
-            &noisy(),
-            RunChunkedOptions::default(),
-            with_panics,
-        )
-        .await
-        .unwrap();
+        let st = full_scan(&ctx, &noisy())
+            .with_checks(with_panics)
+            .run(run, RunChunkedOptions::default())
+            .await
+            .unwrap();
         assert_eq!(st, RunStatus::Done);
         assert_eq!(all_findings(&ctx, conn).await.len(), expected().await.len());
         let r = run_row(&ctx, run).await;
@@ -861,15 +860,11 @@ async fn duplicate_draft_keys_merge_into_one_finding() {
         let conn = connection(&req, &ctx, "o@example.com").await;
         for n in 0..2 {
             let run = new_run(&ctx, conn, n).await;
-            let st = full_scan::scan_with(
-                &ctx,
-                run,
-                &noisy(),
-                RunChunkedOptions::default(),
-                with_twice,
-            )
-            .await
-            .unwrap();
+            let st = full_scan(&ctx, &noisy())
+                .with_checks(with_twice)
+                .run(run, RunChunkedOptions::default())
+                .await
+                .unwrap();
             assert_eq!(st, RunStatus::Done);
             let dups: Vec<_> = all_findings(&ctx, conn)
                 .await
@@ -904,7 +899,8 @@ async fn connector_error_ends_partial_and_redelivery_is_noop() {
             ("partial", Some("partial_inventory"))
         );
         let calls = k.calls.load(SeqCst);
-        let st = full_scan::scan(&ctx, run, &k, RunChunkedOptions::default())
+        let st = full_scan(&ctx, &k)
+            .run(run, RunChunkedOptions::default())
             .await
             .unwrap();
         assert_eq!(st, RunStatus::Partial);
@@ -929,7 +925,8 @@ async fn blocked_connection_is_skipped_without_inventory() {
         a.update(&ctx.db).await.unwrap();
         let k = rigged(None);
         let run = new_run(&ctx, conn, 0).await;
-        let st = full_scan::scan(&ctx, run, &k, RunChunkedOptions::default())
+        let st = full_scan(&ctx, &k)
+            .run(run, RunChunkedOptions::default())
             .await
             .unwrap();
         assert_eq!(st, RunStatus::Skipped);
@@ -1069,7 +1066,11 @@ async fn provider_messages_never_reach_the_logs() {
                 .unwrap()
                 .run;
             let k = rigged(Some(Fault::Verify("MalformedPolicyDocument")));
-            opsagent_brain::workers::verify::verify(&ctx, run.id, Some(&k))
+            let verify = &actions(&ctx).unwrap().runs.verify_connection;
+            verify
+                .clone()
+                .with_connector(std::sync::Arc::new(k))
+                .run(run.id)
                 .await
                 .unwrap();
         })
@@ -1091,14 +1092,11 @@ async fn provider_messages_never_reach_the_logs() {
 #[tokio::test]
 #[serial]
 async fn second_scan_while_one_runs_is_skipped_as_overlap() {
-    use opsagent_ledger::{lease::claim, redis};
+    use opsagent_ledger::lease::claim;
     serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
         // The app's own Redis (the environment may have changed since boot).
-        let Some(loco_rs::config::QueueConfig::Redis(q)) = &ctx.config.queue else {
-            panic!("tests run with the redis queue")
-        };
-        let r = redis::Client::open(q.uri.as_str()).unwrap();
+        let r = redis_of(&ctx);
         let key = format!("lease:conn:{conn}:full_scan");
         let ttl = std::time::Duration::from_secs(60);
         // Another run of this connection holds the scan claim.
@@ -1136,7 +1134,7 @@ async fn each_scan_run_writes_one_scan_started_audit_row() {
                     after_checkpoint: Some(ks),
                     ..Default::default()
                 };
-                full_scan::scan(&ctx, run, k, opts).await
+                full_scan(&ctx, k).run(run, opts).await
             }
         })
         .await

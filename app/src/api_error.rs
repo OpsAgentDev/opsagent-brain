@@ -114,11 +114,17 @@ macro_rules! internal_from {
 }
 internal_from!(
     sea_orm::DbErr,
-    loco_rs::Error,
     tower_sessions::session::Error,
     opsagent_secrets::SecretsError,
     opsagent_ledger::LedgerError
 );
+
+/// Through `AppError`, so a repository error maps in one place.
+impl From<opsagent_core::repo::RepoError> for ApiError {
+    fn from(e: opsagent_core::repo::RepoError) -> Self {
+        crate::error::AppError::from(e).into()
+    }
+}
 
 /// `Json` extractor whose rejection is a problem-details body.
 pub struct ApiJson<T>(pub T);

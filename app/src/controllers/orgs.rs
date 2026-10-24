@@ -1,7 +1,6 @@
 use axum::{extract::State, http::StatusCode, Json};
 use chrono::{DateTime, FixedOffset};
-use loco_rs::app::AppContext;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use opsagent_core::org::{Organisation, OrganisationPatch};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -9,19 +8,10 @@ use uuid::Uuid;
 
 use super::OrgPath;
 use crate::{
+    actions::orgs::CreateOrgInput,
     api_error::{ApiError, ApiJson, Problem},
-    app::kek,
     middleware::org_scope::{AuthUser, OrgScope},
-    models::{
-        _entities::{members, organisations},
-        now,
-        organisations::{valid_name, valid_timezone},
-    },
-    services::{
-        orgs,
-        rate_limit::{hit, DAY_SECS},
-    },
-    workers::common::redis_client,
+    state::AppState,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -35,14 +25,14 @@ pub struct Org {
     pub created_at: DateTime<FixedOffset>,
 }
 
-fn view(o: &organisations::Model, role: &str) -> Org {
+fn view(o: &Organisation, role: &str) -> Org {
     Org {
         id: o.id,
         name: o.name.clone(),
         slug: o.slug.clone(),
         timezone: o.timezone.clone(),
         role: role.into(),
-        created_at: o.created_at,
+        created_at: o.created_at.fixed_offset(),
     }
 }
 
@@ -53,80 +43,40 @@ pub struct NewOrg {
     pub timezone: Option<String>,
 }
 
-/// Organisations a user may create per day (each gets a DEK, and owners can send mail).
-pub const ORGS_PER_USER_PER_DAY: i64 = 5;
-
-/// Counts one creation for `user_id`; 429 `rate_limited` past the daily cap. Fails closed.
-async fn limit_creation(ctx: &AppContext, user_id: Uuid) -> Result<(), ApiError> {
-    let redis = redis_client(ctx)?;
-    let mut c = redis
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(ApiError::internal)?;
-    let key = format!("ratelimit:org_create:user:{user_id}");
-    let ok = hit(&mut c, &key, ORGS_PER_USER_PER_DAY, DAY_SECS)
-        .await
-        .map_err(ApiError::internal)?;
-    if ok {
-        Ok(())
-    } else {
-        // shortcut: Retry-After is the window length, an upper bound; read the key TTL if exactness matters.
-        Err(ApiError::rate_limited(
-            "At most 5 organisations can be created per day.",
-            DAY_SECS.unsigned_abs(),
-        ))
-    }
-}
-
 #[utoipa::path(post, path = "/orgs", tag = "orgs", request_body = NewOrg,
     responses((status = 201, body = Org), (status = 401, body = Problem), (status = 422, body = Problem),
         (status = 429, body = Problem)))]
 async fn create_org(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     AuthUser(user_id): AuthUser,
     ApiJson(body): ApiJson<NewOrg>,
 ) -> Result<(StatusCode, Json<Org>), ApiError> {
-    let name = valid_name(&body.name)?;
-    let tz = valid_timezone(body.timezone.as_deref().unwrap_or("UTC"))?;
-    limit_creation(&ctx, user_id).await?;
-    let org = orgs::create(&ctx.db, kek(&ctx)?.as_ref(), user_id, &name, &tz).await?;
+    let input = CreateOrgInput {
+        user_id,
+        name: body.name,
+        timezone: body.timezone.unwrap_or_else(|| "UTC".into()),
+    };
+    let org = app.actions.orgs.create_org.run(input).await?;
     Ok((StatusCode::CREATED, Json(view(&org, "owner"))))
 }
 
 #[utoipa::path(get, path = "/orgs", tag = "orgs",
     responses((status = 200, body = Vec<Org>), (status = 401, body = Problem)))]
 async fn list(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     AuthUser(user_id): AuthUser,
 ) -> Result<Json<Vec<Org>>, ApiError> {
-    // tenancy: the caller's own memberships, across organisations.
-    let rows = members::Entity::find()
-        .filter(members::Column::UserId.eq(user_id))
-        .find_also_related(organisations::Entity)
-        .all(&ctx.db)
-        .await?;
+    let rows = app.actions.orgs.list_orgs.run(user_id).await?;
     Ok(Json(
-        rows.iter()
-            .filter_map(|(m, o)| {
-                o.as_ref()
-                    .filter(|o| o.deleted_at.is_none())
-                    .map(|o| view(o, &m.role))
-            })
-            .collect(),
+        rows.iter().map(|(o, r)| view(o, r.as_str())).collect(),
     ))
-}
-
-async fn load(ctx: &AppContext, scope: &OrgScope) -> Result<organisations::Model, ApiError> {
-    organisations::Entity::find_by_id(scope.organisation_id)
-        .one(&ctx.db)
-        .await?
-        .ok_or_else(ApiError::not_found)
 }
 
 #[utoipa::path(get, path = "/orgs/{org}", tag = "orgs", params(OrgPath),
     responses((status = 200, body = Org), (status = 404, body = Problem)))]
-async fn show(State(ctx): State<AppContext>, scope: OrgScope) -> Result<Json<Org>, ApiError> {
-    Ok(Json(view(&load(&ctx, &scope).await?, &scope.role)))
+async fn show(State(app): State<AppState>, scope: OrgScope) -> Result<Json<Org>, ApiError> {
+    let org = app.actions.orgs.get_org.run(&scope).await?;
+    Ok(Json(view(&org, scope.member.role.as_str())))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -139,32 +89,27 @@ pub struct OrgPatch {
     responses((status = 200, body = Org), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 422, body = Problem)))]
 async fn update(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiJson(body): ApiJson<OrgPatch>,
 ) -> Result<Json<Org>, ApiError> {
-    scope.require_owner()?;
-    let mut a: organisations::ActiveModel = load(&ctx, &scope).await?.into();
-    if let Some(n) = &body.name {
-        a.name = Set(valid_name(n)?);
-    }
-    if let Some(t) = &body.timezone {
-        a.timezone = Set(valid_timezone(t)?);
-    }
-    a.updated_at = Set(now());
-    let org = a.update(&ctx.db).await?;
-    Ok(Json(view(&org, &scope.role)))
+    let patch = OrganisationPatch {
+        name: body.name,
+        timezone: body.timezone,
+    };
+    let org = app.actions.orgs.update_org.run(&scope, patch).await?;
+    Ok(Json(view(&org, scope.member.role.as_str())))
 }
 
 #[utoipa::path(delete, path = "/orgs/{org}", tag = "orgs", params(OrgPath),
     responses((status = 204), (status = 403, body = Problem), (status = 404, body = Problem)))]
-async fn delete(State(ctx): State<AppContext>, scope: OrgScope) -> Result<StatusCode, ApiError> {
-    scope.require_owner()?;
-    orgs::delete(&ctx.db, scope.organisation_id, scope.user_id).await?;
+async fn delete(State(app): State<AppState>, scope: OrgScope) -> Result<StatusCode, ApiError> {
+    let actor = scope.member.user_id;
+    app.actions.orgs.delete_org.run(&scope, actor).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(create_org, list))
         .routes(routes!(show, update, delete))

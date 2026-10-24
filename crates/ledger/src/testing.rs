@@ -54,6 +54,14 @@ impl Storage for MemoryStorage {
     async fn load_run(&self, id: Uuid) -> Result<RunRow> {
         self.with(id, |r| Ok(r.clone()))
     }
+    async fn hold_fence(&self, id: Uuid, fence: u64) -> Result<()> {
+        self.with(id, |r| {
+            if r.fence != fence {
+                return Err(LedgerError::StaleFence);
+            }
+            Ok(())
+        })
+    }
     async fn bump_fence(&self, id: Uuid) -> Result<u64> {
         self.with(id, |r| {
             r.fence += 1;
@@ -117,11 +125,6 @@ impl Storage for MemoryStorage {
             .unwrap()
             .effects
             .insert((run_id, key.to_string()), Some(r));
-        Ok(())
-    }
-    async fn mark_enqueue_pending(&self, id: Uuid, at: DateTime<Utc>) -> Result<()> {
-        self.with(id, |_| Ok(()))?;
-        self.0.lock().unwrap().next_attempt.insert(id, at);
         Ok(())
     }
     async fn clear_enqueue_marker(&self, id: Uuid, marker_at: DateTime<Utc>) -> Result<bool> {

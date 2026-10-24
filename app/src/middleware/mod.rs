@@ -1,57 +1,81 @@
+//! The HTTP middleware stack (app-shell.md): request id, request span, CSRF, session, CORS,
+//! secure headers, timeout, catch-panic and the body limit. The old framework's `x-powered-by`
+//! and etag are gone by ruling.
 pub mod csrf;
 pub mod org_scope;
 pub mod request_span;
 pub mod session;
 
-use async_trait::async_trait;
+use std::{any::Any, time::Duration};
+
 use axum::{
-    http::{header, HeaderName, HeaderValue, Method},
-    middleware::from_fn_with_state,
-    Router as AxumRouter,
+    extract::{DefaultBodyLimit, Request, State},
+    http::{header, HeaderName, HeaderValue, Method, StatusCode},
+    middleware::{from_fn, from_fn_with_state, Next},
+    response::{IntoResponse, Response},
+    Router,
 };
-use loco_rs::{
-    app::{AppContext, Initializer},
-    environment::Environment,
-    Result,
+use tower_http::{
+    catch_panic::CatchPanicLayer,
+    cors::CorsLayer,
+    set_header::SetResponseHeaderLayer,
+    trace::{DefaultOnResponse, TraceLayer},
 };
-use std::sync::Arc;
-use tower_http::cors::CorsLayer;
+use tracing::Level;
 
 use crate::{
-    adapters::slack::{HttpSlack, SlackClient},
-    mailers,
-    settings::Settings,
+    api_error::ApiError,
+    config::AppEnv,
+    error::{AppError, AppResult},
+    state::AppState,
 };
 
-/// Installs the session layer and the CSRF guard (settings come from `install_adapters`).
-pub struct AuthInitializer;
+/// Today's value (the old framework's default).
+const BODY_LIMIT: usize = 2_000_000;
+const HSTS: &str = "max-age=31536000; includeSubDomains";
 
-#[async_trait]
-impl Initializer for AuthInitializer {
-    fn name(&self) -> String {
-        "auth".into()
-    }
-
-    async fn after_routes(&self, router: AxumRouter, ctx: &AppContext) -> Result<AxumRouter> {
-        let settings = Settings::get(ctx);
-        let layer = session::layer(ctx.db.clone(), &settings);
-        let cors = cors_layer(&settings.web_base_url)?;
-        // Last layer is outermost: the session must load before the CSRF guard runs, and CORS
-        // wraps both so their error responses still reach the browser.
-        Ok(router
-            .layer(from_fn_with_state(ctx.clone(), csrf::guard))
-            .layer(layer)
-            .layer(cors))
-    }
+/// Wraps `routes`; each `.layer` wraps everything above it, so the last one meets the request
+/// first.
+pub fn stack(routes: Router, app: &AppState) -> AppResult<Router> {
+    let c = &app.config;
+    // The response event (INFO) carries `status` and `latency`, inside the span.
+    let trace = TraceLayer::new_for_http()
+        .make_span_with(request_span::span)
+        .on_response(DefaultOnResponse::new().level(Level::INFO));
+    let hsts = (c.env == AppEnv::Production).then_some(HeaderValue::from_static(HSTS));
+    let set = |name, value: &'static str| {
+        SetResponseHeaderLayer::overriding(name, HeaderValue::from_static(value))
+    };
+    let timeout_after = Duration::from_secs(c.request_timeout_secs);
+    Ok(routes
+        // The session must load before the CSRF guard runs.
+        .layer(from_fn_with_state(app.clone(), csrf::guard))
+        .layer(session::layer(app.db.clone(), c))
+        .layer(from_fn_with_state(timeout_after, timeout))
+        .layer(CatchPanicLayer::custom(panic_problem))
+        .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        // Outside every layer that can answer on its own (CSRF, session, timeout, panic), so
+        // those responses reach the browser with CORS and secure headers and are logged once.
+        .layer(cors_layer(&c.web_base_url)?)
+        .layer(set(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
+        .layer(set(header::X_FRAME_OPTIONS, "DENY"))
+        .layer(set(header::REFERRER_POLICY, "no-referrer"))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::STRICT_TRANSPORT_SECURITY,
+            move |_: &Response| hsts.clone(),
+        ))
+        // Just inside the request id, which the span reads.
+        .layer(trace)
+        .layer(from_fn(request_span::request_id)))
 }
 
 /// The web origin only, with credentials (the session cookie); headers and methods must be
 /// listed explicitly because credentials forbid wildcards.
-fn cors_layer(web_base_url: &str) -> Result<CorsLayer> {
+fn cors_layer(web_base_url: &str) -> AppResult<CorsLayer> {
     let origin: HeaderValue = web_base_url
         .trim_end_matches('/')
         .parse()
-        .map_err(|_| loco_rs::Error::string("WEB_BASE_URL is not a valid origin"))?;
+        .map_err(|_| AppError::Internal("WEB_BASE_URL is not a valid origin".into()))?;
     Ok(CorsLayer::new()
         .allow_origin(origin)
         .allow_credentials(true)
@@ -62,30 +86,24 @@ fn cors_layer(web_base_url: &str) -> Result<CorsLayer> {
         ]))
 }
 
-/// Settings, the Slack client and the mailer, for every mode (server, workers, tasks): called
-/// from `App::after_context`.
-pub fn install_adapters(ctx: &AppContext) -> Result<()> {
-    let settings = Settings::load(ctx)?;
-    let slack = HttpSlack::new(&settings.slack_api_base_url)
-        .map_err(|_| loco_rs::Error::string("slack: HTTP client could not be built"))?;
-    let slack: Arc<dyn SlackClient> = Arc::new(slack);
-    ctx.shared_store.insert(slack);
-    ctx.shared_store.insert(settings);
-    let production = ctx.environment == Environment::Production;
-    ctx.shared_store.insert(mailers::from_env(production)?);
-    Ok(())
+async fn timeout(State(after): State<Duration>, req: Request, next: Next) -> Response {
+    match tokio::time::timeout(after, next.run(req)).await {
+        Ok(res) => res,
+        Err(_) => ApiError::new(
+            StatusCode::GATEWAY_TIMEOUT,
+            "timeout",
+            "The request took too long.",
+        )
+        .into_response(),
+    }
 }
 
-/// The mailer installed by `install_adapters` (tests may replace it in the shared store).
-pub fn mailer(ctx: &AppContext) -> Arc<dyn mailers::Mailer> {
-    ctx.shared_store
-        .get::<Arc<dyn mailers::Mailer>>()
-        .expect("mailer not installed")
-}
-
-/// The Slack client installed by `install_adapters` (tests may replace it in the shared store).
-pub fn slack(ctx: &AppContext) -> Arc<dyn SlackClient> {
-    ctx.shared_store
-        .get::<Arc<dyn SlackClient>>()
-        .expect("slack client not installed")
+/// Logs the panic message (as before the switch) and answers a 500 `internal` problem.
+fn panic_problem(err: Box<dyn Any + Send + 'static>) -> Response {
+    let msg = err
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| err.downcast_ref::<&str>().copied())
+        .unwrap_or("no error details");
+    ApiError::internal(format!("panic: {msg}")).into_response()
 }

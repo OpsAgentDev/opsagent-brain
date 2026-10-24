@@ -1,5 +1,5 @@
 use super::Mail;
-use crate::models::organisations::is_bidi;
+use opsagent_core::org::is_bidi;
 
 pub fn magic_link(to: &str, link: &str) -> Mail {
     Mail {

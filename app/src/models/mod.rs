@@ -1,13 +1,4 @@
 pub mod _entities;
-pub mod audit;
-pub mod connections;
-pub mod integrations;
-pub mod ledger_storage;
-pub mod magic_links;
-pub mod members;
-pub mod organisations;
-pub mod schedules;
-pub mod users;
 
 use sea_orm::{
     prelude::DateTimeWithTimeZone, ColumnTrait, ConnectionTrait, EntityTrait, PrimaryKeyTrait,

@@ -1,8 +1,12 @@
-use loco_rs::prelude::*;
-use opsagent_brain::models::{
-    _entities::{audit_events, connection_credentials, connection_verifications, connections},
-    connections::cas,
+use opsagent_brain::{
+    actions::uow::Repos,
+    adapters::db::Pg,
+    models::_entities::{
+        audit_events, connection_credentials, connection_verifications, connections,
+    },
 };
+use opsagent_core::connection::ConnectionStatus as S;
+use sea_orm::{entity::prelude::*, Set};
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -19,7 +23,7 @@ fn query_param(url: &str, name: &str) -> String {
     urlencoding::decode(v).unwrap().into_owned()
 }
 
-async fn row(ctx: &AppContext, id: &str) -> connections::Model {
+async fn row(ctx: &TestApp, id: &str) -> connections::Model {
     connections::Entity::find_by_id(id.parse::<uuid::Uuid>().unwrap())
         .one(&ctx.db)
         .await
@@ -27,7 +31,7 @@ async fn row(ctx: &AppContext, id: &str) -> connections::Model {
         .unwrap()
 }
 
-async fn audits(ctx: &AppContext, action: &str) -> u64 {
+async fn audits(ctx: &TestApp, action: &str) -> u64 {
     audit_events::Entity::find()
         .filter(audit_events::Column::Action.eq(action))
         .count(&ctx.db)
@@ -176,19 +180,20 @@ async fn status_cas_refuses_a_stale_read() {
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
         let stale = row(&ctx, &id).await; // read as pending
+        let (org_id, conn_id) = (stale.organisation_id, stale.id);
         let res = req
             .delete(&format!("/v1/orgs/{org}/connections/{id}"))
             .add_header("X-CSRF-Token", &t)
             .await;
         assert_eq!(res.status_code(), 200);
-        let write = |s: &str| connections::ActiveModel {
-            status: Set(s.into()),
-            ..Default::default()
+        let repo = Pg::new(&ctx.db);
+        let cas = |from, to| {
+            repo.connections()
+                .cas_status(org_id, conn_id, from, to, None)
         };
-        assert!(!cas(&ctx.db, &stale, write("verifying")).await.unwrap());
+        assert!(!cas(S::Pending, S::Verifying).await.unwrap());
         assert_eq!(row(&ctx, &id).await.status, "disconnected");
-        let fresh = row(&ctx, &id).await;
-        assert!(cas(&ctx.db, &fresh, write("disconnected")).await.unwrap());
+        assert!(cas(S::Disconnected, S::Disconnected).await.unwrap());
     })
     .await;
 }
@@ -292,14 +297,13 @@ async fn changing_the_role_of_a_live_connection_needs_a_reconnect() {
                 res.json::<Value>()["code"],
                 "role_change_requires_reconnect"
             );
-            let kek = opsagent_brain::app::kek(&ctx).unwrap();
-            let creds = opsagent_brain::models::connections::load_creds(
-                &ctx.db,
-                kek.as_ref(),
-                &row(&ctx, id).await,
-            )
-            .await
-            .unwrap();
+            let kek = kek(&ctx).unwrap();
+            let org_id = row(&ctx, id).await.organisation_id;
+            let conn_id = id.parse().unwrap();
+            let creds =
+                opsagent_brain::creds::load(&Pg::new(&ctx.db), kek.as_ref(), org_id, conn_id)
+                    .await
+                    .unwrap();
             assert_eq!(creds.role_arn.as_deref(), Some(ROLE_ARN), "{status}");
             assert_eq!(row(&ctx, id).await.status, status);
         }
@@ -315,10 +319,8 @@ async fn changing_the_role_of_a_live_connection_needs_a_reconnect() {
 #[tokio::test]
 #[serial]
 async fn new_scan_time_moves_the_nightly_scan_from_tomorrow() {
-    use opsagent_brain::models::{
-        _entities::schedules,
-        schedules::{end_of_local_day, next_after},
-    };
+    use opsagent_brain::models::_entities::schedules;
+    use opsagent_deliver::schedule::{end_of_local_day, next_after};
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;

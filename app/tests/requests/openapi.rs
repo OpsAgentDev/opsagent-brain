@@ -1,6 +1,7 @@
 use std::process::Command;
 
-use opsagent_brain::{controllers::openapi::document_json, models::members};
+use opsagent_brain::{adapters::db::Pg, controllers::openapi::document_json};
+use opsagent_core::org::{OrganisationsRepo, Role};
 use serde_json::Value;
 use serial_test::serial;
 
@@ -25,7 +26,8 @@ async fn served_to_owners_only() {
         let tm = sign_in(&req, &mail, "member@example.com").await;
         let me: Value = req.get("/v1/auth/me").await.json();
         let uid: uuid::Uuid = me["id"].as_str().unwrap().parse().unwrap();
-        members::add(&ctx.db, org_id, uid, members::MEMBER)
+        Pg::new(&ctx.db)
+            .add_member(org_id, uid, Role::Member)
             .await
             .unwrap();
         let res = req.get("/openapi.json").await;
@@ -60,7 +62,7 @@ fn committed_document_is_current() {
     assert_eq!(
         committed,
         document_json(),
-        "run `cargo loco task openapi:dump`"
+        "run `cargo run -- task openapi:dump`"
     );
 }
 

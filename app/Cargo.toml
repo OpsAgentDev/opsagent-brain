@@ -6,13 +6,15 @@ publish = false
 default-run = "opsagent-brain"
 
 [dependencies]
-loco-rs = { workspace = true, features = ["worker_redis"] }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 sea-orm = { version = "2.0", default-features = false, features = ["macros", "with-uuid", "with-chrono", "with-json", "with-rust_decimal"] }
 tracing = "0.1"
-tokio = { version = "1.45", default-features = false, features = ["rt-multi-thread"] }
+tokio = { version = "1.45", default-features = false, features = ["rt-multi-thread", "sync", "signal", "net", "macros", "time"] }
+clap = { version = "4", features = ["derive"] }
 async-trait = "0.1"
+futures = "0.3"
+hostname = "0.4"
 axum = "0.8"
 redis = { version = "1", default-features = false, features = ["aio", "tokio-comp"] }
 migration = { path = "migration" }
@@ -28,7 +30,7 @@ oauth2 = { version = "5", default-features = false, features = ["reqwest", "rust
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 chrono = "0.4"
 chrono-tz = "0.10"
-uuid = { version = "1", features = ["v4", "v5", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 regex = "1"
 opsagent-checks = { path = "../crates/checks" }
 opsagent-secrets = { path = "../crates/secrets" }
@@ -41,8 +43,10 @@ zeroize = "1"
 cron = "0.17.0"
 utoipa = { version = "6", features = ["chrono", "uuid", "decimal"] }
 utoipa-axum = "0.3"
-lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "tokio1", "builder", "hostname"] }
-tower-http = { version = "0.6", features = ["cors"] }
+lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls-tls", "builder", "hostname"] }
+tower-http = { version = "0.6", features = ["catch-panic", "cors", "set-header", "trace"] }
+thiserror = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [[bin]]
 name = "opsagent-brain"
@@ -53,13 +57,14 @@ path = "src/bin/main.rs"
 test-support = []
 
 [dev-dependencies]
-loco-rs = { workspace = true, features = ["testing"] }
 opsagent-brain = { path = ".", features = ["test-support"] }
 opsagent-ledger = { path = "../crates/ledger", features = ["test-support"] }
 serial_test = "3.1.1"
-tracing-subscriber = "0.3"
 axum-test = "17"
+tower = { version = "0.5", features = ["util"] }
 wiremock = "0.6"
+# Paused clock for the scheduler loop test.
+tokio = { version = "1.45", features = ["test-util"] }
 
 [lints]
 workspace = true

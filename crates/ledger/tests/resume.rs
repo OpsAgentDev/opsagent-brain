@@ -202,6 +202,9 @@ impl Storage for Faulty {
     async fn bump_fence(&self, id: uuid::Uuid) -> opsagent_ledger::Result<u64> {
         self.0.bump_fence(id).await
     }
+    async fn hold_fence(&self, id: uuid::Uuid, f: u64) -> opsagent_ledger::Result<()> {
+        self.0.hold_fence(id, f).await
+    }
     async fn write_checkpoint(
         &self,
         id: uuid::Uuid,
@@ -239,13 +242,6 @@ impl Storage for Faulty {
         r: Option<String>,
     ) -> opsagent_ledger::Result<()> {
         self.0.effect_done(id, k, r).await
-    }
-    async fn mark_enqueue_pending(
-        &self,
-        id: uuid::Uuid,
-        at: chrono::DateTime<chrono::Utc>,
-    ) -> opsagent_ledger::Result<()> {
-        self.0.mark_enqueue_pending(id, at).await
     }
     async fn clear_enqueue_marker(
         &self,

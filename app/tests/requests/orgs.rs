@@ -1,5 +1,5 @@
-use loco_rs::prelude::*;
 use opsagent_brain::models::_entities::{audit_events, connections, organisations, schedules};
+use sea_orm::entity::prelude::*;
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -169,16 +169,70 @@ async fn invites_owner_only_and_bound_to_email() {
     .await;
 }
 
+/// A membership committed by a concurrent request while this accept is in flight: the
+/// accept still succeeds with the role already held (double submit is idempotent).
+#[tokio::test]
+#[serial]
+async fn accept_racing_a_concurrent_join_returns_the_existing_role() {
+    use opsagent_brain::models::_entities::{members, users};
+    use sea_orm::{ActiveValue::Set, Database, TransactionTrait};
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "owner@example.com").await;
+        let org = create_org(&req, &t, "Race").await;
+        let slug = org["slug"].as_str().unwrap().to_string();
+        let res = req
+            .post(&format!("/v1/orgs/{slug}/invites"))
+            .add_header("X-CSRF-Token", &t)
+            .json(&json!({"email": "racer@example.com", "role": "member"}))
+            .await;
+        assert_eq!(res.status_code(), 201);
+        let accept = format!("/v1/invites/{}/accept", token_of(&last_link(&mail)));
+        req.clear_cookies();
+        let tm = sign_in(&req, &mail, "racer@example.com").await;
+        let racer = users::Entity::find()
+            .filter(users::Column::Email.eq("racer@example.com"))
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        // The other request: its membership row is inserted but not yet committed.
+        let other = Database::connect(ctx.state.config.database_url.clone())
+            .await
+            .unwrap();
+        let held = other.begin().await.unwrap();
+        let now = chrono::Utc::now().fixed_offset();
+        members::ActiveModel {
+            id: Set(uuid::Uuid::new_v4()),
+            organisation_id: Set(org["id"].as_str().unwrap().parse().unwrap()),
+            user_id: Set(racer.id),
+            role: Set("owner".into()),
+            created_at: Set(now),
+            updated_at: Set(now),
+        }
+        .insert(&held)
+        .await
+        .unwrap();
+        let commit_later = async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            held.commit().await.unwrap();
+        };
+        let (res, ()) = tokio::join!(
+            async { req.post(&accept).add_header("X-CSRF-Token", &tm).await },
+            commit_later
+        );
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        assert_eq!(res.json::<Value>()["role"], "owner");
+    })
+    .await;
+}
+
 #[tokio::test]
 #[serial]
 async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
-    use opsagent_brain::{
-        models::{_entities::runs, ledger_storage::PgStorage},
-        tasks::scheduler_tick::tick,
-        workers::verify::{VerifyArgs, VerifyWorker},
-    };
+    use opsagent_brain::{adapters::db::ledger_storage::PgStorage, models::_entities::runs};
     use opsagent_core::run::RunKey;
-    use opsagent_ledger::Storage;
+    use opsagent_ledger::{JobKind, Storage};
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
@@ -198,7 +252,7 @@ async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
             (c.status.as_str(), c.status_reason.as_deref()),
             ("disconnected", Some("organisation_deleted"))
         );
-        let enabled = |ctx: AppContext| async move {
+        let enabled = |ctx: TestApp| async move {
             schedules::Entity::find()
                 .filter(schedules::Column::ConnectionId.eq(conn_id))
                 .filter(schedules::Column::Enabled.eq(true))
@@ -224,7 +278,8 @@ async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
             .execute_unprepared("TRUNCATE runs CASCADE")
             .await
             .unwrap();
-        assert_eq!(tick(&ctx, now).await.unwrap().unwrap(), Default::default());
+        let tick = &actions(&ctx).unwrap().runs.scheduler_tick;
+        assert_eq!(tick.run(now).await.unwrap().unwrap(), Default::default());
         assert_eq!(runs::Entity::find().count(&ctx.db).await.unwrap(), 0);
 
         // And a run that slipped through is skipped by the worker.
@@ -238,10 +293,7 @@ async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
             .await
             .unwrap()
             .run;
-        VerifyWorker::build(&ctx)
-            .perform(VerifyArgs { run_id: run.id })
-            .await
-            .unwrap();
+        perform(&ctx, JobKind::Verify, run.id).await.unwrap();
         let r = runs::Entity::find_by_id(run.id)
             .one(&ctx.db)
             .await

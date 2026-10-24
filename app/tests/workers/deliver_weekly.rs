@@ -1,17 +1,12 @@
 //! `deliver_weekly` (Plan 2 Task 10): idempotent effects, owner summary, unsubscribe footer.
 use chrono::Utc;
-use loco_rs::app::AppContext;
 use opsagent_brain::{
-    models::members as member_model,
-    services::{
-        mail_guard::email_hash,
-        recipients::{unsubscribe, unsubscribe_token, unsubscribe_url},
-    },
-    settings::Settings,
-    workers::deliver_weekly,
+    actions::recipients::tokens::{email_hash, unsubscribe_token, unsubscribe_url},
+    adapters::db::Pg,
 };
+use opsagent_core::org::{OrganisationsRepo, Role};
 use opsagent_core::run::RunStatus;
-use opsagent_ledger::{harness, RunChunkedOptions};
+use opsagent_ledger::{harness, JobKind, RunChunkedOptions};
 use serde_json::json;
 use serial_test::serial;
 use uuid::Uuid;
@@ -22,7 +17,7 @@ use super::deliver_briefing::{
 };
 use crate::requests::support::*;
 
-async fn user(ctx: &AppContext, email: &str) -> Uuid {
+async fn user(ctx: &TestApp, email: &str) -> Uuid {
     let id = Uuid::new_v4();
     sql(
         ctx,
@@ -34,7 +29,7 @@ async fn user(ctx: &AppContext, email: &str) -> Uuid {
 }
 
 /// An active organisation-level recipient; `member_id` set makes it a member recipient.
-async fn recipient(ctx: &AppContext, w: &World, email: &str, member_id: Option<Uuid>) -> Uuid {
+async fn recipient(ctx: &TestApp, w: &World, email: &str, member_id: Option<Uuid>) -> Uuid {
     let id = Uuid::new_v4();
     sql(
         ctx,
@@ -46,9 +41,20 @@ async fn recipient(ctx: &AppContext, w: &World, email: &str, member_id: Option<U
     id
 }
 
-async fn weekly(ctx: &AppContext, w: &World, conn: Option<Uuid>) -> (Uuid, RunStatus) {
-    let id = new_run(ctx, w.org, conn, deliver_weekly::JOB, Utc::now()).await;
-    let status = deliver_weekly::run(ctx, id, RunChunkedOptions::default())
+async fn weekly(ctx: &TestApp, w: &World, conn: Option<Uuid>) -> (Uuid, RunStatus) {
+    let id = new_run(
+        ctx,
+        w.org,
+        conn,
+        JobKind::DeliverWeekly.as_str(),
+        Utc::now(),
+    )
+    .await;
+    let status = actions(ctx)
+        .unwrap()
+        .deliveries
+        .deliver_weekly
+        .run(id, RunChunkedOptions::default())
         .await
         .unwrap();
     (id, status)
@@ -64,7 +70,7 @@ async fn killed_after_the_email_and_resumed_sends_one_email_and_one_post() {
         slack_on(&ctx, &w, &slack).await;
         mock_post(&slack, json!({"ok": true, "ts": "9.9"}), 1).await;
         scan(&ctx, &w, Utc::now()).await;
-        let id = new_run(&ctx, w.org, Some(w.conn), deliver_weekly::JOB, Utc::now()).await;
+        let id = new_run(&ctx, w.org, Some(w.conn), JobKind::DeliverWeekly.as_str(), Utc::now()).await;
         // Killed after each chunk's checkpoint: after `email`, then after `slack`.
         let runs = harness::kill_after_each_checkpoint(|ks| {
             let ctx = ctx.clone();
@@ -73,7 +79,7 @@ async fn killed_after_the_email_and_resumed_sends_one_email_and_one_post() {
                     after_checkpoint: Some(ks),
                     ..Default::default()
                 };
-                deliver_weekly::run(&ctx, id, opts).await
+                actions(&ctx).unwrap().deliveries.deliver_weekly.run(id, opts).await
             }
         })
         .await
@@ -86,7 +92,7 @@ async fn killed_after_the_email_and_resumed_sends_one_email_and_one_post() {
             vec![id.into()],
         )
         .await;
-        let status = deliver_weekly::run(&ctx, id, RunChunkedOptions::default())
+        let status = actions(&ctx).unwrap().deliveries.deliver_weekly.run(id, RunChunkedOptions::default())
             .await
             .unwrap();
         assert_eq!(status, RunStatus::Done);
@@ -121,7 +127,7 @@ async fn organisation_summary_goes_only_to_owners() {
         let w = world(&req, &ctx, "boss@example.com").await;
         let mail = prepare(&ctx);
         let u = user(&ctx, "member@example.com").await;
-        let m = member_model::add(&ctx.db, w.org, u, "member")
+        let m = Pg::new(&ctx.db).add_member(w.org, u, Role::Member)
             .await
             .unwrap();
         recipient(&ctx, &w, "member@example.com", Some(m.id)).await;
@@ -168,7 +174,7 @@ async fn non_member_mail_has_the_unsubscribe_link_and_members_do_not() {
         let w = world(&req, &ctx, "lead@example.com").await;
         let mail = prepare(&ctx);
         let u = user(&ctx, "dev@example.com").await;
-        let m = member_model::add(&ctx.db, w.org, u, "member").await.unwrap();
+        let m = Pg::new(&ctx.db).add_member(w.org, u, Role::Member).await.unwrap();
         recipient(&ctx, &w, "dev@example.com", Some(m.id)).await;
         let outside = recipient(&ctx, &w, "client@example.com", None).await;
         recipient(&ctx, &w, "gone@example.com", None).await;
@@ -184,7 +190,7 @@ async fn non_member_mail_has_the_unsubscribe_link_and_members_do_not() {
         let sent = mail.sent();
         let to: Vec<_> = sent.iter().map(|m| m.to.as_str()).collect();
         assert_eq!(to, ["dev@example.com", "client@example.com"]);
-        let s = Settings::get(&ctx);
+        let s = state(&ctx).unwrap().config.clone();
         let url = unsubscribe_url(&s.web_base_url, s.unsubscribe_key(), outside);
         assert!(sent[1].text.contains(&url), "{}", sent[1].text);
         assert!(sent[1].html.as_deref().unwrap().contains(&url));
@@ -226,13 +232,13 @@ async fn member_mail_ignores_an_unsubscribe_from_another_organisation() {
             vec![in_a.into(), a.into()],
         )
         .await;
-        let s = Settings::get(&ctx);
+        let s = state(&ctx).unwrap().config.clone();
         let token = unsubscribe_token(s.unsubscribe_key(), in_a);
-        unsubscribe(&ctx.db, s.unsubscribe_key(), &token)
-            .await
-            .unwrap();
+        let unsubscribe = &actions(&ctx).unwrap().recipients.unsubscribe;
+        unsubscribe.run(&token).await.unwrap();
         let u = user(&ctx, "dev@example.com").await;
-        let m = member_model::add(&ctx.db, w.org, u, "member")
+        let m = Pg::new(&ctx.db)
+            .add_member(w.org, u, Role::Member)
             .await
             .unwrap();
         recipient(&ctx, &w, "dev@example.com", Some(m.id)).await;
@@ -253,7 +259,8 @@ async fn other_suppressions_still_block_a_member() {
         let w = world(&req, &ctx, "lead@example.com").await;
         let mail = prepare(&ctx);
         let u = user(&ctx, "dev@example.com").await;
-        let m = member_model::add(&ctx.db, w.org, u, "member")
+        let m = Pg::new(&ctx.db)
+            .add_member(w.org, u, Role::Member)
             .await
             .unwrap();
         recipient(&ctx, &w, "dev@example.com", Some(m.id)).await;

@@ -1,15 +1,15 @@
 use std::collections::HashSet;
 
 use chrono::{Duration, Utc};
-use loco_rs::prelude::*;
 use opsagent_brain::models::_entities::{audit_events, finding_events, findings};
+use sea_orm::entity::prelude::*;
 use serde_json::{json, Value};
 use serial_test::serial;
 
 use super::support::*;
 use crate::workers::full_scan::{expected, noisy, scan};
 
-async fn finding_id(ctx: &AppContext, identity: &str) -> String {
+async fn finding_id(ctx: &TestApp, identity: &str) -> String {
     findings::Entity::find()
         .filter(findings::Column::ResourceIdentity.eq(identity))
         .one(&ctx.db)

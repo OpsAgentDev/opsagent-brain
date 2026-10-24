@@ -46,3 +46,36 @@ async fn info_request_logs_carry_route_status_latency_not_secrets() {
     assert!(!out.contains("SECRETCODE"), "{out}");
     assert!(!out.contains("SECRETTOKEN"), "{out}");
 }
+
+#[tokio::test]
+#[serial]
+async fn timeout_response_is_logged_with_request_id() {
+    let buf = Buf::default();
+    let sub = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_ansi(false)
+        .with_writer({
+            let b = buf.clone();
+            move || b.clone()
+        })
+        .finish();
+    let _g = tracing::subscriber::set_default(sub);
+    serve_with(
+        |c| c.request_timeout_secs = 1,
+        |srv, _ctx| async move {
+            let res = srv
+                .get("/_test/slow")
+                .add_header("x-request-id", "slow-log-1")
+                .await;
+            assert_eq!(res.status_code(), 504);
+        },
+    )
+    .await;
+    let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    let line = out
+        .lines()
+        .find(|l| l.contains("status=504"))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(line.contains(r#"request_id="slow-log-1""#), "{line}");
+    assert!(line.contains("/_test/slow"), "{line}");
+}

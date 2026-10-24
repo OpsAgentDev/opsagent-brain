@@ -133,11 +133,11 @@ jobs:
       - name: "No variables: non-zero exit naming the missing variable"
         run: |
           if out=$(docker run --rm brain 2>&1); then echo "booted without variables" >&2; exit 1; fi
-          echo "$out" | grep -q "environment variable .* not found"
+          echo "$out" | grep -q "missing required variables: .*DATABASE_URL"
       - name: "Placeholder production set: /readyz 200 within 60s"
         run: |
           # Placeholders only; values from .env.docker.example, production-specific ones overridden.
-          set -- --network host --env-file .env.docker.example -e LOCO_ENV=production \
+          set -- --network host --env-file .env.docker.example -e APP_ENV=production \
             -e DATABASE_URL=postgres://loco:loco@localhost:5432/opsagent_brain_prod \
             -e REDIS_URL=redis://localhost:6379 -e MAILER_SMTP_URL=smtp://127.0.0.1:1025 \
             -e OPSAGENT_CONNECTORS=aws \

@@ -4,8 +4,6 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, FixedOffset};
-use loco_rs::app::AppContext;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -13,15 +11,9 @@ use uuid::Uuid;
 
 use super::{OrgIdPath, OrgPath};
 use crate::{
-    api_error::ApiJson,
-    api_error::{ApiError, Problem},
-    middleware::{
-        mailer,
-        org_scope::{AuthUser, OrgScope},
-    },
-    models::_entities::{members, users},
-    services::members as service,
-    settings::Settings,
+    api_error::{ApiError, ApiJson, Problem},
+    middleware::org_scope::{AuthUser, OrgScope},
+    state::AppState,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -35,25 +27,16 @@ pub struct Member {
 
 #[utoipa::path(get, path = "/orgs/{org}/members", tag = "members", params(OrgPath),
     responses((status = 200, body = Vec<Member>), (status = 404, body = Problem)))]
-async fn list(
-    State(ctx): State<AppContext>,
-    scope: OrgScope,
-) -> Result<Json<Vec<Member>>, ApiError> {
-    let rows = members::Entity::find()
-        .filter(members::Column::OrganisationId.eq(scope.organisation_id))
-        .find_also_related(users::Entity)
-        .all(&ctx.db)
-        .await?;
+async fn list(State(app): State<AppState>, scope: OrgScope) -> Result<Json<Vec<Member>>, ApiError> {
+    let rows = app.actions.members.list_members.run(&scope).await?;
     Ok(Json(
         rows.into_iter()
-            .filter_map(|(m, u)| {
-                u.map(|u| Member {
-                    id: m.id,
-                    user_id: u.id,
-                    email: u.email,
-                    name: u.name,
-                    role: m.role,
-                })
+            .map(|m| Member {
+                id: m.id,
+                user_id: m.user_id,
+                email: m.email.as_str().into(),
+                name: m.name,
+                role: m.role.as_str().into(),
             })
             .collect(),
     ))
@@ -79,29 +62,20 @@ pub struct Invite {
     responses((status = 201, body = Invite), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 422, body = Problem)))]
 async fn invite(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiJson(body): ApiJson<NewInvite>,
 ) -> Result<(StatusCode, Json<Invite>), ApiError> {
-    scope.require_owner()?;
-    let web = Settings::get(&ctx).web_base_url;
-    let row = service::invite(
-        &ctx.db,
-        mailer(&ctx).as_ref(),
-        &web,
-        scope.organisation_id,
-        scope.user_id,
-        &body.email,
-        body.role,
-    )
-    .await?;
+    let invite = &app.actions.members.invite_member;
+    let actor = scope.member.user_id;
+    let row = invite.run(&scope, actor, &body.email, &body.role).await?;
     Ok((
         StatusCode::CREATED,
         Json(Invite {
             id: row.id,
-            email: row.email,
-            role: row.role,
-            expires_at: row.expires_at,
+            email: row.email.as_str().into(),
+            role: row.role.as_str().into(),
+            expires_at: row.expires_at.fixed_offset(),
         }),
     ))
 }
@@ -126,16 +100,21 @@ pub struct TokenPath {
     responses((status = 200, body = Membership), (status = 401, body = Problem), (status = 403, body = Problem),
         (status = 410, body = Problem)))]
 async fn accept(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     AuthUser(user_id): AuthUser,
     Path(token): Path<String>,
 ) -> Result<Json<Membership>, ApiError> {
-    let (org, role) = service::accept(&ctx.db, user_id, &token).await?;
+    let (org, role) = app
+        .actions
+        .members
+        .accept_invite
+        .run(user_id, &token)
+        .await?;
     Ok(Json(Membership {
         id: org.id,
         name: org.name,
         slug: org.slug,
-        role,
+        role: role.as_str().into(),
     }))
 }
 
@@ -143,16 +122,17 @@ async fn accept(
     responses((status = 204), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 409, body = Problem)))]
 async fn remove(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, member_id)): Path<(String, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
-    scope.require_owner()?;
-    service::remove(&ctx.db, scope.organisation_id, scope.user_id, member_id).await?;
+    let actor = scope.member.user_id;
+    let remove = &app.actions.members.remove_member;
+    remove.run(&scope, actor, member_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list))
         .routes(routes!(invite))

@@ -2,21 +2,23 @@
 use std::sync::Arc;
 
 use axum_test::TestServer;
-use loco_rs::{app::AppContext, prelude::*};
 use opsagent_brain::{
-    adapters::slack::{HttpSlack, SlackClient},
-    app::kek,
-    mailers::CaptureMailer,
-    models::{
-        _entities::{
-            audit_events, email_suppressions, integrations, organisations, recipients, users,
-        },
+    actions::uow::Repos,
+    actions::{
         integrations::open_token,
-        members as member_model,
+        recipients::tokens::{self as recipient_service, email_hash},
     },
-    services::{mail_guard, recipients as recipient_service},
-    settings::Settings,
+    adapters::{
+        db::Pg,
+        slack::{HttpSlack, SlackClient},
+    },
+    mailers::CaptureMailer,
+    models::_entities::{
+        audit_events, email_suppressions, integrations, organisations, recipients, users,
+    },
 };
+use opsagent_core::org::{OrganisationsRepo, Role};
+use sea_orm::{entity::prelude::*, Set};
 use serde_json::{json, Value};
 use serial_test::serial;
 use wiremock::{
@@ -26,14 +28,16 @@ use wiremock::{
 
 use super::support::*;
 
-/// Points the app at `slack` and configures Slack client credentials.
-fn use_slack(ctx: &AppContext, slack: &MockServer) {
-    let mut s = Settings::get(ctx);
-    s.slack_client_id = "cid".into();
-    s.slack_client_secret = "csecret".into();
-    ctx.shared_store.insert(s);
+/// Slack client credentials, applied at boot (`serve_with`).
+fn slack_app(c: &mut opsagent_brain::config::Config) {
+    c.slack_client_id = "cid".into();
+    c.slack_client_secret = "csecret".into();
+}
+
+/// Points the app at `slack`.
+fn use_slack(ctx: &TestApp, slack: &MockServer) {
     let c: Arc<dyn SlackClient> = Arc::new(HttpSlack::new(slack.uri()).unwrap());
-    ctx.shared_store.insert(c);
+    ctx.set_slack(c);
 }
 
 async fn start(req: &TestServer, csrf: &str, org: &str) -> axum_test::TestResponse {
@@ -80,7 +84,7 @@ async fn mock_oauth(slack: &MockServer) {
 /// Owner signs in, creates an org and completes a Slack install. Returns `(csrf, org slug)`.
 async fn installed(
     req: &TestServer,
-    ctx: &AppContext,
+    ctx: &TestApp,
     mail: &CaptureMailer,
     slack: &MockServer,
 ) -> (String, String) {
@@ -93,7 +97,11 @@ async fn installed(
     (t, org)
 }
 
-async fn audits(ctx: &AppContext, action: &str) -> u64 {
+fn guard(ctx: &TestApp) -> Arc<opsagent_brain::actions::recipients::MailGuard> {
+    actions(ctx).unwrap().recipients.mail_guard.clone()
+}
+
+async fn audits(ctx: &TestApp, action: &str) -> u64 {
     audit_events::Entity::find()
         .filter(audit_events::Column::Action.eq(action))
         .count(&ctx.db)
@@ -104,7 +112,7 @@ async fn audits(ctx: &AppContext, action: &str) -> u64 {
 /// Signs `email` in as a `member` of org `slug` (the current owner session is replaced).
 async fn as_member(
     req: &mut TestServer,
-    ctx: &AppContext,
+    ctx: &TestApp,
     mail: &CaptureMailer,
     org: &str,
     email: &str,
@@ -123,7 +131,8 @@ async fn as_member(
         .await
         .unwrap()
         .unwrap();
-    member_model::add(&ctx.db, o.id, user.id, "member")
+    Pg::new(&ctx.db)
+        .add_member(o.id, user.id, Role::Member)
         .await
         .unwrap();
     t
@@ -132,14 +141,20 @@ async fn as_member(
 #[tokio::test]
 #[serial]
 async fn start_returns_authorize_url_and_needs_config_and_owner() {
-    serve(|mut req, ctx| async move {
+    serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let t = sign_in(&req, &mail, "owner@example.com").await;
         let org = slug(&create_org(&req, &t, "Acme").await);
         let res = start(&req, &t, &org).await;
         assert_eq!(res.status_code(), 503);
         assert_eq!(res.json::<Value>()["code"], "slack_not_configured");
-
+    })
+    .await;
+    // Slack credentials are boot config, so the configured half runs on a second app.
+    serve_with(slack_app, |mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "owner@example.com").await;
+        let org = slug(&create_org(&req, &t, "Acme").await);
         let slack = MockServer::start().await;
         use_slack(&ctx, &slack);
         let res = start(&req, &t, &org).await;
@@ -189,7 +204,7 @@ async fn callback_without_session_redirects_signed_out() {
 #[tokio::test]
 #[serial]
 async fn forged_or_superseded_state_is_403() {
-    serve(|req, ctx| async move {
+    serve_with(slack_app, |req, ctx| async move {
         let mail = prepare(&ctx);
         let slack = MockServer::start().await;
         use_slack(&ctx, &slack);
@@ -222,7 +237,7 @@ async fn forged_or_superseded_state_is_403() {
 #[tokio::test]
 #[serial]
 async fn callback_seals_token_and_redirects_and_state_is_single_use() {
-    serve(|req, ctx| async move {
+    serve_with(slack_app, |req, ctx| async move {
         let mail = prepare(&ctx);
         let slack = MockServer::start().await;
         use_slack(&ctx, &slack);
@@ -249,7 +264,12 @@ async fn callback_seals_token_and_redirects_and_state_is_single_use() {
         assert_eq!(row.config["team_name"], "Acme");
         assert_eq!(row.config["bot_user_id"], "U0BOT");
         assert_ne!(row.ciphertext, b"xoxb-secret-token".to_vec());
-        let plain = open_token(&ctx.db, kek(&ctx).unwrap().as_ref(), &row)
+        let sealed = Pg::new(&ctx.db)
+            .integrations()
+            .list(row.organisation_id)
+            .await
+            .unwrap();
+        let plain = open_token(&Pg::new(&ctx.db), kek(&ctx).unwrap().as_ref(), &sealed[0])
             .await
             .unwrap();
         assert_eq!(plain.as_str(), "xoxb-secret-token");
@@ -304,7 +324,7 @@ async fn callback_seals_token_and_redirects_and_state_is_single_use() {
 #[tokio::test]
 #[serial]
 async fn channels_map_conversations_list_and_revoked_is_503() {
-    serve(|req, ctx| async move {
+    serve_with(slack_app, |req, ctx| async move {
         let mail = prepare(&ctx);
         let slack = MockServer::start().await;
         let (_t, org) = installed(&req, &ctx, &mail, &slack).await;
@@ -483,7 +503,7 @@ async fn unsubscribe_link_is_stable_and_suppresses_the_address() {
             .await
             .unwrap()
             .unwrap();
-        let secret = Settings::get(&ctx).unsubscribe_key().to_owned();
+        let secret = state(&ctx).unwrap().config.unsubscribe_key().to_owned();
         // Two mails carry the same link, and both work (idempotent).
         let web = "http://localhost:3000";
         let first = recipient_service::unsubscribe_url(web, &secret, row.id);
@@ -523,7 +543,7 @@ async fn unsubscribe_link_is_stable_and_suppresses_the_address() {
             .unwrap();
         assert!(row.unsubscribed_at.is_some());
         assert_eq!(audits(&ctx, "recipient.unsubscribe").await, 1);
-        let s = suppression(mail_guard::email_hash("EXT@example.com"))
+        let s = suppression(email_hash("EXT@example.com"))
             .one(&ctx.db)
             .await
             .unwrap()
@@ -613,7 +633,7 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
         .await;
         assert_eq!(res.status_code(), 201);
         assert_eq!(mails_to(&mail, "quiet@example.com"), 2);
-        let s = suppression(mail_guard::email_hash("quiet@example.com"))
+        let s = suppression(email_hash("quiet@example.com"))
             .one(&ctx.db)
             .await
             .unwrap()
@@ -648,7 +668,7 @@ async fn confirm_mails_are_capped_and_ignored_addresses_suppressed() {
             }
         }
         assert_eq!(mails_to(&mail, "busy@example.com"), 3);
-        assert!(suppression(mail_guard::email_hash("busy@example.com"))
+        assert!(suppression(email_hash("busy@example.com"))
             .one(&ctx.db)
             .await
             .unwrap()
@@ -794,7 +814,7 @@ async fn ignored_suppression_is_per_org_and_expires() {
 #[tokio::test]
 #[serial]
 async fn a_slack_workspace_links_to_one_org() {
-    serve(|mut req, ctx| async move {
+    serve_with(slack_app, |mut req, ctx| async move {
         let mail = prepare(&ctx);
         let slack = MockServer::start().await;
         installed(&req, &ctx, &mail, &slack).await;
@@ -905,7 +925,7 @@ async fn add_and_confirm(
     }
 }
 
-async fn blocked(ctx: &AppContext) -> Option<email_suppressions::Model> {
+async fn blocked(ctx: &TestApp) -> Option<email_suppressions::Model> {
     email_suppressions::Entity::find()
         .filter(email_suppressions::Column::Reason.eq("confirm_blocked"))
         .one(&ctx.db)
@@ -957,17 +977,14 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
             .await
             .unwrap()
             .unwrap();
-        assert!(
-            mail_guard::may_deliver(&ctx.db, z.id, "target@example.com", false)
-                .await
-                .unwrap()
-        );
-        let redis = redis_of(&ctx);
-        assert!(
-            !mail_guard::may_send_confirm(&ctx.db, &redis, z.id, "target@example.com")
-                .await
-                .unwrap()
-        );
+        assert!(guard(&ctx)
+            .may_deliver(z.id, "target@example.com", false)
+            .await
+            .unwrap());
+        assert!(!guard(&ctx)
+            .may_send_confirm(z.id, "target@example.com")
+            .await
+            .unwrap());
         // An unsubscribe then replaces the block with a permanent global row.
         let r = recipients::Entity::find()
             .filter(recipients::Column::OrganisationId.eq(z.id))
@@ -975,7 +992,10 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
             .await
             .unwrap()
             .unwrap();
-        let tok = recipient_service::unsubscribe_token(Settings::get(&ctx).unsubscribe_key(), r.id);
+        let tok = recipient_service::unsubscribe_token(
+            state(&ctx).unwrap().config.unsubscribe_key(),
+            r.id,
+        );
         assert_eq!(
             req.post(&format!("/v1/unsubscribe/{tok}"))
                 .await
@@ -991,11 +1011,10 @@ async fn five_distinct_owners_block_confirms_but_not_confirmed_deliveries() {
             (row.reason.as_str(), row.expires_at),
             ("unsubscribed", None)
         );
-        assert!(
-            !mail_guard::may_deliver(&ctx.db, z.id, "target@example.com", false)
-                .await
-                .unwrap()
-        );
+        assert!(!guard(&ctx)
+            .may_deliver(z.id, "target@example.com", false)
+            .await
+            .unwrap());
     })
     .await;
 }
@@ -1046,11 +1065,10 @@ async fn six_owners_who_each_confirm_never_trip_confirm_blocked() {
             .await
             .unwrap()
             .unwrap();
-        assert!(
-            mail_guard::may_deliver(&ctx.db, org.id, "target@example.com", false)
-                .await
-                .unwrap()
-        );
+        assert!(guard(&ctx)
+            .may_deliver(org.id, "target@example.com", false)
+            .await
+            .unwrap());
     })
     .await;
 }

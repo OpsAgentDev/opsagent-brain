@@ -12,6 +12,7 @@ mod m20261022_000007_customer_finding_events;
 mod m20261022_000008_deliveries;
 mod m20261022_000009_email_suppressions;
 mod m20261022_000010_delivery_status;
+mod m20261023_000011_jobs;
 
 pub struct Migrator;
 
@@ -29,6 +30,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261022_000008_deliveries::Migration),
             Box::new(m20261022_000009_email_suppressions::Migration),
             Box::new(m20261022_000010_delivery_status::Migration),
+            Box::new(m20261023_000011_jobs::Migration),
             // inject-above (do not remove this comment)
         ]
     }

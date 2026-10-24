@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use axum_test::TestServer;
-use loco_rs::{app::AppContext, testing::prelude::*};
 use opsagent_brain::{
-    app::App,
+    actions::Actions,
+    error::AppResult,
     mailers::{CaptureMailer, Mailer},
+    state::AppState,
 };
 use serde_json::{json, Value};
 
@@ -20,26 +21,15 @@ pub fn test_env() {
     std::env::set_var("OPSAGENT_AWS_OUTBOUND_ROLE_ARN", OUTBOUND_ARN);
 }
 
-/// Boots the app with `test_env` and a cookie-saving client, then runs `callback`.
-pub async fn serve<F, Fut>(callback: F)
-where
-    F: FnOnce(TestServer, AppContext) -> Fut,
-    Fut: std::future::Future<Output = ()>,
-{
-    test_env();
-    request_with_config::<App, F, Fut>(cookie_config(), callback).await;
-}
+pub use crate::support::{serve, serve_with, TestApp};
 
-/// The Redis the app's queue (and the magic-link limiter) uses.
-pub fn redis_of(ctx: &AppContext) -> opsagent_ledger::redis::Client {
-    let Some(loco_rs::config::QueueConfig::Redis(cfg)) = &ctx.config.queue else {
-        panic!("tests need the redis queue config");
-    };
-    opsagent_ledger::redis::Client::open(cfg.uri.as_str()).unwrap()
+/// The Redis the app's limiter and leases use.
+pub fn redis_of(ctx: &TestApp) -> opsagent_ledger::redis::Client {
+    ctx.redis()
 }
 
 /// Captures mail and resets the mail limiters, whose counters outlive a test (hours to days).
-pub fn prepare(ctx: &AppContext) -> Arc<CaptureMailer> {
+pub fn prepare(ctx: &TestApp) -> Arc<CaptureMailer> {
     let mut c = redis_of(ctx).get_connection().unwrap();
     let mut keys: Vec<String> = Vec::new();
     for pattern in [
@@ -61,12 +51,8 @@ pub fn prepare(ctx: &AppContext) -> Arc<CaptureMailer> {
     }
     let mail = Arc::new(CaptureMailer::default());
     let dynamic: Arc<dyn Mailer> = mail.clone();
-    ctx.shared_store.insert(dynamic);
+    ctx.set_mailer(dynamic);
     mail
-}
-
-pub fn cookie_config() -> RequestConfig {
-    RequestConfigBuilder::new().save_cookies(true).build()
 }
 
 /// Last captured URL (the link in the mail body).
@@ -183,7 +169,7 @@ pub async fn fake_connection(
 /// and marks it connected. Returns `(csrf, org slug, connection id)`.
 pub async fn connected(
     req: &TestServer,
-    ctx: &AppContext,
+    ctx: &TestApp,
     email: &str,
     account: &str,
 ) -> (String, String, uuid::Uuid) {
@@ -209,4 +195,56 @@ pub fn without_instance(res: &axum_test::TestResponse) -> String {
     let mut v: Value = serde_json::from_str(&res.text()).unwrap();
     v["instance"] = Value::Null;
     v.to_string()
+}
+
+/// The booted state.
+pub fn state(ctx: &TestApp) -> AppResult<AppState> {
+    Ok(ctx.state.clone())
+}
+
+/// The actions, built once at boot.
+pub fn actions(ctx: &TestApp) -> AppResult<Arc<Actions>> {
+    Ok(ctx.state.actions.clone())
+}
+
+/// The process KEK (with the DEK cache).
+pub fn kek(ctx: &TestApp) -> AppResult<Arc<dyn opsagent_secrets::Kek>> {
+    Ok(ctx.state.kek.clone())
+}
+
+/// Enqueues one `kind` job for `run_id` and drains the queue, as a worker would run it.
+pub async fn perform(
+    ctx: &TestApp,
+    kind: opsagent_ledger::JobKind,
+    run_id: uuid::Uuid,
+) -> AppResult<usize> {
+    use opsagent_ledger::{NewJob, Queue};
+    let run_at = chrono::Utc::now();
+    let job = NewJob {
+        kind,
+        run_id,
+        run_at,
+    };
+    opsagent_brain::adapters::pg_queue::PgQueue(ctx.db.clone())
+        .enqueue(job)
+        .await?;
+    let n = ctx.drain_jobs().await;
+    // A job left behind failed (kept for a retry, or dead).
+    use sea_orm::ConnectionTrait;
+    let q = "SELECT count(*) AS n FROM jobs WHERE run_id = $1";
+    let left = ctx
+        .db
+        .query_one_raw(opsagent_brain::adapters::db::ledger_storage::stmt(
+            q,
+            vec![run_id.into()],
+        ))
+        .await
+        .map_err(|e| opsagent_brain::error::AppError::Internal(e.to_string()))?
+        .and_then(|r| r.try_get::<i64>("", "n").ok());
+    match left {
+        Some(0) => Ok(n),
+        _ => Err(opsagent_brain::error::AppError::Internal(
+            "job failed: still queued".into(),
+        )),
+    }
 }

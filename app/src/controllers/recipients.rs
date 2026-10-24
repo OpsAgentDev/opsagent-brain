@@ -4,8 +4,7 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, FixedOffset};
-use loco_rs::app::AppContext;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use opsagent_deliver::repo::RecipientRow;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -13,15 +12,11 @@ use uuid::Uuid;
 
 use super::{OrgIdPath, OrgPath};
 use crate::{
+    actions::recipients as action,
     api_error::{ApiError, ApiJson, ApiQuery, Problem},
-    middleware::{mailer, org_scope::OrgScope},
-    models::_entities::recipients,
-    services::{
-        pagination::{self, Page, PageParams},
-        recipients as service,
-    },
-    settings::Settings,
-    workers::common::redis_client,
+    controllers::page::{page_request, Page, PageParams},
+    middleware::org_scope::OrgScope,
+    state::AppState,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -38,36 +33,28 @@ pub struct Recipient {
     pub created_at: DateTime<FixedOffset>,
 }
 
-fn view(r: recipients::Model) -> Recipient {
+fn view(r: RecipientRow) -> Recipient {
     Recipient {
         id: r.id,
         email: r.email,
         connection_id: r.connection_id,
         member_id: r.member_id,
         status: r.status,
-        unsubscribed_at: r.unsubscribed_at,
-        created_at: r.created_at,
+        unsubscribed_at: r.unsubscribed_at.map(|t| t.fixed_offset()),
+        created_at: r.created_at.fixed_offset(),
     }
 }
 
 #[utoipa::path(get, path = "/orgs/{org}/recipients", tag = "recipients", params(OrgPath, PageParams),
     responses((status = 200, body = Page<Recipient>), (status = 404, body = Problem), (status = 422, body = Problem)))]
 async fn list(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiQuery(p): ApiQuery<PageParams>,
 ) -> Result<Json<Page<Recipient>>, ApiError> {
-    use recipients::Column as C;
-    let q = recipients::Entity::find().filter(C::OrganisationId.eq(scope.organisation_id));
-    let page = pagination::fetch(
-        &ctx.db,
-        q,
-        (C::CreatedAt, C::Id),
-        |m| (m.created_at, m.id),
-        &p,
-    )
-    .await?;
-    Ok(Json(page.map(view)))
+    let list = &app.actions.recipients.list_recipients;
+    let got = list.run(scope.organisation.id, page_request(&p)?).await?;
+    Ok(Json(Page::of(got).map(view)))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -85,40 +72,36 @@ pub struct NewRecipient {
     responses((status = 201, body = Recipient), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 409, body = Problem), (status = 422, body = Problem)))]
 async fn create(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     ApiJson(body): ApiJson<NewRecipient>,
 ) -> Result<(StatusCode, Json<Recipient>), ApiError> {
     scope.require_owner()?;
-    let new = service::NewRecipient {
+    let new = action::NewRecipient {
         email: body.email,
         member_id: body.member_id,
         connection_id: body.connection_id,
     };
-    let web = Settings::get(&ctx).web_base_url;
-    let row = service::create(
-        &ctx.db,
-        &redis_client(&ctx)?,
-        mailer(&ctx).as_ref(),
-        web.trim_end_matches('/'),
-        scope.organisation_id,
-        scope.user_id,
-        new,
-    )
-    .await?;
+    let create = &app.actions.recipients.create_recipient;
+    let row = create
+        .run(scope.organisation.id, scope.member.user_id, new)
+        .await?;
     Ok((StatusCode::CREATED, Json(view(row))))
 }
 
 #[utoipa::path(delete, path = "/orgs/{org}/recipients/{id}", tag = "recipients", params(OrgIdPath),
     responses((status = 204), (status = 403, body = Problem), (status = 404, body = Problem)))]
 async fn remove(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     scope: OrgScope,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     scope.require_owner()?;
-    let id: Uuid = id.parse().map_err(|_| ApiError::not_found())?;
-    service::delete(&ctx.db, scope.organisation_id, scope.user_id, id).await?;
+    let id = super::parse_id(&id)?;
+    let delete = &app.actions.recipients.delete_recipient;
+    delete
+        .run(scope.organisation.id, scope.member.user_id, id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -132,10 +115,11 @@ pub struct ConfirmBody {
 #[utoipa::path(post, path = "/recipients/confirm", tag = "recipients", request_body = ConfirmBody,
     responses((status = 204), (status = 410, body = Problem)))]
 async fn confirm(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     ApiJson(body): ApiJson<ConfirmBody>,
 ) -> Result<StatusCode, ApiError> {
-    service::confirm(&ctx.db, &redis_client(&ctx)?, &body.token).await?;
+    let confirm = &app.actions.recipients.confirm_recipient;
+    confirm.run(&body.token).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -150,15 +134,14 @@ pub struct UnsubscribePath {
 #[utoipa::path(post, path = "/unsubscribe/{token}", tag = "recipients", params(UnsubscribePath),
     responses((status = 204), (status = 410, body = Problem)))]
 async fn unsubscribe(
-    State(ctx): State<AppContext>,
+    State(app): State<AppState>,
     Path(token): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let s = Settings::get(&ctx);
-    service::unsubscribe(&ctx.db, s.unsubscribe_key(), &token).await?;
+    app.actions.recipients.unsubscribe.run(&token).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn api() -> OpenApiRouter<AppContext> {
+pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list, create))
         .routes(routes!(remove))
