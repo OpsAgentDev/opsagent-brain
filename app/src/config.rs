@@ -160,6 +160,14 @@ impl Config {
         if c.session_secret.len() < 16 {
             return Err(invalid("SESSION_SECRET", "must be at least 16 bytes"));
         }
+        // rmcp treats an empty allowed-hosts list as allow-all, so the host must exist.
+        let base = reqwest::Url::parse(&c.api_base_url).ok();
+        if !base.is_some_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some()) {
+            return Err(invalid(
+                "APP_BASE_URL",
+                "must be an absolute http(s) URL with a host",
+            ));
+        }
         if !c.unsubscribe_secret.is_empty() && c.unsubscribe_secret.len() < 16 {
             return Err(invalid("UNSUBSCRIBE_SECRET", "must be at least 16 bytes"));
         }
@@ -264,6 +272,33 @@ mod tests {
 
     fn cfg(pairs: &[(&str, &str)]) -> Config {
         ok(vars(pairs))
+    }
+
+    #[test]
+    fn app_base_url_must_be_an_absolute_http_url() {
+        for bad in [
+            "brain.opsagent.dev",
+            "/v1",
+            "ftp://x.dev",
+            "http://",
+            "mailto:a@b.c",
+        ] {
+            let r = vars(&[("APP_BASE_URL", bad)]);
+            assert!(
+                matches!(
+                    r,
+                    Err(ConfigError::Invalid {
+                        name: "APP_BASE_URL",
+                        ..
+                    })
+                ),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            cfg(&[("APP_BASE_URL", "https://b.dev:8443")]).api_base_url,
+            "https://b.dev:8443"
+        );
     }
 
     fn production(extra: &[(&'static str, &'static str)]) -> Vec<(&'static str, &'static str)> {

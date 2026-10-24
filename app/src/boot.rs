@@ -297,7 +297,7 @@ pub fn build_tools(d: &Deps) -> ToolRegistry {
         connections::ListConnections::new(d.uow.clone()),
         runs::ListRuns::new(d.uow.clone()),
     ))];
-    ToolRegistry::new(tools)
+    ToolRegistry::new(tools, d.uow.clone())
 }
 
 fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipients {

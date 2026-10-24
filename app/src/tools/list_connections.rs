@@ -42,6 +42,7 @@ impl Tool for ListConnectionsTool {
         let org = caller.scope.organisation.id;
         let mut out = Vec::new();
         for c in self.list.run(org).await? {
+            // shortcut: one runs query per connection, batch when connections per org grow past ~50
             let filter = RunFilter {
                 connection_id: Some(c.id),
                 job_type: Some("full_scan".into()),

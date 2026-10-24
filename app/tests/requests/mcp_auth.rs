@@ -355,3 +355,51 @@ async fn tool_call_is_audited_without_arguments() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn body_over_the_limit_is_refused() {
+    serve(|req, app| async move {
+        let (a, _) = agent(&req, &app, "big@example.com", "Big").await;
+        let res = req
+            .post("/mcp")
+            .add_header("Host", "localhost:5150")
+            .add_header("Accept", "application/json, text/event-stream")
+            .add_header("Content-Type", "application/json")
+            .add_header("Authorization", format!("Bearer {}", a.token))
+            .bytes(format!(r#"{{"pad":"{}"}}"#, "a".repeat(20 * 1024)).into())
+            .await;
+        assert_eq!(res.status_code(), 413, "{}", res.text());
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn initialize_in_the_2026_07_28_era() {
+    serve(|req, app| async move {
+        let (a, _) = agent(&req, &app, "era@example.com", "Era").await;
+        let res = req
+            .post("/mcp")
+            .add_header("Host", "localhost:5150")
+            .add_header("Accept", "application/json, text/event-stream")
+            .add_header("MCP-Protocol-Version", "2026-07-28")
+            .add_header("Authorization", format!("Bearer {}", a.token))
+            .json(
+                &json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                    "protocolVersion": "2026-07-28",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"},
+                }}),
+            )
+            .await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        let body: Value = res.json();
+        assert!(
+            body["result"]["capabilities"]["tools"].is_object(),
+            "{body}"
+        );
+        assert!(body.get("error").is_none(), "{body}");
+    })
+    .await;
+}

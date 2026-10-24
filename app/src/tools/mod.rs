@@ -3,17 +3,20 @@
 //! adapters over the `ToolRegistry`.
 pub mod list_connections;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use opsagent_core::repo::RepoError;
+use opsagent_core::{audit::AuditEntry, repo::RepoError};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::{actions::orgs::OrgScope, error::AppError};
+use crate::{
+    actions::{orgs::OrgScope, uow::UnitOfWork},
+    error::AppError,
+};
 
 pub use list_connections::ListConnectionsTool;
 
@@ -64,6 +67,9 @@ pub enum ToolError {
     NotFound,
     #[error("{0}")]
     Invalid(String),
+    /// No tool of that name; a protocol error for the adapter, not a tool outcome.
+    #[error("Unknown tool: {0}")]
+    Unknown(String),
     #[error("A scan ran less than an hour ago (last at {last_scan_at}).")]
     ScanTooSoon { last_scan_at: DateTime<Utc> },
     #[error("The connection is blocked.")]
@@ -79,6 +85,7 @@ impl ToolError {
         match self {
             Self::NotFound => "not_found",
             Self::Invalid(_) => "invalid",
+            Self::Unknown(_) => "unknown_tool",
             Self::ScanTooSoon { .. } => "scan_too_soon",
             Self::ConnectionBlocked => "connection_blocked",
             Self::Internal(_) => "internal",
@@ -106,20 +113,21 @@ pub fn parse_args<T: DeserializeOwned>(args: Value) -> Result<T, ToolError> {
     serde_json::from_value(args).map_err(|e| ToolError::Invalid(e.to_string()))
 }
 
-/// Every tool, by unique name.
+/// Every tool, by unique name, and the one place a call is audited and logged.
 pub struct ToolRegistry {
     tools: Vec<Arc<dyn Tool>>,
+    uow: Arc<dyn UnitOfWork>,
 }
 
 impl ToolRegistry {
     /// Panics on a duplicate name: a startup bug.
-    pub fn new(tools: Vec<Arc<dyn Tool>>) -> Self {
+    pub fn new(tools: Vec<Arc<dyn Tool>>, uow: Arc<dyn UnitOfWork>) -> Self {
         let mut names: Vec<_> = tools.iter().map(|t| t.spec().name).collect();
         names.sort_unstable();
         if let Some(w) = names.windows(2).find(|w| w[0] == w[1]) {
             panic!("tool registered twice: {}", w[0]);
         }
-        Self { tools }
+        Self { tools, uow }
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {
@@ -129,11 +137,45 @@ impl ToolRegistry {
     pub fn get(&self, name: &str) -> Option<&Arc<dyn Tool>> {
         self.tools.iter().find(|t| t.spec().name == name)
     }
+
+    /// Runs the tool, writes its `audit_events` row (tool and outcome, never arguments or
+    /// results) and logs outcome and latency. An unknown name is `Unknown`, not audited; a
+    /// failed audit write fails the call (no unaudited access).
+    pub async fn invoke(
+        &self,
+        caller: &Caller,
+        name: &str,
+        args: Value,
+    ) -> Result<Value, ToolError> {
+        let Some(tool) = self.get(name) else {
+            tracing::warn!(tool = name, "unknown tool");
+            return Err(ToolError::Unknown(name.to_owned()));
+        };
+        let started = Instant::now();
+        let result = tool.call(caller, args).await;
+        let outcome = result.as_ref().map_or_else(ToolError::code, |_| "success");
+        let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        tracing::info!(tool = name, outcome, latency_ms, "tool call");
+        let Via::Mcp {
+            grant_id,
+            client_id,
+            ..
+        } = &caller.via;
+        let org = caller.scope.organisation.id;
+        let entry = AuditEntry::mcp_client(org, *grant_id, "mcp.tool.call", outcome)
+            .with_meta(json!({ "client_id": client_id, "tool": name, "outcome": outcome }));
+        if let Err(e) = self.uow.audit().record(entry).await {
+            tracing::error!(error = %e, tool = name, "tool call audit failed");
+            return Err(ToolError::Internal("audit failed".into()));
+        }
+        result
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::memory::MemStore;
 
     struct Named(&'static str);
 
@@ -157,16 +199,22 @@ mod tests {
     #[test]
     #[should_panic(expected = "tool registered twice: a")]
     fn registry_rejects_duplicate_names() {
-        ToolRegistry::new(vec![
-            Arc::new(Named("a")),
-            Arc::new(Named("b")),
-            Arc::new(Named("a")),
-        ]);
+        ToolRegistry::new(
+            vec![
+                Arc::new(Named("a")),
+                Arc::new(Named("b")),
+                Arc::new(Named("a")),
+            ],
+            Arc::new(MemStore::default()),
+        );
     }
 
     #[test]
     fn registry_finds_by_name() {
-        let r = ToolRegistry::new(vec![Arc::new(Named("a")), Arc::new(Named("b"))]);
+        let r = ToolRegistry::new(
+            vec![Arc::new(Named("a")), Arc::new(Named("b"))],
+            Arc::new(MemStore::default()),
+        );
         assert_eq!(r.get("b").map(|t| t.spec().name), Some("b"));
         assert!(r.get("c").is_none());
         assert_eq!(r.specs().len(), 2);

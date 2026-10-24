@@ -1,9 +1,8 @@
 //! The MCP edge: rmcp's streamable HTTP service over the `ToolRegistry`. It maps specs,
 //! results and errors to MCP and owns no tool logic. `auth` resolves the caller first.
-pub mod audit;
 pub mod auth;
 
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
 use axum::http::request::Parts;
 use rmcp::{
@@ -21,7 +20,6 @@ use rmcp::{
 use serde_json::{json, Value};
 
 use crate::{
-    actions::uow::UnitOfWork,
     config::{AppEnv, Config},
     middleware::PUBLIC_BODY_LIMIT,
     state::AppState,
@@ -31,7 +29,6 @@ use crate::{
 #[derive(Clone)]
 pub struct McpServer {
     tools: Arc<ToolRegistry>,
-    uow: Arc<dyn UnitOfWork>,
 }
 
 /// The service mounted at `/mcp` (behind `auth::layer`): stateless for every protocol era,
@@ -39,7 +36,6 @@ pub struct McpServer {
 pub fn service(state: &AppState) -> StreamableHttpService<McpServer, NeverSessionManager> {
     let server = McpServer {
         tools: state.tools.clone(),
-        uow: state.uow.clone(),
     };
     let config = StreamableHttpServerConfig::default()
         .with_allowed_hosts(allowed_hosts(&state.config))
@@ -75,7 +71,9 @@ fn to_mcp(s: ToolSpec) -> McpTool {
     t.title = Some(s.title.into());
     t.annotations = Some(
         ToolAnnotations::new()
-            .read_only(s.access == Access::Read)
+            .read_only(match s.access {
+                Access::Read => true,
+            })
             .destructive(false)
             .idempotent(s.idempotent)
             .open_world(false),
@@ -128,25 +126,13 @@ impl ServerHandler for McpServer {
             .and_then(|p| p.extensions.get::<Caller>())
             .cloned()
             .ok_or_else(|| ErrorData::internal_error("no caller", None))?;
-        let name = request.name.as_ref();
-        let Some(tool) = self.tools.get(name) else {
-            tracing::warn!(tool = name, "mcp unknown tool");
-            return Err(ErrorData::invalid_params(
-                format!("Unknown tool: {name}"),
-                None,
-            ));
-        };
-        let started = Instant::now();
         let args = Value::Object(request.arguments.unwrap_or_default());
-        let result = tool.call(&caller, args).await;
-        let outcome = result.as_ref().map_or_else(ToolError::code, |_| "success");
-        let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        tracing::info!(tool = name, outcome, latency_ms, "mcp tool call");
-        if let Err(e) = audit::record(self.uow.audit(), &caller, name, outcome).await {
-            tracing::error!(error = %e, tool = name, "mcp tool call audit failed");
-            return Err(ErrorData::internal_error("audit failed", None));
-        }
+        let result = self
+            .tools
+            .invoke(&caller, request.name.as_ref(), args)
+            .await;
         Ok(match result {
+            Err(ToolError::Unknown(m)) => return Err(ErrorData::invalid_params(m, None)),
             Ok(v) => CallToolResult::structured(v),
             Err(e) => error_result(&e),
         }
