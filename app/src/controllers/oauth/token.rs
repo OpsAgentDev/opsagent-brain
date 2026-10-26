@@ -10,7 +10,34 @@ use axum::{
 use serde::Deserialize;
 
 use super::OAuthError;
-use crate::{actions::oauth::CodeExchange, state::AppState};
+use crate::{
+    actions::{hit_ip, oauth::CodeExchange, HOUR_SECS},
+    adapters::client_ip::ClientIp,
+    state::AppState,
+};
+
+/// Shared by both endpoints. An agent refreshes about once an hour, so this leaves room for
+/// a whole office behind one address while bounding token-lookup load.
+const PER_IP_PER_HOUR: i64 = 300;
+
+async fn limit(s: &AppState, ip: ClientIp) -> Result<(), OAuthError> {
+    match hit_ip(
+        s.limiter.as_ref(),
+        "oauth:token",
+        ip.0,
+        PER_IP_PER_HOUR,
+        HOUR_SECS,
+    )
+    .await
+    {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(OAuthError::slow_down("Too many token requests.")),
+        Err(e) => {
+            tracing::error!(error = %e, "token rate limiter failed");
+            Err(OAuthError::server_error())
+        }
+    }
+}
 
 #[derive(Debug, Default, Deserialize)]
 struct TokenForm {
@@ -30,8 +57,12 @@ fn required(v: Option<String>, name: &str) -> Result<String, OAuthError> {
 
 async fn token(
     State(s): State<AppState>,
+    ip: ClientIp,
     form: Result<Form<TokenForm>, FormRejection>,
 ) -> Response {
+    if let Err(e) = limit(&s, ip).await {
+        return e.into_response();
+    }
     let Ok(Form(f)) = form else {
         return OAuthError::invalid_request("The body must be form-encoded.").into_response();
     };
@@ -84,8 +115,12 @@ struct RevokeForm {
 
 async fn revoke(
     State(s): State<AppState>,
+    ip: ClientIp,
     form: Result<Form<RevokeForm>, FormRejection>,
 ) -> Response {
+    if let Err(e) = limit(&s, ip).await {
+        return e.into_response();
+    }
     let Some(token) = form
         .ok()
         .and_then(|Form(f)| f.token)

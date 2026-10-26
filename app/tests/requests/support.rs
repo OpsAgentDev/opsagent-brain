@@ -219,7 +219,8 @@ pub async fn perform(
     run_id: uuid::Uuid,
 ) -> AppResult<usize> {
     use opsagent_ledger::{NewJob, Queue};
-    let run_at = chrono::Utc::now();
+    // Back-dated: dequeue compares with Postgres `now()`, whose clock can trail this one.
+    let run_at = chrono::Utc::now() - chrono::Duration::seconds(5);
     let job = NewJob {
         kind,
         run_id,

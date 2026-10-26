@@ -413,3 +413,25 @@ async fn initialize_in_the_2026_07_28_era() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn ip_limit_stops_unauthenticated_floods_before_lookup() {
+    serve(|req, _| async move {
+        let hit = |ip: &'static str| {
+            req.post("/mcp")
+                .add_header("x-forwarded-for", ip)
+                .add_header("Host", "localhost:5150")
+                .add_header("Accept", "application/json, text/event-stream")
+                .json(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+        };
+        for i in 0..600 {
+            assert_eq!(hit("198.51.100.9").await.status_code(), 401, "call {i}");
+        }
+        let res = hit("198.51.100.9").await;
+        assert_eq!(res.status_code(), 429);
+        assert_eq!(res.header("retry-after"), "60");
+        assert_eq!(hit("198.51.100.10").await.status_code(), 401);
+    })
+    .await;
+}

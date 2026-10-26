@@ -9,7 +9,8 @@ use axum::{
 };
 
 use crate::{
-    actions::oauth::Bearer,
+    actions::{hit_ip, oauth::Bearer},
+    adapters::client_ip::ClientIp,
     api_error::ApiError,
     state::AppState,
     tools::{Caller, Via},
@@ -18,10 +19,17 @@ use crate::{
 const WINDOW_SECS: i64 = 60;
 const PER_TOKEN: i64 = 60;
 const PER_ORG: i64 = 600;
+/// Checked before the token lookup, so unauthenticated floods never reach the database.
+const PER_IP: i64 = 600;
 
-pub async fn layer(State(app): State<AppState>, mut req: Request, next: Next) -> Response {
+pub async fn layer(
+    State(app): State<AppState>,
+    ip: ClientIp,
+    mut req: Request,
+    next: Next,
+) -> Response {
     let token = bearer_token(req.headers());
-    match authenticate(&app, token).await {
+    match authenticate(&app, ip, token).await {
         Ok(b) => {
             req.extensions_mut().insert(Caller {
                 scope: b.scope,
@@ -52,13 +60,32 @@ enum Refused {
     Api(ApiError),
 }
 
-async fn authenticate(app: &AppState, token: Option<String>) -> Result<Bearer, Refused> {
+fn rate_limited() -> Refused {
+    let retry = u64::try_from(WINDOW_SECS).unwrap_or(60);
+    Refused::Api(ApiError::rate_limited(
+        "Too many MCP calls; retry in a minute.",
+        retry,
+    ))
+}
+
+async fn authenticate(
+    app: &AppState,
+    ip: ClientIp,
+    token: Option<String>,
+) -> Result<Bearer, Refused> {
+    let internal = |e| Refused::Api(ApiError::from(e));
+    let limiter = app.limiter.as_ref();
+    if !hit_ip(limiter, "mcp", ip.0, PER_IP, WINDOW_SECS)
+        .await
+        .map_err(internal)?
+    {
+        return Err(rate_limited());
+    }
     let Some(token) = token else {
         return Err(Refused::Token);
     };
     let now = app.clock.now();
     let oauth = &app.actions.oauth;
-    let internal = |e| Refused::Api(ApiError::from(e));
     let Some(b) = oauth
         .authenticate_bearer
         .run(&token, now)
@@ -78,9 +105,7 @@ async fn authenticate(app: &AppState, token: Option<String>) -> Result<Bearer, R
             .await
             .map_err(internal)?
         {
-            let detail = "Too many MCP calls; retry in a minute.";
-            let retry = u64::try_from(WINDOW_SECS).unwrap_or(60);
-            return Err(Refused::Api(ApiError::rate_limited(detail, retry)));
+            return Err(rate_limited());
         }
     }
     let touch = format!("mcp:touch:{}", b.grant.id);

@@ -161,7 +161,23 @@ where
     Fut: Future<Output = ()>,
 {
     let app = TestApp::boot_with(config).await;
+    clear_oauth_limits(&app);
     f(app.server(), app).await;
+}
+
+/// The OAuth and MCP counters outlive a test (minutes to an hour), so a rerun inside the
+/// window would start over the cap. No Redis (the outage tests) means nothing to clear.
+fn clear_oauth_limits(app: &TestApp) {
+    use opsagent_ledger::redis::cmd;
+    let Ok(mut c) = app.redis().get_connection() else {
+        return;
+    };
+    for pattern in ["oauth:*", "mcp:*"] {
+        let keys: Vec<String> = cmd("KEYS").arg(pattern).query(&mut c).unwrap();
+        if !keys.is_empty() {
+            let _: () = cmd("DEL").arg(&keys).query(&mut c).unwrap();
+        }
+    }
 }
 
 /// The default Slack double: every call fails as unreachable, so nothing leaves the test.
