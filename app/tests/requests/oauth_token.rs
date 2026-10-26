@@ -358,3 +358,62 @@ async fn errors_are_rfc6749_json() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn token_and_revoke_share_a_per_ip_limit() {
+    serve(|req, _| async move {
+        let token = || {
+            req.post("/oauth/token")
+                .add_header("x-forwarded-for", "198.51.100.9")
+                .form(&[("grant_type", "password")])
+        };
+        for _ in 0..299 {
+            assert_eq!(token().await.status_code(), 400);
+        }
+        let revoke = req
+            .post("/oauth/revoke")
+            .add_header("x-forwarded-for", "198.51.100.9")
+            .form(&[("token", "nope")])
+            .await;
+        assert_eq!(revoke.status_code(), 200);
+        let res = token().await;
+        assert_eq!(res.status_code(), 429);
+        assert_eq!(res.json::<Value>()["error"], "slow_down");
+        let other = req
+            .post("/oauth/token")
+            .add_header("x-forwarded-for", "198.51.100.10")
+            .form(&[("grant_type", "password")])
+            .await;
+        assert_eq!(other.status_code(), 400);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn client_revoke_is_audited_once_as_the_client() {
+    serve(|req, app| async move {
+        let t = tokens(&req, &app).await;
+        let (_, g) = app
+            .state
+            .uow
+            .oauth()
+            .access_by_hash(&hash_token(t["access_token"].as_str().unwrap()))
+            .await
+            .unwrap()
+            .unwrap();
+        for _ in 0..2 {
+            let res = req
+                .post("/oauth/revoke")
+                .form(&[("token", rt(&t).as_str())])
+                .await;
+            assert_eq!(res.status_code(), 200);
+        }
+        assert_eq!(
+            audits(&app, "oauth.grant.revoked").await,
+            [(Some(g.id.to_string()), Some("client_revoked".into()))]
+        );
+    })
+    .await;
+}

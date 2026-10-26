@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::{ResolveClient, CONSENT_TTL_SECS};
 use crate::{
-    actions::{ip_bucket, uow::UnitOfWork, RateLimiter, HOUR_SECS},
+    actions::{hit_ip, uow::UnitOfWork, RateLimiter, HOUR_SECS},
     controllers::oauth::OAuthError,
 };
 
@@ -153,10 +153,8 @@ impl StartAuthorization {
 
     /// Fails closed: a limiter outage is a 500, not an open door.
     async fn limit(&self, ip: Option<IpAddr>) -> Result<(), OAuthError> {
-        // `unknown` only without X-Forwarded-For: behind Railway's edge ClientIp always has one.
-        let who = ip.map_or_else(|| "unknown".to_owned(), |ip| ip_bucket(ip).to_string());
-        let key = format!("oauth:authorize:ip:{who}");
-        match self.limiter.hit(&key, PER_IP_PER_HOUR, HOUR_SECS).await {
+        let limiter = self.limiter.as_ref();
+        match hit_ip(limiter, "oauth:authorize", ip, PER_IP_PER_HOUR, HOUR_SECS).await {
             Ok(true) => Ok(()),
             Ok(false) => Err(OAuthError::slow_down("Too many authorization requests.")),
             Err(e) => {

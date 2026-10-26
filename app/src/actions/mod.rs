@@ -69,6 +69,21 @@ pub fn net_bucket(ip: std::net::IpAddr) -> std::net::IpAddr {
     }
 }
 
+/// Counts one hit for the client at `ip` under `name`; `true` while within `cap`. `unknown`
+/// only without X-Forwarded-For: behind Railway's edge every request carries one.
+pub async fn hit_ip(
+    limiter: &dyn RateLimiter,
+    name: &str,
+    ip: Option<std::net::IpAddr>,
+    cap: i64,
+    window_secs: i64,
+) -> AppResult<bool> {
+    let who = ip.map_or_else(|| "unknown".to_owned(), |ip| ip_bucket(ip).to_string());
+    limiter
+        .hit(&format!("{name}:ip:{who}"), cap, window_secs)
+        .await
+}
+
 pub const HOUR_SECS: i64 = 3600;
 pub const DAY_SECS: i64 = 86_400;
 
