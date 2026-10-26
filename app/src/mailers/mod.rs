@@ -178,7 +178,7 @@ fn smtp(url: &str, from: &str) -> Result<SmtpMailer, ConfigError> {
 pub fn from_config(config: &Config) -> Result<Arc<dyn Mailer>, ConfigError> {
     let production = config.env == AppEnv::Production;
     let env = |k: &str| std::env::var(k).ok();
-    let from = env("MAIL_FROM").unwrap_or_else(|| "OpsAgent <login@opsagent.dev>".into());
+    let from = env("MAIL_FROM").unwrap_or_else(|| "OpsAgent <info@opsagent.dev>".into());
     Ok(
         match choose(env("MAILER_SMTP_URL"), env("RESEND_API_KEY"), production)? {
             MailerChoice::Smtp(url) => Arc::new(smtp(&url, &from)?),
@@ -288,13 +288,13 @@ mod tests {
             "MAIL_FROM"
         );
         assert_eq!(
-            err(smtp("ftp://x", "OpsAgent <login@opsagent.dev>")),
+            err(smtp("ftp://x", "OpsAgent <info@opsagent.dev>")),
             "MAILER_SMTP_URL"
         );
         assert_eq!(
             err(smtp(
                 "smtp://localhost:1025",
-                "OpsAgent <login@opsagent.dev>"
+                "OpsAgent <info@opsagent.dev>"
             )),
             "ok"
         );
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn smtp_mailer_parses_url_and_from() {
-        assert!(SmtpMailer::new("smtp://localhost:1025", "OpsAgent <login@opsagent.dev>").is_ok());
+        assert!(SmtpMailer::new("smtp://localhost:1025", "OpsAgent <info@opsagent.dev>").is_ok());
         assert!(SmtpMailer::new("smtp://localhost:1025", "not an address").is_err());
     }
 }

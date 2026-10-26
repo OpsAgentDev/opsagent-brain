@@ -27,7 +27,7 @@ Plan 2 variables (placeholders only; real values live in Railway):
 |---|---|---|
 | `SLACK_CLIENT_ID` | plain | Slack app client id (OAuth install) |
 | `SLACK_CLIENT_SECRET` | sealed | Slack app client secret |
-| `MAIL_FROM` | plain | sender for recipient mail, e.g. `OpsAgent <briefing@opsagent.dev>`; default `OpsAgent <login@opsagent.dev>` |
+| `MAIL_FROM` | plain | sender for recipient mail, default `OpsAgent <info@opsagent.dev>` |
 | `SLACK_API_BASE_URL` | plain, optional | default `https://slack.com/api`; override only for tests |
 
 Unsubscribe tokens are HMACs keyed from `UNSUBSCRIBE_SECRET` (sealed, at least 16 bytes), falling back to `SESSION_SECRET` when unset. Set it before the first weekly ships; to switch from the fallback without breaking links already sent, set it equal to the current `SESSION_SECRET`. Rotating `UNSUBSCRIBE_SECRET` invalidates every outstanding unsubscribe link, so do not rotate it; once it is set, `SESSION_SECRET` may rotate freely. `SLACK_SIGNING_SECRET`, Stripe and `JWT_SIGNING_KEY` are listed for later plans and not read yet. Optional: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `COOKIE_DOMAIN` (default `opsagent.dev`), `OPSAGENT_KEK_VERSION`, `OPSAGENT_KEK_PREV`, `LOG_LEVEL`. Railway sets `PORT`.
