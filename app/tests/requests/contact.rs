@@ -180,6 +180,7 @@ async fn logs_never_hold_the_email_or_message() {
     })
     .await;
     let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    assert!(out.contains("contact message saved"), "{out}");
     assert!(!out.contains("ann@visitor.io"), "{out}");
     assert!(!out.contains("call me about the audit"), "{out}");
 }
