@@ -2695,6 +2695,36 @@
           }
         }
       }
+    },
+    "/waitlist": {
+      "post": {
+        "tags": [
+          "waitlist"
+        ],
+        "summary": "Always 202 for a valid address, new or already listed, so the response never reveals which.",
+        "operationId": "waitlist_join",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitlistRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "On the waitlist"
+          },
+          "422": {
+            "description": "Invalid email or source"
+          },
+          "429": {
+            "description": "Rate limited (10 per client IP per hour)"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4377,6 +4407,24 @@
           "role_arn": {
             "type": "string",
             "description": "The read role's ARN from the stack outputs (required for `aws`)."
+          }
+        }
+      },
+      "WaitlistRequest": {
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the form sat, at most 64 characters (`landing-hero`, `landing-footer`)."
           }
         }
       }

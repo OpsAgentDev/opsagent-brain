@@ -15,6 +15,7 @@ pub mod resources;
 pub mod runs;
 #[cfg(feature = "test-support")]
 pub mod test_routes;
+pub mod waitlist;
 
 use serde::Serialize;
 use utoipa::{IntoParams, ToSchema};

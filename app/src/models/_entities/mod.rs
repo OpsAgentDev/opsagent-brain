@@ -31,3 +31,4 @@ pub mod schedules;
 pub mod sessions;
 pub mod side_effects;
 pub mod users;
+pub mod waitlist_entries;

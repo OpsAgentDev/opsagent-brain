@@ -13,12 +13,12 @@ use axum::{middleware::from_fn_with_state, Router};
 use crate::{
     actions::{
         auth, connections, deliveries, findings, integrations, members, oauth, orgs, recipients,
-        resources, runs, uow::UnitOfWork, Actions, ClientMetadataSource, ConnectorSource,
+        resources, runs, uow::UnitOfWork, waitlist, Actions, ClientMetadataSource, ConnectorSource,
         RateLimiter,
     },
     adapters::{
         client_metadata::HttpClientMetadata,
-        db::Pg,
+        db::{Pg, PgWaitlist},
         pg_queue::PgQueue,
         rate_limiter::RedisRateLimiter,
         slack::{HttpSlack, SlackClient},
@@ -177,6 +177,12 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
     // One guard for recipient confirms and delivery mail.
     let guard = Arc::new(recipients::MailGuard::new(d.uow.clone(), d.limiter.clone()));
     Actions {
+        waitlist: waitlist::Waitlist {
+            join: waitlist::JoinWaitlist::new(
+                Arc::new(PgWaitlist(d.db.clone())),
+                d.limiter.clone(),
+            ),
+        },
         auth: auth::Auth {
             request_magic_link: auth::RequestMagicLink::new(
                 d.uow.clone(),

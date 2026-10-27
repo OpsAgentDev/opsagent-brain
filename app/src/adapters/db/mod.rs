@@ -14,6 +14,7 @@ mod resources;
 mod runs;
 mod schedules;
 mod users;
+mod waitlist;
 
 use std::fmt::Display;
 
@@ -39,6 +40,7 @@ use sea_orm::{
 
 pub use connections::status_of;
 pub use page::page;
+pub use waitlist::PgWaitlist;
 
 use crate::actions::uow::{Repos, Tx, UnitOfWork};
 
