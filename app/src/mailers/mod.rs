@@ -1,3 +1,4 @@
+pub mod contact;
 pub mod magic_link;
 pub mod waitlist;
 

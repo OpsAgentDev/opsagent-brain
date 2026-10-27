@@ -71,6 +71,8 @@ pub struct Config {
     pub worker_shutdown_grace_secs: u64,
     /// A request still running after this answers 504 `timeout`.
     pub request_timeout_secs: u64,
+    /// Fixed recipient of contact-form mail; never taken from a request.
+    pub contact_to: String,
 }
 
 /// Required in production (no default there); the same list as deployment.md and deploy/README.md.
@@ -154,6 +156,7 @@ impl Config {
             job_lock_max_age_secs: p(&get, "JOB_LOCK_MAX_AGE_SECS", "25200")?,
             worker_shutdown_grace_secs: p(&get, "WORKER_SHUTDOWN_GRACE_SECS", "30")?,
             request_timeout_secs: p(&get, "REQUEST_TIMEOUT_SECS", "30")?,
+            contact_to: s("CONTACT_TO", "info@opsagent.dev"),
         };
         if c.session_secret.len() < 16 {
             return Err(invalid("SESSION_SECRET", "must be at least 16 bytes"));

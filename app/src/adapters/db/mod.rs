@@ -2,6 +2,7 @@
 //! borrowed handle to either.
 mod audit;
 mod connections;
+mod contact;
 mod deliveries;
 mod findings;
 mod integrations;
@@ -39,6 +40,7 @@ use sea_orm::{
 };
 
 pub use connections::status_of;
+pub use contact::PgContact;
 pub use page::page;
 pub use waitlist::PgWaitlist;
 

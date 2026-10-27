@@ -237,6 +237,35 @@
         }
       }
     },
+    "/contact": {
+      "post": {
+        "tags": [
+          "contact"
+        ],
+        "operationId": "contact_send",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Received"
+          },
+          "422": {
+            "description": "Invalid name, email, topic or message"
+          },
+          "429": {
+            "description": "Rate limited (5 per client IP per hour)"
+          }
+        }
+      }
+    },
     "/integrations/slack/callback": {
       "get": {
         "tags": [
@@ -3065,6 +3094,39 @@
           "verified": {
             "type": "boolean",
             "description": "Always false: dynamic and metadata-document clients are unverified."
+          }
+        }
+      },
+      "ContactRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "email",
+          "topic",
+          "message"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "10 to 5000 characters."
+          },
+          "name": {
+            "type": "string",
+            "description": "1 to 100 characters, no control characters."
+          },
+          "topic": {
+            "type": "string",
+            "description": "One of `general`, `sales`, `support`, `security`, `partnership`."
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Honeypot: real visitors leave it empty; a filled value is answered 202 and dropped."
           }
         }
       },
