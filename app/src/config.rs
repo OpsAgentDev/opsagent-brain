@@ -74,7 +74,7 @@ pub struct Config {
 }
 
 /// Required in production (no default there); the same list as deployment.md and deploy/README.md.
-const PRODUCTION_REQUIRED: [&str; 9] = [
+const PRODUCTION_REQUIRED: [&str; 7] = [
     "DATABASE_URL",
     "REDIS_URL",
     "APP_BASE_URL",
@@ -82,8 +82,6 @@ const PRODUCTION_REQUIRED: [&str; 9] = [
     "SESSION_SECRET",
     "OPSAGENT_KEK",
     "OPSAGENT_CONNECTORS",
-    "OPSAGENT_AWS_OUTBOUND_ROLE_ARN",
-    "OPSAGENT_TEMPLATE_BASE_URL",
 ];
 
 impl Config {

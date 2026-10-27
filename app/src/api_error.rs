@@ -73,6 +73,10 @@ impl ApiError {
             "This link is invalid, expired or already used.",
         )
     }
+    /// 503 for a feature that is not configured on this deployment.
+    pub fn unavailable(code: &'static str, detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, code, detail)
+    }
     pub fn internal(e: impl std::fmt::Display) -> Self {
         tracing::error!(error = %e, "internal error");
         Self::new(

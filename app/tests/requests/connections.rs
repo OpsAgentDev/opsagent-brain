@@ -354,3 +354,25 @@ async fn new_scan_time_moves_the_nightly_scan_from_tomorrow() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn create_aws_without_outbound_role_is_503_and_writes_nothing() {
+    serve_with(
+        |c| c.aws_outbound_role_arn = None,
+        |req, ctx| async move {
+            let mail = prepare(&ctx);
+            let t = sign_in(&req, &mail, "owner@example.com").await;
+            let org = slug(&create_org(&req, &t, "Acme").await);
+            let res = req
+                .post(&format!("/v1/orgs/{org}/connections"))
+                .add_header("X-CSRF-Token", &t)
+                .json(&json!({ "provider": "aws", "display_name": "Production" }))
+                .await;
+            assert_eq!(res.status_code(), 503, "{}", res.text());
+            assert_eq!(res.json::<Value>()["code"], "connector_unavailable");
+            assert_eq!(connections::Entity::find().count(&ctx.db).await.unwrap(), 0);
+        },
+    )
+    .await;
+}
