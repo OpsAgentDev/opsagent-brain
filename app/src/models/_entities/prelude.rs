@@ -29,3 +29,4 @@ pub use super::schedules::Entity as Schedules;
 pub use super::sessions::Entity as Sessions;
 pub use super::side_effects::Entity as SideEffects;
 pub use super::users::Entity as Users;
+pub use super::waitlist_entries::Entity as WaitlistEntries;

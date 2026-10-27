@@ -20,7 +20,10 @@ impl Email {
             && !domain.starts_with('.')
             && !domain.ends_with('.')
             && !domain.contains('@')
-            && !e.chars().any(|c| c.is_whitespace() || c.is_control());
+            // Not valid in a bare addr-spec; keeps every mail path's parser in agreement.
+            && !e.chars().any(|c| {
+                c.is_whitespace() || c.is_control() || "<>\",;()[]\\:".contains(c)
+            });
         ok.then_some(Self(e))
     }
 
@@ -91,8 +94,21 @@ mod tests {
             "ada@b@example.com",
             "a da@example.com",
             "ada@exa\u{7}mple.com",
+            "<ada@example.com>",
+            "ada@example.com>",
+            "\"ada\"@example.com",
+            "ada,bob@example.com",
+            "ada@example.com,bob@example.com",
+            "ada;bob@example.com",
+            "ada(c)@example.com",
+            "ada@[example.com]",
+            "ad\\a@example.com",
+            "ada:x@example.com",
         ] {
             assert!(Email::parse(bad).is_none(), "{bad:?}");
+        }
+        for ok in ["a+b@x.io", "a.b-c_d@x-y.io"] {
+            assert!(Email::parse(ok).is_some(), "{ok:?}");
         }
         let long = format!("{}@example.com", "a".repeat(250));
         assert!(Email::parse(&long).is_none());

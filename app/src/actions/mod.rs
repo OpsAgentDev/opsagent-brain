@@ -11,6 +11,7 @@ pub mod recipients;
 pub mod resources;
 pub mod runs;
 pub mod uow;
+pub mod waitlist;
 
 use std::sync::Arc;
 
@@ -32,6 +33,7 @@ pub struct Actions {
     pub integrations: integrations::Integrations,
     pub deliveries: deliveries::Deliveries,
     pub oauth: oauth::OAuth,
+    pub waitlist: waitlist::Waitlist,
 }
 
 /// Fixed-window counters shared by every rate limit.
