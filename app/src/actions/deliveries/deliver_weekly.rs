@@ -144,6 +144,7 @@ impl DeliverWeekly {
             text,
             html: Some(html),
             idempotency_key: None,
+            reply_to: None,
         }
     }
 
