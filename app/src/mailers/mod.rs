@@ -1,3 +1,4 @@
+pub mod contact;
 pub mod magic_link;
 pub mod waitlist;
 
@@ -21,6 +22,8 @@ pub struct Mail {
     pub html: Option<String>,
     /// Sent as Resend's `Idempotency-Key`: a retried send is delivered once.
     pub idempotency_key: Option<String>,
+    /// Reply-To address; never the To.
+    pub reply_to: Option<String>,
 }
 
 #[async_trait]
@@ -70,15 +73,23 @@ pub struct ResendMailer {
     http: reqwest::Client,
 }
 
+fn resend_body(from: &str, mail: &Mail) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "from": from, "to": [&mail.to], "subject": &mail.subject, "text": &mail.text
+    });
+    if let Some(html) = &mail.html {
+        body["html"] = html.as_str().into();
+    }
+    if let Some(r) = &mail.reply_to {
+        body["reply_to"] = serde_json::json!([r]);
+    }
+    body
+}
+
 #[async_trait]
 impl Mailer for ResendMailer {
     async fn send(&self, mail: Mail) -> std::result::Result<(), String> {
-        let mut body = serde_json::json!({
-            "from": self.from, "to": [mail.to], "subject": mail.subject, "text": mail.text
-        });
-        if let Some(html) = mail.html {
-            body["html"] = html.into();
-        }
+        let body = resend_body(&self.from, &mail);
         let mut req = self
             .http
             .post("https://api.resend.com/emails")
@@ -119,6 +130,10 @@ impl Mailer for SmtpMailer {
             .from(self.from.clone())
             .to(mail.to.parse().map_err(|e: AddressError| e.to_string())?)
             .subject(mail.subject);
+        let b = match &mail.reply_to {
+            Some(r) => b.reply_to(r.parse().map_err(|e: AddressError| e.to_string())?),
+            None => b,
+        };
         let msg = match mail.html {
             Some(html) => b.multipart(MultiPart::alternative_plain_html(mail.text, html)),
             None => b.body(mail.text),
@@ -236,6 +251,21 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("SECRET123"), "{out}");
+    }
+
+    #[test]
+    fn resend_body_carries_reply_to_only_when_set() {
+        let mut m = Mail {
+            to: "t@x.io".into(),
+            reply_to: Some("v@x.io".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resend_body("f@x.io", &m)["reply_to"],
+            serde_json::json!(["v@x.io"])
+        );
+        m.reply_to = None;
+        assert!(resend_body("f@x.io", &m).get("reply_to").is_none());
     }
 
     fn s(v: &str) -> Option<String> {

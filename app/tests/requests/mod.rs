@@ -1,6 +1,7 @@
 mod agents;
 mod auth;
 mod connections;
+mod contact;
 mod deliveries;
 mod findings;
 mod health;

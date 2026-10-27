@@ -6,6 +6,7 @@ pub use super::audit_events::Entity as AuditEvents;
 pub use super::connection_credentials::Entity as ConnectionCredentials;
 pub use super::connection_verifications::Entity as ConnectionVerifications;
 pub use super::connections::Entity as Connections;
+pub use super::contact_messages::Entity as ContactMessages;
 pub use super::deliveries::Entity as Deliveries;
 pub use super::email_suppressions::Entity as EmailSuppressions;
 pub use super::evidence::Entity as Evidence;

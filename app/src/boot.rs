@@ -12,13 +12,13 @@ use axum::{middleware::from_fn_with_state, Router};
 
 use crate::{
     actions::{
-        auth, connections, deliveries, findings, integrations, members, oauth, orgs, recipients,
-        resources, runs, uow::UnitOfWork, waitlist, Actions, ClientMetadataSource, ConnectorSource,
-        RateLimiter,
+        auth, connections, contact, deliveries, findings, integrations, members, oauth, orgs,
+        recipients, resources, runs, uow::UnitOfWork, waitlist, Actions, ClientMetadataSource,
+        ConnectorSource, RateLimiter,
     },
     adapters::{
         client_metadata::HttpClientMetadata,
-        db::{Pg, PgWaitlist},
+        db::{Pg, PgContact, PgWaitlist},
         pg_queue::PgQueue,
         rate_limiter::RedisRateLimiter,
         slack::{HttpSlack, SlackClient},
@@ -183,6 +183,15 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.limiter.clone(),
                 d.mailer.clone(),
                 d.clock.clone(),
+            ),
+        },
+        contact: contact::Contact {
+            send: contact::SendContact::new(
+                Arc::new(PgContact(d.db.clone())),
+                d.limiter.clone(),
+                d.mailer.clone(),
+                d.clock.clone(),
+                d.config.contact_to.clone(),
             ),
         },
         auth: auth::Auth {

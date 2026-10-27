@@ -8,6 +8,7 @@ pub mod audit_events;
 pub mod connection_credentials;
 pub mod connection_verifications;
 pub mod connections;
+pub mod contact_messages;
 pub mod deliveries;
 pub mod email_suppressions;
 pub mod evidence;

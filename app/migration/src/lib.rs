@@ -16,6 +16,7 @@ mod m20261023_000011_jobs;
 mod m20261024_000012_oauth;
 mod m20261024_000013_magic_link_return_to;
 mod m20261027_000014_waitlist;
+mod m20261028_000015_contact;
 
 pub struct Migrator;
 
@@ -37,6 +38,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261024_000012_oauth::Migration),
             Box::new(m20261024_000013_magic_link_return_to::Migration),
             Box::new(m20261027_000014_waitlist::Migration),
+            Box::new(m20261028_000015_contact::Migration),
             // inject-above (do not remove this comment)
         ]
     }

@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod auth;
 pub mod connections;
+pub mod contact;
 pub mod deliveries;
 pub mod findings;
 pub mod health;
