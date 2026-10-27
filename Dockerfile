@@ -2,10 +2,9 @@
 FROM rust:1.99-bookworm AS builder
 WORKDIR /src
 COPY . .
-# Cache mounts keep the registry and target dir between builds; the binary is copied out of the mount.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
-    cargo build --release -p opsagent-brain --bin opsagent-brain \
+# No BuildKit cache mounts: Railway requires a per-service mount id, and api, worker and
+# scheduler all build from this file.
+RUN cargo build --release -p opsagent-brain --bin opsagent-brain \
     && cp target/release/opsagent-brain /opsagent-brain
 
 FROM debian:bookworm-slim
