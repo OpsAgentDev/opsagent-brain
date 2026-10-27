@@ -67,7 +67,8 @@ pub struct CreatedConnection {
 #[utoipa::path(post, path = "/orgs/{org}/connections", tag = "connections", params(OrgPath),
     request_body = NewConnection,
     responses((status = 201, body = CreatedConnection), (status = 403, body = Problem),
-        (status = 404, body = Problem), (status = 422, body = Problem)))]
+        (status = 404, body = Problem), (status = 422, body = Problem),
+        (status = 503, body = Problem)))]
 async fn create(
     State(app): State<AppState>,
     scope: OrgScope,
@@ -75,6 +76,13 @@ async fn create(
 ) -> Result<(StatusCode, Json<CreatedConnection>), ApiError> {
     scope.require_owner()?;
     let name = valid_name(&body.display_name).map_err(ApiError::invalid)?;
+    // Before any row is written: AWS needs the outbound role to build the onboarding link.
+    if body.provider == "aws" && app.config.aws_outbound_role_arn.is_none() {
+        return Err(ApiError::unavailable(
+            "connector_unavailable",
+            "AWS connections are not available yet.",
+        ));
+    }
     let org_id = scope.organisation.id;
     let create = &app.actions.connections.create_connection;
     let created = create
