@@ -1,11 +1,12 @@
 use std::{net::IpAddr, sync::Arc};
 
-use opsagent_core::user::Email;
+use opsagent_core::{repo::Clock, user::Email};
 
 use super::WaitlistStore;
 use crate::{
     actions::{hit_ip, RateLimiter, HOUR_SECS},
     error::AppResult,
+    mailers::{waitlist::waitlist_confirmation, Mailer},
 };
 
 /// Joins per client IP (IPv6: per /64) per hour; duplicates count.
@@ -31,11 +32,23 @@ pub enum JoinOutcome {
 pub struct JoinWaitlist {
     store: Arc<dyn WaitlistStore>,
     limiter: Arc<dyn RateLimiter>,
+    mailer: Arc<dyn Mailer>,
+    clock: Arc<dyn Clock>,
 }
 
 impl JoinWaitlist {
-    pub fn new(store: Arc<dyn WaitlistStore>, limiter: Arc<dyn RateLimiter>) -> Self {
-        Self { store, limiter }
+    pub fn new(
+        store: Arc<dyn WaitlistStore>,
+        limiter: Arc<dyn RateLimiter>,
+        mailer: Arc<dyn Mailer>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self {
+            store,
+            limiter,
+            mailer,
+            clock,
+        }
     }
 
     pub async fn run(&self, input: JoinInput) -> AppResult<JoinOutcome> {
@@ -68,7 +81,77 @@ impl JoinWaitlist {
         }
         if let Some(id) = self.store.insert(&email, input.source.as_deref()).await? {
             tracing::info!(entry_id = %id, "waitlist entry added");
+            // Inline, only for a fresh row: a duplicate or a lost race sends nothing.
+            // Never log the address.
+            match self
+                .mailer
+                .send(waitlist_confirmation(email.as_str()))
+                .await
+            {
+                Ok(()) => self.store.mark_confirmed(id, self.clock.now()).await?,
+                Err(_) => tracing::warn!(entry_id = %id, "waitlist confirmation not sent"),
+            }
         }
         Ok(JoinOutcome::Accepted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{error::AppError, mailers::CaptureMailer};
+    use async_trait::async_trait;
+    use opsagent_core::repo::SystemClock;
+
+    struct BrokenLimiter;
+
+    #[async_trait]
+    impl RateLimiter for BrokenLimiter {
+        async fn hit(&self, _: &str, _: i64, _: i64) -> AppResult<bool> {
+            Err(AppError::Internal("redis down".into()))
+        }
+        async fn distinct(&self, _: &str, _: &str, _: i64) -> AppResult<i64> {
+            unreachable!()
+        }
+        async fn clear(&self, _: &str) -> AppResult<()> {
+            unreachable!()
+        }
+        async fn forget(&self, _: &str, _: &str) -> AppResult<()> {
+            unreachable!()
+        }
+    }
+
+    struct NoStore;
+
+    #[async_trait]
+    impl WaitlistStore for NoStore {
+        async fn insert(&self, _: &Email, _: Option<&str>) -> AppResult<Option<uuid::Uuid>> {
+            panic!("must not reach the store")
+        }
+        async fn mark_confirmed(
+            &self,
+            _: uuid::Uuid,
+            _: chrono::DateTime<chrono::Utc>,
+        ) -> AppResult<()> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn limiter_error_fails_closed() {
+        let mail = Arc::new(CaptureMailer::default());
+        let join = JoinWaitlist::new(
+            Arc::new(NoStore),
+            Arc::new(BrokenLimiter),
+            mail.clone(),
+            Arc::new(SystemClock),
+        );
+        let input = JoinInput {
+            email: "a@b.io".into(),
+            source: None,
+            client_ip: None,
+        };
+        assert_eq!(join.run(input).await.unwrap(), JoinOutcome::RateLimited);
+        assert!(mail.sent().is_empty());
     }
 }

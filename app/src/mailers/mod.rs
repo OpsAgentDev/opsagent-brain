@@ -1,4 +1,5 @@
 pub mod magic_link;
+pub mod waitlist;
 
 use std::sync::Arc;
 

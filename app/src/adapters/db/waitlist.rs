@@ -1,6 +1,7 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use opsagent_core::user::Email;
-use sea_orm::{DatabaseConnection, FromQueryResult};
+use sea_orm::{ConnectionTrait, DatabaseConnection, FromQueryResult};
 use uuid::Uuid;
 
 use super::ledger_storage::stmt;
@@ -30,5 +31,16 @@ impl WaitlistStore for PgWaitlist {
         .await
         .map_err(super::db_err)?;
         Ok(row.map(|r| r.id))
+    }
+
+    async fn mark_confirmed(&self, id: Uuid, at: DateTime<Utc>) -> AppResult<()> {
+        self.0
+            .execute_raw(stmt(
+                "UPDATE waitlist_entries SET confirmation_sent_at = $2 WHERE id = $1",
+                vec![id.into(), at.into()],
+            ))
+            .await
+            .map_err(super::db_err)?;
+        Ok(())
     }
 }

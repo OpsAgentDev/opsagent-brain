@@ -181,6 +181,8 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             join: waitlist::JoinWaitlist::new(
                 Arc::new(PgWaitlist(d.db.clone())),
                 d.limiter.clone(),
+                d.mailer.clone(),
+                d.clock.clone(),
             ),
         },
         auth: auth::Auth {

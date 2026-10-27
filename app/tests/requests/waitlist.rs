@@ -3,7 +3,33 @@ use sea_orm::{entity::prelude::*, ConnectionTrait};
 use serde_json::json;
 use serial_test::serial;
 
+use std::sync::{Arc, Mutex};
+
+use opsagent_brain::mailers::{Mail, Mailer};
+
 use super::support::*;
+
+struct FailingMailer;
+
+#[async_trait::async_trait]
+impl Mailer for FailingMailer {
+    async fn send(&self, _: Mail) -> Result<(), String> {
+        Err("boom".into())
+    }
+}
+
+#[derive(Clone, Default)]
+struct Buf(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Buf {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 /// Empty table and fresh IP counters: both outlive a test.
 async fn reset(ctx: &TestApp) {
@@ -146,4 +172,97 @@ async fn no_csrf_needed_anonymously() {
         assert!(res.text().is_empty());
     })
     .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn new_email_gets_one_confirmation() {
+    serve(|req, ctx| async move {
+        reset(&ctx).await;
+        let mail = prepare(&ctx);
+        let res = req
+            .post("/v1/waitlist")
+            .json(&json!({"email":"a@b.io"}))
+            .await;
+        assert_eq!(res.status_code(), 202);
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].to, "a@b.io");
+        assert_eq!(sent[0].subject, "You're on the OpsAgent waitlist");
+        let row = waitlist_entries::Entity::find().one(&ctx.db).await.unwrap();
+        assert!(row.unwrap().confirmation_sent_at.is_some());
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn duplicate_sends_no_second_mail() {
+    serve(|req, ctx| async move {
+        reset(&ctx).await;
+        let mail = prepare(&ctx);
+        for _ in 0..2 {
+            let res = req
+                .post("/v1/waitlist")
+                .json(&json!({"email":"a@b.io"}))
+                .await;
+            assert_eq!(res.status_code(), 202);
+        }
+        assert_eq!(mail.sent().len(), 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn concurrent_duplicates_send_one_mail() {
+    serve(|req, ctx| async move {
+        reset(&ctx).await;
+        let mail = prepare(&ctx);
+        let post = || req.post("/v1/waitlist").json(&json!({"email":"a@b.io"}));
+        let (a, b) = tokio::join!(post(), post());
+        assert_eq!(
+            (a.status_code().as_u16(), b.status_code().as_u16()),
+            (202, 202)
+        );
+        assert_eq!(mail.sent().len(), 1);
+        assert_eq!(
+            waitlist_entries::Entity::find()
+                .count(&ctx.db)
+                .await
+                .unwrap(),
+            1
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn mail_failure_still_accepts() {
+    let buf = Buf::default();
+    let sub = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_ansi(false)
+        .with_writer({
+            let b = buf.clone();
+            move || b.clone()
+        })
+        .finish();
+    let _g = tracing::subscriber::set_default(sub);
+    serve(|req, ctx| async move {
+        reset(&ctx).await;
+        ctx.set_mailer(Arc::new(FailingMailer));
+        let res = req
+            .post("/v1/waitlist")
+            .json(&json!({"email":"a@b.io"}))
+            .await;
+        assert_eq!(res.status_code(), 202);
+        let row = waitlist_entries::Entity::find().one(&ctx.db).await.unwrap();
+        assert!(row.unwrap().confirmation_sent_at.is_none());
+    })
+    .await;
+    let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    assert!(out.contains("waitlist confirmation not sent"), "{out}");
+    assert!(!out.contains("a@b.io"), "{out}");
 }
