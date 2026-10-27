@@ -31,6 +31,16 @@ impl std::io::Write for Buf {
     }
 }
 
+async fn until(mut done: impl FnMut() -> bool) {
+    for _ in 0..300 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting");
+}
+
 /// Empty table and fresh IP counters: both outlive a test.
 async fn reset(ctx: &TestApp) {
     ctx.db
@@ -185,12 +195,19 @@ async fn new_email_gets_one_confirmation() {
             .json(&json!({"email":"a@b.io"}))
             .await;
         assert_eq!(res.status_code(), 202);
+        until(|| !mail.sent().is_empty()).await;
         let sent = mail.sent();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].to, "a@b.io");
         assert_eq!(sent[0].subject, "You're on the OpsAgent waitlist");
-        let row = waitlist_entries::Entity::find().one(&ctx.db).await.unwrap();
-        assert!(row.unwrap().confirmation_sent_at.is_some());
+        for _ in 0..300 {
+            let row = waitlist_entries::Entity::find().one(&ctx.db).await.unwrap();
+            if row.unwrap().confirmation_sent_at.is_some() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("confirmation_sent_at never set");
     })
     .await;
 }
@@ -208,6 +225,8 @@ async fn duplicate_sends_no_second_mail() {
                 .await;
             assert_eq!(res.status_code(), 202);
         }
+        until(|| !mail.sent().is_empty()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert_eq!(mail.sent().len(), 1);
     })
     .await;
@@ -258,6 +277,8 @@ async fn mail_failure_still_accepts() {
             .json(&json!({"email":"a@b.io"}))
             .await;
         assert_eq!(res.status_code(), 202);
+        // Wait for the background send to fail and log before reading.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let row = waitlist_entries::Entity::find().one(&ctx.db).await.unwrap();
         assert!(row.unwrap().confirmation_sent_at.is_none());
     })
