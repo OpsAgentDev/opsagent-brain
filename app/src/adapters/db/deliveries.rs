@@ -199,6 +199,8 @@ impl<C: Conn> DeliveriesRepo for Pg<C> {
         since: DateTime<Utc>,
     ) -> RepoResult<AlertTally> {
         const ONE: &str = "e.effect_key ~ '^alert:[0-9a-f-]{36}$'";
+        // `baselined` reads all history on purpose: `alert:baseline` side effects must never be
+        // pruned (any future retention must keep them) or the connection re-baselines.
         let r = self
             .db()
             .query_one_raw(stmt(

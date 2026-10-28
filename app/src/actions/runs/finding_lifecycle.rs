@@ -46,6 +46,9 @@ pub(super) async fn apply_watch(
     drafts: &[FindingDraft],
     now: DateTime<Utc>,
 ) -> RepoResult<()> {
+    if drafts.is_empty() {
+        return Ok(());
+    }
     let (org, conn, findings) = (c.organisation_id, c.id, repos.findings());
     let mut tracked: HashSet<FindingKey> = HashSet::new();
     let check_ids: BTreeSet<&str> = drafts.iter().map(|d| d.key.check_id.as_str()).collect();

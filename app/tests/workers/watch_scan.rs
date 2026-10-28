@@ -281,6 +281,90 @@ impl Connector for Failing {
     }
 }
 
+/// `noisy` that claims the full-scan lease on its first scoped (chunk) inventory call: a full
+/// scan starts after the watch passed its start gate.
+#[derive(Clone)]
+struct FullScanStarts {
+    inner: FakeConnector,
+    redis: opsagent_ledger::redis::Client,
+    key: String,
+}
+
+#[async_trait]
+impl Connector for FullScanStarts {
+    fn provider(&self) -> Provider {
+        self.inner.provider()
+    }
+    fn capabilities(&self) -> BTreeSet<Capability> {
+        self.inner.capabilities()
+    }
+    async fn verify(&self, c: &Credentials) -> opsagent_connectors::Result<VerifyOutcome> {
+        self.inner.verify(c).await
+    }
+    async fn inventory(
+        &self,
+        c: &Credentials,
+        s: &Scope,
+    ) -> opsagent_connectors::Result<InventoryResult> {
+        if s.services.len() == 1 {
+            let ttl = std::time::Duration::from_secs(60);
+            lease::claim(&self.redis, &self.key, "full-run", ttl)
+                .await
+                .unwrap();
+        }
+        self.inner.inventory(c, s).await
+    }
+    async fn cost_daily(
+        &self,
+        c: &Credentials,
+        d: u32,
+    ) -> opsagent_connectors::Result<Vec<CostRow>> {
+        self.inner.cost_daily(c, d).await
+    }
+    async fn metrics(
+        &self,
+        c: &Credentials,
+        q: MetricQuery,
+    ) -> opsagent_connectors::Result<Vec<MetricPoint>> {
+        self.inner.metrics(c, q).await
+    }
+    async fn simulate_restore(
+        &self,
+        c: &Credentials,
+        role: &str,
+    ) -> opsagent_connectors::Result<SimulationResult> {
+        self.inner.simulate_restore(c, role).await
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn watch_finalize_skips_when_full_scan_started_mid_run() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx).await;
+        scan(&ctx, conn, 0, &without_snapshot()).await;
+        let before = all_findings(&ctx, conn).await.len();
+        let key = format!("lease:conn:{conn}:full_scan");
+        let k = FullScanStarts {
+            inner: noisy(),
+            redis: ctx.redis(),
+            key: key.clone(),
+        };
+        let r = watch_run(&ctx, conn, 0, &watch(&ctx, k)).await;
+        assert_eq!(outcome(&r), ("skipped", Some("overlap")));
+        assert!(finding(&ctx, conn, "snap-public").await.is_none());
+        assert_eq!(all_findings(&ctx, conn).await.len(), before);
+        let history = resource_history::Entity::find()
+            .filter(resource_history::Column::RunId.eq(r.id))
+            .count(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(history, 0);
+        lease::unclaim(&ctx.redis(), &key, "full-run").await;
+    })
+    .await;
+}
+
 #[tokio::test]
 #[serial]
 async fn watch_scan_skips_check_with_failed_chunk() {

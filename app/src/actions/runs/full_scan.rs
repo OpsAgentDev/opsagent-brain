@@ -170,10 +170,15 @@ impl FullScan {
         if !done.await.map_err(lerr)? {
             return Ok(skip("no_baseline"));
         }
-        if is_claimed(&self.redis, &lease_key(c.id, JobKind::FullScan)).await? {
+        if self.full_scan_held(c).await? {
             return Ok(skip("overlap"));
         }
         Ok(None)
+    }
+
+    /// True while a full scan holds the connection's claim.
+    pub(super) async fn full_scan_held(&self, c: &Connection) -> Result<bool> {
+        is_claimed(&self.redis, &lease_key(c.id, JobKind::FullScan)).await
     }
 
     /// The scan proper, once the connection is claimed: credentials, discovery, chunks.

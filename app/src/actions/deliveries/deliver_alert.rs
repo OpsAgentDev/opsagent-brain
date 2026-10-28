@@ -125,6 +125,8 @@ impl DeliverAlert {
         let mut route = self.route(run, &c).await?;
         let base = &self.kit.web_base_url;
         let account = account(&c);
+        // `alert:baseline` ledger entries must never be pruned: retention that drops them
+        // would re-baseline the connection and swallow its next criticals into a summary.
         if !tally.baselined {
             let n = candidates.len();
             let msg = (n > 0).then(|| Msg {

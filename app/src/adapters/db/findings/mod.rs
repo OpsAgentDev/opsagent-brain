@@ -304,6 +304,8 @@ impl<C: Conn> FindingsRepo for Pg<C> {
             .col_expr(F::AlertedAt, Expr::value(at))
             .filter(F::OrganisationId.eq(organisation_id))
             .filter(F::Id.is_in(ids.iter().copied()))
+            // A finding resolved since it was read must keep `alerted_at` cleared (it re-alerts on reopen).
+            .filter(F::Status.ne("resolved"))
             .exec(self.db())
             .await
             .map(|_| ())

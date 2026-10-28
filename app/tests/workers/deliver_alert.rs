@@ -320,6 +320,32 @@ async fn first_full_scan_baselines_with_one_summary() {
 
 #[tokio::test]
 #[serial]
+async fn an_old_baseline_never_re_baselines() {
+    serve(|req, ctx| async move {
+        let w = world(&req, &ctx, "old-baseline@example.com").await;
+        let s = slack(&ctx, &w).await;
+        mock_post(&s, OK(), 2).await;
+        baselined(&ctx, &w).await;
+        // The baseline is long past every tally window.
+        sql(
+            &ctx,
+            "UPDATE side_effects SET done_at = now() - interval '400 days' \
+             WHERE effect_key = 'alert:baseline'",
+            vec![],
+        )
+        .await;
+        crit(&ctx, &w, "c1").await;
+        crit(&ctx, &w, "c2").await;
+        alert(&ctx, &w).await;
+        let got = posted(&s).await;
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|t| t.starts_with("🔴 Urgent:")), "{got:?}");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn each_scan_enqueues_one_delivery_that_the_worker_runs() {
     serve(|req, ctx| async move {
         let conn = connected(&req, &ctx, "enqueue@example.com", "noisy")

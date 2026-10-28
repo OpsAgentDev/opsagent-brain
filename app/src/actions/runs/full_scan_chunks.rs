@@ -288,6 +288,17 @@ impl Scan<'_> {
             now,
             unavailable: &unavailable,
         };
+        // A full scan that started after this watch began owns the findings: writing here
+        // could insert or reopen the same finding as its finalize.
+        if watch && self.fs.full_scan_held(c).await? {
+            let forget = tx.resources().forget_run(c.organisation_id, c.id, run_id);
+            forget.await.map_err(lerr)?;
+            tx.commit().await.map_err(lerr)?;
+            return Ok(ChunkOutcome {
+                stats: json!({ "skip_reason": "overlap" }),
+                ..Default::default()
+            });
+        }
         let mut stats = if watch {
             let (checks, skipped) = watch_scan::checks((self.fs.checks)(), &unavailable);
             let (mut drafts, check_errors) = run_checks(checks, k, &cx, run_id);

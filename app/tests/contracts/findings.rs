@@ -143,6 +143,17 @@ contract_suite! {
         let f = s.findings().get(org, id).await.unwrap().unwrap();
         assert_eq!((f.status.as_str(), f.alerted_at), ("resolved", None));
     }
+    async fn mark_alerted_skips_resolved(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        scan(s, seed, org, conn, &[draft(conn, "c", "a", Severity::Critical)]).await;
+        let id = s.findings().alert_candidates(org, conn).await.unwrap()[0].id;
+        let r2 = scan(s, seed, org, conn, &[]).await;
+        s.findings().resolve_unseen(org, conn, r2, &[], t(1)).await.unwrap();
+        s.findings().mark_alerted(org, &[id], t(2)).await.unwrap();
+        let f = s.findings().get(org, id).await.unwrap().unwrap();
+        assert_eq!((f.status.as_str(), f.alerted_at), ("resolved", None));
+    }
+
     async fn upsert_seen_twice_keeps_one_row_and_bumps_last_seen(s, seed) {
         let (org, conn) = world(s, seed).await;
         let d = [draft(conn, "no_mfa", "user/a", Severity::High)];

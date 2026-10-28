@@ -217,7 +217,7 @@ pub trait FindingsRepo: Send + Sync {
         organisation_id: Uuid,
         connection_id: Uuid,
     ) -> RepoResult<Vec<Finding>>;
-    /// Stamps `alerted_at` on these findings of the organisation.
+    /// Stamps `alerted_at` on these findings of the organisation; resolved ones are left alone.
     async fn mark_alerted(
         &self,
         organisation_id: Uuid,

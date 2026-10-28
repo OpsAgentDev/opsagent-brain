@@ -301,7 +301,8 @@ impl FindingsRepo for MemStore {
     ) -> RepoResult<()> {
         for r in self.state().findings.iter_mut() {
             let f = &mut r.finding;
-            if f.organisation_id == organisation_id && ids.contains(&f.id) {
+            if f.organisation_id == organisation_id && ids.contains(&f.id) && f.status != "resolved"
+            {
                 f.alerted_at = Some(at);
             }
         }
