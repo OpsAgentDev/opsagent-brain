@@ -197,9 +197,9 @@ async fn jobs_table_has_spec_columns_and_both_partial_indexes() {
     exec(&db, free).await.unwrap();
     exec(&db, free).await.unwrap();
 
-    // Eight steps: jobs is followed by the oauth, magic-link return_to, waitlist, contact,
-    // sign-in, urgent-alerts and resource-history index migrations.
-    Migrator::down(&db, Some(8)).await.unwrap();
+    // Nine steps: jobs is followed by the oauth, magic-link return_to, waitlist, contact,
+    // sign-in, urgent-alerts, resource-history index and retention migrations.
+    Migrator::down(&db, Some(9)).await.unwrap();
     assert!(exec(&db, "SELECT 1 FROM jobs").await.is_err());
     Migrator::up(&db, None).await.unwrap();
 }

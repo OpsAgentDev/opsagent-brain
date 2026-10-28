@@ -146,5 +146,6 @@ async fn mem_backfill_fills_connected_connections_once() {
             .unwrap(),
         0
     );
-    assert_eq!(all_due(&store).await.len(), 6);
+    // The connection's five, the organisation's weekly and the global retention schedule.
+    assert_eq!(all_due(&store).await.len(), 7);
 }

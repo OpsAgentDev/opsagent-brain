@@ -11,6 +11,7 @@ mod passkeys;
 mod rate_limiter;
 mod recipients;
 mod resources;
+mod retention;
 mod runs;
 mod schedules;
 mod users;
@@ -31,6 +32,7 @@ use opsagent_core::{
     passkey::{PasskeysRepo, StoredPasskey},
     repo::{Cursor, PageOf, PageRequest, RepoResult},
     resource::ResourcesRepo,
+    retention::{RetentionRepo, TtlTable},
     run::RunsRepo,
     user::{Email, User, UsersRepo},
 };
@@ -100,7 +102,8 @@ struct SuppressionRow {
 #[derive(Clone)]
 struct ScheduleRow {
     id: Uuid,
-    organisation_id: Uuid,
+    /// `None` for a global schedule (retention).
+    organisation_id: Option<Uuid>,
     connection_id: Option<Uuid>,
     job_type: String,
     cron_local: String,
@@ -140,6 +143,8 @@ pub struct MemState {
     verifications: Vec<(Uuid, Verification)>,
     /// Enqueued jobs, one per run.
     jobs: Vec<NewJob>,
+    /// Rows the retention job expires: `(table, expiry instant)`.
+    expiring: Vec<(TtlTable, DateTime<Utc>)>,
 }
 
 #[derive(Clone, Default)]
@@ -193,6 +198,9 @@ impl Repos for MemStore {
         self
     }
     fn passkeys(&self) -> &dyn PasskeysRepo {
+        self
+    }
+    fn retention(&self) -> &dyn RetentionRepo {
         self
     }
 }
@@ -256,6 +264,9 @@ impl Repos for MemTx {
         &self.work
     }
     fn passkeys(&self) -> &dyn PasskeysRepo {
+        &self.work
+    }
+    fn retention(&self) -> &dyn RetentionRepo {
         &self.work
     }
 }

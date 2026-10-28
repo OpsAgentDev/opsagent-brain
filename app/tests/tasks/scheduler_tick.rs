@@ -22,10 +22,19 @@ pub(super) async fn count(ctx: &TestApp, sql: &str) -> i64 {
         .unwrap()
 }
 
-/// Drops every schedule and run (and what hangs off runs, such as a first scan's rows).
+/// Drops every schedule and run (and what hangs off runs, such as a first scan's rows). The
+/// global retention schedule stays, disabled, so the tick's backfill does not add a due one.
 pub(super) async fn reset(ctx: &TestApp) {
     ctx.db
         .execute_raw(stmt("TRUNCATE schedules, runs CASCADE", vec![]))
+        .await
+        .unwrap();
+    ctx.db
+        .execute_raw(stmt(
+            "INSERT INTO schedules (id, job_type, cron_local, enabled) \
+             VALUES ($1, 'retention', '30 3 * * *', false)",
+            vec![Uuid::new_v4().into()],
+        ))
         .await
         .unwrap();
 }
@@ -44,7 +53,10 @@ async fn schedule(ctx: &TestApp, cron: &str, tz: &str, due: DateTime<Utc>) {
 
 async fn next_due(ctx: &TestApp) -> DateTime<Utc> {
     ctx.db
-        .query_one_raw(stmt("SELECT next_due_at FROM schedules", vec![]))
+        .query_one_raw(stmt(
+            "SELECT next_due_at FROM schedules WHERE enabled",
+            vec![],
+        ))
         .await
         .unwrap()
         .unwrap()
@@ -187,7 +199,8 @@ async fn connecting_creates_default_schedules_once() {
         // full_scan, watch_scan, verify, deliver_briefing, deliver_weekly; plus the
         // organisation's summary.
         let q = format!("SELECT count(*) n FROM schedules WHERE connection_id = '{id}'");
-        let org_q = "SELECT count(*) n FROM schedules WHERE connection_id IS NULL";
+        let org_q =
+            "SELECT count(*) n FROM schedules WHERE connection_id IS NULL AND organisation_id IS NOT NULL";
         assert_eq!(count(&ctx, &q).await, 5);
         assert_eq!(count(&ctx, org_q).await, 1);
         assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
@@ -225,7 +238,8 @@ async fn tick_gives_connected_connections_without_delivery_schedules_their_defau
             "SELECT count(*) n FROM schedules WHERE connection_id = '{id}' \
              AND job_type IN ('deliver_briefing','deliver_weekly')"
         );
-        let org_q = "SELECT count(*) n FROM schedules WHERE connection_id IS NULL";
+        let org_q =
+            "SELECT count(*) n FROM schedules WHERE connection_id IS NULL AND organisation_id IS NOT NULL";
         let pending_q =
             format!("SELECT count(*) n FROM schedules WHERE connection_id = '{pending}'");
         for _ in 0..2 {

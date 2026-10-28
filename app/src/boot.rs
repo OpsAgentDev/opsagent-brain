@@ -13,8 +13,8 @@ use axum::{middleware::from_fn_with_state, Router};
 use crate::{
     actions::{
         auth, connections, contact, deliveries, findings, integrations, members, oauth, orgs,
-        recipients, resources, runs, uow::UnitOfWork, waitlist, Actions, ClientMetadataSource,
-        ConnectorSource, RateLimiter,
+        recipients, resources, retention, runs, uow::UnitOfWork, waitlist, Actions,
+        ClientMetadataSource, ConnectorSource, RateLimiter,
     },
     adapters::{
         client_metadata::HttpClientMetadata,
@@ -27,8 +27,8 @@ use crate::{
     controllers,
     error::{AppError, AppResult},
     jobs::{
-        DeliverAlertJob, DeliverBriefingJob, DeliverWeeklyJob, FullScanJob, JobHandler, Scheduler,
-        VerifyJob, WatchScanJob, WorkerRunner,
+        DeliverAlertJob, DeliverBriefingJob, DeliverWeeklyJob, FullScanJob, JobHandler,
+        RetentionJob, Scheduler, VerifyJob, WatchScanJob, WorkerRunner,
     },
     mailers::{self, Mailer},
     mcp, middleware,
@@ -197,6 +197,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.config.contact_to.clone(),
             ),
         },
+        retention: retention::Retention::new(d.uow.clone(), d.redis.clone(), d.clock.clone()),
         auth: auth::Auth {
             request_magic_link: auth::RequestMagicLink::new(
                 d.uow.clone(),
@@ -459,7 +460,7 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
     }
 }
 
-/// The job runner with the six job handlers, the only registry of job kinds. The queue and
+/// The job runner with the seven job handlers, the only registry of job kinds. The queue and
 /// the job work share the state's one pool (`pool_size` with a worker).
 pub fn worker(state: &AppState) -> WorkerRunner {
     let (runs, deliveries) = (&state.actions.runs, &state.actions.deliveries);
@@ -474,6 +475,7 @@ pub fn worker(state: &AppState) -> WorkerRunner {
             deliveries.deliver_weekly.clone(),
         ))),
         Arc::new(DeliverAlertJob(Arc::new(deliveries.deliver_alert.clone()))),
+        Arc::new(RetentionJob(Arc::new(state.actions.retention.clone()))),
     ];
     let source = Arc::new(PgQueue(state.db.clone()));
     WorkerRunner::new(source, handlers, &state.config, state.clock.clone())

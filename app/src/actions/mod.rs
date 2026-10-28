@@ -10,6 +10,7 @@ pub mod oauth;
 pub mod orgs;
 pub mod recipients;
 pub mod resources;
+pub mod retention;
 pub mod runs;
 pub mod uow;
 pub mod waitlist;
@@ -36,6 +37,7 @@ pub struct Actions {
     pub oauth: oauth::OAuth,
     pub waitlist: waitlist::Waitlist,
     pub contact: contact::Contact,
+    pub retention: retention::Retention,
 }
 
 /// Fixed-window counters shared by every rate limit.

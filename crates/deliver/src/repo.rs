@@ -323,7 +323,8 @@ pub trait SchedulesRepo: Send + Sync {
     ) -> RepoResult<()>;
     async fn disable_for_org(&self, organisation_id: Uuid) -> RepoResult<u64>;
     /// `create_defaults` for every connected connection of a live organisation that lacks
-    /// the newest default (`watch_scan`); returns how many.
+    /// the newest default (`watch_scan`); returns how many. Also creates the one global
+    /// `retention` schedule if it is missing.
     /// tenancy: scheduler pass; each row's organisation scopes its writes.
     async fn backfill_defaults(&self, now: DateTime<Utc>) -> RepoResult<u64>;
     /// Enabled schedules due at `now`, of live organisations, most overdue first.

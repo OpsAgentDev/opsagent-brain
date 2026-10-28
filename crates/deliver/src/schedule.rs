@@ -18,6 +18,8 @@ pub const VERIFY_REVOKED: &str = "0 4 * * *";
 pub const BRIEFING: &str = "0 8 * * *";
 /// Weekly report, Monday 09:00 local, per connection and per organisation.
 pub const WEEKLY: &str = "0 9 * * 1";
+/// The global nightly retention run, 03:30 UTC (retention.md).
+pub const RETENTION_CRON: &str = "30 3 * * *";
 
 /// `HH:MM` local as a daily cron (`M H * * *`).
 pub fn daily_at(t: NaiveTime) -> String {
