@@ -91,6 +91,7 @@ mod tests {
             mail.clone(),
             WEB.into(),
             at(0),
+            SECRET.into(),
         );
         let input = MagicLinkInput {
             email: "late@example.com".into(),

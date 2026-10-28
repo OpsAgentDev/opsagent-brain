@@ -10,7 +10,7 @@ use crate::{
     actions::{ip_bucket, uow::UnitOfWork, RateLimiter, HOUR_SECS},
     error::AppResult,
     mailers::{magic_link as mail, Mailer},
-    tokens::{hash_token, new_token},
+    tokens::{code_hash, hash_token, new_code, new_token},
 };
 
 /// Links per address per hour.
@@ -32,6 +32,8 @@ pub struct RequestMagicLink {
     mailer: Arc<dyn Mailer>,
     web_base_url: String,
     clock: Arc<dyn Clock>,
+    /// Keys the stored code hashes (`SESSION_SECRET`).
+    secret: String,
 }
 
 impl RequestMagicLink {
@@ -41,6 +43,7 @@ impl RequestMagicLink {
         mailer: Arc<dyn Mailer>,
         web_base_url: String,
         clock: Arc<dyn Clock>,
+        secret: String,
     ) -> Self {
         Self {
             users,
@@ -48,6 +51,7 @@ impl RequestMagicLink {
             mailer,
             web_base_url,
             clock,
+            secret,
         }
     }
 
@@ -85,12 +89,15 @@ impl RequestMagicLink {
         let user = users.find_or_create_by_email(&email).await?;
         let return_to = input.return_to.as_deref().and_then(consent_return_to);
         let token = new_token();
+        let token_hash = hash_token(&token);
+        let code = new_code();
         let expires = self.clock.now() + Duration::minutes(15);
         users
             .issue_magic_link(
                 user.id,
                 &email,
-                &hash_token(&token),
+                &token_hash,
+                &code_hash(&self.secret, &token_hash, &code),
                 return_to.as_deref(),
                 expires,
             )
@@ -102,7 +109,7 @@ impl RequestMagicLink {
         );
         if let Err(e) = self
             .mailer
-            .send(mail::magic_link(email.as_str(), &link))
+            .send(mail::magic_link(email.as_str(), &link, &code))
             .await
         {
             tracing::error!(error = %e, "magic link mail failed");
@@ -153,6 +160,15 @@ mod tests {
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].to, "new@example.com");
         assert!(last_token(&mail).len() > 20);
+        let m = &sent[0];
+        assert!(
+            m.subject.starts_with("Your OpsAgent sign-in code: "),
+            "{}",
+            m.subject
+        );
+        let code = last_code(&mail);
+        assert!(code.len() == 6 && code.bytes().all(|b| b.is_ascii_digit()));
+        assert!(m.text.contains(&format!("Or enter this code: {code}")));
         let email = Email::parse("new@example.com").unwrap();
         assert!(store.users().find_by_email(&email).await.unwrap().is_some());
     }

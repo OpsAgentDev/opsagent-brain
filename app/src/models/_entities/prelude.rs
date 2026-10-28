@@ -22,6 +22,7 @@ pub use super::oauth_consent_requests::Entity as OauthConsentRequests;
 pub use super::oauth_grants::Entity as OauthGrants;
 pub use super::oauth_refresh_tokens::Entity as OauthRefreshTokens;
 pub use super::organisations::Entity as Organisations;
+pub use super::passkeys::Entity as Passkeys;
 pub use super::recipients::Entity as Recipients;
 pub use super::resource_history::Entity as ResourceHistory;
 pub use super::resources::Entity as Resources;

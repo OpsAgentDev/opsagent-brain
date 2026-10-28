@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     repo::RepoResult,
-    user::{Email, User, UsersRepo},
+    user::{Email, LiveCode, User, UsersRepo},
 };
 use uuid::Uuid;
 
@@ -19,6 +19,7 @@ impl MemState {
             email: email.clone(),
             name,
             github_id,
+            google_id: None,
             created_at: Utc::now(),
         };
         self.users.push(u.clone());
@@ -65,13 +66,18 @@ impl UsersRepo for MemStore {
     async fn issue_magic_link(
         &self,
         user_id: Uuid,
-        _email: &Email,
+        email: &Email,
         token_hash: &str,
+        code_hash: &str,
         return_to: Option<&str>,
         expires_at: DateTime<Utc>,
     ) -> RepoResult<()> {
         self.state().magic_links.push(MagicLinkRow {
+            id: Uuid::new_v4(),
             user_id,
+            email: email.clone(),
+            code_hash: Some(code_hash.into()),
+            code_attempts: 0,
             token_hash: token_hash.into(),
             return_to: return_to.map(Into::into),
             expires_at,
@@ -94,5 +100,46 @@ impl UsersRepo for MemStore {
             l.used = true;
             (l.user_id, l.return_to.clone())
         }))
+    }
+
+    async fn live_codes(&self, email: &Email, now: DateTime<Utc>) -> RepoResult<Vec<LiveCode>> {
+        let s = self.state();
+        Ok(s.magic_links
+            .iter()
+            .filter(|l| l.email == *email && !l.used && l.expires_at > now)
+            .filter_map(|l| {
+                Some(LiveCode {
+                    id: l.id,
+                    user_id: l.user_id,
+                    token_hash: l.token_hash.clone(),
+                    code_hash: l.code_hash.clone()?,
+                    return_to: l.return_to.clone(),
+                })
+            })
+            .collect())
+    }
+
+    async fn spend_code(&self, id: Uuid, now: DateTime<Utc>) -> RepoResult<bool> {
+        let mut s = self.state();
+        let link = s
+            .magic_links
+            .iter_mut()
+            .find(|l| l.id == id && !l.used && l.expires_at > now);
+        Ok(link.map(|l| l.used = true).is_some())
+    }
+
+    async fn count_wrong_code(&self, ids: &[Uuid]) -> RepoResult<()> {
+        for l in self
+            .state()
+            .magic_links
+            .iter_mut()
+            .filter(|l| ids.contains(&l.id))
+        {
+            l.code_attempts += 1;
+            if l.code_attempts >= 5 {
+                l.code_hash = None;
+            }
+        }
+        Ok(())
     }
 }

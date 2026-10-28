@@ -30,7 +30,7 @@ use opsagent_core::{
     repo::{Cursor, PageOf, PageRequest, RepoResult},
     resource::ResourcesRepo,
     run::RunsRepo,
-    user::{User, UsersRepo},
+    user::{Email, User, UsersRepo},
 };
 use opsagent_deliver::repo::{
     DeliveriesRepo, DeliveryRow, Integration, IntegrationsRepo, RecipientRow, RecipientsRepo,
@@ -70,7 +70,11 @@ struct InviteRow {
 
 #[derive(Clone)]
 struct MagicLinkRow {
+    id: Uuid,
     user_id: Uuid,
+    email: Email,
+    code_hash: Option<String>,
+    code_attempts: u32,
     token_hash: String,
     return_to: Option<String>,
     expires_at: DateTime<Utc>,

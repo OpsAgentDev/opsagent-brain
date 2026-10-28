@@ -34,6 +34,7 @@ pub fn prepare(ctx: &TestApp) -> Arc<CaptureMailer> {
     let mut keys: Vec<String> = Vec::new();
     for pattern in [
         "ratelimit:magic_link:*",
+        "ratelimit:verify_code:*",
         "ratelimit:recipient_confirm:*",
         "recipient_confirm:*",
     ] {

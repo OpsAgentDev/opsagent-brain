@@ -38,16 +38,47 @@ contract_suite! {
         let e = email("ada@example.com");
         let u = s.users().find_or_create_by_email(&e).await.unwrap();
         let now = Utc::now();
-        s.users().issue_magic_link(u.id, &e, "h1", None, now + Duration::minutes(15)).await.unwrap();
+        s.users().issue_magic_link(u.id, &e, "h1", "ch1", None, now + Duration::minutes(15)).await.unwrap();
         assert_eq!(s.users().consume_magic_link("h1", now).await.unwrap(), Some((u.id, None)));
         assert_eq!(s.users().consume_magic_link("h1", now).await.unwrap(), None);
-        s.users().issue_magic_link(u.id, &e, "h2", Some("/oauth/consent?request_id=x"), now + Duration::minutes(1)).await.unwrap();
+        s.users().issue_magic_link(u.id, &e, "h2", "ch2", Some("/oauth/consent?request_id=x"), now + Duration::minutes(1)).await.unwrap();
         let later = now + Duration::minutes(2);
         assert_eq!(s.users().consume_magic_link("h2", later).await.unwrap(), None);
         assert_eq!(s.users().consume_magic_link("unknown", now).await.unwrap(), None);
         // The stored destination comes back with the user.
-        s.users().issue_magic_link(u.id, &e, "h3", Some("/oauth/consent?request_id=x"), now + Duration::minutes(1)).await.unwrap();
+        s.users().issue_magic_link(u.id, &e, "h3", "ch3", Some("/oauth/consent?request_id=x"), now + Duration::minutes(1)).await.unwrap();
         let back = s.users().consume_magic_link("h3", now).await.unwrap();
         assert_eq!(back, Some((u.id, Some("/oauth/consent?request_id=x".into()))));
+    }
+
+    async fn live_codes_spend_once_and_die_after_five_wrong(s) {
+        let e = email("ada@example.com");
+        let u = s.users().find_or_create_by_email(&e).await.unwrap();
+        let now = Utc::now();
+        let soon = now + Duration::minutes(15);
+        s.users().issue_magic_link(u.id, &e, "t1", "c1", Some("/x"), soon).await.unwrap();
+        s.users().issue_magic_link(u.id, &e, "t2", "c2", None, now + Duration::minutes(1)).await.unwrap();
+        let live = s.users().live_codes(&e, now).await.unwrap();
+        assert_eq!(live.len(), 2);
+        let one = live.iter().find(|l| l.token_hash == "t1").unwrap().clone();
+        assert_eq!((one.user_id, one.code_hash.as_str(), one.return_to.as_deref()), (u.id, "c1", Some("/x")));
+        // Expired rows are not live.
+        assert_eq!(s.users().live_codes(&e, now + Duration::minutes(2)).await.unwrap().len(), 1);
+        // Four wrong guesses keep the code, the fifth disables it; the link still redeems.
+        let ids: Vec<_> = live.iter().map(|l| l.id).collect();
+        for _ in 0..4 {
+            s.users().count_wrong_code(&ids).await.unwrap();
+        }
+        assert_eq!(s.users().live_codes(&e, now).await.unwrap().len(), 2);
+        s.users().count_wrong_code(&ids).await.unwrap();
+        assert!(s.users().live_codes(&e, now).await.unwrap().is_empty());
+        assert!(s.users().consume_magic_link("t1", now).await.unwrap().is_some());
+        // Spending is once only, and not after expiry.
+        s.users().issue_magic_link(u.id, &e, "t3", "c3", None, soon).await.unwrap();
+        let id = s.users().live_codes(&e, now).await.unwrap()[0].id;
+        assert!(!s.users().spend_code(id, soon).await.unwrap());
+        assert!(s.users().spend_code(id, now).await.unwrap());
+        assert!(!s.users().spend_code(id, now).await.unwrap());
+        assert!(s.users().consume_magic_link("t3", now).await.unwrap().is_none());
     }
 }

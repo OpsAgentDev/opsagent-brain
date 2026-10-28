@@ -35,6 +35,41 @@ async fn magic_link_creates_user_and_sends_one_mail() {
 
 #[tokio::test]
 #[serial]
+async fn verify_code_sets_cookie_and_honours_origin() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        req.post("/v1/auth/magic-link")
+            .json(&json!({"email": "Code@Example.com"}))
+            .await;
+        let m = mail.sent().pop().unwrap();
+        let code = m.subject.rsplit(' ').next().unwrap().to_string();
+        let verify = |origin: &'static str, code: &str| {
+            req.post("/v1/auth/magic-link/verify")
+                .add_header("Origin", origin)
+                .json(&json!({ "email": "code@example.com", "code": code }))
+        };
+
+        let res = verify("https://evil.example", &code).await;
+        assert_eq!(res.status_code(), 403);
+
+        let res = verify(WEB_ORIGIN, &code).await;
+        assert_eq!(res.status_code(), 200);
+        assert!(res.json::<Value>()["redirect"]
+            .as_str()
+            .unwrap()
+            .ends_with("/dashboard"));
+        let cookie = res.header("set-cookie").to_str().unwrap().to_string();
+        assert!(cookie.starts_with("opsagent_session="), "{cookie}");
+
+        let res = verify(WEB_ORIGIN, &code).await;
+        assert_eq!(res.status_code(), 410);
+        assert_eq!(res.json::<Value>()["code"], "code_invalid");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn magic_link_redeem_sets_cookie_and_is_single_use() {
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);

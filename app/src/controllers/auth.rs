@@ -16,7 +16,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use crate::{
-    actions::auth::{GithubProfile, MagicLinkInput},
+    actions::auth::{GithubProfile, MagicLinkInput, VerifyCodeInput},
     adapters::client_ip::ClientIp,
     api_error::{ApiError, ApiJson, Problem},
     middleware::{csrf, org_scope::AuthUser, session::USER_KEY},
@@ -114,6 +114,40 @@ async fn redeem_link(
     check_origin(&headers, &web)?;
     let redeem = &app.actions.auth.redeem_magic_link;
     let (user_id, return_to) = redeem.run(&body.token).await?;
+    start_session(&session, user_id).await?;
+    Ok(Json(Redirect {
+        redirect: landing(&web, return_to.as_deref()),
+    }))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct VerifyRequest {
+    pub email: String,
+    /// The 6-digit code from the sign-in mail; spaces are ignored.
+    pub code: String,
+}
+
+/// Same session and `redirect` as redeem; 10 attempts per client IP and per address per 15
+/// minutes, then 429.
+#[utoipa::path(post, path = "/auth/magic-link/verify", tag = "auth", request_body = VerifyRequest,
+    responses((status = 200, body = Redirect, description = "Session cookie set"),
+        (status = 403, body = Problem), (status = 410, body = Problem),
+        (status = 429, body = Problem)))]
+async fn verify_code(
+    State(app): State<AppState>,
+    session: Session,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<VerifyRequest>,
+) -> Result<Json<Redirect>, ApiError> {
+    let web = app.config.web_base_url.clone();
+    check_origin(&headers, &web)?;
+    let input = VerifyCodeInput {
+        email: body.email,
+        code: body.code,
+        client_ip: ip,
+    };
+    let (user_id, return_to) = app.actions.auth.verify_code.run(input).await?;
     start_session(&session, user_id).await?;
     Ok(Json(Redirect {
         redirect: landing(&web, return_to.as_deref()),
@@ -360,6 +394,7 @@ pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(request_link))
         .routes(routes!(redeem_link))
+        .routes(routes!(verify_code))
         .routes(routes!(github_start))
         .routes(routes!(github_callback))
         .routes(routes!(csrf_token))

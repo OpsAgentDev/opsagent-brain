@@ -110,6 +110,64 @@
         }
       }
     },
+    "/auth/magic-link/verify": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Same session and `redirect` as redeem; 10 attempts per client IP and per address per 15\nminutes, then 429.",
+        "operationId": "auth_verify_code",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Session cookie set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Redirect"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/me": {
       "get": {
         "tags": [
@@ -4478,6 +4536,22 @@
           "role_arn": {
             "type": "string",
             "description": "The read role's ARN from the stack outputs (required for `aws`)."
+          }
+        }
+      },
+      "VerifyRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The 6-digit code from the sign-in mail; spaces are ignored."
+          },
+          "email": {
+            "type": "string"
           }
         }
       },

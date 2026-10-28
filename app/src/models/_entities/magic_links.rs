@@ -17,6 +17,9 @@ pub struct Model {
     #[sea_orm(column_type = "Text", nullable)]
     pub return_to: Option<String>,
     pub used_at: Option<DateTimeWithTimeZone>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub code_hash: Option<String>,
+    pub code_attempts: i32,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }

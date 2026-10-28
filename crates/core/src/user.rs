@@ -38,7 +38,18 @@ pub struct User {
     pub email: Email,
     pub name: Option<String>,
     pub github_id: Option<i64>,
+    pub google_id: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+/// An unspent, unexpired link whose mailed code can still be tried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveCode {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub token_hash: String,
+    pub code_hash: String,
+    pub return_to: Option<String>,
 }
 
 #[async_trait]
@@ -55,13 +66,15 @@ pub trait UsersRepo: Send + Sync {
         email: &Email,
         name: Option<String>,
     ) -> RepoResult<User>;
-    /// Stores a link for `user_id` (sent to `email`); only the token's hash is kept.
+    /// Stores a link for `user_id` (sent to `email`); only the hashes of the token and of the
+    /// mailed code are kept.
     /// `return_to` is where sign-in lands afterwards; the caller has validated it.
     async fn issue_magic_link(
         &self,
         user_id: Uuid,
         email: &Email,
         token_hash: &str,
+        code_hash: &str,
         return_to: Option<&str>,
         expires_at: DateTime<Utc>,
     ) -> RepoResult<()>;
@@ -72,6 +85,12 @@ pub trait UsersRepo: Send + Sync {
         token_hash: &str,
         now: DateTime<Utc>,
     ) -> RepoResult<Option<(Uuid, Option<String>)>>;
+    /// Unspent, unexpired links for `email` that still have a code.
+    async fn live_codes(&self, email: &Email, now: DateTime<Utc>) -> RepoResult<Vec<LiveCode>>;
+    /// Marks the link used, once; `false` if it was already used or has expired at `now`.
+    async fn spend_code(&self, id: Uuid, now: DateTime<Utc>) -> RepoResult<bool>;
+    /// Counts a wrong guess on each link; at 5 the link's code is disabled (the link stays valid).
+    async fn count_wrong_code(&self, ids: &[Uuid]) -> RepoResult<()>;
 }
 
 #[cfg(test)]
