@@ -54,6 +54,13 @@ impl VerifyCode {
             detail: "Too many attempts. Try again in a few minutes.".into(),
             retry_after_secs: WINDOW_SECS as u64,
         };
+        // Fail closed: an unavailable limiter refuses rather than allowing unlimited guesses.
+        let allowed = |r: AppResult<bool>| {
+            r.unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "verify code rate limit unavailable, refusing");
+                false
+            })
+        };
         let sha = format!("{:x}", Sha256::digest(email.as_str()));
         if ip.is_some() {
             let ok = hit_ip(
@@ -64,7 +71,7 @@ impl VerifyCode {
                 WINDOW_SECS,
             )
             .await;
-            if !ok.unwrap_or(false) {
+            if !allowed(ok) {
                 return Err(over());
             }
         }
@@ -80,7 +87,7 @@ impl VerifyCode {
                 DAY_SECS,
             ),
         ] {
-            if !self.limiter.hit(&key, cap, window).await.unwrap_or(false) {
+            if !allowed(self.limiter.hit(&key, cap, window).await) {
                 return Err(over());
             }
         }

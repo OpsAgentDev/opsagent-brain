@@ -18,10 +18,11 @@ use webauthn_rs::prelude::{
 };
 
 use super::{
-    auth::{check_origin, landing, start_session, Redirect, StartQuery},
+    auth::{check_origin, sign_in_json, Redirect, StartQuery},
     parse_id,
 };
 use crate::{
+    actions::auth::passkey_invalid,
     api_error::{ApiError, ApiJson, Problem},
     middleware::org_scope::AuthUser,
     state::AppState,
@@ -79,7 +80,9 @@ pub struct RegisterFinish {
 #[utoipa::path(post, path = "/auth/passkeys/register/finish", tag = "auth",
     request_body = RegisterFinish,
     responses((status = 201, body = PasskeyView), (status = 400, body = Problem),
-        (status = 401, body = Problem), (status = 422, body = Problem)))]
+        (status = 401, body = Problem),
+        (status = 409, body = Problem, description = "The credential is already registered"),
+        (status = 422, body = Problem)))]
 async fn register_finish(
     State(app): State<AppState>,
     session: Session,
@@ -172,25 +175,17 @@ async fn login_finish(
     headers: HeaderMap,
     ApiJson(body): ApiJson<LoginFinish>,
 ) -> Result<Json<Redirect>, ApiError> {
-    let web = app.config.web_base_url.clone();
-    check_origin(&headers, &web)?;
-    // Removed before verifying, so a state is single-use whatever the outcome.
-    let (state, return_to) = session
-        .remove::<(DiscoverableAuthentication, Option<String>)>(AUTH_KEY)
-        .await?
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::UNAUTHORIZED,
-                "passkey_invalid",
-                "Start signing in with the passkey again.",
-            )
-        })?;
     let passkeys = &app.actions.auth.passkeys;
-    let user_id = passkeys.finish_login(&body.credential, state).await?;
-    start_session(&session, user_id).await?;
-    Ok(Json(Redirect {
-        redirect: landing(&web, return_to.as_deref()),
-    }))
+    sign_in_json(&app, &session, &headers, || async {
+        // Removed before verifying, so a state is single-use whatever the outcome.
+        let (state, return_to) = session
+            .remove::<(DiscoverableAuthentication, Option<String>)>(AUTH_KEY)
+            .await?
+            .ok_or_else(passkey_invalid)?;
+        let user_id = passkeys.finish_login(&body.credential, state).await?;
+        Ok((user_id, return_to))
+    })
+    .await
 }
 
 pub fn api() -> OpenApiRouter<AppState> {

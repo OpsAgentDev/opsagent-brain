@@ -122,7 +122,8 @@ impl Passkeys {
     }
 
     /// The signed-in user for a verified assertion. An unknown, removed, someone else's or
-    /// unverifiable credential is `passkey_invalid` (401).
+    /// unverifiable credential is `passkey_invalid` (401); a stored credential that no longer
+    /// deserialises is `Internal` (500).
     pub async fn finish_login(
         &self,
         credential: &PublicKeyCredential,
@@ -139,8 +140,11 @@ impl Passkeys {
             .await?
             .filter(|p| p.user_id == user_id)
             .ok_or_else(passkey_invalid)?;
-        let mut passkey: Passkey =
-            serde_json::from_value(stored.credential).map_err(|_| passkey_invalid())?;
+        let mut passkey: Passkey = serde_json::from_value(stored.credential).map_err(|_| {
+            // A row we wrote ourselves that no longer parses is corruption, not a bad assertion.
+            tracing::error!(passkey_id = %stored.id, "stored passkey does not deserialise");
+            AppError::Internal(format!("stored passkey {} does not deserialise", stored.id))
+        })?;
         let result = self
             .webauthn
             .finish_discoverable_authentication(
@@ -182,7 +186,7 @@ impl Passkeys {
     }
 }
 
-fn passkey_invalid() -> AppError {
+pub(crate) fn passkey_invalid() -> AppError {
     AppError::Refused {
         status: StatusCode::UNAUTHORIZED,
         code: "passkey_invalid",
@@ -270,14 +274,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finish_login_with_unknown_credential_is_passkey_invalid() {
+    async fn finish_login_with_unknown_or_foreign_credential_is_passkey_invalid() {
         let store = MemStore::default();
         let ada = user(&store, "ada@example.com").await;
         let eve = user(&store, "eve@example.com").await;
         stored(&store, ada, &[4, 5]).await;
         let actions = passkeys(&store);
-        // Unknown id, someone else's credential, and a stored one that does not verify.
-        for (cred, claimed) in [(&[9u8][..], ada), (&[4, 5][..], eve), (&[4, 5][..], ada)] {
+        // An unknown credential id, and Ada's credential claimed by Eve's user handle.
+        for (cred, claimed) in [(&[9u8][..], ada), (&[4, 5][..], eve)] {
             let (rcr, state) = actions.start_login().unwrap();
             assert!(rcr.public_key.allow_credentials.is_empty());
             let err = actions
@@ -295,6 +299,22 @@ mod tests {
                 "{err:?}"
             );
         }
+        assert!(store.audit_entries().is_empty());
+    }
+
+    #[tokio::test]
+    async fn finish_login_with_corrupt_stored_credential_is_internal() {
+        let store = MemStore::default();
+        let ada = user(&store, "ada@example.com").await;
+        // `stored` writes `{}`, which is not a serialised `Passkey`.
+        stored(&store, ada, &[4, 5]).await;
+        let actions = passkeys(&store);
+        let (_, state) = actions.start_login().unwrap();
+        let err = actions
+            .finish_login(&assertion(&[4, 5], ada), state)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Internal(_)), "{err:?}");
         assert!(store.audit_entries().is_empty());
     }
 

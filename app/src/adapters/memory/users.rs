@@ -74,19 +74,22 @@ impl UsersRepo for MemStore {
         google_id: &str,
         email: &Email,
         name: Option<String>,
-        may_link: bool,
+        authoritative: bool,
     ) -> RepoResult<User> {
         let mut s = self.state();
         if let Some(u) = s.user_mut(|u| u.google_id.as_deref() == Some(google_id)) {
             return Ok(u.clone());
         }
         if let Some(u) = s.user_mut(|u| u.email == *email) {
-            if !may_link || u.google_id.is_some() {
+            if !authoritative || u.google_id.is_some() {
                 return Err(RepoError::Conflict("account_exists"));
             }
             u.google_id = Some(google_id.to_owned());
             u.name = u.name.take().or(name);
             return Ok(u.clone());
+        }
+        if !authoritative {
+            return Err(RepoError::Conflict("google_email_unmanaged"));
         }
         Ok(s.new_user(email, name, None, Some(google_id.to_owned())))
     }

@@ -22,7 +22,8 @@ pub struct GoogleProfile {
 }
 
 /// Google vouches for the address itself: a Gmail address, or one in the account's own
-/// Workspace domain. Only then may an existing user be linked by email.
+/// Workspace domain. Only then may an existing user be linked by email, or a new one created
+/// (otherwise anyone could pre-register a Google account under someone else's address).
 fn google_is_authoritative(email: &Email, hosted_domain: Option<&str>) -> bool {
     let domain = email.as_str().rsplit_once('@').map_or("", |(_, d)| d);
     matches!(domain, "gmail.com" | "googlemail.com")
@@ -41,16 +42,28 @@ impl SignInGoogle {
 
     pub async fn run(&self, profile: GoogleProfile) -> AppResult<Uuid> {
         let tx = self.uow.begin().await?;
-        let may_link = google_is_authoritative(&profile.email, profile.hosted_domain.as_deref());
+        let authoritative =
+            google_is_authoritative(&profile.email, profile.hosted_domain.as_deref());
         let user = tx
             .users()
-            .find_or_create_google(&profile.google_id, &profile.email, profile.name, may_link)
+            .find_or_create_google(
+                &profile.google_id,
+                &profile.email,
+                profile.name,
+                authoritative,
+            )
             .await
             .map_err(|e| match e {
                 RepoError::Conflict("account_exists") => AppError::Refused {
                     status: StatusCode::CONFLICT,
                     code: "account_exists",
                     detail: "An account with this email exists; sign in the way you did before."
+                        .into(),
+                },
+                RepoError::Conflict("google_email_unmanaged") => AppError::Refused {
+                    status: StatusCode::CONFLICT,
+                    code: "google_email_unmanaged",
+                    detail: "Google does not manage this address; sign in with email instead."
                         .into(),
                 },
                 e => e.into(),
@@ -143,6 +156,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(id, existing.id);
+    }
+
+    #[tokio::test]
+    async fn refuses_to_create_a_user_for_an_unmanaged_address() {
+        let store = MemStore::default();
+        let action = SignInGoogle::new(Arc::new(store.clone()));
+        for hd in [None, Some("other.com")] {
+            let res = action.run(profile("s1", "victim@corp.com", hd)).await;
+            assert!(matches!(
+                res,
+                Err(AppError::Refused {
+                    code: "google_email_unmanaged",
+                    ..
+                })
+            ));
+        }
+        let e = Email::parse("victim@corp.com").unwrap();
+        assert!(store.users().find_by_email(&e).await.unwrap().is_none());
+        assert!(store.audit_entries().is_empty());
+        // The managed case still creates the user, and later sign-ins match on the sub.
+        let id = action
+            .run(profile("s1", "victim@corp.com", Some("corp.com")))
+            .await
+            .unwrap();
+        assert_eq!(
+            action
+                .run(profile("s1", "victim@corp.com", None))
+                .await
+                .unwrap(),
+            id
+        );
     }
 
     #[tokio::test]

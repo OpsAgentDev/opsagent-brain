@@ -132,7 +132,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
         google_id: &str,
         email: &Email,
         name: Option<String>,
-        may_link: bool,
+        authoritative: bool,
     ) -> RepoResult<User> {
         if let Some(u) = self
             .user_where(users::Column::GoogleId.eq(google_id))
@@ -147,7 +147,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
             .await
             .map_err(db_err)?
         {
-            if !may_link || u.google_id.is_some() {
+            if !authoritative || u.google_id.is_some() {
                 return Err(RepoError::Conflict("account_exists"));
             }
             let mut a: users::ActiveModel = u.clone().into();
@@ -155,6 +155,9 @@ impl<C: Conn> UsersRepo for Pg<C> {
             a.name = Set(u.name.or(name));
             a.updated_at = Set(now());
             return user(a.update(db).await.map_err(db_err)?);
+        }
+        if !authoritative {
+            return Err(RepoError::Conflict("google_email_unmanaged"));
         }
         user(
             new_user(email, name, None, Some(google_id.to_owned()))

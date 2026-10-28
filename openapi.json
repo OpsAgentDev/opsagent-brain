@@ -370,6 +370,16 @@
               }
             }
           },
+          "409": {
+            "description": "The credential is already registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {

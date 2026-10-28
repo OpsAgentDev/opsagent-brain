@@ -329,3 +329,44 @@ async fn passkey_login_keeps_return_to() {
     })
     .await;
 }
+
+/// A registered passkey whose assertion does not verify: a tampered signature, then a valid
+/// signature over a different (earlier) challenge. Both 401 `passkey_invalid`, no session.
+#[tokio::test]
+#[serial]
+async fn passkey_login_with_bad_signature_or_stale_challenge_is_401() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let csrf = sign_in(&req, &mail, "sig@example.com").await;
+        let (mut soft, _, _) = register(&req, &csrf).await;
+        let user = user_id(&ctx, "sig@example.com").await;
+        let row = passkeys::Entity::find()
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        let cred_id = json!(B64.encode(&row.credential_id));
+        sign_out(&req, &csrf).await;
+
+        let start = login_start(&req, "").await.json::<Value>();
+        let mut cred = assert_with(&mut soft, &start, &cred_id, user);
+        let mut sig = B64
+            .decode(cred["response"]["signature"].as_str().unwrap())
+            .unwrap();
+        let last = sig.len() - 1;
+        sig[last] ^= 0x01;
+        cred["response"]["signature"] = json!(B64.encode(&sig));
+        let res = login_finish(&req, &cred).await;
+        assert_eq!(res.status_code(), 401, "{}", res.text());
+        assert_eq!(res.json::<Value>()["code"], "passkey_invalid");
+
+        let stale = login_start(&req, "").await.json::<Value>();
+        let cred = assert_with(&mut soft, &stale, &cred_id, user);
+        login_start(&req, "").await; // replaces the ceremony the assertion was made for
+        let res = login_finish(&req, &cred).await;
+        assert_eq!(res.status_code(), 401, "{}", res.text());
+        assert_eq!(res.json::<Value>()["code"], "passkey_invalid");
+        assert_eq!(req.get("/v1/auth/me").await.status_code(), 401);
+    })
+    .await;
+}

@@ -104,6 +104,26 @@ pub(crate) fn check_origin(headers: &HeaderMap, web_base_url: &str) -> Result<()
     }
 }
 
+/// The anonymous JSON sign-ins: the origin check, then `run` for the user and the `return_to`,
+/// then a fresh session and where to land.
+pub(crate) async fn sign_in_json<Fut>(
+    app: &AppState,
+    session: &Session,
+    headers: &HeaderMap,
+    run: impl FnOnce() -> Fut,
+) -> Result<Json<Redirect>, ApiError>
+where
+    Fut: std::future::Future<Output = Result<(Uuid, Option<String>), ApiError>>,
+{
+    let web = &app.config.web_base_url;
+    check_origin(headers, web)?;
+    let (user_id, return_to) = run().await?;
+    start_session(session, user_id).await?;
+    Ok(Json(Redirect {
+        redirect: landing(web, return_to.as_deref()),
+    }))
+}
+
 #[utoipa::path(post, path = "/auth/magic-link/redeem", tag = "auth", request_body = RedeemRequest,
     responses((status = 200, body = Redirect, description = "Session cookie set"),
         (status = 403, body = Problem), (status = 410, body = Problem)))]
@@ -113,14 +133,11 @@ async fn redeem_link(
     headers: HeaderMap,
     ApiJson(body): ApiJson<RedeemRequest>,
 ) -> Result<Json<Redirect>, ApiError> {
-    let web = app.config.web_base_url.clone();
-    check_origin(&headers, &web)?;
     let redeem = &app.actions.auth.redeem_magic_link;
-    let (user_id, return_to) = redeem.run(&body.token).await?;
-    start_session(&session, user_id).await?;
-    Ok(Json(Redirect {
-        redirect: landing(&web, return_to.as_deref()),
-    }))
+    sign_in_json(&app, &session, &headers, || async {
+        Ok(redeem.run(&body.token).await?)
+    })
+    .await
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -143,18 +160,16 @@ async fn verify_code(
     headers: HeaderMap,
     ApiJson(body): ApiJson<VerifyRequest>,
 ) -> Result<Json<Redirect>, ApiError> {
-    let web = app.config.web_base_url.clone();
-    check_origin(&headers, &web)?;
     let input = VerifyCodeInput {
         email: body.email,
         code: body.code,
         client_ip: ip,
     };
-    let (user_id, return_to) = app.actions.auth.verify_code.run(input).await?;
-    start_session(&session, user_id).await?;
-    Ok(Json(Redirect {
-        redirect: landing(&web, return_to.as_deref()),
-    }))
+    let verify = &app.actions.auth.verify_code;
+    sign_in_json(&app, &session, &headers, || async {
+        Ok(verify.run(input).await?)
+    })
+    .await
 }
 
 /// The OAuth client with both endpoints set (the typestate of `oauth_client`).
@@ -174,6 +189,14 @@ fn oauth_client(
         .set_redirect_uri(RedirectUrl::new(redirect).map_err(ApiError::internal)?))
 }
 
+/// The provider's callback on brain; a trailing '/' on `API_BASE_URL` is ignored.
+fn redirect_uri(api_base_url: &str, provider: &str) -> String {
+    format!(
+        "{}/v1/auth/sign-in/{provider}/callback",
+        api_base_url.trim_end_matches('/')
+    )
+}
+
 /// 503 `<provider>_not_configured` unless both the id and the secret are set.
 fn github_client(c: &Config) -> Result<Client, ApiError> {
     if c.github_client_id.is_empty() || c.github_client_secret.is_empty() {
@@ -187,7 +210,7 @@ fn github_client(c: &Config) -> Result<Client, ApiError> {
         &c.github_client_secret,
         "https://github.com/login/oauth/authorize",
         "https://github.com/login/oauth/access_token",
-        format!("{}/v1/auth/sign-in/github/callback", c.api_base_url),
+        redirect_uri(&c.api_base_url, "github"),
     )
 }
 
@@ -203,7 +226,7 @@ fn google_client(c: &Config) -> Result<Client, ApiError> {
         &c.google_client_secret,
         "https://accounts.google.com/o/oauth2/v2/auth",
         "https://oauth2.googleapis.com/token",
-        format!("{}/v1/auth/sign-in/google/callback", c.api_base_url),
+        redirect_uri(&c.api_base_url, "google"),
     )
 }
 
@@ -397,9 +420,11 @@ where
     })
 }
 
+/// Bounded so a hung provider ends in the `/sign-in?error=` redirect, not the global 504.
 fn http_client() -> Result<reqwest::Client, ApiError> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(ApiError::internal)
 }
@@ -583,7 +608,21 @@ pub fn api() -> OpenApiRouter<AppState> {
 
 #[cfg(test)]
 mod tests {
-    use super::{google_profile, landing, GoogleUser};
+    use super::{google_profile, landing, redirect_uri, GoogleUser};
+
+    #[test]
+    fn redirect_uri_ignores_a_trailing_slash() {
+        for base in ["https://b.dev/", "https://b.dev"] {
+            assert_eq!(
+                redirect_uri(base, "github"),
+                "https://b.dev/v1/auth/sign-in/github/callback"
+            );
+            assert_eq!(
+                redirect_uri(base, "google"),
+                "https://b.dev/v1/auth/sign-in/google/callback"
+            );
+        }
+    }
 
     #[test]
     fn google_profile_needs_a_present_verified_email() {

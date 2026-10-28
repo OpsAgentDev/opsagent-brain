@@ -8,6 +8,7 @@ mod sign_in_google;
 mod verify_code;
 
 pub use current_user::CurrentUser;
+pub(crate) use passkeys::passkey_invalid;
 pub use passkeys::Passkeys;
 pub use redeem_magic_link::RedeemMagicLink;
 pub use request_magic_link::{MagicLinkInput, RequestMagicLink, PER_EMAIL, PER_IP};

@@ -41,7 +41,7 @@ contract_suite! {
         assert_eq!((g.id, g.google_id.as_deref(), g.name.as_deref()), (u.id, Some("sub-1"), Some("Ada")));
         let again = s.users().find_or_create_google("sub-1", &email("new@example.com"), None, false).await.unwrap();
         assert_eq!(again.id, u.id);
-        let other = s.users().find_or_create_google("sub-2", &email("bob@example.com"), None, false).await.unwrap();
+        let other = s.users().find_or_create_google("sub-2", &email("bob@example.com"), None, true).await.unwrap();
         assert_ne!(other.id, u.id);
         assert_eq!((other.google_id.as_deref(), other.email.as_str()), (Some("sub-2"), "bob@example.com"));
     }
@@ -54,6 +54,13 @@ contract_suite! {
         s.users().find_or_create_google("s1", &e, None, true).await.unwrap();
         let other = s.users().find_or_create_google("s2", &e, None, true).await;
         assert!(matches!(other, Err(RepoError::Conflict("account_exists"))));
+    }
+
+    async fn google_refuses_to_create_for_unmanaged_address(s) {
+        let e = email("mallory@corp.com");
+        let refused = s.users().find_or_create_google("s1", &e, None, false).await;
+        assert!(matches!(refused, Err(RepoError::Conflict("google_email_unmanaged"))));
+        assert!(s.users().find_by_email(&e).await.unwrap().is_none());
     }
 
     async fn magic_link_consumed_once_and_not_after_expiry(s) {

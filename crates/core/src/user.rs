@@ -67,14 +67,15 @@ pub trait UsersRepo: Send + Sync {
         name: Option<String>,
     ) -> RepoResult<User>;
     /// Match on the Google `sub`, else link to the user with `email`, else create. `name` fills a
-    /// missing name only. Linking needs `may_link` and no other Google id on that user; otherwise
-    /// `RepoError::Conflict("account_exists")`.
+    /// missing name only. Linking needs `authoritative` and no other Google id on that user,
+    /// otherwise `RepoError::Conflict("account_exists")`; creating needs `authoritative`, otherwise
+    /// `RepoError::Conflict("google_email_unmanaged")`.
     async fn find_or_create_google(
         &self,
         google_id: &str,
         email: &Email,
         name: Option<String>,
-        may_link: bool,
+        authoritative: bool,
     ) -> RepoResult<User>;
     /// Stores a link for `user_id` (sent to `email`); only the hashes of the token and of the
     /// mailed code are kept.
