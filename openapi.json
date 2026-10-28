@@ -196,6 +196,164 @@
         }
       }
     },
+    "/auth/passkeys": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PasskeyView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/passkeys/register/finish": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_register_finish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterFinish"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasskeyView"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/passkeys/register/start": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "WebAuthn creation options (`{publicKey: …}`) for\n`PublicKeyCredential.parseCreationOptionsFromJSON`; a discoverable credential is required.",
+        "operationId": "auth_register_start",
+        "responses": {
+          "200": {
+            "description": "WebAuthn creation options",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/passkeys/{id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Only your own passkeys; anyone else's (or an unknown id) is 404.",
+        "operationId": "auth_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/sign-in/github/callback": {
       "get": {
         "tags": [
@@ -3693,11 +3851,16 @@
         "type": "object",
         "required": [
           "id",
-          "email"
+          "email",
+          "has_passkey"
         ],
         "properties": {
           "email": {
             "type": "string"
+          },
+          "has_passkey": {
+            "type": "boolean",
+            "description": "Whether the user has registered a passkey (the web suggests one when not)."
           },
           "id": {
             "type": "string",
@@ -4266,6 +4429,34 @@
           }
         }
       },
+      "PasskeyView": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "Problem": {
         "type": "object",
         "description": "The wire shape of every error (`application/problem+json`).",
@@ -4370,6 +4561,25 @@
         "properties": {
           "redirect": {
             "type": "string"
+          }
+        }
+      },
+      "RegisterFinish": {
+        "type": "object",
+        "required": [
+          "credential"
+        ],
+        "properties": {
+          "credential": {
+            "type": "object",
+            "description": "The authenticator's response (`credential.toJSON()`)."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Defaults to \"Passkey <date>\"; at most 100 characters."
           }
         }
       },

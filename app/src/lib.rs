@@ -17,3 +17,4 @@ pub mod state;
 pub mod tokens;
 pub mod tools;
 pub mod views;
+pub mod webauthn;

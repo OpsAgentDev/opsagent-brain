@@ -16,6 +16,7 @@ mod oauth_discovery;
 mod oauth_token;
 mod openapi;
 mod orgs;
+mod passkeys;
 mod resources;
 mod runs;
 mod shell_parity;

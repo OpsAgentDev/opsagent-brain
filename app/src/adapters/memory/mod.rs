@@ -7,6 +7,7 @@ mod findings;
 mod integrations;
 mod oauth;
 mod orgs;
+mod passkeys;
 mod rate_limiter;
 mod recipients;
 mod resources;
@@ -27,6 +28,7 @@ use opsagent_core::{
     finding::FindingsRepo,
     oauth::{AccessToken, ConsentRequest, Grant, OAuthClient, OAuthRepo, RefreshToken},
     org::{Invite, Organisation, OrganisationsRepo, Role},
+    passkey::{PasskeysRepo, StoredPasskey},
     repo::{Cursor, PageOf, PageRequest, RepoResult},
     resource::ResourcesRepo,
     run::RunsRepo,
@@ -114,6 +116,7 @@ pub struct MemState {
     invites: Vec<InviteRow>,
     users: Vec<User>,
     magic_links: Vec<MagicLinkRow>,
+    passkeys: Vec<StoredPasskey>,
     audit: Vec<AuditEntry>,
     connections: Vec<(Connection, SealedCreds)>,
     runs: Vec<runs::RunEntry>,
@@ -187,6 +190,9 @@ impl Repos for MemStore {
     fn oauth(&self) -> &dyn OAuthRepo {
         self
     }
+    fn passkeys(&self) -> &dyn PasskeysRepo {
+        self
+    }
 }
 
 #[async_trait]
@@ -245,6 +251,9 @@ impl Repos for MemTx {
         &self.work
     }
     fn oauth(&self) -> &dyn OAuthRepo {
+        &self.work
+    }
+    fn passkeys(&self) -> &dyn PasskeysRepo {
         &self.work
     }
 }

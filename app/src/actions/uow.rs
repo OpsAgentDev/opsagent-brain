@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use opsagent_core::{
     audit::AuditLog, connection::ConnectionsRepo, finding::FindingsRepo, oauth::OAuthRepo,
-    org::OrganisationsRepo, repo::RepoResult, resource::ResourcesRepo, run::RunsRepo,
-    user::UsersRepo,
+    org::OrganisationsRepo, passkey::PasskeysRepo, repo::RepoResult, resource::ResourcesRepo,
+    run::RunsRepo, user::UsersRepo,
 };
 use opsagent_deliver::repo::{DeliveriesRepo, IntegrationsRepo, RecipientsRepo, SchedulesRepo};
 use opsagent_ledger::{Queue, Storage};
@@ -25,6 +25,7 @@ pub trait Repos: Send + Sync {
     fn deliveries(&self) -> &dyn DeliveriesRepo;
     fn schedules(&self) -> &dyn SchedulesRepo;
     fn oauth(&self) -> &dyn OAuthRepo;
+    fn passkeys(&self) -> &dyn PasskeysRepo;
 }
 
 /// Writes through a `Tx` are discarded unless it is committed.

@@ -550,16 +550,20 @@ pub struct Me {
     pub id: Uuid,
     pub email: String,
     pub name: Option<String>,
+    /// Whether the user has registered a passkey (the web suggests one when not).
+    pub has_passkey: bool,
 }
 
 #[utoipa::path(get, path = "/auth/me", tag = "auth",
     responses((status = 200, body = Me), (status = 401, body = Problem)))]
 async fn me(State(app): State<AppState>, AuthUser(id): AuthUser) -> Result<Json<Me>, ApiError> {
     let u = app.actions.auth.current_user.run(id).await?;
+    let has_passkey = !app.actions.auth.passkeys.list(id).await?.is_empty();
     Ok(Json(Me {
         id: u.id,
         email: u.email.as_str().into(),
         name: u.name,
+        has_passkey,
     }))
 }
 

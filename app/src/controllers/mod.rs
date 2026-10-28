@@ -11,6 +11,7 @@ pub mod oauth;
 pub mod oauth_consent;
 pub mod openapi;
 pub mod orgs;
+pub mod passkeys;
 pub mod recipients;
 pub mod resources;
 pub mod runs;

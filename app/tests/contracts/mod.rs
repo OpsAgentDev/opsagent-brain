@@ -15,6 +15,7 @@ mod findings;
 mod integrations;
 mod oauth;
 mod orgs;
+mod passkeys;
 mod recipients;
 mod resources;
 mod runs;

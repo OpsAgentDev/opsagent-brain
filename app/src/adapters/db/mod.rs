@@ -10,6 +10,7 @@ pub mod ledger_storage;
 mod oauth;
 mod orgs;
 mod page;
+mod passkeys;
 mod recipients;
 mod resources;
 mod runs;
@@ -27,6 +28,7 @@ use opsagent_core::{
     finding::FindingsRepo,
     oauth::OAuthRepo,
     org::{OrganisationsRepo, Role},
+    passkey::PasskeysRepo,
     repo::{RepoError, RepoResult},
     resource::ResourcesRepo,
     run::RunsRepo,
@@ -144,6 +146,9 @@ impl<C: Conn> Repos for Pg<C> {
         self
     }
     fn oauth(&self) -> &dyn OAuthRepo {
+        self
+    }
+    fn passkeys(&self) -> &dyn PasskeysRepo {
         self
     }
 }

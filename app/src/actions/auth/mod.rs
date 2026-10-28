@@ -1,5 +1,6 @@
 //! Sign-in use cases. Session, CSRF and OAuth state stay in the controller (transport).
 mod current_user;
+mod passkeys;
 mod redeem_magic_link;
 mod request_magic_link;
 mod sign_in_github;
@@ -7,6 +8,7 @@ mod sign_in_google;
 mod verify_code;
 
 pub use current_user::CurrentUser;
+pub use passkeys::Passkeys;
 pub use redeem_magic_link::RedeemMagicLink;
 pub use request_magic_link::{MagicLinkInput, RequestMagicLink, PER_EMAIL, PER_IP};
 pub use sign_in_github::{GithubProfile, SignInGithub};
@@ -20,6 +22,7 @@ pub struct Auth {
     pub sign_in_github: SignInGithub,
     pub sign_in_google: SignInGoogle,
     pub current_user: CurrentUser,
+    pub passkeys: Passkeys,
 }
 
 #[cfg(test)]
