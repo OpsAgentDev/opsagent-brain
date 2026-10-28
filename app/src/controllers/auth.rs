@@ -286,8 +286,10 @@ async fn google_start(
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct CallbackQuery {
-    pub code: String,
-    pub state: String,
+    pub code: Option<String>,
+    pub state: Option<String>,
+    /// Set by the provider when the user cancelled or denied.
+    pub error: Option<String>,
 }
 
 /// 302 to `{web}/sign-in?error=<code>`, keeping a validated `return_to`, so a browser that
@@ -363,9 +365,17 @@ where
 {
     let web = &app.config.web_base_url;
     let stored = session.remove::<OauthPending>(key).await?;
-    // A mismatch keeps the `return_to` this same session stored at start (already validated).
+    // A failure keeps the `return_to` this same session stored at start (already validated).
     let return_to = stored.as_ref().and_then(|p| p.return_to.clone());
-    let Some(p) = stored.filter(|p| p.state == q.state) else {
+    let (Some(code), Some(state), None) = (q.code, q.state, q.error) else {
+        let err = ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "oauth_denied",
+            "Sign-in with the provider was cancelled.",
+        );
+        return Ok(provider_failure(web, &err, return_to.as_deref()));
+    };
+    let Some(p) = stored.filter(|p| p.state == state) else {
         let err = ApiError::new(
             StatusCode::BAD_REQUEST,
             "oauth_state",
@@ -374,7 +384,7 @@ where
         return Ok(provider_failure(web, &err, return_to.as_deref()));
     };
     let outcome = async {
-        let user_id = sign_in(q.code, p.verifier).await?;
+        let user_id = sign_in(code, p.verifier).await?;
         start_session(session, user_id).await
     }
     .await;
@@ -454,13 +464,14 @@ async fn github_callback(
 #[derive(Deserialize)]
 struct GoogleUser {
     sub: String,
-    email: String,
+    email: Option<String>,
     #[serde(default)]
     email_verified: bool,
     name: Option<String>,
+    hd: Option<String>,
 }
 
-/// The Google profile for an access token; the address must be verified.
+/// The Google profile for an access token; the address must be present and verified.
 async fn google_identity(http: &reqwest::Client, access: &str) -> Result<GoogleProfile, ApiError> {
     let u: GoogleUser = fetch(
         http,
@@ -468,7 +479,14 @@ async fn google_identity(http: &reqwest::Client, access: &str) -> Result<GoogleP
         access,
     )
     .await?;
-    let email = Email::parse(&u.email)
+    google_profile(u)
+}
+
+fn google_profile(u: GoogleUser) -> Result<GoogleProfile, ApiError> {
+    let email = u
+        .email
+        .as_deref()
+        .and_then(Email::parse)
         .filter(|_| u.email_verified)
         .ok_or_else(|| {
             ApiError::new(
@@ -481,6 +499,7 @@ async fn google_identity(http: &reqwest::Client, access: &str) -> Result<GoogleP
         google_id: u.sub,
         email,
         name: u.name,
+        hosted_domain: u.hd,
     })
 }
 
@@ -560,7 +579,27 @@ pub fn api() -> OpenApiRouter<AppState> {
 
 #[cfg(test)]
 mod tests {
-    use super::landing;
+    use super::{google_profile, landing, GoogleUser};
+
+    #[test]
+    fn google_profile_needs_a_present_verified_email() {
+        let user = |email: Option<&str>, verified| GoogleUser {
+            sub: "s".into(),
+            email: email.map(Into::into),
+            email_verified: verified,
+            name: None,
+            hd: Some("corp.com".into()),
+        };
+        for bad in [user(Some("a@corp.com"), false), user(None, true)] {
+            assert_eq!(
+                google_profile(bad).err().unwrap().code(),
+                "google_no_verified_email"
+            );
+        }
+        let ok = google_profile(user(Some("A@Corp.com"), true)).unwrap();
+        assert_eq!(ok.email.as_str(), "a@corp.com");
+        assert_eq!(ok.hosted_domain.as_deref(), Some("corp.com"));
+    }
 
     #[test]
     fn landing_follows_a_valid_return_to_else_the_dashboard() {

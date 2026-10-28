@@ -1,5 +1,5 @@
 use chrono::{Duration, Utc};
-use opsagent_core::user::Email;
+use opsagent_core::{repo::RepoError, user::Email};
 use uuid::Uuid;
 
 use super::contract_suite;
@@ -37,13 +37,23 @@ contract_suite! {
     async fn google_links_existing_email_user_then_matches_sub(s) {
         let e = email("ada@example.com");
         let u = s.users().find_or_create_by_email(&e).await.unwrap();
-        let g = s.users().find_or_create_google("sub-1", &e, Some("Ada".into())).await.unwrap();
+        let g = s.users().find_or_create_google("sub-1", &e, Some("Ada".into()), true).await.unwrap();
         assert_eq!((g.id, g.google_id.as_deref(), g.name.as_deref()), (u.id, Some("sub-1"), Some("Ada")));
-        let again = s.users().find_or_create_google("sub-1", &email("new@example.com"), None).await.unwrap();
+        let again = s.users().find_or_create_google("sub-1", &email("new@example.com"), None, false).await.unwrap();
         assert_eq!(again.id, u.id);
-        let other = s.users().find_or_create_google("sub-2", &email("bob@example.com"), None).await.unwrap();
+        let other = s.users().find_or_create_google("sub-2", &email("bob@example.com"), None, false).await.unwrap();
         assert_ne!(other.id, u.id);
         assert_eq!((other.google_id.as_deref(), other.email.as_str()), (Some("sub-2"), "bob@example.com"));
+    }
+
+    async fn google_refuses_unauthoritative_link_and_other_sub(s) {
+        let e = email("eve@corp.com");
+        s.users().find_or_create_by_email(&e).await.unwrap();
+        let refused = s.users().find_or_create_google("s1", &e, None, false).await;
+        assert!(matches!(refused, Err(RepoError::Conflict("account_exists"))));
+        s.users().find_or_create_google("s1", &e, None, true).await.unwrap();
+        let other = s.users().find_or_create_google("s2", &e, None, true).await;
+        assert!(matches!(other, Err(RepoError::Conflict("account_exists"))));
     }
 
     async fn magic_link_consumed_once_and_not_after_expiry(s) {

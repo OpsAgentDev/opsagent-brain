@@ -528,6 +528,44 @@ async fn google_callback_with_bad_state_redirects_to_sign_in_error() {
     std::env::remove_var("GOOGLE_CLIENT_SECRET");
 }
 
+#[tokio::test]
+#[serial]
+async fn provider_denial_redirects_to_sign_in_with_oauth_denied() {
+    std::env::set_var("GITHUB_CLIENT_ID", "gid");
+    std::env::set_var("GITHUB_CLIENT_SECRET", "secret");
+    std::env::set_var("GOOGLE_CLIENT_ID", "gid");
+    std::env::set_var("GOOGLE_CLIENT_SECRET", "secret");
+    serve(|req, _ctx| async move {
+        for provider in ["github", "google"] {
+            req.post(&format!("/v1/auth/sign-in/{provider}/start"))
+                .add_query_param("return_to", CONSENT)
+                .await;
+            let res = req
+                .get(&format!(
+                    "/v1/auth/sign-in/{provider}/callback?error=access_denied&state=x"
+                ))
+                .await;
+            assert_eq!(res.status_code(), 302);
+            let to = location(&res);
+            assert!(
+                to.starts_with(&format!(
+                    "{WEB_ORIGIN}/sign-in?error=oauth_denied&return_to=%2Foauth%2Fconsent"
+                )),
+                "{to}"
+            );
+        }
+    })
+    .await;
+    for k in [
+        "GITHUB_CLIENT_ID",
+        "GITHUB_CLIENT_SECRET",
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+    ] {
+        std::env::remove_var(k);
+    }
+}
+
 /// An attacker starts a consent request in their own browser and mails the victim a sign-in
 /// link whose `return_to` points at it: the victim's browser lacks the binding cookie.
 #[tokio::test]

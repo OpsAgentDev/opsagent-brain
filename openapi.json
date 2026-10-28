@@ -206,7 +206,7 @@
           {
             "name": "code",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -214,7 +214,16 @@
           {
             "name": "state",
             "in": "query",
-            "required": true,
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "Set by the provider when the user cancelled or denied.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -276,7 +285,7 @@
           {
             "name": "code",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -284,7 +293,16 @@
           {
             "name": "state",
             "in": "query",
-            "required": true,
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "Set by the provider when the user cancelled or denied.",
+            "required": false,
             "schema": {
               "type": "string"
             }

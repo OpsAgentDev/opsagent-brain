@@ -132,6 +132,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
         google_id: &str,
         email: &Email,
         name: Option<String>,
+        may_link: bool,
     ) -> RepoResult<User> {
         if let Some(u) = self
             .user_where(users::Column::GoogleId.eq(google_id))
@@ -146,6 +147,9 @@ impl<C: Conn> UsersRepo for Pg<C> {
             .await
             .map_err(db_err)?
         {
+            if !may_link || u.google_id.is_some() {
+                return Err(RepoError::Conflict("account_exists"));
+            }
             let mut a: users::ActiveModel = u.clone().into();
             a.google_id = Set(Some(google_id.to_owned()));
             a.name = Set(u.name.or(name));
