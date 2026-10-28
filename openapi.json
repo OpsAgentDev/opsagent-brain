@@ -110,6 +110,64 @@
         }
       }
     },
+    "/auth/magic-link/verify": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Same session and `redirect` as redeem; 10 attempts per client IP and per address per 15\nminutes, then 429.",
+        "operationId": "auth_verify_code",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Session cookie set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Redirect"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/me": {
       "get": {
         "tags": [
@@ -138,44 +196,26 @@
         }
       }
     },
-    "/auth/sign-in/github/callback": {
+    "/auth/passkeys": {
       "get": {
         "tags": [
           "auth"
         ],
-        "operationId": "auth_github_callback",
-        "parameters": [
-          {
-            "name": "code",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "state",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
+        "operationId": "auth_list",
         "responses": {
-          "302": {
-            "description": "Session cookie set; redirects to the validated return_to, else the web dashboard"
-          },
-          "400": {
+          "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PasskeyView"
+                  }
                 }
               }
             }
           },
-          "502": {
+          "401": {
             "content": {
               "application/json": {
                 "schema": {
@@ -187,12 +227,367 @@
         }
       }
     },
+    "/auth/passkeys/login/finish": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Starts the session and returns where to land: the `return_to` given at start, else the\ndashboard. Without a started ceremony, or for an unknown or bad credential, 401\n`passkey_invalid`.",
+        "operationId": "auth_login_finish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginFinish"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Session cookie set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Redirect"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/passkeys/login/start": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "WebAuthn request options (`{publicKey: …}`) with an empty allow list, for\n`PublicKeyCredential.parseRequestOptionsFromJSON`.",
+        "operationId": "auth_login_start",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "description": "Where sign-in lands afterwards; same rule as the magic link's `return_to`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "WebAuthn request options",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/passkeys/register/finish": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_register_finish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterFinish"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasskeyView"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The credential is already registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/passkeys/register/start": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "WebAuthn creation options (`{publicKey: …}`) for\n`PublicKeyCredential.parseCreationOptionsFromJSON`; a discoverable credential is required.",
+        "operationId": "auth_register_start",
+        "responses": {
+          "200": {
+            "description": "WebAuthn creation options",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/passkeys/{id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Only your own passkeys; anyone else's (or an unknown id) is 404.",
+        "operationId": "auth_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/sign-in/github/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_github_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "Set by the provider when the user cancelled or denied.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Session cookie set; redirects to the validated return_to, else the web dashboard. A failure redirects to /sign-in?error=<code>"
+          }
+        }
+      }
+    },
     "/auth/sign-in/github/start": {
       "post": {
         "tags": [
           "auth"
         ],
         "operationId": "auth_github_start",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "description": "Where sign-in lands afterwards; same rule as the magic link's `return_to`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizeUrl"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/sign-in/google/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_google_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "Set by the provider when the user cancelled or denied.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Session cookie set; redirects to the validated return_to, else the web dashboard. A failure redirects to /sign-in?error=<code>"
+          }
+        }
+      }
+    },
+    "/auth/sign-in/google/start": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_google_start",
         "parameters": [
           {
             "name": "return_to",
@@ -3543,6 +3938,18 @@
           }
         }
       },
+      "LoginFinish": {
+        "type": "object",
+        "required": [
+          "credential"
+        ],
+        "properties": {
+          "credential": {
+            "type": "object",
+            "description": "The authenticator's assertion (`credential.toJSON()`)."
+          }
+        }
+      },
       "MagicLinkRequest": {
         "type": "object",
         "required": [
@@ -3565,11 +3972,16 @@
         "type": "object",
         "required": [
           "id",
-          "email"
+          "email",
+          "has_passkey"
         ],
         "properties": {
           "email": {
             "type": "string"
+          },
+          "has_passkey": {
+            "type": "boolean",
+            "description": "Whether the user has registered a passkey (the web suggests one when not)."
           },
           "id": {
             "type": "string",
@@ -4138,6 +4550,34 @@
           }
         }
       },
+      "PasskeyView": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "Problem": {
         "type": "object",
         "description": "The wire shape of every error (`application/problem+json`).",
@@ -4242,6 +4682,25 @@
         "properties": {
           "redirect": {
             "type": "string"
+          }
+        }
+      },
+      "RegisterFinish": {
+        "type": "object",
+        "required": [
+          "credential"
+        ],
+        "properties": {
+          "credential": {
+            "type": "object",
+            "description": "The authenticator's response (`credential.toJSON()`)."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Defaults to \"Passkey <date>\"; at most 100 characters."
           }
         }
       },
@@ -4478,6 +4937,22 @@
           "role_arn": {
             "type": "string",
             "description": "The read role's ARN from the stack outputs (required for `aws`)."
+          }
+        }
+      },
+      "VerifyRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The 6-digit code from the sign-in mail; spaces are ignored."
+          },
+          "email": {
+            "type": "string"
           }
         }
       },

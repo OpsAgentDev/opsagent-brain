@@ -24,6 +24,7 @@ pub mod oauth_consent_requests;
 pub mod oauth_grants;
 pub mod oauth_refresh_tokens;
 pub mod organisations;
+pub mod passkeys;
 pub mod recipients;
 pub mod resource_history;
 pub mod resources;

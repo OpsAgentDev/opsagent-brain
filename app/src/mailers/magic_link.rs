@@ -1,12 +1,12 @@
 use super::Mail;
 use opsagent_core::org::is_bidi;
 
-pub fn magic_link(to: &str, link: &str) -> Mail {
+pub fn magic_link(to: &str, link: &str, code: &str) -> Mail {
     Mail {
         to: to.into(),
-        subject: "Your OpsAgent sign-in link".into(),
+        subject: format!("Your OpsAgent sign-in code: {code}"),
         text: format!(
-            "Sign in to OpsAgent:\n\n{link}\n\nThe link works once and expires in 15 minutes."
+            "Sign in to OpsAgent:\n\n{link}\n\nOr enter this code: {code}\n\nThe link and code work once and expire in 15 minutes."
         ),
         ..Default::default()
     }

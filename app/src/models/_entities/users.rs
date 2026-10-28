@@ -14,6 +14,8 @@ pub struct Model {
     pub name: Option<String>,
     #[sea_orm(column_type = "Text", nullable, unique)]
     pub github_id: Option<String>,
+    #[sea_orm(column_type = "Text", nullable, unique)]
+    pub google_id: Option<String>,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }
@@ -24,6 +26,8 @@ pub enum Relation {
     MagicLinks,
     #[sea_orm(has_many = "super::members::Entity")]
     Members,
+    #[sea_orm(has_many = "super::passkeys::Entity")]
+    Passkeys,
 }
 
 impl Related<super::magic_links::Entity> for Entity {
@@ -35,6 +39,12 @@ impl Related<super::magic_links::Entity> for Entity {
 impl Related<super::members::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Members.def()
+    }
+}
+
+impl Related<super::passkeys::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Passkeys.def()
     }
 }
 

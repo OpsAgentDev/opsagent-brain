@@ -58,6 +58,8 @@ pub struct Deps {
     pub clock: Arc<dyn Clock>,
     /// Fetches Client ID Metadata Documents.
     pub client_metadata: Arc<dyn ClientMetadataSource>,
+    /// The WebAuthn relying party for `WEB_BASE_URL`.
+    pub webauthn: Arc<webauthn_rs::Webauthn>,
 }
 
 fn internal(e: impl std::fmt::Display) -> AppError {
@@ -120,6 +122,7 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
     let slack = HttpSlack::new(&config.slack_api_base_url)
         .map_err(|_| internal("slack: HTTP client could not be built"))?;
     Ok(Deps {
+        webauthn: Arc::new(crate::webauthn::build(&config.web_base_url)?),
         mailer: mailers::from_config(&config).map_err(internal)?,
         config,
         uow: Arc::new(Pg::new(db.clone())),
@@ -201,10 +204,19 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.mailer.clone(),
                 d.config.web_base_url.clone(),
                 d.clock.clone(),
+                d.config.session_secret.clone(),
             ),
             redeem_magic_link: auth::RedeemMagicLink::new(d.uow.clone(), d.clock.clone()),
+            verify_code: auth::VerifyCode::new(
+                d.uow.clone(),
+                d.limiter.clone(),
+                d.clock.clone(),
+                d.config.session_secret.clone(),
+            ),
             sign_in_github: auth::SignInGithub::new(d.uow.clone()),
+            sign_in_google: auth::SignInGoogle::new(d.uow.clone()),
             current_user: auth::CurrentUser::new(d.uow.clone()),
+            passkeys: auth::Passkeys::new(d.uow.clone(), d.webauthn.clone(), d.clock.clone()),
         },
         orgs: orgs::Orgs {
             resolve_scope: orgs::ResolveOrgScope::new(d.uow.clone()),

@@ -1,19 +1,29 @@
 //! Sign-in use cases. Session, CSRF and OAuth state stay in the controller (transport).
 mod current_user;
+mod passkeys;
 mod redeem_magic_link;
 mod request_magic_link;
 mod sign_in_github;
+mod sign_in_google;
+mod verify_code;
 
 pub use current_user::CurrentUser;
+pub(crate) use passkeys::passkey_invalid;
+pub use passkeys::Passkeys;
 pub use redeem_magic_link::RedeemMagicLink;
 pub use request_magic_link::{MagicLinkInput, RequestMagicLink, PER_EMAIL, PER_IP};
 pub use sign_in_github::{GithubProfile, SignInGithub};
+pub use sign_in_google::{GoogleProfile, SignInGoogle};
+pub use verify_code::{VerifyCode, VerifyCodeInput};
 
 pub struct Auth {
     pub request_magic_link: RequestMagicLink,
     pub redeem_magic_link: RedeemMagicLink,
+    pub verify_code: VerifyCode,
     pub sign_in_github: SignInGithub,
+    pub sign_in_google: SignInGoogle,
     pub current_user: CurrentUser,
+    pub passkeys: Passkeys,
 }
 
 #[cfg(test)]
@@ -29,6 +39,7 @@ pub(crate) mod test_support {
     };
 
     pub const WEB: &str = "https://web.test";
+    pub const SECRET: &str = "test-session-secret";
 
     pub fn request_link(store: &MemStore, mail: &Arc<CaptureMailer>) -> RequestMagicLink {
         RequestMagicLink::new(
@@ -37,6 +48,7 @@ pub(crate) mod test_support {
             mail.clone(),
             WEB.into(),
             Arc::new(SystemClock),
+            SECRET.into(),
         )
     }
 
@@ -62,5 +74,11 @@ pub(crate) mod test_support {
             .split_whitespace()
             .find_map(|w| w.split_once("token=").map(|(_, t)| t.to_owned()))
             .expect("no token in mail")
+    }
+
+    /// The 6-digit code in the last mail's subject.
+    pub fn last_code(mail: &CaptureMailer) -> String {
+        let m = mail.sent().pop().expect("no mail sent");
+        m.subject.rsplit(' ').next().expect("no code").to_owned()
     }
 }

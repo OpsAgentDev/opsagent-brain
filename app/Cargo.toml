@@ -48,6 +48,8 @@ tower-http = { version = "0.6", features = ["catch-panic", "cors", "set-header",
 thiserror = "1"
 rmcp = { version = "3.7", default-features = false, features = ["server", "transport-streamable-http-server"] }
 schemars = "1"
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+webauthn-rs-proto = "0.5"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [[bin]]
@@ -62,6 +64,8 @@ test-support = []
 opsagent-brain = { path = ".", features = ["test-support"] }
 opsagent-ledger = { path = "../crates/ledger", features = ["test-support"] }
 serial_test = "3.1.1"
+# Software authenticator for the passkey registration ceremony test.
+webauthn-authenticator-rs = { version = "0.5", features = ["softpasskey"] }
 axum-test = "17"
 tower = { version = "0.5", features = ["util"] }
 wiremock = "0.6"

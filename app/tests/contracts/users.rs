@@ -1,5 +1,5 @@
 use chrono::{Duration, Utc};
-use opsagent_core::user::Email;
+use opsagent_core::{repo::RepoError, user::Email};
 use uuid::Uuid;
 
 use super::contract_suite;
@@ -34,20 +34,80 @@ contract_suite! {
         assert_eq!((other.github_id, other.email.as_str()), (Some(43), "bob@example.com"));
     }
 
+    async fn google_links_existing_email_user_then_matches_sub(s) {
+        let e = email("ada@example.com");
+        let u = s.users().find_or_create_by_email(&e).await.unwrap();
+        let g = s.users().find_or_create_google("sub-1", &e, Some("Ada".into()), true).await.unwrap();
+        assert_eq!((g.id, g.google_id.as_deref(), g.name.as_deref()), (u.id, Some("sub-1"), Some("Ada")));
+        let again = s.users().find_or_create_google("sub-1", &email("new@example.com"), None, false).await.unwrap();
+        assert_eq!(again.id, u.id);
+        let other = s.users().find_or_create_google("sub-2", &email("bob@example.com"), None, true).await.unwrap();
+        assert_ne!(other.id, u.id);
+        assert_eq!((other.google_id.as_deref(), other.email.as_str()), (Some("sub-2"), "bob@example.com"));
+    }
+
+    async fn google_refuses_unauthoritative_link_and_other_sub(s) {
+        let e = email("eve@corp.com");
+        s.users().find_or_create_by_email(&e).await.unwrap();
+        let refused = s.users().find_or_create_google("s1", &e, None, false).await;
+        assert!(matches!(refused, Err(RepoError::Conflict("account_exists"))));
+        s.users().find_or_create_google("s1", &e, None, true).await.unwrap();
+        let other = s.users().find_or_create_google("s2", &e, None, true).await;
+        assert!(matches!(other, Err(RepoError::Conflict("account_exists"))));
+    }
+
+    async fn google_refuses_to_create_for_unmanaged_address(s) {
+        let e = email("mallory@corp.com");
+        let refused = s.users().find_or_create_google("s1", &e, None, false).await;
+        assert!(matches!(refused, Err(RepoError::Conflict("google_email_unmanaged"))));
+        assert!(s.users().find_by_email(&e).await.unwrap().is_none());
+    }
+
     async fn magic_link_consumed_once_and_not_after_expiry(s) {
         let e = email("ada@example.com");
         let u = s.users().find_or_create_by_email(&e).await.unwrap();
         let now = Utc::now();
-        s.users().issue_magic_link(u.id, &e, "h1", None, now + Duration::minutes(15)).await.unwrap();
+        s.users().issue_magic_link(u.id, &e, "h1", "ch1", None, now + Duration::minutes(15)).await.unwrap();
         assert_eq!(s.users().consume_magic_link("h1", now).await.unwrap(), Some((u.id, None)));
         assert_eq!(s.users().consume_magic_link("h1", now).await.unwrap(), None);
-        s.users().issue_magic_link(u.id, &e, "h2", Some("/oauth/consent?request_id=x"), now + Duration::minutes(1)).await.unwrap();
+        s.users().issue_magic_link(u.id, &e, "h2", "ch2", Some("/oauth/consent?request_id=x"), now + Duration::minutes(1)).await.unwrap();
         let later = now + Duration::minutes(2);
         assert_eq!(s.users().consume_magic_link("h2", later).await.unwrap(), None);
         assert_eq!(s.users().consume_magic_link("unknown", now).await.unwrap(), None);
         // The stored destination comes back with the user.
-        s.users().issue_magic_link(u.id, &e, "h3", Some("/oauth/consent?request_id=x"), now + Duration::minutes(1)).await.unwrap();
+        s.users().issue_magic_link(u.id, &e, "h3", "ch3", Some("/oauth/consent?request_id=x"), now + Duration::minutes(1)).await.unwrap();
         let back = s.users().consume_magic_link("h3", now).await.unwrap();
         assert_eq!(back, Some((u.id, Some("/oauth/consent?request_id=x".into()))));
+    }
+
+    async fn live_codes_spend_once_and_die_after_five_wrong(s) {
+        let e = email("ada@example.com");
+        let u = s.users().find_or_create_by_email(&e).await.unwrap();
+        let now = Utc::now();
+        let soon = now + Duration::minutes(15);
+        s.users().issue_magic_link(u.id, &e, "t1", "c1", Some("/x"), soon).await.unwrap();
+        s.users().issue_magic_link(u.id, &e, "t2", "c2", None, now + Duration::minutes(1)).await.unwrap();
+        let live = s.users().live_codes(&e, now).await.unwrap();
+        assert_eq!(live.len(), 2);
+        let one = live.iter().find(|l| l.token_hash == "t1").unwrap().clone();
+        assert_eq!((one.user_id, one.code_hash.as_str(), one.return_to.as_deref()), (u.id, "c1", Some("/x")));
+        // Expired rows are not live.
+        assert_eq!(s.users().live_codes(&e, now + Duration::minutes(2)).await.unwrap().len(), 1);
+        // Four wrong guesses keep the code, the fifth disables it; the link still redeems.
+        let ids: Vec<_> = live.iter().map(|l| l.id).collect();
+        for _ in 0..4 {
+            s.users().count_wrong_code(&ids).await.unwrap();
+        }
+        assert_eq!(s.users().live_codes(&e, now).await.unwrap().len(), 2);
+        s.users().count_wrong_code(&ids).await.unwrap();
+        assert!(s.users().live_codes(&e, now).await.unwrap().is_empty());
+        assert!(s.users().consume_magic_link("t1", now).await.unwrap().is_some());
+        // Spending is once only, and not after expiry.
+        s.users().issue_magic_link(u.id, &e, "t3", "c3", None, soon).await.unwrap();
+        let id = s.users().live_codes(&e, now).await.unwrap()[0].id;
+        assert!(!s.users().spend_code(id, soon).await.unwrap());
+        assert!(s.users().spend_code(id, now).await.unwrap());
+        assert!(!s.users().spend_code(id, now).await.unwrap());
+        assert!(s.users().consume_magic_link("t3", now).await.unwrap().is_none());
     }
 }
