@@ -7,6 +7,7 @@ mod full_scan;
 mod runner;
 mod scheduler;
 mod verify;
+mod watch_scan;
 
 use async_trait::async_trait;
 use opsagent_core::run::RunStatus;
@@ -21,6 +22,7 @@ pub use full_scan::FullScanJob;
 pub use runner::WorkerRunner;
 pub use scheduler::Scheduler;
 pub use verify::VerifyJob;
+pub use watch_scan::WatchScanJob;
 
 #[async_trait]
 pub trait JobHandler: Send + Sync {

@@ -12,6 +12,7 @@ mod scheduler_tick;
 mod verify_connection;
 mod verify_outcome;
 mod verify_verdict;
+mod watch_scan;
 
 use std::sync::Arc;
 
@@ -35,6 +36,8 @@ pub struct Runs {
     /// Shared with the scheduler loop (`jobs::Scheduler`).
     pub scheduler_tick: Arc<SchedulerTick>,
     pub full_scan: FullScan,
+    /// `full_scan.watch()`: the 15-minute urgent-exposure subset.
+    pub watch_scan: FullScan,
     pub scan_now: ScanNow,
 }
 

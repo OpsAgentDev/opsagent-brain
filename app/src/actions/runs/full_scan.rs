@@ -1,5 +1,6 @@
 //! `full_scan` (PRD 7.3, jobs.md): one chunk per service × region, then a `finalize` chunk
 //! that marks unseen resources gone, runs the checks and applies the finding lifecycle.
+//! The same action runs `watch_scan` under `ScanProfile::Watch` (see `watch_scan`).
 use std::{collections::BTreeSet, sync::Arc};
 
 use opsagent_checks::Check;
@@ -11,7 +12,7 @@ use opsagent_core::{
     run::RunStatus,
 };
 use opsagent_ledger::{
-    lease::{self, claim, unclaim},
+    lease::{self, claim, is_claimed, unclaim},
     redis,
     retry::{fail_on_storage_error, settle},
     run_chunked, JobKind, LedgerError, Result, RunChunkedOptions, RunRow,
@@ -20,7 +21,10 @@ use opsagent_secrets::Kek;
 use serde_json::json;
 use uuid::Uuid;
 
-use super::full_scan_chunks::{Scan, FINALIZE, SIMULATE};
+use super::{
+    full_scan_chunks::{Scan, FINALIZE, SIMULATE},
+    watch_scan::WATCH_SERVICES,
+};
 use crate::{
     actions::runs::classify::{job_err, lerr, revoked},
     actions::{uow::UnitOfWork, ConnectorSource},
@@ -29,6 +33,15 @@ use crate::{
 };
 
 pub(super) const JOB: JobKind = JobKind::FullScan;
+
+/// Which scan a `FullScan` runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ScanProfile {
+    /// Every service and check; resolves, marks gone and scores.
+    Full,
+    /// `watch_scan`: the watch services and variants only; never resolves, marks gone or scores.
+    Watch,
+}
 
 /// Runs (or resumes) the scan of one run. Clone it to override the connector or the checks.
 #[derive(Clone)]
@@ -40,6 +53,7 @@ pub struct FullScan {
     pub(super) clock: Arc<dyn Clock>,
     connector: Option<Arc<dyn Connector>>,
     pub(super) checks: fn() -> Vec<Box<dyn Check>>,
+    pub(super) profile: ScanProfile,
 }
 
 /// How a run ends without (more) chunks.
@@ -65,6 +79,22 @@ impl FullScan {
             clock,
             connector: None,
             checks: opsagent_checks::all,
+            profile: ScanProfile::Full,
+        }
+    }
+
+    /// The same scan as a `watch_scan`.
+    pub fn watch(self) -> Self {
+        Self {
+            profile: ScanProfile::Watch,
+            ..self
+        }
+    }
+
+    fn job(&self) -> JobKind {
+        match self.profile {
+            ScanProfile::Full => JobKind::FullScan,
+            ScanProfile::Watch => JobKind::WatchScan,
         }
     }
 
@@ -103,12 +133,14 @@ impl FullScan {
             let skip = End::Set(RunStatus::Skipped, format!("status:{}", enum_str(c.status)));
             return self.end(&run, &opts, skip).await;
         }
-        // At most one full scan per connection (PRD 7.3); the run id owns the claim, so a
-        // resumed run passes and any other run is skipped.
-        let (key, owner) = (
-            format!("lease:conn:{}:{}", c.id, JOB.as_str()),
-            run_id.to_string(),
-        );
+        if self.profile == ScanProfile::Watch {
+            if let Some(skip) = self.watch_gate(&c).await? {
+                return self.end(&run, &opts, skip).await;
+            }
+        }
+        // At most one scan of each kind per connection (PRD 7.3); the run id owns the claim,
+        // so a resumed run passes and any other run is skipped.
+        let (key, owner) = (lease_key(c.id, self.job()), run_id.to_string());
         if !claim(&self.redis, &key, &owner, opts.time_cap + opts.lease_ttl).await? {
             let skip = End::Set(RunStatus::Skipped, "overlap".into());
             return self.end(&run, &opts, skip).await;
@@ -120,6 +152,24 @@ impl FullScan {
             unclaim(&self.redis, &key, &owner).await;
         }
         res
+    }
+
+    /// Why a watch scan must not run now: before the connection's first completed full scan
+    /// (its criticals are the baseline), or while a full scan holds the connection. A full
+    /// scan never waits for a watch scan.
+    async fn watch_gate(&self, c: &Connection) -> Result<Option<End>> {
+        let snap = self
+            .uow
+            .deliveries()
+            .connection_snapshot(c.organisation_id, c.id);
+        let skip = |why: &str| Some(End::Set(RunStatus::Skipped, why.into()));
+        if snap.await.map_err(lerr)?.first_scan_at.is_none() {
+            return Ok(skip("no_baseline"));
+        }
+        if is_claimed(&self.redis, &lease_key(c.id, JobKind::FullScan)).await? {
+            return Ok(skip("overlap"));
+        }
+        Ok(None)
     }
 
     /// The scan proper, once the connection is claimed: credentials, discovery, chunks.
@@ -137,10 +187,14 @@ impl FullScan {
             Ok(cr) => cr,
             Err(e) => return self.end(run, &opts, End::Failed(e)).await,
         };
-        if let Err(e) = self.audit_start(c, run.id).await {
-            return self.end(run, &opts, End::Failed(e)).await;
+        // shortcut: watch scans (every 15 min) skip `connection.scan_started`, or they would
+        // flood the audit log; audit them when the audit view can filter by run kind.
+        if self.profile == ScanProfile::Full {
+            if let Err(e) = self.audit_start(c, run.id).await {
+                return self.end(run, &opts, End::Failed(e)).await;
+            }
         }
-        let chunks = match discover(k.as_ref(), &cr).await {
+        let chunks = match discover(k.as_ref(), &cr, self.profile).await {
             Ok(chunks) => chunks,
             Err(e) => return self.end(run, &opts, e).await,
         };
@@ -200,7 +254,7 @@ impl FullScan {
         let context = CallContext {
             organisation_id: c.organisation_id,
             run_id,
-            trigger: JOB.as_str().into(),
+            trigger: self.job().as_str().into(),
         };
         providers::credentials(&c.provider, &creds, context).map_err(|e| job_err(&e))
     }
@@ -230,11 +284,27 @@ impl FullScan {
     }
 }
 
-/// The chunk list (`service@region`, then `simulate` and `finalize`) from an unscoped inventory call.
+fn lease_key(connection_id: Uuid, job: JobKind) -> String {
+    format!("lease:conn:{connection_id}:{}", job.as_str())
+}
+
+/// The chunk list (`service@region`, then `simulate` and `finalize`; a watch scan has no
+/// `simulate`) from one inventory call over the profile's services.
 /// shortcut: re-run on every (re)start, which doubles the AWS calls; upgrade to a declared
 /// connector scope when the AWS connector exposes one.
-async fn discover(k: &dyn Connector, cr: &Credentials) -> std::result::Result<Vec<String>, End> {
-    let inv = k.inventory(cr, &Scope::default()).await.map_err(|e| {
+async fn discover(
+    k: &dyn Connector,
+    cr: &Credentials,
+    profile: ScanProfile,
+) -> std::result::Result<Vec<String>, End> {
+    let scope = match profile {
+        ScanProfile::Full => Scope::default(),
+        ScanProfile::Watch => Scope {
+            regions: vec![],
+            services: WATCH_SERVICES.map(String::from).to_vec(),
+        },
+    };
+    let inv = k.inventory(cr, &scope).await.map_err(|e| {
         if revoked(&e) {
             End::Set(RunStatus::Partial, "revoked".into())
         } else {
@@ -254,6 +324,9 @@ async fn discover(k: &dyn Connector, cr: &Credentials) -> std::result::Result<Ve
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    chunks.extend([SIMULATE.into(), FINALIZE.into()]);
+    if profile == ScanProfile::Full {
+        chunks.push(SIMULATE.into());
+    }
+    chunks.push(FINALIZE.into());
     Ok(chunks)
 }

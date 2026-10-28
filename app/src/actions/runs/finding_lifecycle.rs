@@ -1,7 +1,13 @@
 //! Finding lifecycle per `full_scan` (PRD 7.4): the repository upserts what the run saw and
 //! resolves what it did not; this holds the rule of which findings may resolve.
+use std::collections::{BTreeSet, HashSet};
+
 use chrono::{DateTime, Utc};
-use opsagent_core::{connection::Connection, finding::FindingDraft, repo::RepoResult};
+use opsagent_core::{
+    connection::Connection,
+    finding::{FindingDraft, FindingFilter, FindingKey},
+    repo::{PageRequest, RepoResult},
+};
 use uuid::Uuid;
 
 use crate::actions::uow::Repos;
@@ -25,6 +31,62 @@ pub(super) async fn apply(
     }
     findings.resolve_unseen(org, conn, run_id, &[], now).await?;
     Ok(())
+}
+
+/// Applies one watch run's drafts: opens new findings and reopens resolved ones, resolves
+/// nothing. Findings already tracked (open, flapping, accepted, snoozed) are left to the full
+/// scan, so a 15-minute run neither settles flapping faster (`STABLE_RUNS` counts seen runs)
+/// nor writes a `seen` event and evidence each time.
+pub(super) async fn apply_watch(
+    repos: &dyn Repos,
+    c: &Connection,
+    run_id: Uuid,
+    drafts: &[FindingDraft],
+    now: DateTime<Utc>,
+) -> RepoResult<()> {
+    let (org, conn, findings) = (c.organisation_id, c.id, repos.findings());
+    let mut tracked: HashSet<FindingKey> = HashSet::new();
+    let check_ids: BTreeSet<&str> = drafts.iter().map(|d| d.key.check_id.as_str()).collect();
+    for check_id in check_ids {
+        let filter = FindingFilter {
+            connection_id: Some(conn),
+            check_id: Some(check_id.into()),
+            ..Default::default()
+        };
+        let mut page = PageRequest {
+            after: None,
+            limit: 500,
+        };
+        loop {
+            let got = findings.list(org, filter.clone(), page).await?;
+            tracked.extend(
+                got.items
+                    .into_iter()
+                    .filter(|f| {
+                        matches!(
+                            f.status.as_str(),
+                            "open" | "flapping" | "accepted" | "snoozed"
+                        )
+                    })
+                    .map(|f| f.key),
+            );
+            match got.next {
+                Some(after) => {
+                    page = PageRequest {
+                        after: Some(after),
+                        ..page
+                    }
+                }
+                None => break,
+            }
+        }
+    }
+    let fresh: Vec<FindingDraft> = drafts
+        .iter()
+        .filter(|d| !tracked.contains(&d.key))
+        .cloned()
+        .collect();
+    findings.upsert_seen(org, conn, run_id, &fresh, now).await
 }
 
 #[cfg(test)]

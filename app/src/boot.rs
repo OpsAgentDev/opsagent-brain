@@ -28,7 +28,7 @@ use crate::{
     error::{AppError, AppResult},
     jobs::{
         DeliverBriefingJob, DeliverWeeklyJob, FullScanJob, JobHandler, Scheduler, VerifyJob,
-        WorkerRunner,
+        WatchScanJob, WorkerRunner,
     },
     mailers::{self, Mailer},
     mcp, middleware,
@@ -289,6 +289,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             )),
             dispatcher,
             scan_now: runs::ScanNow::new(d.uow.clone(), full_scan.clone(), d.clock.clone()),
+            watch_scan: full_scan.clone().watch(),
             full_scan,
         },
         recipients: recipients(d, guard.clone()),
@@ -457,13 +458,14 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
     }
 }
 
-/// The job runner with the four job handlers, the only registry of job kinds. The queue and
+/// The job runner with the five job handlers, the only registry of job kinds. The queue and
 /// the job work share the state's one pool (`pool_size` with a worker).
 pub fn worker(state: &AppState) -> WorkerRunner {
     let (runs, deliveries) = (&state.actions.runs, &state.actions.deliveries);
     let handlers: Vec<Arc<dyn JobHandler>> = vec![
         Arc::new(VerifyJob(Arc::new(runs.verify_connection.clone()))),
         Arc::new(FullScanJob(Arc::new(runs.full_scan.clone()))),
+        Arc::new(WatchScanJob(Arc::new(runs.watch_scan.clone()))),
         Arc::new(DeliverBriefingJob(Arc::new(
             deliveries.deliver_briefing.clone(),
         ))),

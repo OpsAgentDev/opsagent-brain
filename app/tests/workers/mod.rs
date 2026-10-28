@@ -6,3 +6,4 @@ pub mod full_scan;
 mod runner;
 mod takeover;
 mod verify;
+mod watch_scan;

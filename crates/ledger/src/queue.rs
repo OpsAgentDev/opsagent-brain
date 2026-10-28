@@ -16,14 +16,16 @@ pub enum JobKind {
     FullScan,
     DeliverBriefing,
     DeliverWeekly,
+    WatchScan,
 }
 
 impl JobKind {
-    pub const ALL: [JobKind; 4] = [
+    pub const ALL: [JobKind; 5] = [
         Self::Verify,
         Self::FullScan,
         Self::DeliverBriefing,
         Self::DeliverWeekly,
+        Self::WatchScan,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -32,6 +34,7 @@ impl JobKind {
             Self::FullScan => "full_scan",
             Self::DeliverBriefing => "deliver_briefing",
             Self::DeliverWeekly => "deliver_weekly",
+            Self::WatchScan => "watch_scan",
         }
     }
 
@@ -101,7 +104,13 @@ mod tests {
 
     #[test]
     fn job_kind_round_trips_every_stored_string() {
-        let stored = ["verify", "full_scan", "deliver_briefing", "deliver_weekly"];
+        let stored = [
+            "verify",
+            "full_scan",
+            "deliver_briefing",
+            "deliver_weekly",
+            "watch_scan",
+        ];
         assert_eq!(JobKind::ALL.map(JobKind::as_str), stored);
         for (k, s) in JobKind::ALL.into_iter().zip(stored) {
             assert_eq!(JobKind::parse(s), Some(k));

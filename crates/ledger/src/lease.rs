@@ -127,6 +127,15 @@ pub async fn claim(redis: &Client, key: &str, owner: &str, ttl: Duration) -> Res
     Ok(n == 1)
 }
 
+/// True while anyone holds the `claim` on `key`.
+pub async fn is_claimed(redis: &Client, key: &str) -> Result<bool> {
+    let n: i32 = redis::cmd("EXISTS")
+        .arg(key)
+        .query_async(&mut conn(redis).await?)
+        .await?;
+    Ok(n == 1)
+}
+
 /// Releases `key` if `owner` still holds it. Best effort.
 pub async fn unclaim(redis: &Client, key: &str, owner: &str) {
     let Ok(mut c) = conn(redis).await else { return };

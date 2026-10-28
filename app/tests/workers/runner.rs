@@ -100,7 +100,7 @@ async fn runner_handles_each_kind_once() {
         .map(|r| r.clone() as Arc<dyn JobHandler>)
         .collect();
     let w = runner(&ctx, handlers, |_| {});
-    assert_eq!(w.drain().await.unwrap(), 4);
+    assert_eq!(w.drain().await.unwrap(), JobKind::ALL.len());
     for (rec, run) in recs.iter().zip(&runs) {
         assert_eq!(*rec.1.lock().unwrap(), vec![*run], "{:?}", rec.0);
         assert!(
