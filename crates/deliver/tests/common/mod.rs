@@ -33,6 +33,7 @@ pub fn conn() -> ConnectionSnapshot {
         first_scan_at: Some(now() - Duration::days(30)),
         last_scan_at: Some(now() - Duration::hours(6)),
         partial: false,
+        timezone: "UTC".into(),
     }
 }
 
@@ -58,6 +59,7 @@ pub fn finding(
         first_seen_at: now() - Duration::days(3),
         last_seen_at: now() - Duration::hours(6),
         events_since: events.to_vec(),
+        alerted_at: None,
     }
 }
 

@@ -122,6 +122,8 @@ pub struct MemState {
     runs: Vec<runs::RunEntry>,
     /// `None`: started, `Some(external_ref)`: done.
     effects: HashMap<(Uuid, String), Option<Option<String>>>,
+    /// When each done effect was done.
+    effects_done_at: HashMap<(Uuid, String), DateTime<Utc>>,
     findings: Vec<findings::FindingRow>,
     resources: Vec<resources::ResourceMem>,
     recipients: Vec<MemRecipient>,

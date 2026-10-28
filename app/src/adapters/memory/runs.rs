@@ -251,9 +251,10 @@ impl Storage for MemStore {
     }
 
     async fn effect_done(&self, run_id: Uuid, key: &str, r: Option<String>) -> Result<()> {
-        self.state()
-            .effects
-            .insert((run_id, key.to_owned()), Some(r));
+        let mut s = self.state();
+        let k = (run_id, key.to_owned());
+        s.effects_done_at.insert(k.clone(), Utc::now());
+        s.effects.insert(k, Some(r));
         Ok(())
     }
 

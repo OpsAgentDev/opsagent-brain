@@ -180,6 +180,7 @@ pub trait IntegrationsRepo: Send + Sync {
 /// `deliveries.kind` and `deliveries.status` values.
 pub const BRIEFING: &str = "briefing";
 pub const WEEKLY: &str = "weekly";
+pub const ALERT: &str = "alert";
 pub const SENT: &str = "sent";
 pub const FAILED: &str = "failed";
 pub const FALLBACK_EMAIL: &str = "fallback_email";
@@ -248,6 +249,15 @@ pub trait DeliveriesRepo: Send + Sync {
         connection_id: Uuid,
         before: DateTime<Utc>,
     ) -> RepoResult<bool>;
+    /// The connection's urgent alerts since `since`, from the side-effect ledger of its
+    /// `deliver_alert` runs: individual alerts sent (`alert:<finding_id>` done), and when the
+    /// last roll-up (`alert:rollup:<run_id>`) went out.
+    async fn alerts_since(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        since: DateTime<Utc>,
+    ) -> RepoResult<(usize, Option<DateTime<Utc>>)>;
     /// `NotFound` for a connection outside the organisation.
     async fn connection_snapshot(
         &self,

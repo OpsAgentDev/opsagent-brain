@@ -127,6 +127,42 @@ impl DeliveriesRepo for MemStore {
         }))
     }
 
+    async fn alerts_since(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        since: DateTime<Utc>,
+    ) -> RepoResult<(usize, Option<DateTime<Utc>>)> {
+        let s = self.state();
+        let mine = |run: &Uuid| {
+            s.runs.iter().any(|r| {
+                let k = &r.row.key;
+                r.row.id == *run
+                    && (k.organisation_id, k.connection_id, k.job_type.as_str())
+                        == (Some(organisation_id), Some(connection_id), "deliver_alert")
+            })
+        };
+        let done: Vec<(&str, DateTime<Utc>)> = s
+            .effects_done_at
+            .iter()
+            .filter(|((run, _), at)| **at >= since && mine(run))
+            .map(|((_, key), at)| (key.as_str(), *at))
+            .collect();
+        let individual = done
+            .iter()
+            .filter(|(k, _)| {
+                k.strip_prefix("alert:")
+                    .is_some_and(|id| Uuid::parse_str(id).is_ok())
+            })
+            .count();
+        let rollup = done
+            .iter()
+            .filter(|(k, _)| k.starts_with("alert:rollup:"))
+            .map(|(_, at)| *at)
+            .max();
+        Ok((individual, rollup))
+    }
+
     async fn connection_snapshot(
         &self,
         organisation_id: Uuid,
@@ -176,6 +212,11 @@ impl DeliveriesRepo for MemStore {
             partial: scans
                 .last()
                 .is_some_and(|(_, st)| *st == RunStatus::Partial),
+            timezone: s
+                .orgs
+                .iter()
+                .find(|o| o.id == organisation_id)
+                .map_or_else(|| "UTC".into(), |o| o.timezone.clone()),
         })
     }
 
@@ -204,6 +245,7 @@ impl DeliveriesRepo for MemStore {
                 first_seen_at: f.created_at,
                 last_seen_at: f.updated_at,
                 events_since: recent.iter().filter_map(|e| enum_of(&e.kind)).collect(),
+                alerted_at: f.alerted_at,
             })
         });
         Ok(snaps.collect())
