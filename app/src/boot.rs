@@ -211,6 +211,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.config.session_secret.clone(),
             ),
             sign_in_github: auth::SignInGithub::new(d.uow.clone()),
+            sign_in_google: auth::SignInGoogle::new(d.uow.clone()),
             current_user: auth::CurrentUser::new(d.uow.clone()),
         },
         orgs: orgs::Orgs {

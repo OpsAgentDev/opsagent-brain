@@ -36,13 +36,18 @@ fn user(m: users::Model) -> RepoResult<User> {
     })
 }
 
-fn new_user(email: &Email, name: Option<String>, github_id: Option<i64>) -> users::ActiveModel {
+fn new_user(
+    email: &Email,
+    name: Option<String>,
+    github_id: Option<i64>,
+    google_id: Option<String>,
+) -> users::ActiveModel {
     users::ActiveModel {
         id: Set(Uuid::new_v4()),
         email: Set(email.as_str().into()),
         name: Set(name),
         github_id: Set(github_id.map(|g| g.to_string())),
-        google_id: Set(None),
+        google_id: Set(google_id),
         created_at: Set(now()),
         updated_at: Set(now()),
     }
@@ -80,7 +85,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
         }
         // A concurrent first use inserts nothing here (any conflict: the email index is on
         // `lower(email)`) and is found below.
-        let inserted = users::Entity::insert(new_user(email, None, None))
+        let inserted = users::Entity::insert(new_user(email, None, None, None))
             .on_conflict(OnConflict::new().do_nothing().to_owned())
             .exec_without_returning(self.db())
             .await;
@@ -115,7 +120,40 @@ impl<C: Conn> UsersRepo for Pg<C> {
             return user(a.update(db).await.map_err(db_err)?);
         }
         user(
-            new_user(email, name, Some(github_id))
+            new_user(email, name, Some(github_id), None)
+                .insert(db)
+                .await
+                .map_err(db_err)?,
+        )
+    }
+
+    async fn find_or_create_google(
+        &self,
+        google_id: &str,
+        email: &Email,
+        name: Option<String>,
+    ) -> RepoResult<User> {
+        if let Some(u) = self
+            .user_where(users::Column::GoogleId.eq(google_id))
+            .await?
+        {
+            return Ok(u);
+        }
+        let db = self.db();
+        if let Some(u) = users::Entity::find()
+            .filter(users::Column::Email.eq(email.as_str()))
+            .one(db)
+            .await
+            .map_err(db_err)?
+        {
+            let mut a: users::ActiveModel = u.clone().into();
+            a.google_id = Set(Some(google_id.to_owned()));
+            a.name = Set(u.name.or(name));
+            a.updated_at = Set(now());
+            return user(a.update(db).await.map_err(db_err)?);
+        }
+        user(
+            new_user(email, name, None, Some(google_id.to_owned()))
                 .insert(db)
                 .await
                 .map_err(db_err)?,

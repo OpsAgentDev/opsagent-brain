@@ -34,6 +34,18 @@ contract_suite! {
         assert_eq!((other.github_id, other.email.as_str()), (Some(43), "bob@example.com"));
     }
 
+    async fn google_links_existing_email_user_then_matches_sub(s) {
+        let e = email("ada@example.com");
+        let u = s.users().find_or_create_by_email(&e).await.unwrap();
+        let g = s.users().find_or_create_google("sub-1", &e, Some("Ada".into())).await.unwrap();
+        assert_eq!((g.id, g.google_id.as_deref(), g.name.as_deref()), (u.id, Some("sub-1"), Some("Ada")));
+        let again = s.users().find_or_create_google("sub-1", &email("new@example.com"), None).await.unwrap();
+        assert_eq!(again.id, u.id);
+        let other = s.users().find_or_create_google("sub-2", &email("bob@example.com"), None).await.unwrap();
+        assert_ne!(other.id, u.id);
+        assert_eq!((other.google_id.as_deref(), other.email.as_str()), (Some("sub-2"), "bob@example.com"));
+    }
+
     async fn magic_link_consumed_once_and_not_after_expiry(s) {
         let e = email("ada@example.com");
         let u = s.users().find_or_create_by_email(&e).await.unwrap();

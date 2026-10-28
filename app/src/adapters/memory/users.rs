@@ -13,13 +13,19 @@ impl MemState {
         self.users.iter_mut().find(|u| f(u))
     }
 
-    fn new_user(&mut self, email: &Email, name: Option<String>, github_id: Option<i64>) -> User {
+    fn new_user(
+        &mut self,
+        email: &Email,
+        name: Option<String>,
+        github_id: Option<i64>,
+        google_id: Option<String>,
+    ) -> User {
         let u = User {
             id: Uuid::new_v4(),
             email: email.clone(),
             name,
             github_id,
-            google_id: None,
+            google_id,
             created_at: Utc::now(),
         };
         self.users.push(u.clone());
@@ -42,7 +48,7 @@ impl UsersRepo for MemStore {
         if let Some(u) = s.user_mut(|u| u.email == *email) {
             return Ok(u.clone());
         }
-        Ok(s.new_user(email, None, None))
+        Ok(s.new_user(email, None, None, None))
     }
 
     async fn find_or_create_github(
@@ -60,7 +66,25 @@ impl UsersRepo for MemStore {
             u.name = u.name.take().or(name);
             return Ok(u.clone());
         }
-        Ok(s.new_user(email, name, Some(github_id)))
+        Ok(s.new_user(email, name, Some(github_id), None))
+    }
+
+    async fn find_or_create_google(
+        &self,
+        google_id: &str,
+        email: &Email,
+        name: Option<String>,
+    ) -> RepoResult<User> {
+        let mut s = self.state();
+        if let Some(u) = s.user_mut(|u| u.google_id.as_deref() == Some(google_id)) {
+            return Ok(u.clone());
+        }
+        if let Some(u) = s.user_mut(|u| u.email == *email) {
+            u.google_id = Some(google_id.to_owned());
+            u.name = u.name.take().or(name);
+            return Ok(u.clone());
+        }
+        Ok(s.new_user(email, name, None, Some(google_id.to_owned())))
     }
 
     async fn issue_magic_link(

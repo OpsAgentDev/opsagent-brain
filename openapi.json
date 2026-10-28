@@ -222,18 +222,39 @@
         ],
         "responses": {
           "302": {
-            "description": "Session cookie set; redirects to the validated return_to, else the web dashboard"
-          },
-          "400": {
+            "description": "Session cookie set; redirects to the validated return_to, else the web dashboard. A failure redirects to /sign-in?error=<code>"
+          }
+        }
+      }
+    },
+    "/auth/sign-in/github/start": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_github_start",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "description": "Where sign-in lands afterwards; same rule as the magic link's `return_to`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "$ref": "#/components/schemas/AuthorizeUrl"
                 }
               }
             }
           },
-          "502": {
+          "503": {
             "content": {
               "application/json": {
                 "schema": {
@@ -245,12 +266,43 @@
         }
       }
     },
-    "/auth/sign-in/github/start": {
+    "/auth/sign-in/google/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_google_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Session cookie set; redirects to the validated return_to, else the web dashboard. A failure redirects to /sign-in?error=<code>"
+          }
+        }
+      }
+    },
+    "/auth/sign-in/google/start": {
       "post": {
         "tags": [
           "auth"
         ],
-        "operationId": "auth_github_start",
+        "operationId": "auth_google_start",
         "parameters": [
           {
             "name": "return_to",

@@ -6,7 +6,8 @@ use axum::{
 };
 use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
-    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
+    EndpointNotSet, EndpointSet, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
+    TokenResponse, TokenUrl,
 };
 use opsagent_core::{oauth::rules::consent_return_to, user::Email};
 use serde::{Deserialize, Serialize};
@@ -16,14 +17,16 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use crate::{
-    actions::auth::{GithubProfile, MagicLinkInput, VerifyCodeInput},
+    actions::auth::{GithubProfile, GoogleProfile, MagicLinkInput, VerifyCodeInput},
     adapters::client_ip::ClientIp,
     api_error::{ApiError, ApiJson, Problem},
+    config::Config,
     middleware::{csrf, org_scope::AuthUser, session::USER_KEY},
     state::AppState,
 };
 
 const GH_KEY: &str = "github_oauth";
+const GOOGLE_KEY: &str = "google_oauth";
 const UA: &str = "opsagent-brain";
 
 #[derive(Deserialize, ToSchema)]
@@ -154,40 +157,59 @@ async fn verify_code(
     }))
 }
 
-/// Expands to a configured GitHub OAuth client (the typestate client type is not nameable
-/// without noise); 503 if no client id/secret is set.
-macro_rules! github_client {
-    ($s:expr) => {{
-        if $s.github_client_id.is_empty() || $s.github_client_secret.is_empty() {
-            return Err(ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "github_not_configured",
-                "GitHub sign-in is not configured.",
-            ));
-        }
-        BasicClient::new(ClientId::new($s.github_client_id.clone()))
-            .set_client_secret(ClientSecret::new($s.github_client_secret.clone()))
-            .set_auth_uri(
-                AuthUrl::new("https://github.com/login/oauth/authorize".into())
-                    .map_err(ApiError::internal)?,
-            )
-            .set_token_uri(
-                TokenUrl::new("https://github.com/login/oauth/access_token".into())
-                    .map_err(ApiError::internal)?,
-            )
-            .set_redirect_uri(
-                RedirectUrl::new(format!(
-                    "{}/v1/auth/sign-in/github/callback",
-                    $s.api_base_url
-                ))
-                .map_err(ApiError::internal)?,
-            )
-    }};
+/// The OAuth client with both endpoints set (the typestate of `oauth_client`).
+type Client = BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
+
+fn oauth_client(
+    id: &str,
+    secret: &str,
+    auth_url: &str,
+    token_url: &str,
+    redirect: String,
+) -> Result<Client, ApiError> {
+    Ok(BasicClient::new(ClientId::new(id.into()))
+        .set_client_secret(ClientSecret::new(secret.into()))
+        .set_auth_uri(AuthUrl::new(auth_url.into()).map_err(ApiError::internal)?)
+        .set_token_uri(TokenUrl::new(token_url.into()).map_err(ApiError::internal)?)
+        .set_redirect_uri(RedirectUrl::new(redirect).map_err(ApiError::internal)?))
 }
 
-/// What the session keeps between GitHub start and callback.
+/// 503 `<provider>_not_configured` unless both the id and the secret are set.
+fn github_client(c: &Config) -> Result<Client, ApiError> {
+    if c.github_client_id.is_empty() || c.github_client_secret.is_empty() {
+        return Err(ApiError::unavailable(
+            "github_not_configured",
+            "GitHub sign-in is not configured.",
+        ));
+    }
+    oauth_client(
+        &c.github_client_id,
+        &c.github_client_secret,
+        "https://github.com/login/oauth/authorize",
+        "https://github.com/login/oauth/access_token",
+        format!("{}/v1/auth/sign-in/github/callback", c.api_base_url),
+    )
+}
+
+fn google_client(c: &Config) -> Result<Client, ApiError> {
+    if c.google_client_id.is_empty() || c.google_client_secret.is_empty() {
+        return Err(ApiError::unavailable(
+            "google_not_configured",
+            "Google sign-in is not configured.",
+        ));
+    }
+    oauth_client(
+        &c.google_client_id,
+        &c.google_client_secret,
+        "https://accounts.google.com/o/oauth2/v2/auth",
+        "https://oauth2.googleapis.com/token",
+        format!("{}/v1/auth/sign-in/google/callback", c.api_base_url),
+    )
+}
+
+/// What the session keeps between a provider's start and callback.
 #[derive(Serialize, Deserialize)]
-struct GhPending {
+struct OauthPending {
     state: String,
     verifier: String,
     return_to: Option<String>,
@@ -205,6 +227,31 @@ pub struct StartQuery {
     pub return_to: Option<String>,
 }
 
+/// The authorize URL with PKCE; state, verifier and `return_to` go in the session under `key`.
+async fn oauth_start(
+    session: &Session,
+    key: &str,
+    client: &Client,
+    scopes: &[&str],
+    return_to: Option<&str>,
+) -> Result<Json<AuthorizeUrl>, ApiError> {
+    let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+    let mut req = client.authorize_url(CsrfToken::new_random);
+    for sc in scopes {
+        req = req.add_scope(Scope::new((*sc).into()));
+    }
+    let (url, state) = req.set_pkce_challenge(challenge).url();
+    let pending = OauthPending {
+        state: state.secret().clone(),
+        verifier: verifier.secret().clone(),
+        return_to: return_to.and_then(consent_return_to),
+    };
+    session.insert(key, pending).await?;
+    Ok(Json(AuthorizeUrl {
+        url: url.to_string(),
+    }))
+}
+
 #[utoipa::path(post, path = "/auth/sign-in/github/start", tag = "auth", params(StartQuery),
     responses((status = 200, body = AuthorizeUrl), (status = 503, body = Problem)))]
 async fn github_start(
@@ -212,28 +259,28 @@ async fn github_start(
     session: Session,
     Query(q): Query<StartQuery>,
 ) -> Result<Json<AuthorizeUrl>, ApiError> {
-    let s = app.config.clone();
-    let client = github_client!(s);
-    let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
-    let (url, state) = client
-        .authorize_url(CsrfToken::new_random)
-        .add_scope(Scope::new("read:user".into()))
-        .add_scope(Scope::new("user:email".into()))
-        .set_pkce_challenge(challenge)
-        .url();
-    session
-        .insert(
-            GH_KEY,
-            GhPending {
-                state: state.secret().clone(),
-                verifier: verifier.secret().clone(),
-                return_to: q.return_to.as_deref().and_then(consent_return_to),
-            },
-        )
-        .await?;
-    Ok(Json(AuthorizeUrl {
-        url: url.to_string(),
-    }))
+    let client = github_client(&app.config)?;
+    let scopes = ["read:user", "user:email"];
+    oauth_start(&session, GH_KEY, &client, &scopes, q.return_to.as_deref()).await
+}
+
+#[utoipa::path(post, path = "/auth/sign-in/google/start", tag = "auth", params(StartQuery),
+    responses((status = 200, body = AuthorizeUrl), (status = 503, body = Problem)))]
+async fn google_start(
+    State(app): State<AppState>,
+    session: Session,
+    Query(q): Query<StartQuery>,
+) -> Result<Json<AuthorizeUrl>, ApiError> {
+    let client = google_client(&app.config)?;
+    let scopes = ["openid", "email", "profile"];
+    oauth_start(
+        &session,
+        GOOGLE_KEY,
+        &client,
+        &scopes,
+        q.return_to.as_deref(),
+    )
+    .await
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -241,6 +288,110 @@ async fn github_start(
 pub struct CallbackQuery {
     pub code: String,
     pub state: String,
+}
+
+/// 302 to `{web}/sign-in?error=<code>`, keeping a validated `return_to`, so a browser that
+/// navigated here lands on a page instead of JSON.
+fn provider_failure(web_base_url: &str, err: &ApiError, return_to: Option<&str>) -> Response {
+    let mut to = format!(
+        "{}/sign-in?error={}",
+        web_base_url.trim_end_matches('/'),
+        err.code()
+    );
+    if let Some(r) = return_to.and_then(consent_return_to) {
+        to.push_str(&format!("&return_to={}", urlencoding::encode(&r)));
+    }
+    (StatusCode::FOUND, [(header::LOCATION, to)]).into_response()
+}
+
+fn bad_gateway(e: impl std::fmt::Display) -> ApiError {
+    tracing::warn!(error = %e, "oauth exchange failed");
+    ApiError::new(
+        StatusCode::BAD_GATEWAY,
+        "oauth_exchange",
+        "Sign-in with the provider failed.",
+    )
+}
+
+/// The provider's access token for the callback `code`.
+async fn exchange(
+    http: &reqwest::Client,
+    client: &Client,
+    code: String,
+    verifier: String,
+) -> Result<String, ApiError> {
+    let token = client
+        .exchange_code(AuthorizationCode::new(code))
+        .set_pkce_verifier(PkceCodeVerifier::new(verifier))
+        .request_async(http)
+        .await
+        .map_err(bad_gateway)?;
+    Ok(token.access_token().secret().clone())
+}
+
+/// A JSON GET with the access token as bearer.
+async fn fetch<T: serde::de::DeserializeOwned>(
+    http: &reqwest::Client,
+    url: &str,
+    access: &str,
+) -> Result<T, ApiError> {
+    http.get(url)
+        .bearer_auth(access)
+        .header("User-Agent", UA)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(bad_gateway)?
+        .json()
+        .await
+        .map_err(bad_gateway)
+}
+
+/// The callback both providers share: checks the state, runs `sign_in(code, verifier)`, starts
+/// the session and lands. Every failure after the state check, and a state mismatch, 302s to
+/// `/sign-in?error=` instead of answering JSON.
+async fn finish_oauth<F, Fut>(
+    app: &AppState,
+    session: &Session,
+    key: &str,
+    q: CallbackQuery,
+    sign_in: F,
+) -> Result<Response, ApiError>
+where
+    F: FnOnce(String, String) -> Fut,
+    Fut: std::future::Future<Output = Result<Uuid, ApiError>>,
+{
+    let web = &app.config.web_base_url;
+    let stored = session.remove::<OauthPending>(key).await?;
+    // A mismatch keeps the `return_to` this same session stored at start (already validated).
+    let return_to = stored.as_ref().and_then(|p| p.return_to.clone());
+    let Some(p) = stored.filter(|p| p.state == q.state) else {
+        let err = ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "oauth_state",
+            "OAuth state mismatch; start sign-in again.",
+        );
+        return Ok(provider_failure(web, &err, return_to.as_deref()));
+    };
+    let outcome = async {
+        let user_id = sign_in(q.code, p.verifier).await?;
+        start_session(session, user_id).await
+    }
+    .await;
+    Ok(match outcome {
+        Ok(()) => {
+            let to = landing(web, p.return_to.as_deref());
+            (StatusCode::FOUND, [(header::LOCATION, to)]).into_response()
+        }
+        Err(e) => provider_failure(web, &e, p.return_to.as_deref()),
+    })
+}
+
+fn http_client() -> Result<reqwest::Client, ApiError> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(ApiError::internal)
 }
 
 #[derive(Deserialize)]
@@ -257,37 +408,13 @@ struct GhEmail {
     verified: bool,
 }
 
-fn bad_gateway(e: impl std::fmt::Display) -> ApiError {
-    tracing::warn!(error = %e, "github exchange failed");
-    ApiError::new(
-        StatusCode::BAD_GATEWAY,
-        "oauth_exchange",
-        "GitHub sign-in failed.",
-    )
-}
-
 /// The GitHub user and their verified primary email, for an access token.
 async fn github_identity(
     http: &reqwest::Client,
     access: &str,
 ) -> Result<(GhUser, Email), ApiError> {
-    let get = |url: &str| http.get(url).bearer_auth(access).header("User-Agent", UA);
-    let gh: GhUser = get("https://api.github.com/user")
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(bad_gateway)?
-        .json()
-        .await
-        .map_err(bad_gateway)?;
-    let emails: Vec<GhEmail> = get("https://api.github.com/user/emails")
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(bad_gateway)?
-        .json()
-        .await
-        .map_err(bad_gateway)?;
+    let gh: GhUser = fetch(http, "https://api.github.com/user", access).await?;
+    let emails: Vec<GhEmail> = fetch(http, "https://api.github.com/user/emails", access).await?;
     let email = emails
         .into_iter()
         .find(|e| e.primary && e.verified)
@@ -303,48 +430,75 @@ async fn github_identity(
 }
 
 #[utoipa::path(get, path = "/auth/sign-in/github/callback", tag = "auth", params(CallbackQuery),
-    responses((status = 302, description = "Session cookie set; redirects to the validated return_to, else the web dashboard"),
-        (status = 400, body = Problem), (status = 502, body = Problem)))]
+    responses((status = 302, description = "Session cookie set; redirects to the validated return_to, else the web dashboard. A failure redirects to /sign-in?error=<code>")))]
 async fn github_callback(
     State(app): State<AppState>,
     session: Session,
     Query(q): Query<CallbackQuery>,
 ) -> Result<Response, ApiError> {
-    let s = app.config.clone();
-    let client = github_client!(s);
-    let stored = session.remove::<GhPending>(GH_KEY).await?;
-    let Some(GhPending {
-        verifier,
-        return_to,
-        ..
-    }) = stored.filter(|p| p.state == q.state)
-    else {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "oauth_state",
-            "OAuth state mismatch; start sign-in again.",
-        ));
+    let sign_in = |code, verifier| async {
+        let client = github_client(&app.config)?;
+        let http = http_client()?;
+        let access = exchange(&http, &client, code, verifier).await?;
+        let (gh, email) = github_identity(&http, &access).await?;
+        let profile = GithubProfile {
+            github_id: gh.id,
+            email,
+            name: gh.name.or(Some(gh.login)),
+        };
+        Ok(app.actions.auth.sign_in_github.run(profile).await?)
     };
-    let http = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(ApiError::internal)?;
-    let token = client
-        .exchange_code(AuthorizationCode::new(q.code))
-        .set_pkce_verifier(PkceCodeVerifier::new(verifier))
-        .request_async(&http)
-        .await
-        .map_err(bad_gateway)?;
-    let (gh, email) = github_identity(&http, token.access_token().secret()).await?;
-    let profile = GithubProfile {
-        github_id: gh.id,
+    finish_oauth(&app, &session, GH_KEY, q, sign_in).await
+}
+
+#[derive(Deserialize)]
+struct GoogleUser {
+    sub: String,
+    email: String,
+    #[serde(default)]
+    email_verified: bool,
+    name: Option<String>,
+}
+
+/// The Google profile for an access token; the address must be verified.
+async fn google_identity(http: &reqwest::Client, access: &str) -> Result<GoogleProfile, ApiError> {
+    let u: GoogleUser = fetch(
+        http,
+        "https://openidconnect.googleapis.com/v1/userinfo",
+        access,
+    )
+    .await?;
+    let email = Email::parse(&u.email)
+        .filter(|_| u.email_verified)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "google_no_verified_email",
+                "The Google account has no verified email.",
+            )
+        })?;
+    Ok(GoogleProfile {
+        google_id: u.sub,
         email,
-        name: gh.name.or(Some(gh.login)),
+        name: u.name,
+    })
+}
+
+#[utoipa::path(get, path = "/auth/sign-in/google/callback", tag = "auth", params(CallbackQuery),
+    responses((status = 302, description = "Session cookie set; redirects to the validated return_to, else the web dashboard. A failure redirects to /sign-in?error=<code>")))]
+async fn google_callback(
+    State(app): State<AppState>,
+    session: Session,
+    Query(q): Query<CallbackQuery>,
+) -> Result<Response, ApiError> {
+    let sign_in = |code, verifier| async {
+        let client = google_client(&app.config)?;
+        let http = http_client()?;
+        let access = exchange(&http, &client, code, verifier).await?;
+        let profile = google_identity(&http, &access).await?;
+        Ok(app.actions.auth.sign_in_google.run(profile).await?)
     };
-    let user_id = app.actions.auth.sign_in_github.run(profile).await?;
-    start_session(&session, user_id).await?;
-    let to = landing(&s.web_base_url, return_to.as_deref());
-    Ok((StatusCode::FOUND, [(header::LOCATION, to)]).into_response())
+    finish_oauth(&app, &session, GOOGLE_KEY, q, sign_in).await
 }
 
 #[derive(Serialize, ToSchema)]
@@ -397,6 +551,8 @@ pub fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(verify_code))
         .routes(routes!(github_start))
         .routes(routes!(github_callback))
+        .routes(routes!(google_start))
+        .routes(routes!(google_callback))
         .routes(routes!(csrf_token))
         .routes(routes!(sign_out))
         .routes(routes!(me))

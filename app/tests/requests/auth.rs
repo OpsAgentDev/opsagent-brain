@@ -197,8 +197,11 @@ async fn github_start_returns_authorize_url_with_state_and_pkce() {
         let res = req
             .get("/v1/auth/sign-in/github/callback?code=x&state=forged")
             .await;
-        assert_eq!(res.status_code(), 400);
-        assert_eq!(res.json::<Value>()["code"], "oauth_state");
+        assert_eq!(res.status_code(), 302);
+        assert_eq!(
+            location(&res),
+            format!("{WEB_ORIGIN}/sign-in?error=oauth_state")
+        );
     })
     .await;
     std::env::remove_var("GITHUB_CLIENT_ID");
@@ -439,11 +442,90 @@ async fn github_return_to_round_trips() {
         let res = req
             .get("/v1/auth/sign-in/github/callback?code=x&state=forged")
             .await;
-        assert_eq!(res.json::<Value>()["code"], "oauth_state");
+        assert_eq!(res.status_code(), 302);
+        assert!(location(&res).contains("error=oauth_state"));
     })
     .await;
     std::env::remove_var("GITHUB_CLIENT_ID");
     std::env::remove_var("GITHUB_CLIENT_SECRET");
+}
+
+fn location(res: &axum_test::TestResponse) -> String {
+    res.header("location").to_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+#[serial]
+async fn google_start_is_503_when_unconfigured() {
+    serve(|req, _ctx| async move {
+        let res = req.post("/v1/auth/sign-in/google/start").await;
+        assert_eq!(res.status_code(), 503);
+        assert_eq!(res.json::<Value>()["code"], "google_not_configured");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn google_start_returns_google_url_with_pkce() {
+    std::env::set_var("GOOGLE_CLIENT_ID", "gid");
+    std::env::set_var("GOOGLE_CLIENT_SECRET", "secret");
+    serve(|req, _ctx| async move {
+        let res = req.post("/v1/auth/sign-in/google/start").await;
+        assert_eq!(res.status_code(), 200);
+        let url = res.json::<Value>()["url"].as_str().unwrap().to_string();
+        assert!(
+            url.starts_with("https://accounts.google.com/o/oauth2/v2/auth"),
+            "{url}"
+        );
+        for p in [
+            "state=",
+            "code_challenge=",
+            "client_id=gid",
+            "scope=openid+email+profile",
+        ] {
+            assert!(url.contains(p), "{p} missing in {url}");
+        }
+    })
+    .await;
+    std::env::remove_var("GOOGLE_CLIENT_ID");
+    std::env::remove_var("GOOGLE_CLIENT_SECRET");
+}
+
+#[tokio::test]
+#[serial]
+async fn google_callback_with_bad_state_redirects_to_sign_in_error() {
+    std::env::set_var("GOOGLE_CLIENT_ID", "gid");
+    std::env::set_var("GOOGLE_CLIENT_SECRET", "secret");
+    serve(|req, _ctx| async move {
+        // No pending sign-in at all.
+        let res = req
+            .get("/v1/auth/sign-in/google/callback?code=x&state=forged")
+            .await;
+        assert_eq!(res.status_code(), 302);
+        let to = location(&res);
+        assert!(
+            to.starts_with(&format!("{WEB_ORIGIN}/sign-in?error=oauth_state")),
+            "{to}"
+        );
+        // A started consent flow keeps its validated return_to on the failure redirect.
+        req.post("/v1/auth/sign-in/google/start")
+            .add_query_param("return_to", CONSENT)
+            .await;
+        let res = req
+            .get("/v1/auth/sign-in/google/callback?code=x&state=forged")
+            .await;
+        let to = location(&res);
+        assert!(
+            to.starts_with(&format!(
+                "{WEB_ORIGIN}/sign-in?error=oauth_state&return_to=%2Foauth%2Fconsent"
+            )),
+            "{to}"
+        );
+    })
+    .await;
+    std::env::remove_var("GOOGLE_CLIENT_ID");
+    std::env::remove_var("GOOGLE_CLIENT_SECRET");
 }
 
 /// An attacker starts a consent request in their own browser and mails the victim a sign-in

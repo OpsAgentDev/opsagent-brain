@@ -66,6 +66,14 @@ pub trait UsersRepo: Send + Sync {
         email: &Email,
         name: Option<String>,
     ) -> RepoResult<User>;
+    /// Match on the Google `sub`, else link to the user with `email`, else create. `name` fills a
+    /// missing name only.
+    async fn find_or_create_google(
+        &self,
+        google_id: &str,
+        email: &Email,
+        name: Option<String>,
+    ) -> RepoResult<User>;
     /// Stores a link for `user_id` (sent to `email`); only the hashes of the token and of the
     /// mailed code are kept.
     /// `return_to` is where sign-in lands afterwards; the caller has validated it.

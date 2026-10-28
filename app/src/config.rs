@@ -57,6 +57,8 @@ pub struct Config {
     pub cookie_domain: String,
     pub github_client_id: String,
     pub github_client_secret: String,
+    pub google_client_id: String,
+    pub google_client_secret: String,
     /// Empty disables Slack (`slack_not_configured`).
     pub slack_client_id: String,
     pub slack_client_secret: String,
@@ -141,6 +143,8 @@ impl Config {
             cookie_domain: s("COOKIE_DOMAIN", pick("", "", "opsagent.dev")),
             github_client_id: s("GITHUB_CLIENT_ID", ""),
             github_client_secret: s("GITHUB_CLIENT_SECRET", ""),
+            google_client_id: s("GOOGLE_CLIENT_ID", ""),
+            google_client_secret: s("GOOGLE_CLIENT_SECRET", ""),
             slack_client_id: s("SLACK_CLIENT_ID", ""),
             slack_client_secret: s("SLACK_CLIENT_SECRET", ""),
             slack_api_base_url: s("SLACK_API_BASE_URL", "https://slack.com/api"),
