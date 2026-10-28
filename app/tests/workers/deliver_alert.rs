@@ -506,3 +506,47 @@ async fn briefing_marks_alerted_items() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn concurrent_deliveries_post_once() {
+    serve(|req, ctx| async move {
+        let w = world(&req, &ctx, "overlap@example.com").await;
+        let s = slack(&ctx, &w).await;
+        Mock::given(method("POST"))
+            .and(path("/chat.postMessage"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(OK())
+                    .set_delay(std::time::Duration::from_millis(300)),
+            )
+            .mount(&s)
+            .await;
+        baselined(&ctx, &w).await;
+        crit(&ctx, &w, "raced").await;
+        let job = JobKind::DeliverAlert.as_str();
+        let a = new_run(&ctx, w.org, Some(w.conn), job, Utc::now()).await;
+        let b = new_run(
+            &ctx,
+            w.org,
+            Some(w.conn),
+            job,
+            Utc::now() + Duration::seconds(1),
+        )
+        .await;
+        let (ra, rb) = tokio::join!(rerun(&ctx, a), rerun(&ctx, b));
+        assert_eq!(posted(&s).await.len(), 1);
+        let mut st = [ra, rb];
+        st.sort_by_key(|s| format!("{s:?}"));
+        assert_eq!(st, [RunStatus::Done, RunStatus::Skipped]);
+        let skipped = runs::Entity::find()
+            .filter(runs::Column::Status.eq("skipped"))
+            .filter(runs::Column::ConnectionId.eq(w.conn))
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(skipped.partial_reason.as_deref(), Some("overlap"));
+    })
+    .await;
+}

@@ -15,6 +15,7 @@ use opsagent_deliver::{
     repo::{Integration, ALERT, FALLBACK_EMAIL},
 };
 use opsagent_ledger::{
+    lease::{self, claim, unclaim},
     run_chunked, ChunkOutcome, EffectState, LedgerError, RunChunkedOptions, RunRow,
 };
 use uuid::Uuid;
@@ -30,10 +31,13 @@ use crate::{
 
 const CHUNK: &str = "deliver";
 const BASELINE: &str = "alert:baseline";
-/// Resource lookups by identity: one page is plenty for an exact identity.
+/// How long a delivery holds its connection: far longer than five posts and a roll-up take,
+/// short enough that a crashed run blocks the next deliveries only briefly.
+const CLAIM_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+/// A resource lookup by exact identity: at most one row per connection.
 const LOOKUP: PageRequest = PageRequest {
     after: None,
-    limit: 20,
+    limit: 1,
 };
 
 #[derive(Clone)]
@@ -66,11 +70,41 @@ impl DeliverAlert {
         if !matches!(run.status, RunStatus::Queued | RunStatus::Running) {
             return Ok(run.status); // duplicate delivery of a finished run
         }
+        // One delivery per connection at a time, or two runs could send the same finding; the
+        // run id owns the claim, so a resumed run passes and any other run is skipped (the
+        // next scan's delivery picks up what it would have sent).
+        let conn = run.key.connection_id.ok_or(LedgerError::NotFound)?;
+        let (key, owner) = (
+            format!("lease:conn:{conn}:deliver_alert"),
+            run_id.to_string(),
+        );
+        if !claim(&self.kit.redis, &key, &owner, CLAIM_TTL).await? {
+            return self.skip(&run, &opts).await;
+        }
         let chunks = vec![CHUNK.to_owned()];
-        run_chunked(storage, &self.kit.redis, run_id, chunks, opts, |_, _| {
+        let res = run_chunked(storage, &self.kit.redis, run_id, chunks, opts, |_, _| {
             self.deliver(&run)
         })
-        .await
+        .await;
+        // A worker that took over this run's lease is still delivering: leave the claim to it.
+        let after = storage.load_run(run_id).await.map(|r| r.status);
+        if !matches!(after, Ok(RunStatus::Running)) {
+            unclaim(&self.kit.redis, &key, &owner).await;
+        }
+        res
+    }
+
+    /// Ends the run `skipped: overlap` under a run lease of its own.
+    async fn skip(&self, run: &RunRow, opts: &RunChunkedOptions) -> LResult<RunStatus> {
+        let (storage, redis) = (self.kit.uow.ledger(), &self.kit.redis);
+        let l = lease::acquire(storage, redis, run.id, &opts.worker_id, opts.lease_ttl).await?;
+        let l = l.ok_or(LedgerError::LeaseHeld)?;
+        let skip = RunStatus::Skipped;
+        let res = storage
+            .set_status(run.id, l.fence, skip, Some("overlap".into()))
+            .await;
+        lease::release(redis, &l).await;
+        res.map(|()| skip)
     }
 
     async fn deliver(&self, run: &RunRow) -> LResult<ChunkOutcome> {
@@ -162,7 +196,7 @@ impl DeliverAlert {
         let identity = &f.key.resource_identity;
         let filter = ResourceFilter {
             connection_id: Some(c.id),
-            q: Some(identity.clone()),
+            identity: Some(identity.clone()),
             ..Default::default()
         };
         let rows = self
@@ -171,7 +205,7 @@ impl DeliverAlert {
             .resources()
             .list(c.organisation_id, filter, LOOKUP);
         let rows = rows.await.map_err(lerr)?.items;
-        let row = rows.into_iter().find(|r| &r.identity == identity);
+        let row = rows.into_iter().next();
         Ok(ConnectionInfo {
             account: account(c),
             resource: row

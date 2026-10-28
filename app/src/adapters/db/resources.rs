@@ -118,6 +118,7 @@ impl<C: Conn> ResourcesRepo for Pg<C> {
             .filter(R::OrganisationId.eq(organisation_id))
             .apply_if(f.connection_id, |q, v| q.filter(R::ConnectionId.eq(v)))
             .apply_if(f.kind, |q, v| q.filter(R::Kind.eq(v.to_string())))
+            .apply_if(f.identity, |q, v| q.filter(R::Identity.eq(v)))
             .apply_if(f.q, |q, v| {
                 q.filter(
                     Condition::any()

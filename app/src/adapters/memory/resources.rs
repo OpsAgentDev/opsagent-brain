@@ -72,6 +72,7 @@ impl ResourcesRepo for MemStore {
                     && f.connection_id.is_none_or(|c| r.row.connection_id == c)
                     && f.kind.is_none_or(|k| r.row.kind == k)
                     && f.q.as_deref().is_none_or(|q| matches(&r.row, q))
+                    && f.identity.as_ref().is_none_or(|i| &r.row.identity == i)
             })
             .cloned()
             .collect();

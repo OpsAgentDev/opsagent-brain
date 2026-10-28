@@ -60,6 +60,7 @@ impl Tool for ListResourcesTool {
                 .map(|k| enum_arg::<ResourceKind>("kind", k))
                 .transpose()?,
             q: a.q,
+            identity: None,
         };
         let page = page_request(a.cursor.as_deref(), a.limit)?;
         let got = self

@@ -99,6 +99,8 @@ pub struct ResourceFilter {
     pub kind: Option<ResourceKind>,
     /// Case-insensitive substring of name or identity; LIKE wildcards match literally.
     pub q: Option<String>,
+    /// Exactly this identity.
+    pub identity: Option<String>,
 }
 
 #[async_trait]

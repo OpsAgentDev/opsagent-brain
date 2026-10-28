@@ -137,5 +137,8 @@ contract_suite! {
         // LIKE wildcards are literals.
         assert!(found(q("%")).await.is_empty());
         assert!(found(q("_")).await.is_empty());
+        let exact = |i: &str| ResourceFilter { identity: Some(i.into()), ..Default::default() };
+        assert_eq!(found(exact("snap-public")).await, ["snap-public"]);
+        assert!(found(exact("snap")).await.is_empty(), "no substring match");
     }
 }

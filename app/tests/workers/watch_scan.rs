@@ -37,6 +37,17 @@ fn watch(ctx: &TestApp, k: impl Connector + 'static) -> FullScan {
 
 /// Runs one watch scan for the connection; returns the run row.
 async fn watch_run(ctx: &TestApp, conn: Uuid, n: i64, ws: &FullScan) -> runs::Model {
+    let at = chrono::DateTime::from_timestamp(1_900_000_000 + n * 60, 0).unwrap();
+    watch_run_at(ctx, conn, at, ws).await
+}
+
+/// `watch_run` for slot `at`.
+async fn watch_run_at(
+    ctx: &TestApp,
+    conn: Uuid,
+    at: chrono::DateTime<chrono::Utc>,
+    ws: &FullScan,
+) -> runs::Model {
     let c = connections::Entity::find_by_id(conn)
         .one(&ctx.db)
         .await
@@ -47,7 +58,7 @@ async fn watch_run(ctx: &TestApp, conn: Uuid, n: i64, ws: &FullScan) -> runs::Mo
             organisation_id: Some(c.organisation_id),
             connection_id: Some(conn),
             job_type: "watch_scan".into(),
-            scheduled_at: chrono::DateTime::from_timestamp(1_900_000_000 + n * 60, 0).unwrap(),
+            scheduled_at: at,
         })
         .await
         .unwrap()
@@ -383,6 +394,71 @@ async fn watch_drafts_outside_allowlist_dropped() {
             .map(|f| f.variant)
             .collect();
         assert_eq!(got, ["sg_open_admin_port"]);
+    })
+    .await;
+}
+
+/// The connection's `deliver_alert` runs, by slot.
+async fn deliveries(ctx: &TestApp, conn: Uuid) -> Vec<runs::Model> {
+    let mut v = runs::Entity::find()
+        .filter(runs::Column::ConnectionId.eq(conn))
+        .filter(runs::Column::JobType.eq("deliver_alert"))
+        .all(&ctx.db)
+        .await
+        .unwrap();
+    v.sort_by_key(|r| r.scheduled_at);
+    v
+}
+
+#[tokio::test]
+#[serial]
+async fn watch_scan_enqueues_a_delivery_only_for_unalerted_criticals() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx).await;
+        scan(&ctx, conn, 0, &without_snapshot()).await;
+        assert_eq!(deliveries(&ctx, conn).await.len(), 1, "the full scan's");
+        let alerted = "UPDATE findings SET alerted_at = now() WHERE connection_id = $1";
+        ctx.db
+            .execute_raw(opsagent_brain::adapters::db::ledger_storage::stmt(
+                alerted,
+                vec![conn.into()],
+            ))
+            .await
+            .unwrap();
+        // Nothing new: no delivery.
+        watch_run(&ctx, conn, 1, &watch(&ctx, without_snapshot())).await;
+        assert_eq!(deliveries(&ctx, conn).await.len(), 1);
+        // The public snapshot opens: exactly one delivery, a microsecond after its slot.
+        let w = watch_run(&ctx, conn, 2, &watch(&ctx, noisy())).await;
+        let d = deliveries(&ctx, conn).await;
+        assert_eq!(d.len(), 2);
+        let slot = w.scheduled_at + chrono::Duration::microseconds(1);
+        assert_eq!(d[1].scheduled_at, slot);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn full_and_watch_scan_of_one_slot_get_a_delivery_each() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx).await;
+        let full = scan(&ctx, conn, 0, &noisy()).await;
+        let f = runs::Entity::find_by_id(full)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        // Same slot; the full scan's criticals are still unalerted (its delivery has not run).
+        let at = f.scheduled_at.with_timezone(&chrono::Utc);
+        watch_run_at(&ctx, conn, at, &watch(&ctx, noisy())).await;
+        let d = deliveries(&ctx, conn).await;
+        assert_eq!(d.len(), 2, "no key collision");
+        assert_eq!(d[0].scheduled_at, f.scheduled_at);
+        assert_eq!(
+            d[1].scheduled_at,
+            f.scheduled_at + chrono::Duration::microseconds(1)
+        );
     })
     .await;
 }
