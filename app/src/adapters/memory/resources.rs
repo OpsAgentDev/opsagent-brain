@@ -161,6 +161,23 @@ impl ResourcesRepo for MemStore {
         Ok(n)
     }
 
+    async fn forget_run(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+    ) -> RepoResult<u64> {
+        let mut n = 0;
+        for r in self.state().resources.iter_mut() {
+            if r.organisation_id == organisation_id && r.row.connection_id == connection_id {
+                let before = r.history.len();
+                r.history.retain(|h| *h != run_id);
+                n += (before - r.history.len()) as u64;
+            }
+        }
+        Ok(n)
+    }
+
     // shortcut: the fake keeps the latest attributes only, so it answers for the latest run;
     // keep history attributes per run if a test reads an older run.
     async fn observed(

@@ -146,9 +146,16 @@ impl FullScan {
             return self.end(&run, &opts, skip).await;
         }
         let res = self.claimed(&run, &c, opts).await;
+        let after = self.uow.ledger().load_run(run_id).await;
+        if self.profile == ScanProfile::Watch
+            && after
+                .as_ref()
+                .is_ok_and(|r| r.partial_reason.as_deref() == Some("time_cap"))
+        {
+            tracing::warn!(connection = %c.id, run = %run_id, "watch_scan: time cap hit before finalize");
+        }
         // A worker that took over this run's lease is still scanning: leave the claim to it.
-        let status = self.uow.ledger().load_run(run_id).await.map(|r| r.status);
-        if !matches!(status, Ok(RunStatus::Running)) {
+        if !matches!(after.map(|r| r.status), Ok(RunStatus::Running)) {
             unclaim(&self.redis, &key, &owner).await;
         }
         res
@@ -158,12 +165,9 @@ impl FullScan {
     /// (its criticals are the baseline), or while a full scan holds the connection. A full
     /// scan never waits for a watch scan.
     async fn watch_gate(&self, c: &Connection) -> Result<Option<End>> {
-        let snap = self
-            .uow
-            .deliveries()
-            .connection_snapshot(c.organisation_id, c.id);
+        let done = self.uow.runs().completed_full_scan(c.organisation_id, c.id);
         let skip = |why: &str| Some(End::Set(RunStatus::Skipped, why.into()));
-        if snap.await.map_err(lerr)?.first_scan_at.is_none() {
+        if !done.await.map_err(lerr)? {
             return Ok(skip("no_baseline"));
         }
         if is_claimed(&self.redis, &lease_key(c.id, JobKind::FullScan)).await? {

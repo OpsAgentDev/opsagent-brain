@@ -175,6 +175,24 @@ impl<C: Conn> ResourcesRepo for Pg<C> {
         Ok(r.rows_affected())
     }
 
+    async fn forget_run(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+    ) -> RepoResult<u64> {
+        let r = self
+            .db()
+            .execute_raw(stmt(
+                "DELETE FROM resource_history h USING resources r WHERE h.run_id = $1 \
+                 AND h.resource_id = r.id AND r.organisation_id = $2 AND r.connection_id = $3",
+                vec![run_id.into(), organisation_id.into(), connection_id.into()],
+            ))
+            .await
+            .map_err(db_err)?;
+        Ok(r.rows_affected())
+    }
+
     async fn observed(
         &self,
         organisation_id: Uuid,

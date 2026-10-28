@@ -138,6 +138,13 @@ pub trait ResourcesRepo: Send + Sync {
         provider: Provider,
         account: &str,
     ) -> RepoResult<Vec<Resource>>;
+    /// Deletes the connection's history rows of `run_id` (a watch scan keeps none); returns how many.
+    async fn forget_run(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+    ) -> RepoResult<u64>;
     /// Replaces the run's inventory call counts recorded for the chunk `service@region` with
     /// `calls` (a re-run chunk restates its counts). tenancy: call stats belong to the run.
     async fn replace_inventory_calls(

@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use opsagent_brain::{
     actions::runs::FullScan,
     adapters::db::ledger_storage::PgStorage,
-    models::_entities::{connections, findings, resources, runs},
+    models::_entities::{connections, findings, resource_history, resources, runs},
 };
 use opsagent_checks::{Check, CheckCtx};
 use opsagent_connectors::{
@@ -151,6 +151,32 @@ async fn watch_scan_never_marks_resources_gone() {
         for f in all_findings(&ctx, conn).await {
             assert_eq!(f.status, "open", "{}", f.resource_identity);
         }
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn watch_scan_leaves_no_resource_history() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx).await;
+        let full = scan(&ctx, conn, 0, &noisy()).await;
+        let rows = |run: Uuid| {
+            let db = ctx.db.clone();
+            async move {
+                resource_history::Entity::find()
+                    .filter(resource_history::Column::RunId.eq(run))
+                    .count(&db)
+                    .await
+                    .unwrap()
+            }
+        };
+        let before = rows(full).await;
+        assert!(before > 0);
+        let r = watch_run(&ctx, conn, 0, &watch(&ctx, noisy())).await;
+        assert_eq!(outcome(&r), ("done", None));
+        assert_eq!(rows(r.id).await, 0);
+        assert_eq!(rows(full).await, before);
     })
     .await;
 }

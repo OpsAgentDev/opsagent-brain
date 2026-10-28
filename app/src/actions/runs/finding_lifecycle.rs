@@ -34,9 +34,11 @@ pub(super) async fn apply(
 }
 
 /// Applies one watch run's drafts: opens new findings and reopens resolved ones, resolves
-/// nothing. Findings already tracked (open, flapping, accepted, snoozed) are left to the full
-/// scan, so a 15-minute run neither settles flapping faster (`STABLE_RUNS` counts seen runs)
-/// nor writes a `seen` event and evidence each time.
+/// nothing. Findings already tracked (any status but resolved) are left to the full scan, so
+/// a 15-minute run neither settles flapping faster (`STABLE_RUNS` counts seen runs) nor
+/// writes a `seen` event and evidence each time.
+/// shortcut: lists every finding of the drafts' checks, resolved ones too (`FindingFilter`
+/// has no status-not filter); bounded by the (resource, variant) pairs ever seen for 03/06.
 pub(super) async fn apply_watch(
     repos: &dyn Repos,
     c: &Connection,
@@ -62,12 +64,7 @@ pub(super) async fn apply_watch(
             tracked.extend(
                 got.items
                     .into_iter()
-                    .filter(|f| {
-                        matches!(
-                            f.status.as_str(),
-                            "open" | "flapping" | "accepted" | "snoozed"
-                        )
-                    })
+                    .filter(|f| f.status != "resolved")
                     .map(|f| f.key),
             );
             match got.next {

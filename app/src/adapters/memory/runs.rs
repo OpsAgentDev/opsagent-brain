@@ -133,6 +133,19 @@ impl RunsRepo for MemStore {
         });
         Ok(scans.map(|r| r.row.key.scheduled_at).max())
     }
+
+    async fn completed_full_scan(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+    ) -> RepoResult<bool> {
+        Ok(self.state().runs.iter().any(|r| {
+            r.in_org(organisation_id)
+                && r.row.key.connection_id == Some(connection_id)
+                && r.row.key.job_type == JobKind::FullScan.as_str()
+                && matches!(r.row.status, RunStatus::Done | RunStatus::Partial)
+        }))
+    }
 }
 
 #[async_trait]

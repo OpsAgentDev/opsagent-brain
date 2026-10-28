@@ -291,6 +291,9 @@ impl Scan<'_> {
             finding_lifecycle::apply_watch(&*tx, c, run_id, &drafts, now)
                 .await
                 .map_err(lerr)?;
+            // A watch keeps no history: nothing after finalize reads this run's rows.
+            let forget = tx.resources().forget_run(c.organisation_id, c.id, run_id);
+            forget.await.map_err(lerr)?;
             json!({ "check_errors": check_errors, "skipped_checks": skipped })
         } else {
             let (drafts, check_errors) = run_checks((self.fs.checks)(), k, &cx, run_id);

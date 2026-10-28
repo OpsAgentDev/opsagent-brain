@@ -66,4 +66,10 @@ pub trait RunsRepo: Send + Sync {
         organisation_id: Uuid,
         connection_id: Uuid,
     ) -> RepoResult<Option<DateTime<Utc>>>;
+    /// True once the connection has a `full_scan` run that ended `done` or `partial`.
+    async fn completed_full_scan(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+    ) -> RepoResult<bool>;
 }
