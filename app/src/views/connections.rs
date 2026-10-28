@@ -51,6 +51,8 @@ pub struct Connection {
     /// Slack channel id for this connection's deliveries; null posts nothing to Slack (there is
     /// no organisation channel), so briefings go to the owners by email.
     pub slack_channel_id: Option<String>,
+    /// Whether new critical findings alert the owners right away.
+    pub urgent_alerts: bool,
     pub first_connected_at: Option<DateTime<FixedOffset>>,
     pub billable_from: Option<DateTime<FixedOffset>>,
     pub created_at: DateTime<FixedOffset>,
@@ -70,6 +72,7 @@ pub fn view(c: &connection::Connection, last: Option<&connection::Verification>)
         briefing_time_local: hhmm(c.briefing_time_local),
         api_rate_ceiling: c.api_rate_ceiling,
         slack_channel_id: c.slack_channel_id.clone(),
+        urgent_alerts: c.urgent_alerts,
         first_connected_at: c.first_connected_at.map(|t| t.fixed_offset()),
         billable_from: c.billable_from.map(|t| t.fixed_offset()),
         created_at: c.created_at.fixed_offset(),

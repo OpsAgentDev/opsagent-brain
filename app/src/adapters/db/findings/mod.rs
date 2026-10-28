@@ -66,6 +66,7 @@ fn finding(m: findings::Model) -> RepoResult<Finding> {
         last_seen_run_id: m.last_seen_run_id,
         resolved_at: m.resolved_at.map(utc),
         resolved_reason: m.resolved_reason,
+        alerted_at: m.alerted_at.map(utc),
         created_at: utc(m.created_at),
         updated_at: utc(m.updated_at),
     })
@@ -268,6 +269,45 @@ impl<C: Conn> FindingsRepo for Pg<C> {
             seen::resolve(self.db(), f, run_id, now).await?;
         }
         Ok(unseen.len() as u64)
+    }
+
+    async fn alert_candidates(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+    ) -> RepoResult<Vec<Finding>> {
+        use findings::Column as F;
+        findings::Entity::find()
+            .filter(F::OrganisationId.eq(organisation_id))
+            .filter(F::ConnectionId.eq(connection_id))
+            .filter(F::Severity.eq(enum_str(Severity::Critical)))
+            .filter(F::Status.eq("open"))
+            .filter(F::AlertedAt.is_null())
+            .order_by_asc(F::CreatedAt)
+            .order_by_asc(F::Id)
+            .all(self.db())
+            .await
+            .map_err(db_err)?
+            .into_iter()
+            .map(finding)
+            .collect()
+    }
+
+    async fn mark_alerted(
+        &self,
+        organisation_id: Uuid,
+        ids: &[Uuid],
+        at: DateTime<Utc>,
+    ) -> RepoResult<()> {
+        use findings::Column as F;
+        findings::Entity::update_many()
+            .col_expr(F::AlertedAt, Expr::value(at))
+            .filter(F::OrganisationId.eq(organisation_id))
+            .filter(F::Id.is_in(ids.iter().copied()))
+            .exec(self.db())
+            .await
+            .map(|_| ())
+            .map_err(db_err)
     }
 
     async fn posture_rows(

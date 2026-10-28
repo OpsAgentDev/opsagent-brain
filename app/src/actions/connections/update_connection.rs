@@ -24,6 +24,7 @@ pub struct PatchInput {
     pub briefing_time_local: Option<String>,
     pub api_rate_ceiling: Option<i32>,
     pub slack_channel_id: Option<String>,
+    pub urgent_alerts: Option<bool>,
 }
 
 /// `""` clears; otherwise a Slack conversation id.
@@ -70,6 +71,7 @@ impl PatchInput {
                 .as_deref()
                 .map(valid_channel)
                 .transpose()?,
+            urgent_alerts: self.urgent_alerts,
         })
     }
 }

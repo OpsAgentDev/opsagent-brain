@@ -89,6 +89,60 @@ fn snooze(id: Uuid, from: &str) -> StatusChange {
 }
 
 contract_suite! {
+    async fn alert_candidates_are_open_unalerted_criticals(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let other = seed.connection(org).await;
+        let crit = |id: &str| draft(conn, "c", id, Severity::Critical);
+        scan(s, seed, org, conn, &[
+            crit("keep"), crit("accepted"), crit("snoozed"), crit("flapping"), crit("alerted"),
+            draft(conn, "c", "high", Severity::High),
+        ]).await;
+        scan(s, seed, org, other, &[draft(other, "c", "elsewhere", Severity::Critical)]).await;
+        let list = || async {
+            s.findings().list(org, FindingFilter { connection_id: Some(conn), ..Default::default() }, all()).await.unwrap().items
+        };
+        let id_of = |items: &[opsagent_core::finding::Finding], name: &str| {
+            items.iter().find(|f| f.key.resource_identity == name).unwrap().id
+        };
+        let items = list().await;
+        for (name, status) in [("accepted", "accepted"), ("snoozed", "snoozed")] {
+            let id = id_of(&items, name);
+            let mut c = snooze(id, "open");
+            c.status = status.into();
+            s.findings().change_status(org, id, c).await.unwrap();
+        }
+        let id = id_of(&items, "flapping");
+        let mut c = snooze(id, "open");
+        c.status = "flapping".into();
+        s.findings().change_status(org, id, c).await.unwrap();
+        s.findings().mark_alerted(org, &[id_of(&items, "alerted")], t(0)).await.unwrap();
+        let got = s.findings().alert_candidates(org, conn).await.unwrap();
+        assert_eq!(got.iter().map(|f| f.key.resource_identity.as_str()).collect::<Vec<_>>(), ["keep"]);
+        assert!(got[0].alerted_at.is_none());
+    }
+
+    async fn mark_alerted_is_org_scoped(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let (other_org, _) = world(s, seed).await;
+        scan(s, seed, org, conn, &[draft(conn, "c", "a", Severity::Critical)]).await;
+        let id = s.findings().alert_candidates(org, conn).await.unwrap()[0].id;
+        s.findings().mark_alerted(other_org, &[id], t(5)).await.unwrap();
+        assert_eq!(s.findings().get(org, id).await.unwrap().unwrap().alerted_at, None);
+        s.findings().mark_alerted(org, &[id], t(5)).await.unwrap();
+        assert_eq!(s.findings().get(org, id).await.unwrap().unwrap().alerted_at, Some(t(5)));
+        assert!(s.findings().alert_candidates(org, conn).await.unwrap().is_empty());
+    }
+
+    async fn resolve_clears_alerted_at(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        scan(s, seed, org, conn, &[draft(conn, "c", "a", Severity::Critical)]).await;
+        let id = s.findings().alert_candidates(org, conn).await.unwrap()[0].id;
+        s.findings().mark_alerted(org, &[id], t(0)).await.unwrap();
+        let r2 = scan(s, seed, org, conn, &[]).await;
+        s.findings().resolve_unseen(org, conn, r2, &[], t(1)).await.unwrap();
+        let f = s.findings().get(org, id).await.unwrap().unwrap();
+        assert_eq!((f.status.as_str(), f.alerted_at), ("resolved", None));
+    }
     async fn upsert_seen_twice_keeps_one_row_and_bumps_last_seen(s, seed) {
         let (org, conn) = world(s, seed).await;
         let d = [draft(conn, "no_mfa", "user/a", Severity::High)];

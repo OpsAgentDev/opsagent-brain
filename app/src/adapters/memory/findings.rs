@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use opsagent_core::{
     finding::{
         dedupe, Finding, FindingDraft, FindingEvent, FindingFilter, FindingsRepo, PostureRow,
-        StatusChange, StoredEvidence,
+        Severity, StatusChange, StoredEvidence,
     },
     repo::{Cursor, PageOf, PageRequest, RepoError, RepoResult},
 };
@@ -216,6 +216,7 @@ impl FindingsRepo for MemStore {
                             last_seen_run_id: Some(run_id),
                             resolved_at: None,
                             resolved_reason: None,
+                            alerted_at: None,
                             created_at: now,
                             updated_at: now,
                         },
@@ -263,9 +264,48 @@ impl FindingsRepo for MemStore {
             let f = &mut row.finding;
             (f.status, f.resolved_at) = ("resolved".into(), Some(now));
             f.resolved_reason = Some(reason.into());
+            f.alerted_at = None;
             n += 1;
         }
         Ok(n)
+    }
+
+    async fn alert_candidates(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+    ) -> RepoResult<Vec<Finding>> {
+        let mut out: Vec<Finding> = self
+            .state()
+            .findings
+            .iter()
+            .map(|r| &r.finding)
+            .filter(|f| {
+                f.organisation_id == organisation_id
+                    && f.connection_id == connection_id
+                    && f.severity == Severity::Critical
+                    && f.status == "open"
+                    && f.alerted_at.is_none()
+            })
+            .cloned()
+            .collect();
+        out.sort_by_key(|f| (f.created_at, f.id));
+        Ok(out)
+    }
+
+    async fn mark_alerted(
+        &self,
+        organisation_id: Uuid,
+        ids: &[Uuid],
+        at: DateTime<Utc>,
+    ) -> RepoResult<()> {
+        for r in self.state().findings.iter_mut() {
+            let f = &mut r.finding;
+            if f.organisation_id == organisation_id && ids.contains(&f.id) {
+                f.alerted_at = Some(at);
+            }
+        }
+        Ok(())
     }
 
     async fn posture_rows(

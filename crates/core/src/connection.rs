@@ -84,6 +84,8 @@ pub struct Connection {
     /// Consecutive verify calls refused access, and when the first of them was.
     pub verify_denied_streak: i32,
     pub verify_denied_first_at: Option<DateTime<Utc>>,
+    /// Tell the owners right away about new critical findings.
+    pub urgent_alerts: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -108,6 +110,7 @@ pub struct ConnectionPatch {
     pub api_rate_ceiling: Option<i32>,
     /// `Some(None)` clears the channel.
     pub slack_channel_id: Option<Option<String>>,
+    pub urgent_alerts: Option<bool>,
 }
 
 /// One recorded verify outcome; the grants are the stored grant labels.
