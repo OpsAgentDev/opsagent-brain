@@ -1,5 +1,6 @@
 //! Briefing and weekly documents (pure: snapshots in, text out), schedule maths, and the
 //! delivery repository ports. No I/O, no logging.
+pub mod alert;
 pub mod briefing;
 pub mod model;
 pub mod render_html;

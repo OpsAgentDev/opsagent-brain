@@ -69,8 +69,12 @@ fn daily(
     for (name, items, total) in sections.iter().filter(|s| s.2 > 0) {
         out += &format!("*{name}* ({total})\n");
         for i in items {
+            let alerted = i
+                .alerted
+                .as_ref()
+                .map_or(String::new(), |t| format!(" (alerted {t})"));
             out += &format!(
-                "• {}: {}\n",
+                "• {}: {}{alerted}\n",
                 severity_label(i.severity),
                 slack_item(&i.title)
             );
@@ -106,7 +110,7 @@ fn status_label(s: ConnectionStatus) -> String {
 }
 
 /// Escapes Slack's control characters (`&`, `<`, `>`), then caps at ITEM_MAX with an ellipsis.
-fn slack_item(s: &str) -> String {
+pub(crate) fn slack_item(s: &str) -> String {
     let e = s
         .replace('&', "&amp;")
         .replace('<', "&lt;")

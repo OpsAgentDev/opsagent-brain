@@ -3,7 +3,7 @@ use chrono::{DateTime, NaiveTime, Utc};
 use opsagent_core::{connection::ConnectionStatus, repo::RepoResult, run::RunKey};
 use opsagent_deliver::{
     repo::{DueRun, SchedulesRepo, SinceFn},
-    schedule::{daily_at, next_after, BRIEFING, FULL_SCAN, VERIFY_WEEKLY, WEEKLY},
+    schedule::{daily_at, next_after, BRIEFING, FULL_SCAN, VERIFY_WEEKLY, WATCH_CRON, WEEKLY},
 };
 use uuid::Uuid;
 
@@ -55,6 +55,7 @@ impl SchedulesRepo for MemStore {
         let jobs = [
             (None, "deliver_weekly", WEEKLY),
             (Some(connection_id), "full_scan", scan.as_str()),
+            (Some(connection_id), "watch_scan", WATCH_CRON),
             (Some(connection_id), "verify", VERIFY_WEEKLY),
             (Some(connection_id), "deliver_briefing", briefing.as_str()),
             (Some(connection_id), "deliver_weekly", WEEKLY),
@@ -116,10 +117,11 @@ impl SchedulesRepo for MemStore {
     async fn backfill_defaults(&self, now: DateTime<Utc>) -> RepoResult<u64> {
         let todo: Vec<_> = {
             let s = self.state();
-            let briefed = |id| {
+            // The newest default schedule: a connection without it lacks some defaults.
+            let current = |id| {
                 s.schedules
                     .iter()
-                    .any(|r| r.connection_id == Some(id) && r.job_type == "deliver_briefing")
+                    .any(|r| r.connection_id == Some(id) && r.job_type == "watch_scan")
             };
             s.connections
                 .iter()
@@ -130,7 +132,7 @@ impl SchedulesRepo for MemStore {
                         .iter()
                         .any(|o| o.id == c.organisation_id && o.deleted_at.is_none())
                 })
-                .filter(|c| !briefed(c.id))
+                .filter(|c| !current(c.id))
                 .map(|c| {
                     (
                         c.organisation_id,

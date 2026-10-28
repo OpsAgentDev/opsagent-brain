@@ -2,15 +2,15 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     repo::{PageOf, PageRequest, RepoError, RepoResult},
-    run::{Run, RunFilter, RunsRepo},
+    run::{Run, RunFilter, RunStatus, RunsRepo},
 };
 use opsagent_ledger::JobKind;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QueryTrait};
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QueryTrait};
 use serde_json::Value;
 use uuid::Uuid;
 
 use super::{db_err, page, utc, Conn, Pg};
-use crate::models::{_entities::runs, enum_of};
+use crate::models::{_entities::runs, enum_of, enum_str};
 
 fn run(m: runs::Model) -> RepoResult<Run> {
     let status = enum_of(&m.status)
@@ -75,5 +75,22 @@ impl<C: Conn> RunsRepo for Pg<C> {
             .await
             .map_err(db_err)?
             .map(|r| utc(r.scheduled_at)))
+    }
+
+    async fn completed_full_scan(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+    ) -> RepoResult<bool> {
+        let done = [RunStatus::Done, RunStatus::Partial].map(enum_str);
+        let n = runs::Entity::find()
+            .filter(runs::Column::OrganisationId.eq(organisation_id))
+            .filter(runs::Column::ConnectionId.eq(connection_id))
+            .filter(runs::Column::JobType.eq(JobKind::FullScan.as_str()))
+            .filter(runs::Column::Status.is_in(done))
+            .count(self.db())
+            .await
+            .map_err(db_err)?;
+        Ok(n > 0)
     }
 }

@@ -3280,6 +3280,7 @@
           "id",
           "provider",
           "status",
+          "urgent_alerts",
           "created_at"
         ],
         "properties": {
@@ -3372,6 +3373,10 @@
               "string",
               "null"
             ]
+          },
+          "urgent_alerts": {
+            "type": "boolean",
+            "description": "Whether new critical findings alert the owners right away."
           }
         }
       },
@@ -3412,6 +3417,13 @@
               "null"
             ],
             "description": "Slack channel id (`C…` or `G…`) for this connection's deliveries; `\"\"` clears it.\nEmail recipients are managed through `/orgs/{org}/recipients` with `connection_id`."
+          },
+          "urgent_alerts": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Tell the owners right away about new critical findings (default on)."
           }
         }
       },

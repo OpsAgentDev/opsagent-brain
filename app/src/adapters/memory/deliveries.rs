@@ -9,8 +9,8 @@ use opsagent_core::{
 use opsagent_deliver::{
     model::{ConnectionSnapshot, FindingSnapshot, FindingStatus, SeverityCounts},
     repo::{
-        DeliveriesRepo, DeliveryFilter, DeliveryRow, NewDelivery, BRIEFING, FALLBACK_EMAIL,
-        REVOKED, SENT, SLACK,
+        AlertTally, DeliveriesRepo, DeliveryFilter, DeliveryRow, NewDelivery, BRIEFING,
+        FALLBACK_EMAIL, REVOKED, SENT, SLACK,
     },
 };
 use uuid::Uuid;
@@ -127,6 +127,50 @@ impl DeliveriesRepo for MemStore {
         }))
     }
 
+    async fn alert_tally(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        since: DateTime<Utc>,
+    ) -> RepoResult<AlertTally> {
+        let s = self.state();
+        let mine = |run: &Uuid| {
+            s.runs.iter().any(|r| {
+                let k = &r.row.key;
+                r.row.id == *run
+                    && (k.organisation_id, k.connection_id, k.job_type.as_str())
+                        == (Some(organisation_id), Some(connection_id), "deliver_alert")
+            })
+        };
+        let done: Vec<(Uuid, &str, DateTime<Utc>)> = s
+            .effects_done_at
+            .iter()
+            .filter(|((run, _), _)| mine(run))
+            .map(|((run, key), at)| (*run, key.as_str(), *at))
+            .collect();
+        let one = |k: &str| {
+            k.strip_prefix("alert:")
+                .is_some_and(|id| Uuid::parse_str(id).is_ok())
+        };
+        Ok(AlertTally {
+            since: done
+                .iter()
+                .filter(|(_, k, at)| one(k) && *at >= since)
+                .count(),
+            this_run: done
+                .iter()
+                .filter(|(r, k, _)| one(k) && *r == run_id)
+                .count(),
+            last_rollup_at: done
+                .iter()
+                .filter(|(_, k, at)| k.starts_with("alert:rollup:") && *at >= since)
+                .map(|(_, _, at)| *at)
+                .max(),
+            baselined: done.iter().any(|(_, k, _)| *k == "alert:baseline"),
+        })
+    }
+
     async fn connection_snapshot(
         &self,
         organisation_id: Uuid,
@@ -176,6 +220,11 @@ impl DeliveriesRepo for MemStore {
             partial: scans
                 .last()
                 .is_some_and(|(_, st)| *st == RunStatus::Partial),
+            timezone: s
+                .orgs
+                .iter()
+                .find(|o| o.id == organisation_id)
+                .map_or_else(|| "UTC".into(), |o| o.timezone.clone()),
         })
     }
 
@@ -204,6 +253,7 @@ impl DeliveriesRepo for MemStore {
                 first_seen_at: f.created_at,
                 last_seen_at: f.updated_at,
                 events_since: recent.iter().filter_map(|e| enum_of(&e.kind)).collect(),
+                alerted_at: f.alerted_at,
             })
         });
         Ok(snaps.collect())

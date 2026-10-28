@@ -138,6 +138,8 @@ pub struct ConnectionPatch {
     /// Slack channel id (`C…` or `G…`) for this connection's deliveries; `""` clears it.
     /// Email recipients are managed through `/orgs/{org}/recipients` with `connection_id`.
     pub slack_channel_id: Option<String>,
+    /// Tell the owners right away about new critical findings (default on).
+    pub urgent_alerts: Option<bool>,
 }
 
 #[utoipa::path(patch, path = "/orgs/{org}/connections/{id}", tag = "connections", params(OrgIdPath),
@@ -158,6 +160,7 @@ async fn update(
         briefing_time_local: body.briefing_time_local,
         api_rate_ceiling: body.api_rate_ceiling,
         slack_channel_id: body.slack_channel_id,
+        urgent_alerts: body.urgent_alerts,
     };
     let update = &app.actions.connections.update_connection;
     Ok(Json(view(

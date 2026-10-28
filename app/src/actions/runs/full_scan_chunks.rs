@@ -1,26 +1,29 @@
-//! The chunks of one full scan: `service@region` inventory, `simulate`, then `finalize`.
+//! The chunks of one full scan: `service@region` inventory, `simulate`, then `finalize`
+//! (which also enqueues the scan's `deliver_alert`).
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     panic::{catch_unwind, AssertUnwindSafe},
 };
 
+use chrono::{DateTime, Duration, Utc};
 use opsagent_checks::{Check, CheckCtx, MetricStore};
 use opsagent_connectors::{
     Connector, Credentials, InventoryResult, Result as ConnResult, Scope, SimulationResult,
 };
+use opsagent_core::run::RunKey;
 use opsagent_core::{
     connection::{Connection, Posture},
     finding::FindingDraft,
     resource::{CallCount, Resource},
 };
-use opsagent_ledger::{ChunkOutcome, LedgerError, Result};
+use opsagent_ledger::{ChunkOutcome, JobKind, LedgerError, Result, RunRow};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::{finding_lifecycle, FullScan};
+use super::{finding_lifecycle, full_scan::ScanProfile, watch_scan, FullScan, RunDispatcher};
 use crate::{
     actions::runs::classify::{classify, lerr, revoked},
-    actions::uow::Repos,
+    actions::uow::{Repos, Tx},
 };
 
 pub(super) const SIMULATE: &str = "simulate";
@@ -243,24 +246,31 @@ impl Scan<'_> {
         })
     }
 
-    /// Gone-marking, checks, lifecycle and posture, in one fenced transaction.
+    /// Gone-marking, checks, lifecycle and posture, in one fenced transaction. A watch scan
+    /// only runs its checks and opens what they find.
     async fn finalize(&self, fence: u64) -> Result<ChunkOutcome> {
         let (run_id, c, k) = (self.run_id, self.c, self.k);
-        let cp = self.fs.uow.ledger().load_run(run_id).await?.checkpoint;
+        let watch = self.fs.profile == ScanProfile::Watch;
+        let run = self.fs.uow.ledger().load_run(run_id).await?;
+        let cp = run.checkpoint.clone();
         let so_far = cp.stats;
         let simulations: HashMap<String, SimulationResult> = parse(&cp.cursor["simulations"])?;
         let unavailable: BTreeSet<String> = parse(&so_far["unavailable"])?;
         let partial = so_far["partial"] == json!(true);
         let now = self.fs.clock.now();
-        let cost = k.cost_daily(self.cr, 30).await.unwrap_or_else(|e| {
-            // Cost visibility is optional (PRD 7.3): cost checks see no rows.
-            let (code, _) = classify(&e);
-            tracing::warn!(code, run = %run_id, "full_scan: cost unavailable");
+        let cost = if watch {
             vec![]
-        });
+        } else {
+            k.cost_daily(self.cr, 30).await.unwrap_or_else(|e| {
+                // Cost visibility is optional (PRD 7.3): cost checks see no rows.
+                let (code, _) = classify(&e);
+                tracing::warn!(code, run = %run_id, "full_scan: cost unavailable");
+                vec![]
+            })
+        };
         let tx = self.fs.uow.begin().await.map_err(lerr)?;
         tx.ledger().hold_fence(run_id, fence).await?;
-        if !partial {
+        if !partial && !watch {
             let gone = tx
                 .resources()
                 .mark_unseen_gone(c.organisation_id, c.id, run_id, now);
@@ -278,18 +288,44 @@ impl Scan<'_> {
             now,
             unavailable: &unavailable,
         };
-        let (drafts, check_errors) = run_checks(self.fs.checks, k, &cx, run_id);
-        finding_lifecycle::apply(&*tx, c, run_id, &drafts, now, partial)
-            .await
-            .map_err(lerr)?;
-        let rows = tx.findings().posture_rows(c.organisation_id, c.id);
-        let posture = Posture::from_rows(&rows.await.map_err(lerr)?);
-        let mut stats = serde_json::to_value(posture).map_err(lerr)?;
+        // A full scan that started after this watch began owns the findings: writing here
+        // could insert or reopen the same finding as its finalize.
+        if watch && self.fs.full_scan_held(c).await? {
+            let forget = tx.resources().forget_run(c.organisation_id, c.id, run_id);
+            forget.await.map_err(lerr)?;
+            tx.commit().await.map_err(lerr)?;
+            return Ok(ChunkOutcome {
+                stats: json!({ "skip_reason": "overlap" }),
+                ..Default::default()
+            });
+        }
+        let mut stats = if watch {
+            let (checks, skipped) = watch_scan::checks((self.fs.checks)(), &unavailable);
+            let (mut drafts, check_errors) = run_checks(checks, k, &cx, run_id);
+            drafts.retain(watch_scan::allowed);
+            finding_lifecycle::apply_watch(&*tx, c, run_id, &drafts, now)
+                .await
+                .map_err(lerr)?;
+            // A watch keeps no history: nothing after finalize reads this run's rows.
+            let forget = tx.resources().forget_run(c.organisation_id, c.id, run_id);
+            forget.await.map_err(lerr)?;
+            json!({ "check_errors": check_errors, "skipped_checks": skipped })
+        } else {
+            let (drafts, check_errors) = run_checks((self.fs.checks)(), k, &cx, run_id);
+            finding_lifecycle::apply(&*tx, c, run_id, &drafts, now, partial)
+                .await
+                .map_err(lerr)?;
+            let rows = tx.findings().posture_rows(c.organisation_id, c.id);
+            let posture = Posture::from_rows(&rows.await.map_err(lerr)?);
+            let mut stats = serde_json::to_value(posture).map_err(lerr)?;
+            stats["check_errors"] = json!(check_errors);
+            stats
+        };
         stats["partial"] = json!(partial);
-        stats["check_errors"] = json!(check_errors);
         if so_far["revoked"] == json!(true) {
             stats["partial_reason"] = json!("revoked");
         }
+        self.enqueue_alert(&*tx, &run, now).await?;
         tx.commit().await.map_err(lerr)?;
         Ok(ChunkOutcome {
             stats,
@@ -298,17 +334,45 @@ impl Scan<'_> {
     }
 }
 
+impl Scan<'_> {
+    /// This scan's one `deliver_alert` run and job, on the finalize transaction (urgent-alerts
+    /// spec), when the connection takes alerts and there may be something to send: unalerted
+    /// criticals, or (any full scan) the connection's first-scan baseline. Keyed to the scan's
+    /// slot, a watch scan's a microsecond later so a full and a watch scan of the same slot
+    /// get one each; a re-run finalize finds the run and enqueues nothing.
+    async fn enqueue_alert(&self, tx: &dyn Tx, scan: &RunRow, now: DateTime<Utc>) -> Result<()> {
+        let c = self.c;
+        if !c.urgent_alerts {
+            return Ok(());
+        }
+        let watch = self.fs.profile == ScanProfile::Watch;
+        let candidates = tx.findings().alert_candidates(c.organisation_id, c.id);
+        if watch && candidates.await.map_err(lerr)?.is_empty() {
+            return Ok(());
+        }
+        let key = RunKey {
+            organisation_id: Some(c.organisation_id),
+            connection_id: Some(c.id),
+            job_type: JobKind::DeliverAlert.as_str().into(),
+            scheduled_at: scan.key.scheduled_at + Duration::microseconds(i64::from(watch)),
+        };
+        let d = RunDispatcher::new(self.fs.uow.clone());
+        d.create_and_enqueue(tx, key, now).await.map_err(lerr)?;
+        Ok(())
+    }
+}
+
 /// Runs every check that supports the provider and has its capabilities. A buggy check fails
 /// alone (PRD 7.3); its id is returned in the second list.
 fn run_checks(
-    checks: fn() -> Vec<Box<dyn Check>>,
+    checks: Vec<Box<dyn Check>>,
     k: &dyn Connector,
     cx: &CheckCtx,
     run_id: Uuid,
 ) -> (Vec<FindingDraft>, Vec<&'static str>) {
     let (provider, caps) = (k.provider(), k.capabilities());
     let (mut drafts, mut check_errors) = (vec![], vec![]);
-    for ch in checks() {
+    for ch in checks {
         if !ch.supported().contains(&provider) || !ch.required().iter().all(|r| caps.contains(r)) {
             continue;
         }

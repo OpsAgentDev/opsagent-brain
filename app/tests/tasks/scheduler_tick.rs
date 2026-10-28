@@ -184,13 +184,14 @@ async fn connecting_creates_default_schedules_once() {
         let mail = prepare(&ctx);
         let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
         assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
-        // full_scan, verify, deliver_briefing, deliver_weekly; plus the organisation's summary.
+        // full_scan, watch_scan, verify, deliver_briefing, deliver_weekly; plus the
+        // organisation's summary.
         let q = format!("SELECT count(*) n FROM schedules WHERE connection_id = '{id}'");
         let org_q = "SELECT count(*) n FROM schedules WHERE connection_id IS NULL";
-        assert_eq!(count(&ctx, &q).await, 4);
+        assert_eq!(count(&ctx, &q).await, 5);
         assert_eq!(count(&ctx, org_q).await, 1);
         assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
-        assert_eq!(count(&ctx, &q).await, 4);
+        assert_eq!(count(&ctx, &q).await, 5);
         assert_eq!(count(&ctx, org_q).await, 1);
     })
     .await;
@@ -229,7 +230,7 @@ async fn tick_gives_connected_connections_without_delivery_schedules_their_defau
             format!("SELECT count(*) n FROM schedules WHERE connection_id = '{pending}'");
         for _ in 0..2 {
             run_tick(&ctx, Utc::now()).await;
-            assert_eq!(count(&ctx, &q).await, 4);
+            assert_eq!(count(&ctx, &q).await, 5);
             assert_eq!(count(&ctx, &jobs).await, 2);
             assert_eq!(count(&ctx, org_q).await, 1);
             assert_eq!(
@@ -237,6 +238,31 @@ async fn tick_gives_connected_connections_without_delivery_schedules_their_defau
                 0,
                 "not verified: no schedules"
             );
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn schedule_backfilled_for_existing_connection() {
+    serve(|req, ctx| async move {
+        reset(&ctx).await;
+        // Connected before watch scans existed: every other schedule is there.
+        let (_, _, id) = connected(&req, &ctx, "old@example.com", "clean").await;
+        let later = Utc::now() + Duration::days(1);
+        for job in ["full_scan", "verify", "deliver_briefing", "deliver_weekly"] {
+            conn_schedule(&ctx, &id.to_string(), job, later).await;
+        }
+        let watch = format!(
+            "SELECT count(*) n FROM schedules WHERE connection_id = '{id}' \
+             AND job_type = 'watch_scan' AND cron_local = '*/15 * * * *' AND enabled"
+        );
+        let all = format!("SELECT count(*) n FROM schedules WHERE connection_id = '{id}'");
+        for _ in 0..2 {
+            run_tick(&ctx, Utc::now()).await;
+            assert_eq!(count(&ctx, &watch).await, 1);
+            assert_eq!(count(&ctx, &all).await, 5);
         }
     })
     .await;
@@ -284,7 +310,8 @@ async fn due_full_scan_enqueues_the_real_worker_once() {
             .await
             .unwrap();
         assert_eq!(run_tick(&ctx, now).await, Report::default());
-        assert_eq!(count(&ctx, "SELECT count(*) n FROM runs").await, 1);
+        let scans = "SELECT count(*) n FROM runs WHERE job_type = 'full_scan'";
+        assert_eq!(count(&ctx, scans).await, 1);
         let next: DateTime<Utc> = ctx
             .db
             .query_one_raw(stmt(

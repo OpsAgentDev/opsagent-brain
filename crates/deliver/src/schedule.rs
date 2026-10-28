@@ -9,6 +9,8 @@ use cron::Schedule;
 
 /// Nightly full scan at 02:00 local unless the connection sets `scan_time_local`.
 pub const FULL_SCAN: &str = "0 2 * * *";
+/// Watch scan for urgent exposures every 15 minutes (urgent-alerts spec).
+pub const WATCH_CRON: &str = "*/15 * * * *";
 /// Weekly verification; daily while the connection is revoked, so a returned role recovers.
 pub const VERIFY_WEEKLY: &str = "0 3 * * 1";
 pub const VERIFY_REVOKED: &str = "0 4 * * *";

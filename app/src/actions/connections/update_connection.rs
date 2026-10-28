@@ -24,6 +24,7 @@ pub struct PatchInput {
     pub briefing_time_local: Option<String>,
     pub api_rate_ceiling: Option<i32>,
     pub slack_channel_id: Option<String>,
+    pub urgent_alerts: Option<bool>,
 }
 
 /// `""` clears; otherwise a Slack conversation id.
@@ -70,6 +71,7 @@ impl PatchInput {
                 .as_deref()
                 .map(valid_channel)
                 .transpose()?,
+            urgent_alerts: self.urgent_alerts,
         })
     }
 }
@@ -77,7 +79,7 @@ impl PatchInput {
 /// Applies a patch, for owners. A new scan time rewrites the nightly `full_scan` schedule,
 /// effective from the next local day so today's scan neither repeats nor moves (PRD 7.3). A
 /// new briefing time rewrites `deliver_briefing`, effective from its next occurrence. One
-/// transaction.
+/// transaction. Turning `urgent_alerts` back on marks the current alert candidates alerted.
 pub struct UpdateConnection {
     uow: Arc<dyn UnitOfWork>,
     clock: Arc<dyn Clock>,
@@ -103,8 +105,17 @@ impl UpdateConnection {
             return Err(disconnected());
         }
         let (scan_time, briefing_time) = (p.scan_time_local, p.briefing_time_local);
+        let re_enabled = !c.urgent_alerts && p.urgent_alerts == Some(true);
         let updated = tx.connections().update(organisation_id, id, p).await?;
         let now = self.clock.now();
+        if re_enabled {
+            // Re-enabling alerts must not flood the backlog: what is open now counts as sent.
+            let backlog = tx.findings().alert_candidates(organisation_id, id).await?;
+            let ids: Vec<Uuid> = backlog.iter().map(|f| f.id).collect();
+            tx.findings()
+                .mark_alerted(organisation_id, &ids, now)
+                .await?;
+        }
         let schedules = tx.schedules();
         if let Some(t) = scan_time {
             let from = |tz: &str| schedule::end_of_local_day(tz, now);
@@ -196,5 +207,43 @@ mod tests {
         let err = update.run(org, c.id, bad).await.unwrap_err();
         assert!(matches!(err, AppError::Invalid(_)), "{err:?}");
         assert_eq!(crons(&store, far).await, after);
+    }
+
+    #[tokio::test]
+    async fn re_enabling_urgent_alerts_marks_the_backlog_alerted() {
+        use opsagent_core::finding::{FindingDraft, FindingKey, FindingsRepo, Severity};
+        let store = MemStore::default();
+        let org = Uuid::new_v4();
+        let c = connected(&store, org).await;
+        let now: DateTime<Utc> = "2026-10-22T12:00:00Z".parse().unwrap();
+        let update = UpdateConnection::new(Arc::new(store.clone()), Arc::new(FixedClock(now)));
+        let alerts = |on| PatchInput {
+            urgent_alerts: Some(on),
+            ..PatchInput::default()
+        };
+        update.run(org, c.id, alerts(false)).await.unwrap();
+        let draft = FindingDraft {
+            key: FindingKey {
+                connection_id: c.id,
+                check_id: "03".into(),
+                resource_identity: "snap".into(),
+                variant: "public_snapshot".into(),
+            },
+            severity: Severity::Critical,
+            title: "t".into(),
+            summary: "s".into(),
+            next_step: "n".into(),
+            cost_monthly_usd: None,
+            evidence: vec![],
+        };
+        let f = &store;
+        f.upsert_seen(org, c.id, Uuid::new_v4(), &[draft], now)
+            .await
+            .unwrap();
+        // Off to off: the backlog is left alone.
+        update.run(org, c.id, alerts(false)).await.unwrap();
+        assert_eq!(f.alert_candidates(org, c.id).await.unwrap().len(), 1);
+        update.run(org, c.id, alerts(true)).await.unwrap();
+        assert!(f.alert_candidates(org, c.id).await.unwrap().is_empty());
     }
 }

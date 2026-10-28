@@ -32,6 +32,7 @@ pub struct Model {
     pub billable_from: Option<DateTimeWithTimeZone>,
     pub verify_denied_streak: i32,
     pub verify_denied_first_at: Option<DateTimeWithTimeZone>,
+    pub urgent_alerts: bool,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }

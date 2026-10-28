@@ -44,10 +44,10 @@ contract_suite! {
         let c = seed.connection(o).await;
         let now = Utc::now();
         s.schedules().create_defaults(o, c, (None, None), now).await.unwrap();
-        // Idempotent: 4 per connection and the organisation's weekly summary.
+        // Idempotent: 5 per connection and the organisation's weekly summary.
         s.schedules().create_defaults(o, c, (None, None), now).await.unwrap();
         let ids = all_due(s).await;
-        assert_eq!(ids.len(), 5);
+        assert_eq!(ids.len(), 6);
         assert!(s.schedules().due_ids(now).await.unwrap().is_empty());
         s.schedules().advance(ids[0], None).await.unwrap();
         assert!(!all_due(s).await.contains(&ids[0]));
@@ -55,7 +55,7 @@ contract_suite! {
         s.schedules().advance(ids[1], Some(far)).await.unwrap();
         assert!(!all_due(s).await.contains(&ids[1]));
         assert!(s.schedules().due_ids(far).await.unwrap().contains(&ids[1]));
-        assert_eq!(s.schedules().disable_for_org(o).await.unwrap(), 5);
+        assert_eq!(s.schedules().disable_for_org(o).await.unwrap(), 6);
         assert!(s.schedules().due_ids(far).await.unwrap().is_empty());
     }
 
@@ -146,5 +146,5 @@ async fn mem_backfill_fills_connected_connections_once() {
             .unwrap(),
         0
     );
-    assert_eq!(all_due(&store).await.len(), 5);
+    assert_eq!(all_due(&store).await.len(), 6);
 }

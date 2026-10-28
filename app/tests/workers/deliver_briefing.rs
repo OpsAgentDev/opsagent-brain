@@ -147,7 +147,7 @@ pub async fn finding(
 }
 
 /// A briefing already delivered at `at`.
-async fn briefed(ctx: &TestApp, w: &World, at: DateTime<Utc>) {
+pub async fn briefed(ctx: &TestApp, w: &World, at: DateTime<Utc>) {
     sql(
         ctx,
         "INSERT INTO deliveries (id, organisation_id, connection_id, kind, channel, target, \

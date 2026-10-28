@@ -1,12 +1,14 @@
 //! Job handlers, the `WorkerRunner` that drains the `jobs` table, and the `Scheduler` loop
 //! (app-shell.md, jobs).
 //! A handler hands its run to one action; the run's ledger decides retries and resume.
+mod deliver_alert;
 mod deliver_briefing;
 mod deliver_weekly;
 mod full_scan;
 mod runner;
 mod scheduler;
 mod verify;
+mod watch_scan;
 
 use async_trait::async_trait;
 use opsagent_core::run::RunStatus;
@@ -15,12 +17,14 @@ use uuid::Uuid;
 
 use crate::error::AppResult;
 
+pub use deliver_alert::DeliverAlertJob;
 pub use deliver_briefing::DeliverBriefingJob;
 pub use deliver_weekly::DeliverWeeklyJob;
 pub use full_scan::FullScanJob;
 pub use runner::WorkerRunner;
 pub use scheduler::Scheduler;
 pub use verify::VerifyJob;
+pub use watch_scan::WatchScanJob;
 
 #[async_trait]
 pub trait JobHandler: Send + Sync {

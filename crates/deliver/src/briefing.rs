@@ -39,7 +39,15 @@ pub fn build_briefing(
         by_severity(&mut v);
         v
     };
-    let new = pick(&is_new);
+    let tz: chrono_tz::Tz = conn.timezone.parse().unwrap_or(chrono_tz::UTC);
+    let mut new = pick(&is_new);
+    for i in &mut new {
+        let f = findings.iter().find(|f| f.id == i.id);
+        i.alerted = f
+            .filter(|f| f.severity == Severity::Critical)
+            .and_then(|f| f.alerted_at)
+            .map(|t| t.with_timezone(&tz).format("%H:%M").to_string());
+    }
     let escalated = pick(&|f| live(f) && !is_new(f) && has(f, EventKind::Escalated));
     let resolved = pick(&|f| {
         f.status == FindingStatus::Resolved

@@ -47,6 +47,7 @@ pub struct Model {
     pub accepted_reason: Option<String>,
     pub accepted_until: Option<DateTimeWithTimeZone>,
     pub snoozed_until: Option<DateTimeWithTimeZone>,
+    pub alerted_at: Option<DateTimeWithTimeZone>,
     pub flap_count: i32,
     pub stable_runs: i32,
     pub created_at: DateTimeWithTimeZone,

@@ -118,6 +118,7 @@ impl<C: Conn> ResourcesRepo for Pg<C> {
             .filter(R::OrganisationId.eq(organisation_id))
             .apply_if(f.connection_id, |q, v| q.filter(R::ConnectionId.eq(v)))
             .apply_if(f.kind, |q, v| q.filter(R::Kind.eq(v.to_string())))
+            .apply_if(f.identity, |q, v| q.filter(R::Identity.eq(v)))
             .apply_if(f.q, |q, v| {
                 q.filter(
                     Condition::any()
@@ -169,6 +170,24 @@ impl<C: Conn> ResourcesRepo for Pg<C> {
                  WHERE r.organisation_id = $4 AND r.connection_id = $1 AND r.gone_at IS NULL AND NOT EXISTS \
                  (SELECT 1 FROM resource_history h WHERE h.resource_id = r.id AND h.run_id = $2)",
                 vec![connection_id.into(), run_id.into(), now.into(), organisation_id.into()],
+            ))
+            .await
+            .map_err(db_err)?;
+        Ok(r.rows_affected())
+    }
+
+    async fn forget_run(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+    ) -> RepoResult<u64> {
+        let r = self
+            .db()
+            .execute_raw(stmt(
+                "DELETE FROM resource_history h USING resources r WHERE h.run_id = $1 \
+                 AND h.resource_id = r.id AND r.organisation_id = $2 AND r.connection_id = $3",
+                vec![run_id.into(), organisation_id.into(), connection_id.into()],
             ))
             .await
             .map_err(db_err)?;

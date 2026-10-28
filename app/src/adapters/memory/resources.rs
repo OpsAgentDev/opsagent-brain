@@ -72,6 +72,7 @@ impl ResourcesRepo for MemStore {
                     && f.connection_id.is_none_or(|c| r.row.connection_id == c)
                     && f.kind.is_none_or(|k| r.row.kind == k)
                     && f.q.as_deref().is_none_or(|q| matches(&r.row, q))
+                    && f.identity.as_ref().is_none_or(|i| &r.row.identity == i)
             })
             .cloned()
             .collect();
@@ -156,6 +157,23 @@ impl ResourcesRepo for MemStore {
             {
                 r.row.gone_at = Some(now);
                 n += 1;
+            }
+        }
+        Ok(n)
+    }
+
+    async fn forget_run(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+    ) -> RepoResult<u64> {
+        let mut n = 0;
+        for r in self.state().resources.iter_mut() {
+            if r.organisation_id == organisation_id && r.row.connection_id == connection_id {
+                let before = r.history.len();
+                r.history.retain(|h| *h != run_id);
+                n += (before - r.history.len()) as u64;
             }
         }
         Ok(n)

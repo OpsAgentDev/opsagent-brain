@@ -95,6 +95,8 @@ pub struct Finding {
     pub resolved_at: Option<DateTime<Utc>>,
     /// `resource_gone` or `check_passed` once resolved.
     pub resolved_reason: Option<String>,
+    /// When the customer was told about this critical right away; cleared on resolve.
+    pub alerted_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -208,4 +210,18 @@ pub trait FindingsRepo: Send + Sync {
         organisation_id: Uuid,
         connection_id: Uuid,
     ) -> RepoResult<Vec<PostureRow>>;
+    /// Open critical findings of the connection not yet alerted, oldest first. Connection
+    /// eligibility (setting, status) is the caller's concern.
+    async fn alert_candidates(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+    ) -> RepoResult<Vec<Finding>>;
+    /// Stamps `alerted_at` on these findings of the organisation; resolved ones are left alone.
+    async fn mark_alerted(
+        &self,
+        organisation_id: Uuid,
+        ids: &[Uuid],
+        at: DateTime<Utc>,
+    ) -> RepoResult<()>;
 }

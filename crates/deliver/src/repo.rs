@@ -180,10 +180,24 @@ pub trait IntegrationsRepo: Send + Sync {
 /// `deliveries.kind` and `deliveries.status` values.
 pub const BRIEFING: &str = "briefing";
 pub const WEEKLY: &str = "weekly";
+pub const ALERT: &str = "alert";
 pub const SENT: &str = "sent";
 pub const FAILED: &str = "failed";
 pub const FALLBACK_EMAIL: &str = "fallback_email";
 pub const SUPPRESSED: &str = "suppressed";
+
+/// What a connection's urgent alerts have sent so far (`DeliveriesRepo::alert_tally`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AlertTally {
+    /// Individual alerts sent since `since`.
+    pub since: usize,
+    /// Individual alerts sent by the run asked about.
+    pub this_run: usize,
+    /// When the last roll-up since `since` went out.
+    pub last_rollup_at: Option<DateTime<Utc>>,
+    /// The first-scan baseline was done (ever).
+    pub baselined: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryRow {
@@ -248,6 +262,15 @@ pub trait DeliveriesRepo: Send + Sync {
         connection_id: Uuid,
         before: DateTime<Utc>,
     ) -> RepoResult<bool>;
+    /// The connection's urgent alerts, from the side-effect ledger of its `deliver_alert` runs
+    /// (`alert:<finding_id>`, `alert:rollup:<run_id>`, `alert:baseline` done).
+    async fn alert_tally(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        since: DateTime<Utc>,
+    ) -> RepoResult<AlertTally>;
     /// `NotFound` for a connection outside the organisation.
     async fn connection_snapshot(
         &self,
@@ -299,8 +322,8 @@ pub trait SchedulesRepo: Send + Sync {
         from: SinceFn<'_>,
     ) -> RepoResult<()>;
     async fn disable_for_org(&self, organisation_id: Uuid) -> RepoResult<u64>;
-    /// `create_defaults` for every connected connection of a live organisation that has no
-    /// briefing schedule; returns how many.
+    /// `create_defaults` for every connected connection of a live organisation that lacks
+    /// the newest default (`watch_scan`); returns how many.
     /// tenancy: scheduler pass; each row's organisation scopes its writes.
     async fn backfill_defaults(&self, now: DateTime<Utc>) -> RepoResult<u64>;
     /// Enabled schedules due at `now`, of live organisations, most overdue first.

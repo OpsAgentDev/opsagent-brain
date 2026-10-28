@@ -228,3 +228,15 @@ fn untracked_spend_renders_as_not_tracked_not_zero() {
         assert!(!out.contains("$0.00"), "{name}: {out}");
     }
 }
+
+#[test]
+fn briefing_marks_alerted_items() {
+    let mut c = conn();
+    c.timezone = "Asia/Dhaka".into();
+    let mut alerted = opened(Severity::Critical, "public snapshot");
+    alerted.alerted_at = Some(now() - chrono::Duration::minutes(48)); // 07:12 UTC
+    let fs = vec![alerted, opened(Severity::High, "open port")];
+    let t = render_text(&build_briefing(&c, &fs, since(), now(), LINK_BASE).expect("briefing"));
+    assert!(t.contains("public snapshot (alerted 13:12)\n"), "{t}");
+    assert!(t.contains("open port\n"), "{t}");
+}

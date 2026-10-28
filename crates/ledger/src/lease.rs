@@ -127,6 +127,15 @@ pub async fn claim(redis: &Client, key: &str, owner: &str, ttl: Duration) -> Res
     Ok(n == 1)
 }
 
+/// True while anyone holds the `claim` on `key`.
+pub async fn is_claimed(redis: &Client, key: &str) -> Result<bool> {
+    let n: i32 = redis::cmd("EXISTS")
+        .arg(key)
+        .query_async(&mut conn(redis).await?)
+        .await?;
+    Ok(n == 1)
+}
+
 /// Releases `key` if `owner` still holds it. Best effort.
 pub async fn unclaim(redis: &Client, key: &str, owner: &str) {
     let Ok(mut c) = conn(redis).await else { return };
@@ -140,7 +149,8 @@ pub async fn unclaim(redis: &Client, key: &str, owner: &str) {
     }
 }
 
-/// `stats` merge into the checkpoint by key; a `partial_reason` string there ends the run `Partial`.
+/// `stats` merge into the checkpoint by key; a `partial_reason` string there ends the run
+/// `Partial`, a `skip_reason` string `Skipped`.
 /// `cursor` (an object, or null for none) merges into the checkpoint cursor by key: state a
 /// resumed run reads back instead of redoing calls.
 #[derive(Debug, Default)]
@@ -264,18 +274,19 @@ fn merge(cp: &mut Checkpoint, chunk: &str, out: &ChunkOutcome) {
 }
 
 /// The final status once every chunk is done. A chunk may decide it by writing
-/// `stats.partial_reason`; that is in the checkpoint, so a resumed run reaches the same verdict.
+/// `stats.partial_reason` or `stats.skip_reason`; that is in the checkpoint, so a resumed run
+/// reaches the same verdict.
 async fn finish<S: Storage + ?Sized>(
     storage: &S,
     run_id: Uuid,
     fence: u64,
     cp: &Checkpoint,
 ) -> Result<RunStatus> {
-    let reason = cp.stats["partial_reason"].as_str().map(str::to_owned);
-    let status = if reason.is_some() {
-        RunStatus::Partial
-    } else {
-        RunStatus::Done
+    let reason = |k: &str| cp.stats[k].as_str().map(str::to_owned);
+    let (status, reason) = match (reason("skip_reason"), reason("partial_reason")) {
+        (Some(r), _) => (RunStatus::Skipped, Some(r)),
+        (None, Some(r)) => (RunStatus::Partial, Some(r)),
+        (None, None) => (RunStatus::Done, None),
     };
     match storage.set_status(run_id, fence, status, reason).await {
         Ok(()) => Ok(status),

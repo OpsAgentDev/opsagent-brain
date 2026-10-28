@@ -376,3 +376,47 @@ async fn create_aws_without_outbound_role_is_503_and_writes_nothing() {
     )
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn patch_urgent_alerts_round_trips() {
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
+        let url = format!("/v1/orgs/{org}/connections/{id}");
+        let body = req.get(&url).await.json::<Value>();
+        assert_eq!(body["urgent_alerts"], true, "default is on");
+        let res = req
+            .patch(&url)
+            .add_header("X-CSRF-Token", &t)
+            .json(&json!({"urgent_alerts": false}))
+            .await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        assert_eq!(res.json::<Value>()["urgent_alerts"], false);
+        assert_eq!(req.get(&url).await.json::<Value>()["urgent_alerts"], false);
+
+        let res = req
+            .post(&format!("/v1/orgs/{org}/invites"))
+            .add_header("X-CSRF-Token", &t)
+            .json(&json!({"email": "mate@example.com", "role": "member"}))
+            .await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        let accept = format!("/v1/invites/{}/accept", token_of(&last_link(&mail)));
+        req.clear_cookies();
+        let tm = sign_in(&req, &mail, "mate@example.com").await;
+        assert_eq!(
+            req.post(&accept)
+                .add_header("X-CSRF-Token", &tm)
+                .await
+                .status_code(),
+            200
+        );
+        let res = req
+            .patch(&url)
+            .add_header("X-CSRF-Token", &tm)
+            .json(&json!({"urgent_alerts": true}))
+            .await;
+        assert_eq!(res.status_code(), 403);
+    })
+    .await;
+}

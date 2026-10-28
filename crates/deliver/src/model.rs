@@ -41,6 +41,8 @@ pub struct FindingSnapshot {
     pub last_seen_at: DateTime<Utc>,
     /// Events written for this finding since the window start, oldest first.
     pub events_since: Vec<EventKind>,
+    /// When an urgent alert told the customer about it.
+    pub alerted_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +68,8 @@ pub struct ConnectionSnapshot {
     pub last_scan_at: Option<DateTime<Utc>>,
     /// The last scan ended partial.
     pub partial: bool,
+    /// The organisation's IANA zone.
+    pub timezone: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -91,6 +95,8 @@ pub struct Item {
     pub id: Uuid,
     pub severity: Severity,
     pub title: String,
+    /// Local `HH:MM` of the urgent alert already sent about it (briefing only).
+    pub alerted: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -190,6 +196,7 @@ impl Item {
             id: f.id,
             severity: f.severity,
             title: f.title.clone(),
+            alerted: None,
         }
     }
 }

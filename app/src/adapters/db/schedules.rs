@@ -3,7 +3,7 @@ use chrono::{DateTime, NaiveTime, Utc};
 use opsagent_core::{repo::RepoResult, run::RunKey};
 use opsagent_deliver::{
     repo::{DueRun, SchedulesRepo, SinceFn},
-    schedule::{daily_at, next_after, BRIEFING, FULL_SCAN, VERIFY_WEEKLY, WEEKLY},
+    schedule::{daily_at, next_after, BRIEFING, FULL_SCAN, VERIFY_WEEKLY, WATCH_CRON, WEEKLY},
 };
 use sea_orm::{ConnectionTrait, QueryResult};
 use uuid::Uuid;
@@ -60,6 +60,7 @@ impl<C: Conn> SchedulesRepo for Pg<C> {
             .map_err(db_err)?;
         for (job, cron) in [
             ("full_scan", scan.as_str()),
+            ("watch_scan", WATCH_CRON),
             ("verify", VERIFY_WEEKLY),
             ("deliver_briefing", briefing.as_str()),
             ("deliver_weekly", WEEKLY),
@@ -142,7 +143,7 @@ impl<C: Conn> SchedulesRepo for Pg<C> {
                 "SELECT c.id, c.organisation_id, c.scan_time_local, c.briefing_time_local \
                  FROM connections c JOIN organisations o ON o.id = c.organisation_id \
                  WHERE c.status = 'connected' AND o.deleted_at IS NULL AND NOT EXISTS \
-                 (SELECT 1 FROM schedules s WHERE s.connection_id = c.id AND s.job_type = 'deliver_briefing')",
+                 (SELECT 1 FROM schedules s WHERE s.connection_id = c.id AND s.job_type = 'watch_scan')",
                 vec![],
             ))
             .await

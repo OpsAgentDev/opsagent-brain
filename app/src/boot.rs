@@ -27,8 +27,8 @@ use crate::{
     controllers,
     error::{AppError, AppResult},
     jobs::{
-        DeliverBriefingJob, DeliverWeeklyJob, FullScanJob, JobHandler, Scheduler, VerifyJob,
-        WorkerRunner,
+        DeliverAlertJob, DeliverBriefingJob, DeliverWeeklyJob, FullScanJob, JobHandler, Scheduler,
+        VerifyJob, WatchScanJob, WorkerRunner,
     },
     mailers::{self, Mailer},
     mcp, middleware,
@@ -289,6 +289,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             )),
             dispatcher,
             scan_now: runs::ScanNow::new(d.uow.clone(), full_scan.clone(), d.clock.clone()),
+            watch_scan: full_scan.clone().watch(),
             full_scan,
         },
         recipients: recipients(d, guard.clone()),
@@ -453,23 +454,26 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
         ),
         deliver_briefing: deliveries::DeliverBriefing::new(kit.clone()),
         deliver_weekly: deliveries::DeliverWeekly::new(kit.clone()),
+        deliver_alert: deliveries::DeliverAlert::new(kit.clone()),
         deliver_briefing_now: deliveries::DeliverBriefingNow::new(kit),
     }
 }
 
-/// The job runner with the four job handlers, the only registry of job kinds. The queue and
+/// The job runner with the six job handlers, the only registry of job kinds. The queue and
 /// the job work share the state's one pool (`pool_size` with a worker).
 pub fn worker(state: &AppState) -> WorkerRunner {
     let (runs, deliveries) = (&state.actions.runs, &state.actions.deliveries);
     let handlers: Vec<Arc<dyn JobHandler>> = vec![
         Arc::new(VerifyJob(Arc::new(runs.verify_connection.clone()))),
         Arc::new(FullScanJob(Arc::new(runs.full_scan.clone()))),
+        Arc::new(WatchScanJob(Arc::new(runs.watch_scan.clone()))),
         Arc::new(DeliverBriefingJob(Arc::new(
             deliveries.deliver_briefing.clone(),
         ))),
         Arc::new(DeliverWeeklyJob(Arc::new(
             deliveries.deliver_weekly.clone(),
         ))),
+        Arc::new(DeliverAlertJob(Arc::new(deliveries.deliver_alert.clone()))),
     ];
     let source = Arc::new(PgQueue(state.db.clone()));
     WorkerRunner::new(source, handlers, &state.config, state.clock.clone())

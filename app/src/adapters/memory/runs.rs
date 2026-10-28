@@ -133,6 +133,19 @@ impl RunsRepo for MemStore {
         });
         Ok(scans.map(|r| r.row.key.scheduled_at).max())
     }
+
+    async fn completed_full_scan(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+    ) -> RepoResult<bool> {
+        Ok(self.state().runs.iter().any(|r| {
+            r.in_org(organisation_id)
+                && r.row.key.connection_id == Some(connection_id)
+                && r.row.key.job_type == JobKind::FullScan.as_str()
+                && matches!(r.row.status, RunStatus::Done | RunStatus::Partial)
+        }))
+    }
 }
 
 #[async_trait]
@@ -238,9 +251,10 @@ impl Storage for MemStore {
     }
 
     async fn effect_done(&self, run_id: Uuid, key: &str, r: Option<String>) -> Result<()> {
-        self.state()
-            .effects
-            .insert((run_id, key.to_owned()), Some(r));
+        let mut s = self.state();
+        let k = (run_id, key.to_owned());
+        s.effects_done_at.insert(k.clone(), Utc::now());
+        s.effects.insert(k, Some(r));
         Ok(())
     }
 

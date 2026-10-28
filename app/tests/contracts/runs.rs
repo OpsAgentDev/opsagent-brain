@@ -105,6 +105,24 @@ contract_suite! {
         assert!(other.items.is_empty());
     }
 
+    async fn completed_full_scan_needs_a_done_or_partial_full_scan(s) {
+        let o = org(s).await;
+        let (c1, c2) = (connection(s, o, "A").await.id, connection(s, o, "B").await.id);
+        let end = |id: Uuid, status: RunStatus| async move {
+            let fence = s.ledger().bump_fence(id).await.unwrap();
+            s.ledger().set_status(id, fence, status, None).await.unwrap();
+        };
+        let failed = run(s, key(o, c1, "full_scan", t0())).await;
+        end(failed, RunStatus::Failed).await;
+        end(run(s, key(o, c1, "watch_scan", t0())).await, RunStatus::Done).await;
+        end(run(s, key(o, c2, "full_scan", t0())).await, RunStatus::Done).await;
+        run(s, key(o, c1, "full_scan", t0() + Duration::hours(1))).await; // still queued
+        assert!(!s.runs().completed_full_scan(o, c1).await.unwrap());
+        end(run(s, key(o, c1, "full_scan", t0() + Duration::hours(2))).await, RunStatus::Partial).await;
+        assert!(s.runs().completed_full_scan(o, c1).await.unwrap());
+        assert!(!s.runs().completed_full_scan(org(s).await, c1).await.unwrap());
+    }
+
     async fn last_manual_scan_counts_only_this_connections_full_scans(s) {
         let o = org(s).await;
         let (c1, c2) = (connection(s, o, "A").await.id, connection(s, o, "B").await.id);

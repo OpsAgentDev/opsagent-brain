@@ -206,7 +206,7 @@ pub(super) async fn resolve(
     };
     exec(
         db,
-        "UPDATE findings SET status = 'resolved', resolved_at = $2, resolved_reason = $3, stable_runs = 0, \
+        "UPDATE findings SET status = 'resolved', resolved_at = $2, resolved_reason = $3, stable_runs = 0, alerted_at = NULL, \
          updated_at = now() WHERE id = $1 AND organisation_id = $4",
         vec![f.id.into(), now.into(), reason.into(), f.organisation_id.into()],
     )

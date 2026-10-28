@@ -75,6 +75,7 @@ impl ConnectionsRepo for MemStore {
             billable_from: None,
             verify_denied_streak: 0,
             verify_denied_first_at: None,
+            urgent_alerts: true,
             created_at: now,
             updated_at: now,
         };
@@ -138,6 +139,9 @@ impl ConnectionsRepo for MemStore {
         }
         if let Some(ch) = p.slack_channel_id {
             c.slack_channel_id = ch;
+        }
+        if let Some(u) = p.urgent_alerts {
+            c.urgent_alerts = u;
         }
         c.updated_at = Utc::now();
         Ok(c.clone())

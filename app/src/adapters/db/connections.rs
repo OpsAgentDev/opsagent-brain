@@ -54,6 +54,7 @@ fn connection(m: connections::Model) -> RepoResult<Connection> {
         billable_from: m.billable_from.map(utc),
         verify_denied_streak: m.verify_denied_streak,
         verify_denied_first_at: m.verify_denied_first_at.map(utc),
+        urgent_alerts: m.urgent_alerts,
         created_at: utc(m.created_at),
         updated_at: utc(m.updated_at),
     })
@@ -116,6 +117,7 @@ impl<C: Conn> ConnectionsRepo for Pg<C> {
             billable_from: Set(None),
             verify_denied_streak: Set(0),
             verify_denied_first_at: Set(None),
+            urgent_alerts: Set(true),
             created_at: Set(now()),
             updated_at: Set(now()),
         }
@@ -210,6 +212,9 @@ impl<C: Conn> ConnectionsRepo for Pg<C> {
         }
         if let Some(ch) = p.slack_channel_id {
             a.slack_channel_id = Set(ch);
+        }
+        if let Some(u) = p.urgent_alerts {
+            a.urgent_alerts = Set(u);
         }
         a.updated_at = Set(now());
         connection(a.update(self.db()).await.map_err(db_err)?)

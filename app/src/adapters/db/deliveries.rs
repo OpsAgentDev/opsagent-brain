@@ -7,7 +7,7 @@ use opsagent_core::{
 };
 use opsagent_deliver::{
     model::{ConnectionSnapshot, EventKind, FindingSnapshot, FindingStatus, SeverityCounts},
-    repo::{DeliveriesRepo, DeliveryFilter, DeliveryRow, NewDelivery},
+    repo::{AlertTally, DeliveriesRepo, DeliveryFilter, DeliveryRow, NewDelivery},
 };
 use sea_orm::{
     prelude::DateTimeWithTimeZone, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter,
@@ -20,6 +20,7 @@ use crate::models::{
     _entities::{
         connections,
         deliveries::{self, Column as Col},
+        organisations,
     },
     enum_of,
 };
@@ -190,6 +191,50 @@ impl<C: Conn> DeliveriesRepo for Pg<C> {
         r.map_or(Ok(false), |r| get(&r, "due"))
     }
 
+    async fn alert_tally(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        since: DateTime<Utc>,
+    ) -> RepoResult<AlertTally> {
+        const ONE: &str = "e.effect_key ~ '^alert:[0-9a-f-]{36}$'";
+        // `baselined` reads all history on purpose: `alert:baseline` side effects must never be
+        // pruned (any future retention must keep them) or the connection re-baselines.
+        let r = self
+            .db()
+            .query_one_raw(stmt(
+                &format!(
+                    "SELECT count(*) FILTER (WHERE {ONE} AND e.done_at >= $4) AS since, \
+                     count(*) FILTER (WHERE {ONE} AND e.run_id = $3) AS this_run, \
+                     max(e.done_at) FILTER (WHERE e.effect_key LIKE 'alert:rollup:%' \
+                     AND e.done_at >= $4) AS rollup, \
+                     coalesce(bool_or(e.effect_key = 'alert:baseline'), false) AS baselined \
+                     FROM side_effects e JOIN runs r ON r.id = e.run_id \
+                     WHERE r.organisation_id = $1 AND r.connection_id = $2 \
+                     AND r.job_type = 'deliver_alert' AND e.status = 'done'"
+                ),
+                vec![
+                    organisation_id.into(),
+                    connection_id.into(),
+                    run_id.into(),
+                    since.into(),
+                ],
+            ))
+            .await
+            .map_err(db_err)?;
+        let Some(r) = r else {
+            return Ok(AlertTally::default());
+        };
+        let (n, this_run): (i64, i64) = (get(&r, "since")?, get(&r, "this_run")?);
+        Ok(AlertTally {
+            since: n as usize,
+            this_run: this_run as usize,
+            last_rollup_at: ts(&r, "rollup")?,
+            baselined: get(&r, "baselined")?,
+        })
+    }
+
     async fn connection_snapshot(
         &self,
         organisation_id: Uuid,
@@ -238,6 +283,11 @@ impl<C: Conn> DeliveriesRepo for Pg<C> {
             first_scan_at: first,
             last_scan_at: last,
             partial: latest.as_deref() == Some("partial"),
+            timezone: organisations::Entity::find_by_id(organisation_id)
+                .one(self.db())
+                .await
+                .map_err(db_err)?
+                .map_or_else(|| "UTC".into(), |o| o.timezone),
         })
     }
 
@@ -251,7 +301,7 @@ impl<C: Conn> DeliveriesRepo for Pg<C> {
             .db()
             .query_all_raw(stmt(
                 "SELECT f.id, f.check_id, f.resource_identity, f.variant, f.severity, f.status, \
-                 f.title, f.cost_monthly_usd::float8 AS cost, f.created_at, f.updated_at, \
+                 f.title, f.cost_monthly_usd::float8 AS cost, f.created_at, f.updated_at, f.alerted_at, \
                  coalesce(string_agg(e.event_type, ',' ORDER BY e.created_at), '') AS events \
                  FROM findings f LEFT JOIN finding_events e ON e.finding_id = f.id AND e.created_at >= $3 \
                  WHERE f.organisation_id = $1 AND f.connection_id = $2 GROUP BY f.id \
@@ -285,6 +335,7 @@ impl<C: Conn> DeliveriesRepo for Pg<C> {
                 last_seen_at: ts(&r, "updated_at")?.unwrap_or_default(),
                 // Kinds the briefing does not use (accepted, snoozed) are dropped.
                 events_since: events.split(',').filter_map(enum_of::<EventKind>).collect(),
+                alerted_at: ts(&r, "alerted_at")?,
             });
         }
         Ok(out)

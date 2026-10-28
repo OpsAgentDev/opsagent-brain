@@ -73,6 +73,21 @@ contract_suite! {
         assert_eq!(gone, ["b-1"]);
     }
 
+    async fn forget_run_drops_only_that_runs_history_in_the_org(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let i1 = res("i-1", ResourceKind::Compute, 1);
+        let (keep, drop) = (seed.run(org, conn).await, seed.run(org, conn).await);
+        for run in [keep, drop] {
+            s.resources().upsert_chunk(org, conn, run, std::slice::from_ref(&i1), now()).await.unwrap();
+        }
+        let (other, _) = world(s, seed).await;
+        assert_eq!(s.resources().forget_run(other, conn, drop).await.unwrap(), 0);
+        assert_eq!(s.resources().forget_run(org, conn, drop).await.unwrap(), 1);
+        assert!(s.resources().observed(org, conn, drop, Provider::Fake, "1").await.unwrap().is_empty());
+        let kept = s.resources().observed(org, conn, keep, Provider::Fake, "1").await.unwrap();
+        assert_eq!(kept, [i1]);
+    }
+
     async fn upsert_chunk_unchanged_returns_false(s, seed) {
         let (org, conn) = world(s, seed).await;
         let chunk = [res("i-1", ResourceKind::Compute, 1), res("b-1", ResourceKind::Storage, 2)];
@@ -122,5 +137,8 @@ contract_suite! {
         // LIKE wildcards are literals.
         assert!(found(q("%")).await.is_empty());
         assert!(found(q("_")).await.is_empty());
+        let exact = |i: &str| ResourceFilter { identity: Some(i.into()), ..Default::default() };
+        assert_eq!(found(exact("snap-public")).await, ["snap-public"]);
+        assert!(found(exact("snap")).await.is_empty(), "no substring match");
     }
 }

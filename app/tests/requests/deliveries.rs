@@ -45,7 +45,11 @@ async fn deliver(ctx: &TestApp, conn: Uuid, kind: &str, channel: &str, target: &
 async fn count(ctx: &TestApp) -> i64 {
     let r = ctx
         .db
-        .query_one_raw(stmt("SELECT count(*) AS n FROM deliveries", vec![]))
+        // The scans' urgent-alert baseline mail is not a briefing row.
+        .query_one_raw(stmt(
+            "SELECT count(*) AS n FROM deliveries WHERE kind <> 'alert'",
+            vec![],
+        ))
         .await
         .unwrap()
         .unwrap();
