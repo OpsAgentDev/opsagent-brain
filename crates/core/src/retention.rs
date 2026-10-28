@@ -61,4 +61,10 @@ pub trait RetentionRepo: Send + Sync {
         cutoff: DateTime<Utc>,
         batch: u64,
     ) -> RepoResult<u64>;
+
+    /// Deletes at most `batch` prunable runs (oldest first) scheduled before `older_than`,
+    /// with their dependents, in one transaction; returns how many runs. Prunable: terminal,
+    /// a `watch_scan` or `deliver_alert` run or any skipped run, with no finding events, no
+    /// evidence, no finding pointing at it and no `alert:baseline` side effect.
+    async fn prune_runs(&self, older_than: DateTime<Utc>, batch: u64) -> RepoResult<u64>;
 }

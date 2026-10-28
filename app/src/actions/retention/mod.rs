@@ -1,11 +1,15 @@
 //! `retention` (retention.md): the global nightly run. Each step deletes in batches until
 //! nothing is left or the run cap is reached; whatever is left waits for the next night.
+mod runs;
 mod ttl;
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, future::Future, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
-use opsagent_core::{repo::Clock, run::RunStatus};
+use opsagent_core::{
+    repo::{Clock, RepoResult},
+    run::RunStatus,
+};
 use opsagent_ledger::{redis, run_chunked, ChunkOutcome, RunChunkedOptions};
 use tokio::time::Instant;
 use uuid::Uuid;
@@ -29,6 +33,32 @@ pub const RUN_CAP: Duration = Duration::from_secs(30 * 60);
 pub struct RetentionStats {
     pub counts: BTreeMap<&'static str, u64>,
     pub time_capped: bool,
+}
+
+/// Calls `step` until it deletes fewer than `batch` rows, or until `deadline` passes (then
+/// sets `time_capped`); returns the rows deleted.
+async fn batched<F, Fut>(
+    batch: u64,
+    deadline: Instant,
+    stats: &mut RetentionStats,
+    mut step: F,
+) -> AppResult<u64>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = RepoResult<u64>>,
+{
+    let mut total = 0;
+    loop {
+        if Instant::now() >= deadline {
+            stats.time_capped = true;
+            return Ok(total);
+        }
+        let n = step().await?;
+        total += n;
+        if n < batch {
+            return Ok(total);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -59,7 +89,9 @@ impl Retention {
     pub async fn run(&self, now: DateTime<Utc>) -> AppResult<RetentionStats> {
         let deadline = Instant::now() + RUN_CAP;
         let mut stats = RetentionStats::default();
-        ttl::run(self.uow.retention(), now, self.batch, deadline, &mut stats).await?;
+        let repo = self.uow.retention();
+        ttl::run(repo, now, self.batch, deadline, &mut stats).await?;
+        runs::run(repo, now, self.batch, deadline, &mut stats).await?;
         Ok(stats)
     }
 

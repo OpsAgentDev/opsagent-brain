@@ -30,6 +30,15 @@ async fn retention_run_records_counts_in_stats() {
     for days in [3, 2, 0, -1] {
         session(&ctx, days).await;
     }
+    // One watch run past the 14-day prune age, one inside it.
+    for days in [20, 1] {
+        sql(
+            &ctx,
+            "INSERT INTO runs (id, job_type, status, scheduled_at) VALUES ($1, 'watch_scan', 'done', $2)",
+            vec![Uuid::now_v7().into(), (Utc::now() - Duration::days(days)).into()],
+        )
+        .await;
+    }
     let key = RunKey {
         organisation_id: None,
         connection_id: None,
@@ -43,6 +52,7 @@ async fn retention_run_records_counts_in_stats() {
     let st = stats(&ctx, id).await;
     assert_eq!(st["sessions"], 2);
     assert_eq!(st["magic_links"], 0);
+    assert_eq!(st["runs"], 1);
     let left = ctx
         .db
         .query_one_raw(sea_orm::Statement::from_string(

@@ -4,9 +4,16 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_brain::{
     actions::uow::Repos,
-    adapters::{db::Pg, memory::MemStore},
+    adapters::{
+        db::Pg,
+        memory::{MemStore, RunLink},
+    },
 };
-use opsagent_core::{org::NewOrganisation, retention::TtlTable};
+use opsagent_core::{
+    org::NewOrganisation,
+    retention::TtlTable,
+    run::{RunKey, RunStatus},
+};
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
 use uuid::Uuid;
 
@@ -52,6 +59,19 @@ pub trait Seed: Sync {
     /// One `table` row expiring (or observed) at `at`, with any parents it needs.
     async fn expiring(&self, organisation_id: Uuid, table: TtlTable, at: DateTime<Utc>);
     async fn expiring_left(&self, table: TtlTable) -> u64;
+    /// A `job_type` run in `status`, scheduled at `at`.
+    async fn run_at(
+        &self,
+        o: Uuid,
+        c: Uuid,
+        job_type: &str,
+        status: RunStatus,
+        at: DateTime<Utc>,
+    ) -> Uuid;
+    /// One row of kind `link` pointing at `run`.
+    async fn run_link(&self, o: Uuid, c: Uuid, run: Uuid, link: RunLink);
+    /// Rows still pointing at `run`.
+    async fn run_links_left(&self, run: Uuid) -> u64;
 }
 
 /// Seeds the lane database over its own connection (the app pool has one connection).
@@ -188,6 +208,93 @@ impl Seed for PgSeed {
         row.try_get::<i64>("", "n").unwrap() as u64
     }
 
+    async fn run_at(
+        &self,
+        o: Uuid,
+        c: Uuid,
+        job_type: &str,
+        status: RunStatus,
+        at: DateTime<Utc>,
+    ) -> Uuid {
+        let id = Uuid::now_v7();
+        let status = serde_json::to_value(status)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let checkpoint = serde_json::to_value(opsagent_ledger::Checkpoint::default()).unwrap();
+        self.exec(
+            "INSERT INTO runs (id, organisation_id, connection_id, job_type, status, scheduled_at, checkpoint) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            vec![id.into(), o.into(), c.into(), job_type.into(), status.into(), at.into(), checkpoint.into()],
+        )
+        .await;
+        id
+    }
+
+    async fn run_link(&self, o: Uuid, c: Uuid, run: Uuid, link: RunLink) {
+        let (id, parent) = (Uuid::now_v7(), Uuid::now_v7());
+        let finding = |first: Option<Uuid>, last: Option<Uuid>| {
+            self.exec(
+                "INSERT INTO findings (id, organisation_id, connection_id, check_id, resource_identity, severity, title, \
+                 first_seen_run_id, last_seen_run_id) VALUES ($1, $2, $3, '01', $4, 'low', 't', $5, $6)",
+                vec![parent.into(), o.into(), c.into(), parent.to_string().into(), first.into(), last.into()],
+            )
+        };
+        let (sql, values): (&str, Vec<sea_orm::Value>) = match link {
+            RunLink::FirstSeen => return finding(Some(run), None).await,
+            RunLink::LastSeen => return finding(None, Some(run)).await,
+            RunLink::FindingEvent => {
+                finding(None, None).await;
+                ("INSERT INTO finding_events (id, finding_id, run_id, event_type) VALUES ($1, $2, $3, 'seen')",
+                 vec![id.into(), parent.into(), run.into()])
+            }
+            RunLink::Evidence => {
+                finding(None, None).await;
+                ("INSERT INTO evidence (id, finding_id, run_id, source, excerpt, expires_at) VALUES ($1, $2, $3, 's', 'e', now() + interval '1 day')",
+                 vec![id.into(), parent.into(), run.into()])
+            }
+            RunLink::Effect(key) => (
+                "INSERT INTO side_effects (id, run_id, effect_key, status) VALUES ($1, $2, $3, 'done')",
+                vec![id.into(), run.into(), key.into()],
+            ),
+            RunLink::ApiCallStats => (
+                "INSERT INTO api_call_stats (id, run_id, provider, service, action, outcome) VALUES ($1, $2, 'fake', 's', 'a', 'ok')",
+                vec![id.into(), run.into()],
+            ),
+            RunLink::ApiCallsRaw => (
+                "INSERT INTO api_calls_raw (id, run_id, provider, service, action, outcome) VALUES ($1, $2, 'fake', 's', 'a', 'ok')",
+                vec![id.into(), run.into()],
+            ),
+            RunLink::ResourceHistory => {
+                self.exec(
+                    "INSERT INTO resources (id, organisation_id, connection_id, kind, identity) VALUES ($1, $2, $3, 'k', $4)",
+                    vec![parent.into(), o.into(), c.into(), parent.to_string().into()],
+                )
+                .await;
+                ("INSERT INTO resource_history (id, resource_id, run_id) VALUES ($1, $2, $3)",
+                 vec![id.into(), parent.into(), run.into()])
+            }
+        };
+        self.exec(sql, values).await;
+    }
+
+    async fn run_links_left(&self, run: Uuid) -> u64 {
+        let sql = "SELECT (SELECT count(*) FROM side_effects WHERE run_id = $1) \
+             + (SELECT count(*) FROM api_call_stats WHERE run_id = $1) \
+             + (SELECT count(*) FROM api_calls_raw WHERE run_id = $1) \
+             + (SELECT count(*) FROM resource_history WHERE run_id = $1) \
+             + (SELECT count(*) FROM finding_events WHERE run_id = $1) \
+             + (SELECT count(*) FROM evidence WHERE run_id = $1) \
+             + (SELECT count(*) FROM findings WHERE first_seen_run_id = $1 OR last_seen_run_id = $1) AS n";
+        let st = sea_orm::Statement::from_sql_and_values(
+            sea_orm::DbBackend::Postgres,
+            sql,
+            vec![run.into()],
+        );
+        let row = self.raw().query_one_raw(st).await.unwrap().unwrap();
+        row.try_get::<i64>("", "n").unwrap() as u64
+    }
+
     async fn resource_gone(&self, organisation_id: Uuid, identity: &str) {
         self.raw()
             .execute_unprepared(&format!(
@@ -215,6 +322,31 @@ impl Seed for MemStore {
 
     async fn expiring_left(&self, table: TtlTable) -> u64 {
         MemStore::expiring_left(self, table)
+    }
+
+    async fn run_at(
+        &self,
+        o: Uuid,
+        c: Uuid,
+        job_type: &str,
+        status: RunStatus,
+        at: DateTime<Utc>,
+    ) -> Uuid {
+        let key = RunKey {
+            organisation_id: Some(o),
+            connection_id: Some(c),
+            job_type: job_type.into(),
+            scheduled_at: at,
+        };
+        self.seed_run(key, status).await
+    }
+
+    async fn run_link(&self, o: Uuid, c: Uuid, run: Uuid, link: RunLink) {
+        self.seed_run_link(o, c, run, link);
+    }
+
+    async fn run_links_left(&self, run: Uuid) -> u64 {
+        MemStore::run_links_left(self, run)
     }
 
     async fn resource_gone(&self, organisation_id: Uuid, identity: &str) {

@@ -3,7 +3,7 @@ use chrono::{DateTime, Duration, Utc};
 use opsagent_core::retention::{RetentionRepo, TtlTable};
 use tokio::time::Instant;
 
-use super::RetentionStats;
+use super::{batched, RetentionStats};
 use crate::error::AppResult;
 
 /// Rows of `t` expiring (or observed) before this instant are deleted.
@@ -28,20 +28,12 @@ pub(super) async fn run(
     stats: &mut RetentionStats,
 ) -> AppResult<()> {
     for t in TtlTable::ALL {
-        let mut total = 0;
-        loop {
-            if Instant::now() >= deadline {
-                stats.counts.insert(t.name(), total);
-                stats.time_capped = true;
-                return Ok(());
-            }
-            let n = repo.delete_expired(t, cutoff(t, now), batch).await?;
-            total += n;
-            if n < batch {
-                break;
-            }
+        let step = || repo.delete_expired(t, cutoff(t, now), batch);
+        let n = batched(batch, deadline, stats, step).await?;
+        stats.counts.insert(t.name(), n);
+        if stats.time_capped {
+            return Ok(());
         }
-        stats.counts.insert(t.name(), total);
     }
     Ok(())
 }

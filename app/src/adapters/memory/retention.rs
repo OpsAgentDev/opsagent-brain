@@ -1,11 +1,62 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
+    finding::{Finding, FindingEvent, FindingKey, Severity, StoredEvidence},
     repo::RepoResult,
     retention::{RetentionRepo, TtlTable},
+    run::{RunKey, RunStatus},
 };
+use opsagent_ledger::Storage;
+use uuid::Uuid;
 
-use super::MemStore;
+use super::{findings::FindingRow, MemStore};
+
+/// A row that points at a run, for seeding run-pruning tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunLink {
+    FindingEvent,
+    Evidence,
+    FirstSeen,
+    LastSeen,
+    /// A done `side_effects` row with this key.
+    Effect(&'static str),
+    /// Pg only: not modelled here (no-ops).
+    ApiCallStats,
+    ApiCallsRaw,
+    ResourceHistory,
+}
+
+/// A bare open finding of `connection_id`.
+fn finding(organisation_id: Uuid, connection_id: Uuid) -> Finding {
+    let now = Utc::now();
+    Finding {
+        id: Uuid::now_v7(),
+        organisation_id,
+        connection_id,
+        key: FindingKey {
+            connection_id,
+            check_id: "01".into(),
+            resource_identity: Uuid::now_v7().to_string(),
+            variant: String::new(),
+        },
+        severity: Severity::Low,
+        status: "open".into(),
+        title: "t".into(),
+        summary: None,
+        next_step: None,
+        cost_monthly_usd: None,
+        accepted_reason: None,
+        accepted_until: None,
+        snoozed_until: None,
+        first_seen_run_id: None,
+        last_seen_run_id: None,
+        resolved_at: None,
+        resolved_reason: None,
+        alerted_at: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
 
 // shortcut: expiring rows are modelled apart from the typed rows (magic links, invites, ...),
 // as one expiry instant per row; model them on the typed rows if a test needs both.
@@ -25,6 +76,71 @@ impl MemStore {
     }
 }
 
+impl MemStore {
+    /// A run with `key` in `status`; returns its id.
+    pub async fn seed_run(&self, key: RunKey, status: RunStatus) -> Uuid {
+        let id = self.create_run(key).await.expect("create run").run.id;
+        let mut s = self.state();
+        let r = s.runs.iter_mut().find(|r| r.row.id == id).expect("run");
+        r.row.status = status;
+        id
+    }
+
+    /// One row of kind `link` pointing at `run_id`.
+    pub fn seed_run_link(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        link: RunLink,
+    ) {
+        let mut s = self.state();
+        if let RunLink::Effect(key) = link {
+            s.effects.insert((run_id, key.to_owned()), Some(None));
+            return;
+        }
+        let mut row = FindingRow {
+            finding: finding(organisation_id, connection_id),
+            events: vec![],
+            evidence: vec![],
+        };
+        match link {
+            RunLink::FindingEvent => row.events.push(FindingEvent {
+                finding_id: row.finding.id,
+                kind: "seen".into(),
+                run_id: Some(run_id),
+                from_severity: None,
+                to_severity: None,
+                at: Utc::now(),
+            }),
+            RunLink::Evidence => row.evidence.push(StoredEvidence {
+                source: "s".into(),
+                excerpt: "e".into(),
+                redacted: false,
+                run_id,
+                created_at: Utc::now(),
+            }),
+            RunLink::FirstSeen => row.finding.first_seen_run_id = Some(run_id),
+            RunLink::LastSeen => row.finding.last_seen_run_id = Some(run_id),
+            _ => return,
+        }
+        s.findings.push(row);
+    }
+
+    /// Rows still pointing at `run_id` (side effects, finding events, evidence, findings).
+    pub fn run_links_left(&self, run_id: Uuid) -> u64 {
+        let s = self.state();
+        let effects = s.effects.keys().filter(|k| k.0 == run_id).count();
+        let found = s.findings.iter().map(|f| {
+            let events = f.events.iter().filter(|e| e.run_id == Some(run_id)).count();
+            let ev = f.evidence.iter().filter(|e| e.run_id == run_id).count();
+            let refs = [f.finding.first_seen_run_id, f.finding.last_seen_run_id];
+            events + ev + refs.iter().filter(|r| **r == Some(run_id)).count()
+        });
+        (effects + found.sum::<usize>()) as u64
+    }
+}
+
 #[async_trait]
 impl RetentionRepo for MemStore {
     async fn delete_expired(
@@ -41,5 +157,43 @@ impl RetentionRepo for MemStore {
             !drop
         });
         Ok(batch - left)
+    }
+
+    async fn prune_runs(&self, older_than: DateTime<Utc>, batch: u64) -> RepoResult<u64> {
+        let mut s = self.state();
+        let pinned = |id: Uuid| {
+            let effect = s
+                .effects
+                .keys()
+                .any(|(r, k)| *r == id && k.starts_with("alert:baseline"));
+            effect
+                || s.findings.iter().any(|f| {
+                    f.events.iter().any(|e| e.run_id == Some(id))
+                        || f.evidence.iter().any(|e| e.run_id == id)
+                        || [f.finding.first_seen_run_id, f.finding.last_seen_run_id]
+                            .contains(&Some(id))
+                })
+        };
+        let mut picked: Vec<_> = s
+            .runs
+            .iter()
+            .map(|r| (&r.row.key, r.row.status, r.row.id))
+            .filter(|(k, st, id)| {
+                let skipped = *st == RunStatus::Skipped;
+                k.scheduled_at < older_than
+                    && !matches!(st, RunStatus::Queued | RunStatus::Running)
+                    && (skipped || ["watch_scan", "deliver_alert"].contains(&k.job_type.as_str()))
+                    && !pinned(*id)
+            })
+            .map(|(k, _, id)| (k.scheduled_at, id))
+            .collect();
+        picked.sort();
+        picked.truncate(batch as usize);
+        let ids: Vec<Uuid> = picked.into_iter().map(|p| p.1).collect();
+        s.effects.retain(|k, _| !ids.contains(&k.0));
+        s.effects_done_at.retain(|k, _| !ids.contains(&k.0));
+        s.jobs.retain(|j| !ids.contains(&j.run_id));
+        s.runs.retain(|r| !ids.contains(&r.row.id));
+        Ok(ids.len() as u64)
     }
 }

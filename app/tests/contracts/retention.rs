@@ -1,15 +1,130 @@
 use chrono::{DateTime, Duration, Utc};
-use opsagent_core::retention::TtlTable;
+use opsagent_brain::adapters::memory::RunLink;
+use opsagent_core::{retention::TtlTable, run::RunStatus};
 use opsagent_deliver::schedule::RETENTION_CRON;
 
-use super::{contract_suite, org_id};
+use super::{contract_suite, org_id, Seed};
 
 /// Whole seconds, so instants survive Postgres' microsecond timestamps unchanged.
 fn now() -> DateTime<Utc> {
     DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap()
 }
 
+/// `(organisation, connection)` for run seeding.
+async fn scope(
+    s: &dyn opsagent_brain::actions::uow::Repos,
+    seed: &dyn Seed,
+) -> (uuid::Uuid, uuid::Uuid) {
+    let o = org_id(s, "acme").await;
+    (o, seed.connection(o).await)
+}
+
+/// The 14-day prune cutoff, and an instant `days` before now (distinct per `nth`).
+fn ago(days: i64, nth: i64) -> DateTime<Utc> {
+    now() - Duration::days(days) - Duration::seconds(nth)
+}
+
+async fn exists(s: &dyn opsagent_brain::actions::uow::UnitOfWork, run: uuid::Uuid) -> bool {
+    s.ledger().load_run(run).await.is_ok()
+}
+
 contract_suite! {
+    async fn prunes_old_watch_run_and_dependents(s, seed) {
+        let (o, c) = scope(s, seed).await;
+        let watch = seed.run_at(o, c, "watch_scan", RunStatus::Done, ago(20, 0)).await;
+        for link in [RunLink::Effect("watch:chunk"), RunLink::ApiCallStats, RunLink::ApiCallsRaw, RunLink::ResourceHistory] {
+            seed.run_link(o, c, watch, link).await;
+        }
+        let alert = seed.run_at(o, c, "deliver_alert", RunStatus::Failed, ago(20, 1)).await;
+        seed.run_link(o, c, alert, RunLink::Effect("alert:rollup:x")).await;
+        let partial = seed.run_at(o, c, "watch_scan", RunStatus::Partial, ago(15, 0)).await;
+        assert_eq!(s.retention().prune_runs(ago(14, 0), 100).await.unwrap(), 3);
+        for run in [watch, alert, partial] {
+            assert!(!exists(s, run).await);
+            assert_eq!(seed.run_links_left(run).await, 0);
+        }
+        assert_eq!(s.retention().prune_runs(ago(14, 0), 100).await.unwrap(), 0);
+    }
+
+    async fn prunes_in_batches_oldest_first(s, seed) {
+        let (o, c) = scope(s, seed).await;
+        let mut runs = Vec::new();
+        for i in 0..3 {
+            runs.push(seed.run_at(o, c, "watch_scan", RunStatus::Done, ago(20, 10 - i)).await);
+        }
+        assert_eq!(s.retention().prune_runs(ago(14, 0), 2).await.unwrap(), 2);
+        // The newest of the three is left.
+        assert!(!exists(s, runs[0]).await && !exists(s, runs[1]).await && exists(s, runs[2]).await);
+        assert_eq!(s.retention().prune_runs(ago(14, 0), 2).await.unwrap(), 1);
+    }
+
+    async fn keeps_watch_run_with_finding_events(s, seed) {
+        let (o, c) = scope(s, seed).await;
+        let evented = seed.run_at(o, c, "watch_scan", RunStatus::Done, ago(20, 0)).await;
+        seed.run_link(o, c, evented, RunLink::FindingEvent).await;
+        let evidenced = seed.run_at(o, c, "watch_scan", RunStatus::Done, ago(20, 1)).await;
+        seed.run_link(o, c, evidenced, RunLink::Evidence).await;
+        assert_eq!(s.retention().prune_runs(ago(14, 0), 100).await.unwrap(), 0);
+        assert!(exists(s, evented).await && exists(s, evidenced).await);
+    }
+
+    async fn keeps_run_referenced_by_finding(s, seed) {
+        let (o, c) = scope(s, seed).await;
+        let first = seed.run_at(o, c, "watch_scan", RunStatus::Done, ago(20, 0)).await;
+        seed.run_link(o, c, first, RunLink::FirstSeen).await;
+        let last = seed.run_at(o, c, "watch_scan", RunStatus::Done, ago(20, 1)).await;
+        seed.run_link(o, c, last, RunLink::LastSeen).await;
+        assert_eq!(s.retention().prune_runs(ago(14, 0), 100).await.unwrap(), 0);
+        assert!(exists(s, first).await && exists(s, last).await);
+    }
+
+    async fn keeps_deliver_alert_with_baseline(s, seed) {
+        let (o, c) = scope(s, seed).await;
+        let run = seed.run_at(o, c, "deliver_alert", RunStatus::Done, ago(20, 0)).await;
+        seed.run_link(o, c, run, RunLink::Effect("alert:baseline")).await;
+        assert_eq!(s.retention().prune_runs(ago(14, 0), 100).await.unwrap(), 0);
+        assert!(exists(s, run).await);
+        assert_eq!(seed.run_links_left(run).await, 1);
+    }
+
+    async fn keeps_full_scan_runs(s, seed) {
+        let (o, c) = scope(s, seed).await;
+        let mut runs = Vec::new();
+        for (i, job) in ["full_scan", "deliver_briefing", "deliver_weekly", "verify"].into_iter().enumerate() {
+            for (j, st) in [RunStatus::Done, RunStatus::Partial, RunStatus::Failed].into_iter().enumerate() {
+                runs.push(seed.run_at(o, c, job, st, ago(40, (i * 3 + j) as i64)).await);
+            }
+        }
+        assert_eq!(s.retention().prune_runs(ago(14, 0), 100).await.unwrap(), 0);
+        for run in runs {
+            assert!(exists(s, run).await);
+        }
+    }
+
+    async fn keeps_unfinished_runs(s, seed) {
+        let (o, c) = scope(s, seed).await;
+        let queued = seed.run_at(o, c, "watch_scan", RunStatus::Queued, ago(20, 0)).await;
+        let running = seed.run_at(o, c, "deliver_alert", RunStatus::Running, ago(20, 1)).await;
+        assert_eq!(s.retention().prune_runs(ago(14, 0), 100).await.unwrap(), 0);
+        assert!(exists(s, queued).await && exists(s, running).await);
+    }
+
+    async fn prunes_old_skipped_runs_of_any_type(s, seed) {
+        let (o, c) = scope(s, seed).await;
+        let full = seed.run_at(o, c, "full_scan", RunStatus::Skipped, ago(20, 0)).await;
+        let brief = seed.run_at(o, c, "deliver_briefing", RunStatus::Skipped, ago(20, 1)).await;
+        assert_eq!(s.retention().prune_runs(ago(14, 0), 100).await.unwrap(), 2);
+        assert!(!exists(s, full).await && !exists(s, brief).await);
+    }
+
+    async fn keeps_runs_newer_than_14_days(s, seed) {
+        let (o, c) = scope(s, seed).await;
+        let watch = seed.run_at(o, c, "watch_scan", RunStatus::Done, ago(13, 0)).await;
+        let skipped = seed.run_at(o, c, "full_scan", RunStatus::Skipped, ago(14, 0)).await;
+        assert_eq!(s.retention().prune_runs(ago(14, 0), 100).await.unwrap(), 0);
+        assert!(exists(s, watch).await && exists(s, skipped).await);
+    }
+
     async fn ttl_deletes_only_rows_past_cutoff(s, seed) {
         let o = org_id(s, "acme").await;
         let cutoff = now();

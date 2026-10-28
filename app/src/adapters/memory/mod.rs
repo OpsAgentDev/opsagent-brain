@@ -16,6 +16,8 @@ mod runs;
 mod schedules;
 mod users;
 
+pub use retention::RunLink;
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, MutexGuard},
