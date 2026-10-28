@@ -227,6 +227,105 @@
         }
       }
     },
+    "/auth/passkeys/login/finish": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Starts the session and returns where to land: the `return_to` given at start, else the\ndashboard. Without a started ceremony, or for an unknown or bad credential, 401\n`passkey_invalid`.",
+        "operationId": "auth_login_finish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginFinish"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Session cookie set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Redirect"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/passkeys/login/start": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "WebAuthn request options (`{publicKey: …}`) with an empty allow list, for\n`PublicKeyCredential.parseRequestOptionsFromJSON`.",
+        "operationId": "auth_login_start",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "description": "Where sign-in lands afterwards; same rule as the magic link's `return_to`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "WebAuthn request options",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/passkeys/register/finish": {
       "post": {
         "tags": [
@@ -3826,6 +3925,18 @@
           },
           "role": {
             "type": "string"
+          }
+        }
+      },
+      "LoginFinish": {
+        "type": "object",
+        "required": [
+          "credential"
+        ],
+        "properties": {
+          "credential": {
+            "type": "object",
+            "description": "The authenticator's assertion (`credential.toJSON()`)."
           }
         }
       },

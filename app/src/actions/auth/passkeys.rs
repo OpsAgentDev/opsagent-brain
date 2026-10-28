@@ -1,13 +1,18 @@
-//! Adding, listing and removing a user's passkeys. Ceremony state stays with the caller.
+//! Adding, listing and removing a user's passkeys, and signing in with one. Ceremony state stays
+//! with the caller.
 use std::sync::Arc;
 
+use axum::http::StatusCode;
 use opsagent_core::{audit::AuditEntry, passkey::StoredPasskey, repo::Clock};
 use uuid::Uuid;
 use webauthn_rs::prelude::{
-    CreationChallengeResponse, PasskeyRegistration, RegisterPublicKeyCredential, Webauthn,
+    CreationChallengeResponse, DiscoverableAuthentication, DiscoverableKey, Passkey,
+    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
+    RequestChallengeResponse, Webauthn,
 };
 use webauthn_rs_proto::ResidentKeyRequirement;
 
+use super::redeem_magic_link::sign_in_entry;
 use crate::{
     actions::uow::UnitOfWork,
     error::{AppError, AppResult},
@@ -104,6 +109,61 @@ impl Passkeys {
         Ok(stored)
     }
 
+    /// Request options with an empty allow list (the authenticator offers its discoverable
+    /// credentials), and the state `finish_login` needs.
+    pub fn start_login(&self) -> AppResult<(RequestChallengeResponse, DiscoverableAuthentication)> {
+        let (mut rcr, state) = self
+            .webauthn
+            .start_discoverable_authentication()
+            .map_err(|e| AppError::Internal(format!("passkey login: {e}")))?;
+        // The library forces conditional (autofill) mediation; the web runs it from a button.
+        rcr.mediation = None;
+        Ok((rcr, state))
+    }
+
+    /// The signed-in user for a verified assertion. An unknown, removed, someone else's or
+    /// unverifiable credential is `passkey_invalid` (401).
+    pub async fn finish_login(
+        &self,
+        credential: &PublicKeyCredential,
+        state: DiscoverableAuthentication,
+    ) -> AppResult<Uuid> {
+        let (user_id, cred_id) = self
+            .webauthn
+            .identify_discoverable_authentication(credential)
+            .map_err(|_| passkey_invalid())?;
+        let stored = self
+            .uow
+            .passkeys()
+            .by_credential_id(cred_id)
+            .await?
+            .filter(|p| p.user_id == user_id)
+            .ok_or_else(passkey_invalid)?;
+        let mut passkey: Passkey =
+            serde_json::from_value(stored.credential).map_err(|_| passkey_invalid())?;
+        let result = self
+            .webauthn
+            .finish_discoverable_authentication(
+                credential,
+                state,
+                &[DiscoverableKey::from(&passkey)],
+            )
+            .map_err(|e| {
+                tracing::info!(error = %e, "passkey assertion rejected");
+                passkey_invalid()
+            })?;
+        passkey.update_credential(&result);
+        let credential =
+            serde_json::to_value(&passkey).map_err(|e| AppError::Internal(e.to_string()))?;
+        let tx = self.uow.begin().await?;
+        tx.passkeys()
+            .update_after_use(stored.id, &credential, self.clock.now())
+            .await?;
+        tx.audit().record(sign_in_entry(user_id)).await?;
+        tx.commit().await?;
+        Ok(user_id)
+    }
+
     pub async fn list(&self, user_id: Uuid) -> AppResult<Vec<StoredPasskey>> {
         Ok(self.uow.passkeys().for_user(user_id).await?)
     }
@@ -119,6 +179,14 @@ impl Passkeys {
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+}
+
+fn passkey_invalid() -> AppError {
+    AppError::Refused {
+        status: StatusCode::UNAUTHORIZED,
+        code: "passkey_invalid",
+        detail: "The passkey could not be verified.".into(),
     }
 }
 
@@ -181,6 +249,53 @@ mod tests {
         assert_eq!(excluded, vec![vec![1, 2, 3]]);
         assert_eq!(ccr.public_key.user.name, "ada@example.com");
         assert_eq!(ccr.public_key.user.id.to_vec(), ada.as_bytes().to_vec());
+    }
+
+    /// A syntactically valid assertion for credential `cred` claiming user handle `user`.
+    fn assertion(cred: &[u8], user: Uuid) -> PublicKeyCredential {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
+        serde_json::from_value(serde_json::json!({
+            "id": B64.encode(cred),
+            "rawId": B64.encode(cred),
+            "response": {
+                "authenticatorData": "",
+                "clientDataJSON": "",
+                "signature": "",
+                "userHandle": B64.encode(user.as_bytes()),
+            },
+            "type": "public-key",
+            "extensions": {},
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn finish_login_with_unknown_credential_is_passkey_invalid() {
+        let store = MemStore::default();
+        let ada = user(&store, "ada@example.com").await;
+        let eve = user(&store, "eve@example.com").await;
+        stored(&store, ada, &[4, 5]).await;
+        let actions = passkeys(&store);
+        // Unknown id, someone else's credential, and a stored one that does not verify.
+        for (cred, claimed) in [(&[9u8][..], ada), (&[4, 5][..], eve), (&[4, 5][..], ada)] {
+            let (rcr, state) = actions.start_login().unwrap();
+            assert!(rcr.public_key.allow_credentials.is_empty());
+            let err = actions
+                .finish_login(&assertion(cred, claimed), state)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    AppError::Refused {
+                        code: "passkey_invalid",
+                        ..
+                    }
+                ),
+                "{err:?}"
+            );
+        }
+        assert!(store.audit_entries().is_empty());
     }
 
     #[tokio::test]

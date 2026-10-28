@@ -57,7 +57,7 @@ async fn request_link(
 }
 
 /// Rotates the session id and binds the session to `user_id`.
-async fn start_session(session: &Session, user_id: Uuid) -> Result<(), ApiError> {
+pub(crate) async fn start_session(session: &Session, user_id: Uuid) -> Result<(), ApiError> {
     session.cycle_id().await?;
     session.insert(USER_KEY, user_id).await?;
     Ok(())
@@ -74,7 +74,7 @@ pub struct Redirect {
 }
 
 /// The web URL after sign-in: the validated `return_to`, else the dashboard.
-fn landing(web_base_url: &str, return_to: Option<&str>) -> String {
+pub(crate) fn landing(web_base_url: &str, return_to: Option<&str>) -> String {
     let path = return_to.and_then(consent_return_to);
     format!(
         "{}{}",
@@ -87,7 +87,7 @@ fn landing(web_base_url: &str, return_to: Option<&str>) -> String {
 /// present it must equal the origin of `WEB_BASE_URL` exactly (nothing else can override a
 /// mismatch). If it is absent, only `Sec-Fetch-Site: same-origin` is accepted (browsers set
 /// that header and scripts cannot forge it); `same-site` is not enough.
-fn check_origin(headers: &HeaderMap, web_base_url: &str) -> Result<(), ApiError> {
+pub(crate) fn check_origin(headers: &HeaderMap, web_base_url: &str) -> Result<(), ApiError> {
     let header = |n: &str| headers.get(n).and_then(|v| v.to_str().ok());
     let ok = match header("origin") {
         Some(o) => o == web_base_url.trim_end_matches('/'),

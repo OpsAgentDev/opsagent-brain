@@ -1,9 +1,11 @@
+use axum_test::TestServer;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use opsagent_brain::models::_entities::{passkeys, users};
 use sea_orm::{entity::prelude::*, Set};
 use serde_json::{json, Value};
 use serial_test::serial;
 use webauthn_authenticator_rs::{softpasskey::SoftPasskey, WebauthnAuthenticator};
-use webauthn_rs::prelude::{CreationChallengeResponse, Url};
+use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse, Url};
 
 use super::support::*;
 
@@ -130,27 +132,7 @@ async fn register_and_list_with_soft_authenticator() {
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let csrf = sign_in(&req, &mail, "soft@example.com").await;
-        let start = req
-            .post("/v1/auth/passkeys/register/start")
-            .add_header("X-CSRF-Token", &csrf)
-            .await;
-        let mut ccr: CreationChallengeResponse = start.json();
-        // SoftPasskey cannot make resident keys; real authenticators get `required` (checked
-        // above). Finish does not depend on it, so the rest of the ceremony is still covered.
-        let sel = ccr.public_key.authenticator_selection.as_mut().unwrap();
-        (sel.resident_key, sel.require_resident_key) = (None, false);
-        let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
-        let credential = authenticator
-            .do_registration(Url::parse(WEB_ORIGIN).unwrap(), ccr)
-            .unwrap();
-        let body = json!({ "credential": credential, "name": "Work laptop" });
-        let res = req
-            .post("/v1/auth/passkeys/register/finish")
-            .add_header("X-CSRF-Token", &csrf)
-            .json(&body)
-            .await;
-        assert_eq!(res.status_code(), 201, "{}", res.text());
-        let view = res.json::<Value>();
+        let (_authenticator, body, view) = register(&req, &csrf).await;
         assert_eq!(view["name"], "Work laptop");
         assert!(view["last_used_at"].is_null());
 
@@ -169,6 +151,181 @@ async fn register_and_list_with_soft_authenticator() {
             req.get("/v1/auth/me").await.json::<Value>()["has_passkey"],
             true
         );
+    })
+    .await;
+}
+
+type Soft = WebauthnAuthenticator<SoftPasskey>;
+
+/// Registers a passkey named "Work laptop" with a software authenticator for the signed-in
+/// session; the authenticator, the finish body and the created passkey.
+async fn register(req: &TestServer, csrf: &str) -> (Soft, Value, Value) {
+    let start = req
+        .post("/v1/auth/passkeys/register/start")
+        .add_header("X-CSRF-Token", csrf)
+        .await;
+    let mut ccr: CreationChallengeResponse = start.json();
+    // SoftPasskey cannot make resident keys; real authenticators get `required` (checked
+    // above). Finish does not depend on it, so the rest of the ceremony is still covered.
+    let sel = ccr.public_key.authenticator_selection.as_mut().unwrap();
+    (sel.resident_key, sel.require_resident_key) = (None, false);
+    let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
+    let credential = authenticator
+        .do_registration(Url::parse(WEB_ORIGIN).unwrap(), ccr)
+        .unwrap();
+    let body = json!({ "credential": credential, "name": "Work laptop" });
+    let res = req
+        .post("/v1/auth/passkeys/register/finish")
+        .add_header("X-CSRF-Token", csrf)
+        .json(&body)
+        .await;
+    assert_eq!(res.status_code(), 201, "{}", res.text());
+    let view = res.json::<Value>();
+    (authenticator, body, view)
+}
+
+async fn login_start(req: &TestServer, query: &str) -> axum_test::TestResponse {
+    req.post(&format!("/v1/auth/passkeys/login/start{query}"))
+        .add_header("Origin", WEB_ORIGIN)
+        .await
+}
+
+async fn login_finish(req: &TestServer, credential: &Value) -> axum_test::TestResponse {
+    req.post("/v1/auth/passkeys/login/finish")
+        .add_header("Origin", WEB_ORIGIN)
+        .json(&json!({ "credential": credential }))
+        .await
+}
+
+/// The authenticator's assertion for the options `login/start` returned. SoftPasskey is not
+/// discoverable: it needs the credential in the allow list and sends no user handle, so the
+/// test does what a resident-key authenticator does itself (the handle is not signed).
+fn assert_with(soft: &mut Soft, start: &Value, cred_id: &Value, user: Uuid) -> Value {
+    let mut opts = start.clone();
+    opts["publicKey"]["allowCredentials"] = json!([{ "type": "public-key", "id": cred_id }]);
+    let rcr: RequestChallengeResponse = serde_json::from_value(opts).unwrap();
+    let cred = soft
+        .do_authentication(Url::parse(WEB_ORIGIN).unwrap(), rcr)
+        .unwrap();
+    let mut cred = serde_json::to_value(cred).unwrap();
+    cred["response"]["userHandle"] = json!(B64.encode(user.as_bytes()));
+    cred
+}
+
+const CONSENT: &str = "/oauth/consent?request_id=0192f3a4-7b1c-7d2e-8f3a-4b5c6d7e8f90";
+
+#[tokio::test]
+#[serial]
+async fn passkey_login_start_checks_origin() {
+    serve(|req, _ctx| async move {
+        let res = req
+            .post("/v1/auth/passkeys/login/start")
+            .add_header("Origin", "https://evil.example")
+            .await;
+        assert_eq!(res.status_code(), 403);
+        assert_eq!(res.json::<Value>()["code"], "bad_origin");
+        let res = login_start(&req, "").await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        let opts = res.json::<Value>();
+        assert!(opts["publicKey"]["challenge"].is_string());
+        let allow = &opts["publicKey"]["allowCredentials"];
+        assert!(allow.is_null() || allow == &json!([]), "{allow}");
+        assert_eq!(opts["publicKey"]["userVerification"], "required");
+        assert!(opts["mediation"].is_null());
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn passkey_login_finish_without_start_is_401() {
+    serve(|req, _ctx| async move {
+        let cred = json!({
+            "id": "AQID", "rawId": "AQID", "type": "public-key", "extensions": {},
+            "response": { "authenticatorData": "", "clientDataJSON": "", "signature": "" },
+        });
+        let res = login_finish(&req, &cred).await;
+        assert_eq!(res.status_code(), 401, "{}", res.text());
+        assert_eq!(res.json::<Value>()["code"], "passkey_invalid");
+        let res = req
+            .post("/v1/auth/passkeys/login/finish")
+            .add_header("Origin", "https://evil.example")
+            .json(&json!({ "credential": cred }))
+            .await;
+        assert_eq!(res.status_code(), 403);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn passkey_login_with_unknown_credential_is_401() {
+    serve(|req, _ctx| async move {
+        login_start(&req, "").await;
+        let cred = json!({
+            "id": "AQID", "rawId": "AQID", "type": "public-key", "extensions": {},
+            "response": {
+                "authenticatorData": "", "clientDataJSON": "", "signature": "",
+                "userHandle": B64.encode(Uuid::now_v7().as_bytes()),
+            },
+        });
+        let res = login_finish(&req, &cred).await;
+        assert_eq!(res.status_code(), 401, "{}", res.text());
+        assert_eq!(res.json::<Value>()["code"], "passkey_invalid");
+        assert_eq!(req.get("/v1/auth/me").await.status_code(), 401);
+    })
+    .await;
+}
+
+/// Register, sign out, sign in with the passkey from a consent flow; then a replay and a
+/// removed passkey are both 401.
+#[tokio::test]
+#[serial]
+async fn passkey_login_keeps_return_to() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let csrf = sign_in(&req, &mail, "login@example.com").await;
+        let (mut soft, _, view) = register(&req, &csrf).await;
+        let user = user_id(&ctx, "login@example.com").await;
+        let row = passkeys::Entity::find()
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        let cred_id = json!(B64.encode(&row.credential_id));
+        sign_out(&req, &csrf).await;
+
+        let q = format!("?return_to={}", urlencoding::encode(CONSENT));
+        let start = login_start(&req, &q).await.json::<Value>();
+        let cred = assert_with(&mut soft, &start, &cred_id, user);
+        let res = login_finish(&req, &cred).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        assert_eq!(
+            res.json::<Value>()["redirect"],
+            format!("{WEB_ORIGIN}{CONSENT}")
+        );
+        assert_eq!(
+            req.get("/v1/auth/me").await.json::<Value>()["id"],
+            json!(user)
+        );
+        let list = req.get("/v1/auth/passkeys").await.json::<Value>();
+        assert!(list[0]["last_used_at"].is_string(), "{list}");
+
+        // The ceremony state is spent: replaying the same assertion is refused.
+        let res = login_finish(&req, &cred).await;
+        assert_eq!(res.status_code(), 401);
+
+        // A removed passkey no longer signs in, even with a fresh ceremony.
+        let csrf = super::support::csrf(&req).await;
+        let path = format!("/v1/auth/passkeys/{}", view["id"].as_str().unwrap());
+        let res = req.delete(&path).add_header("X-CSRF-Token", &csrf).await;
+        assert_eq!(res.status_code(), 204);
+        sign_out(&req, &csrf).await;
+        let start = login_start(&req, "").await.json::<Value>();
+        let cred = assert_with(&mut soft, &start, &cred_id, user);
+        let res = login_finish(&req, &cred).await;
+        assert_eq!(res.status_code(), 401, "{}", res.text());
+        assert_eq!(res.json::<Value>()["code"], "passkey_invalid");
     })
     .await;
 }
