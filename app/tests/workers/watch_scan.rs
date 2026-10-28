@@ -546,3 +546,55 @@ async fn full_and_watch_scan_of_one_slot_get_a_delivery_each() {
     })
     .await;
 }
+
+/// Retention (retention.md): a watch run over findings that are already open writes no
+/// evidence, events or finding refs, so once 14 days old it is pruned.
+#[tokio::test]
+#[serial]
+async fn watch_run_over_open_findings_pins_nothing_and_is_pruned() {
+    use opsagent_brain::adapters::db::Pg;
+    use opsagent_core::retention::RetentionRepo;
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx).await;
+        scan(&ctx, conn, 0, &noisy()).await;
+        let r = watch_run(&ctx, conn, 0, &watch(&ctx, noisy())).await;
+        assert_eq!(outcome(&r), ("done", None));
+        let count = |sql: &'static str| {
+            let db = ctx.db.clone();
+            async move {
+                let st = sea_orm::Statement::from_sql_and_values(
+                    sea_orm::DbBackend::Postgres,
+                    sql,
+                    vec![r.id.into()],
+                );
+                let row = db.query_one_raw(st).await.unwrap().unwrap();
+                row.try_get::<i64>("", "n").unwrap()
+            }
+        };
+        let pins = "SELECT (SELECT count(*) FROM evidence WHERE run_id = $1) \
+             + (SELECT count(*) FROM finding_events WHERE run_id = $1) \
+             + (SELECT count(*) FROM findings \
+                WHERE first_seen_run_id = $1 OR last_seen_run_id = $1) AS n";
+        assert_eq!(count(pins).await, 0);
+        let age = "UPDATE runs SET scheduled_at = now() - interval '20 days' WHERE id = $1";
+        let st = sea_orm::Statement::from_sql_and_values(
+            sea_orm::DbBackend::Postgres,
+            age,
+            vec![r.id.into()],
+        );
+        ctx.db.execute_raw(st).await.unwrap();
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(14);
+        assert_eq!(
+            Pg::new(ctx.db.clone())
+                .prune_runs(cutoff, 100)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            count("SELECT count(*) AS n FROM runs WHERE id = $1").await,
+            0
+        );
+    })
+    .await;
+}
