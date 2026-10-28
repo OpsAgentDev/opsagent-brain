@@ -27,8 +27,8 @@ use crate::{
     controllers,
     error::{AppError, AppResult},
     jobs::{
-        DeliverBriefingJob, DeliverWeeklyJob, FullScanJob, JobHandler, Scheduler, VerifyJob,
-        WatchScanJob, WorkerRunner,
+        DeliverAlertJob, DeliverBriefingJob, DeliverWeeklyJob, FullScanJob, JobHandler, Scheduler,
+        VerifyJob, WatchScanJob, WorkerRunner,
     },
     mailers::{self, Mailer},
     mcp, middleware,
@@ -454,11 +454,12 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
         ),
         deliver_briefing: deliveries::DeliverBriefing::new(kit.clone()),
         deliver_weekly: deliveries::DeliverWeekly::new(kit.clone()),
+        deliver_alert: deliveries::DeliverAlert::new(kit.clone()),
         deliver_briefing_now: deliveries::DeliverBriefingNow::new(kit),
     }
 }
 
-/// The job runner with the five job handlers, the only registry of job kinds. The queue and
+/// The job runner with the six job handlers, the only registry of job kinds. The queue and
 /// the job work share the state's one pool (`pool_size` with a worker).
 pub fn worker(state: &AppState) -> WorkerRunner {
     let (runs, deliveries) = (&state.actions.runs, &state.actions.deliveries);
@@ -472,6 +473,7 @@ pub fn worker(state: &AppState) -> WorkerRunner {
         Arc::new(DeliverWeeklyJob(Arc::new(
             deliveries.deliver_weekly.clone(),
         ))),
+        Arc::new(DeliverAlertJob(Arc::new(deliveries.deliver_alert.clone()))),
     ];
     let source = Arc::new(PgQueue(state.db.clone()));
     WorkerRunner::new(source, handlers, &state.config, state.clock.clone())

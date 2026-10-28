@@ -7,7 +7,7 @@ use opsagent_core::{
 };
 use opsagent_deliver::{
     model::{ConnectionSnapshot, EventKind, FindingSnapshot, FindingStatus, SeverityCounts},
-    repo::{DeliveriesRepo, DeliveryFilter, DeliveryRow, NewDelivery},
+    repo::{AlertTally, DeliveriesRepo, DeliveryFilter, DeliveryRow, NewDelivery},
 };
 use sea_orm::{
     prelude::DateTimeWithTimeZone, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter,
@@ -191,27 +191,46 @@ impl<C: Conn> DeliveriesRepo for Pg<C> {
         r.map_or(Ok(false), |r| get(&r, "due"))
     }
 
-    async fn alerts_since(
+    async fn alert_tally(
         &self,
         organisation_id: Uuid,
         connection_id: Uuid,
+        run_id: Uuid,
         since: DateTime<Utc>,
-    ) -> RepoResult<(usize, Option<DateTime<Utc>>)> {
+    ) -> RepoResult<AlertTally> {
+        const ONE: &str = "e.effect_key ~ '^alert:[0-9a-f-]{36}$'";
         let r = self
             .db()
             .query_one_raw(stmt(
-                "SELECT count(*) FILTER (WHERE e.effect_key ~ '^alert:[0-9a-f-]{36}$') AS n, \
-                 max(e.done_at) FILTER (WHERE e.effect_key LIKE 'alert:rollup:%') AS rollup \
-                 FROM side_effects e JOIN runs r ON r.id = e.run_id \
-                 WHERE r.organisation_id = $1 AND r.connection_id = $2 \
-                 AND r.job_type = 'deliver_alert' AND e.status = 'done' AND e.done_at >= $3",
-                vec![organisation_id.into(), connection_id.into(), since.into()],
+                &format!(
+                    "SELECT count(*) FILTER (WHERE {ONE} AND e.done_at >= $4) AS since, \
+                     count(*) FILTER (WHERE {ONE} AND e.run_id = $3) AS this_run, \
+                     max(e.done_at) FILTER (WHERE e.effect_key LIKE 'alert:rollup:%' \
+                     AND e.done_at >= $4) AS rollup, \
+                     coalesce(bool_or(e.effect_key = 'alert:baseline'), false) AS baselined \
+                     FROM side_effects e JOIN runs r ON r.id = e.run_id \
+                     WHERE r.organisation_id = $1 AND r.connection_id = $2 \
+                     AND r.job_type = 'deliver_alert' AND e.status = 'done'"
+                ),
+                vec![
+                    organisation_id.into(),
+                    connection_id.into(),
+                    run_id.into(),
+                    since.into(),
+                ],
             ))
             .await
             .map_err(db_err)?;
-        let Some(r) = r else { return Ok((0, None)) };
-        let n: i64 = get(&r, "n")?;
-        Ok((n as usize, ts(&r, "rollup")?))
+        let Some(r) = r else {
+            return Ok(AlertTally::default());
+        };
+        let (n, this_run): (i64, i64) = (get(&r, "since")?, get(&r, "this_run")?);
+        Ok(AlertTally {
+            since: n as usize,
+            this_run: this_run as usize,
+            last_rollup_at: ts(&r, "rollup")?,
+            baselined: get(&r, "baselined")?,
+        })
     }
 
     async fn connection_snapshot(

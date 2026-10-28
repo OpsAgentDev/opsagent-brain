@@ -310,7 +310,8 @@ async fn due_full_scan_enqueues_the_real_worker_once() {
             .await
             .unwrap();
         assert_eq!(run_tick(&ctx, now).await, Report::default());
-        assert_eq!(count(&ctx, "SELECT count(*) n FROM runs").await, 1);
+        let scans = "SELECT count(*) n FROM runs WHERE job_type = 'full_scan'";
+        assert_eq!(count(&ctx, scans).await, 1);
         let next: DateTime<Utc> = ctx
             .db
             .query_one_raw(stmt(

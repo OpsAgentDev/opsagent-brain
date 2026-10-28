@@ -1,5 +1,6 @@
 //! Deliveries (delivery.md): the history, the briefing preview, and the briefing and weekly
-//! jobs, each mail through `MailGuard` and each send once per run and effect key.
+//! jobs and urgent alerts, each mail through `MailGuard` and each send once per run and effect key.
+mod deliver_alert;
 mod deliver_briefing;
 mod deliver_weekly;
 mod delivery_out;
@@ -17,6 +18,7 @@ use opsagent_secrets::Kek;
 use serde_json::json;
 use uuid::Uuid;
 
+pub use deliver_alert::DeliverAlert;
 pub use deliver_briefing::{DeliverBriefing, DeliverBriefingNow};
 pub use deliver_weekly::DeliverWeekly;
 pub use get_delivery::GetDelivery;
@@ -34,6 +36,7 @@ pub struct Deliveries {
     pub preview_briefing: PreviewBriefing,
     pub deliver_briefing: DeliverBriefing,
     pub deliver_weekly: DeliverWeekly,
+    pub deliver_alert: DeliverAlert,
     pub deliver_briefing_now: DeliverBriefingNow,
 }
 

@@ -200,7 +200,7 @@ contract_suite! {
         assert_eq!(d.list(o, mine, PAGE).await.unwrap().items.len(), 2);
     }
 
-    async fn alerts_since_counts_individual_alerts_and_the_last_rollup(s) {
+    async fn alert_tally_counts_individual_alerts_rollups_and_the_baseline(s) {
         let o = org_id(s, "acme").await;
         let c = connection(s, o).await;
         let l = s.ledger();
@@ -211,30 +211,34 @@ contract_suite! {
             scheduled_at: at,
         };
         let now = Utc::now();
+        let done = |r: Uuid, key: String| async move {
+            l.effect_begin(r, &key).await.unwrap();
+            l.effect_done(r, &key, None).await.unwrap();
+        };
         let a = l.create_run(run(now, "deliver_alert")).await.unwrap().run.id;
+        let b = l.create_run(run(now + Duration::seconds(1), "deliver_alert")).await.unwrap().run.id;
         let (f1, f2) = (Uuid::new_v4(), Uuid::new_v4());
-        for key in [format!("alert:{f1}"), format!("alert:{f2}"), format!("alert:rollup:{a}")] {
-            l.effect_begin(a, &key).await.unwrap();
-            l.effect_done(a, &key, None).await.unwrap();
-        }
-        // Started only, an owner email, the baseline, and another job's effect don't count.
+        done(a, format!("alert:{f1}")).await;
+        done(a, format!("alert:{f2}")).await;
+        done(b, format!("alert:{}", Uuid::new_v4())).await;
+        done(a, format!("alert:rollup:{a}")).await;
+        // Started only, an inner send, and another job's effect don't count.
         l.effect_begin(a, &format!("alert:{}", Uuid::new_v4())).await.unwrap();
-        for key in [format!("alert:{f1}:{}", Uuid::new_v4()), "alert:baseline".into()] {
-            l.effect_begin(a, &key).await.unwrap();
-            l.effect_done(a, &key, None).await.unwrap();
-        }
-        let b = l.create_run(run(now, "deliver_briefing")).await.unwrap().run.id;
-        l.effect_begin(b, &format!("alert:{f1}")).await.unwrap();
-        l.effect_done(b, &format!("alert:{f1}"), None).await.unwrap();
+        done(a, format!("alert:{f1}:{}", Uuid::new_v4())).await;
+        let brief = l.create_run(run(now, "deliver_briefing")).await.unwrap().run.id;
+        done(brief, format!("alert:{f1}")).await;
+        done(brief, "alert:baseline".into()).await;
 
         let d = s.deliveries();
         let since = now - Duration::hours(24);
-        let (n, rollup) = d.alerts_since(o, c, since).await.unwrap();
-        assert_eq!(n, 2);
-        assert!(rollup.is_some_and(|t| t >= since));
+        let t = d.alert_tally(o, c, a, since).await.unwrap();
+        assert_eq!((t.since, t.this_run, t.baselined), (3, 2, false));
+        assert!(t.last_rollup_at.is_some_and(|at| at >= since));
+        done(b, "alert:baseline".into()).await;
         let later = Utc::now() + Duration::hours(1);
-        assert_eq!(d.alerts_since(o, c, later).await.unwrap(), (0, None));
+        let t = d.alert_tally(o, c, b, later).await.unwrap();
+        assert_eq!((t.since, t.this_run, t.last_rollup_at, t.baselined), (0, 1, None, true));
         let other = org_id(s, "other").await;
-        assert_eq!(d.alerts_since(other, c, since).await.unwrap(), (0, None));
+        assert_eq!(d.alert_tally(other, c, a, since).await.unwrap(), Default::default());
     }
 }

@@ -186,6 +186,19 @@ pub const FAILED: &str = "failed";
 pub const FALLBACK_EMAIL: &str = "fallback_email";
 pub const SUPPRESSED: &str = "suppressed";
 
+/// What a connection's urgent alerts have sent so far (`DeliveriesRepo::alert_tally`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AlertTally {
+    /// Individual alerts sent since `since`.
+    pub since: usize,
+    /// Individual alerts sent by the run asked about.
+    pub this_run: usize,
+    /// When the last roll-up since `since` went out.
+    pub last_rollup_at: Option<DateTime<Utc>>,
+    /// The first-scan baseline was done (ever).
+    pub baselined: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryRow {
     pub id: Uuid,
@@ -249,15 +262,15 @@ pub trait DeliveriesRepo: Send + Sync {
         connection_id: Uuid,
         before: DateTime<Utc>,
     ) -> RepoResult<bool>;
-    /// The connection's urgent alerts since `since`, from the side-effect ledger of its
-    /// `deliver_alert` runs: individual alerts sent (`alert:<finding_id>` done), and when the
-    /// last roll-up (`alert:rollup:<run_id>`) went out.
-    async fn alerts_since(
+    /// The connection's urgent alerts, from the side-effect ledger of its `deliver_alert` runs
+    /// (`alert:<finding_id>`, `alert:rollup:<run_id>`, `alert:baseline` done).
+    async fn alert_tally(
         &self,
         organisation_id: Uuid,
         connection_id: Uuid,
+        run_id: Uuid,
         since: DateTime<Utc>,
-    ) -> RepoResult<(usize, Option<DateTime<Utc>>)>;
+    ) -> RepoResult<AlertTally>;
     /// `NotFound` for a connection outside the organisation.
     async fn connection_snapshot(
         &self,

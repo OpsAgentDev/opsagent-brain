@@ -131,10 +131,11 @@ async fn scheduled_run_is_done_after_tick_and_drain() {
             count(&ctx, "SELECT count(*) n FROM runs WHERE status = 'queued'").await,
             1
         );
-        assert_eq!(ctx.drain_jobs().await, 1);
+        // The scan, then the deliver_alert its finalize enqueued.
+        assert_eq!(ctx.drain_jobs().await, 2);
         assert_eq!(
             count(&ctx, "SELECT count(*) n FROM runs WHERE status = 'done'").await,
-            1
+            2
         );
         assert_eq!(count(&ctx, JOBS).await, 0);
     })
@@ -174,7 +175,7 @@ async fn parked_retry_is_requeued_by_the_next_tick() {
         assert_eq!(tick.run(now).await.unwrap().unwrap(), Report::default());
         let q = format!("SELECT count(*) n FROM jobs WHERE run_id = '{run}'");
         assert_eq!(count(&ctx, &q).await, 1);
-        assert_eq!(ctx.drain_jobs().await, 1);
+        assert_eq!(ctx.drain_jobs().await, 2, "the scan and its deliver_alert");
         let q = format!(
             "SELECT count(*) n FROM runs WHERE id = '{run}' AND status = 'done' AND next_attempt_at IS NULL"
         );
@@ -222,7 +223,8 @@ async fn queued_run_with_due_next_attempt_is_reenqueued_once() {
         // Exactly one real enqueue (the drained worker finishes the run), then nothing is due.
         assert_eq!(run_tick(&ctx, now).await.retries_run, 1);
         assert_eq!(run_tick(&ctx, now).await, Report::default());
-        let q = "SELECT count(*) n FROM runs WHERE next_attempt_at IS NULL AND status = 'done'";
+        let q = "SELECT count(*) n FROM runs WHERE next_attempt_at IS NULL AND status = 'done' \
+                 AND job_type = 'full_scan'";
         assert_eq!(count(&ctx, q).await, 1);
     })
     .await;
@@ -257,7 +259,7 @@ async fn run_written_but_not_enqueued_is_picked_up_by_the_next_tick() {
             .await
             .unwrap();
         assert_eq!(run_tick(&ctx, now).await.retries_run, 1);
-        let q = "SELECT count(*) n FROM runs WHERE status = 'done'";
+        let q = "SELECT count(*) n FROM runs WHERE status = 'done' AND job_type = 'full_scan'";
         assert_eq!(count(&ctx, q).await, 1);
     })
     .await;

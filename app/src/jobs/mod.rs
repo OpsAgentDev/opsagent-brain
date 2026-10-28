@@ -1,6 +1,7 @@
 //! Job handlers, the `WorkerRunner` that drains the `jobs` table, and the `Scheduler` loop
 //! (app-shell.md, jobs).
 //! A handler hands its run to one action; the run's ledger decides retries and resume.
+mod deliver_alert;
 mod deliver_briefing;
 mod deliver_weekly;
 mod full_scan;
@@ -16,6 +17,7 @@ use uuid::Uuid;
 
 use crate::error::AppResult;
 
+pub use deliver_alert::DeliverAlertJob;
 pub use deliver_briefing::DeliverBriefingJob;
 pub use deliver_weekly::DeliverWeeklyJob;
 pub use full_scan::FullScanJob;

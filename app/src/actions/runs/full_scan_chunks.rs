@@ -1,26 +1,29 @@
-//! The chunks of one full scan: `service@region` inventory, `simulate`, then `finalize`.
+//! The chunks of one full scan: `service@region` inventory, `simulate`, then `finalize`
+//! (which also enqueues the scan's `deliver_alert`).
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     panic::{catch_unwind, AssertUnwindSafe},
 };
 
+use chrono::{DateTime, Duration, Utc};
 use opsagent_checks::{Check, CheckCtx, MetricStore};
 use opsagent_connectors::{
     Connector, Credentials, InventoryResult, Result as ConnResult, Scope, SimulationResult,
 };
+use opsagent_core::run::RunKey;
 use opsagent_core::{
     connection::{Connection, Posture},
     finding::FindingDraft,
     resource::{CallCount, Resource},
 };
-use opsagent_ledger::{ChunkOutcome, LedgerError, Result};
+use opsagent_ledger::{ChunkOutcome, JobKind, LedgerError, Result, RunRow};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::{finding_lifecycle, full_scan::ScanProfile, watch_scan, FullScan};
+use super::{finding_lifecycle, full_scan::ScanProfile, watch_scan, FullScan, RunDispatcher};
 use crate::{
     actions::runs::classify::{classify, lerr, revoked},
-    actions::uow::Repos,
+    actions::uow::{Repos, Tx},
 };
 
 pub(super) const SIMULATE: &str = "simulate";
@@ -248,7 +251,8 @@ impl Scan<'_> {
     async fn finalize(&self, fence: u64) -> Result<ChunkOutcome> {
         let (run_id, c, k) = (self.run_id, self.c, self.k);
         let watch = self.fs.profile == ScanProfile::Watch;
-        let cp = self.fs.uow.ledger().load_run(run_id).await?.checkpoint;
+        let run = self.fs.uow.ledger().load_run(run_id).await?;
+        let cp = run.checkpoint.clone();
         let so_far = cp.stats;
         let simulations: HashMap<String, SimulationResult> = parse(&cp.cursor["simulations"])?;
         let unavailable: BTreeSet<String> = parse(&so_far["unavailable"])?;
@@ -310,11 +314,40 @@ impl Scan<'_> {
         if so_far["revoked"] == json!(true) {
             stats["partial_reason"] = json!("revoked");
         }
+        self.enqueue_alert(&*tx, &run, now).await?;
         tx.commit().await.map_err(lerr)?;
         Ok(ChunkOutcome {
             stats,
             ..Default::default()
         })
+    }
+}
+
+impl Scan<'_> {
+    /// This scan's one `deliver_alert` run and job, on the finalize transaction (urgent-alerts
+    /// spec), when the connection takes alerts and there may be something to send: unalerted
+    /// criticals, or (any full scan) the connection's first-scan baseline. Keyed to the scan's
+    /// slot, a watch scan's a microsecond later so a full and a watch scan of the same slot
+    /// get one each; a re-run finalize finds the run and enqueues nothing.
+    async fn enqueue_alert(&self, tx: &dyn Tx, scan: &RunRow, now: DateTime<Utc>) -> Result<()> {
+        let c = self.c;
+        if !c.urgent_alerts {
+            return Ok(());
+        }
+        let watch = self.fs.profile == ScanProfile::Watch;
+        let candidates = tx.findings().alert_candidates(c.organisation_id, c.id);
+        if watch && candidates.await.map_err(lerr)?.is_empty() {
+            return Ok(());
+        }
+        let key = RunKey {
+            organisation_id: Some(c.organisation_id),
+            connection_id: Some(c.id),
+            job_type: JobKind::DeliverAlert.as_str().into(),
+            scheduled_at: scan.key.scheduled_at + Duration::microseconds(i64::from(watch)),
+        };
+        let d = RunDispatcher::new(self.fs.uow.clone());
+        d.create_and_enqueue(tx, key, now).await.map_err(lerr)?;
+        Ok(())
     }
 }
 

@@ -31,14 +31,18 @@ pub struct ConnectionInfo {
     pub region: Option<String>,
 }
 
-/// `candidates` oldest first; `sent_last_24h` individual alerts of the connection.
+/// `candidates` oldest first; `sent_last_24h` individual alerts of the connection, of which
+/// `sent_this_run` by this run already (a run resumed after a Slack rate limit).
 pub fn plan_alerts(
     candidates: &[Finding],
     sent_last_24h: usize,
+    sent_this_run: usize,
     last_rollup_at: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
 ) -> AlertPlan {
-    let room = ALERTS_PER_RUN.min(ALERTS_PER_DAY.saturating_sub(sent_last_24h));
+    let room = ALERTS_PER_RUN
+        .saturating_sub(sent_this_run)
+        .min(ALERTS_PER_DAY.saturating_sub(sent_last_24h));
     let (individual, rollup) = candidates.split_at(room.min(candidates.len()));
     AlertPlan {
         individual: individual.iter().map(|f| f.id).collect(),
@@ -134,7 +138,7 @@ mod tests {
     #[test]
     fn seven_candidates_none_sent_give_five_and_a_rollup_of_two() {
         let c = many(7);
-        let p = plan_alerts(&c, 0, None, now());
+        let p = plan_alerts(&c, 0, 0, None, now());
         assert_eq!(p.individual, ids(&c[..5]));
         assert_eq!(p.rollup, ids(&c[5..]));
         assert!(p.rollup_allowed);
@@ -143,19 +147,21 @@ mod tests {
     #[test]
     fn nineteen_sent_today_leaves_room_for_one() {
         let c = many(3);
-        let p = plan_alerts(&c, 19, None, now());
+        let p = plan_alerts(&c, 19, 0, None, now());
         assert_eq!(p.individual, ids(&c[..1]));
         assert_eq!(p.rollup, ids(&c[1..]));
-        assert_eq!(plan_alerts(&c, 25, None, now()).rollup.len(), 3);
+        assert_eq!(plan_alerts(&c, 25, 0, None, now()).rollup.len(), 3);
+        // A resumed run that already sent 4 has room for one more.
+        assert_eq!(plan_alerts(&c, 4, 4, None, now()).individual, ids(&c[..1]));
     }
 
     #[test]
     fn rollup_half_an_hour_ago_holds_the_rollup_but_keeps_its_findings() {
         let c = many(6);
-        let p = plan_alerts(&c, 0, Some(now() - Duration::minutes(30)), now());
+        let p = plan_alerts(&c, 0, 0, Some(now() - Duration::minutes(30)), now());
         assert!(!p.rollup_allowed);
         assert_eq!(p.rollup, ids(&c[5..]), "still marked alerted");
-        let later = plan_alerts(&c, 0, Some(now() - Duration::minutes(60)), now());
+        let later = plan_alerts(&c, 0, 0, Some(now() - Duration::minutes(60)), now());
         assert!(later.rollup_allowed);
     }
 
