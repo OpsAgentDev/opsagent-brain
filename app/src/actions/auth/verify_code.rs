@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::redeem_magic_link::sign_in_entry;
 use crate::{
-    actions::{hit_ip, uow::UnitOfWork, RateLimiter},
+    actions::{hit_ip, uow::UnitOfWork, RateLimiter, DAY_SECS},
     error::{AppError, AppResult},
     tokens::code_hash,
 };
@@ -15,6 +15,8 @@ use crate::{
 /// Verify attempts per client IP and per address, per window.
 const CAP: i64 = 10;
 const WINDOW_SECS: i64 = 900;
+/// Verify attempts per address per day.
+const DAY_CAP: i64 = 20;
 
 pub struct VerifyCodeInput {
     pub email: String,
@@ -45,34 +47,44 @@ impl VerifyCode {
         }
     }
 
-    /// Counts this attempt against the IP (when known), then the address; fails closed.
+    /// Counts this attempt against the IP (when known), then the address per 15 minutes and per
+    /// day. Fails closed: a limiter error is also a 429.
     async fn within_caps(&self, email: &Email, ip: Option<IpAddr>) -> AppResult<()> {
         let over = || AppError::RateLimited {
             detail: "Too many attempts. Try again in a few minutes.".into(),
             retry_after_secs: WINDOW_SECS as u64,
         };
-        if let Some(ip) = ip {
-            if !hit_ip(
+        let sha = format!("{:x}", Sha256::digest(email.as_str()));
+        if ip.is_some() {
+            let ok = hit_ip(
                 &*self.limiter,
                 "ratelimit:verify_code",
-                Some(ip),
+                ip,
                 CAP,
                 WINDOW_SECS,
             )
-            .await?
-            {
+            .await;
+            if !ok.unwrap_or(false) {
                 return Err(over());
             }
         }
-        let key = format!(
-            "ratelimit:verify_code:email:{:x}",
-            Sha256::digest(email.as_str())
-        );
-        if self.limiter.hit(&key, CAP, WINDOW_SECS).await? {
-            Ok(())
-        } else {
-            Err(over())
+        for (key, cap, window) in [
+            (
+                format!("ratelimit:verify_code:email:{sha}"),
+                CAP,
+                WINDOW_SECS,
+            ),
+            (
+                format!("ratelimit:verify_code:email_day:{sha}"),
+                DAY_CAP,
+                DAY_SECS,
+            ),
+        ] {
+            if !self.limiter.hit(&key, cap, window).await.unwrap_or(false) {
+                return Err(over());
+            }
         }
+        Ok(())
     }
 
     /// The user and the matched link's `return_to`; `Gone("code_invalid")` for a wrong, spent,
@@ -177,11 +189,14 @@ mod tests {
         let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
         request(&store, &mail).await;
         let code = last_code(&mail);
+        let v = verify(&store);
         let spaced = format!("{} {}", &code[..3], &code[3..]);
-        verify(&store)
-            .run(input(&EMAIL.to_uppercase(), &spaced))
-            .await
-            .unwrap();
+        v.run(input(&EMAIL.to_uppercase(), &spaced)).await.unwrap();
+        // A dashed code works too (fresh link: the first one is spent).
+        request(&store, &mail).await;
+        let code = last_code(&mail);
+        let dashed = format!("{}-{}", &code[..3], &code[3..]);
+        v.run(input(EMAIL, &dashed)).await.unwrap();
     }
 
     #[tokio::test]
@@ -215,6 +230,56 @@ mod tests {
         for _ in 0..CAP {
             assert_invalid(v.run(input(EMAIL, "000000")).await);
         }
+        let err = v.run(input(EMAIL, "000000")).await.unwrap_err();
+        assert!(matches!(err, AppError::RateLimited { .. }), "{err:?}");
+    }
+
+    /// Passes every 15-minute hit, so only the daily cap can refuse; or errors on every hit.
+    struct DayOnly(MemRateLimiter, bool);
+
+    #[async_trait::async_trait]
+    impl RateLimiter for DayOnly {
+        async fn hit(&self, key: &str, cap: i64, w: i64) -> AppResult<bool> {
+            if self.1 {
+                return Err(AppError::Internal("redis down".into()));
+            }
+            Ok(self.0.hit(key, cap, w).await? || !key.contains("email_day"))
+        }
+        async fn distinct(&self, k: &str, m: &str, w: i64) -> AppResult<i64> {
+            self.0.distinct(k, m, w).await
+        }
+        async fn clear(&self, k: &str) -> AppResult<()> {
+            self.0.clear(k).await
+        }
+        async fn forget(&self, k: &str, m: &str) -> AppResult<()> {
+            self.0.forget(k, m).await
+        }
+    }
+
+    fn with_limiter(store: &MemStore, l: DayOnly) -> VerifyCode {
+        VerifyCode::new(
+            Arc::new(store.clone()),
+            Arc::new(l),
+            Arc::new(SystemClock),
+            SECRET.into(),
+        )
+    }
+
+    #[tokio::test]
+    async fn twenty_first_attempt_in_a_day_is_too_many() {
+        let store = MemStore::default();
+        let v = with_limiter(&store, DayOnly(MemRateLimiter::default(), false));
+        for _ in 0..DAY_CAP {
+            assert_invalid(v.run(input(EMAIL, "000000")).await);
+        }
+        let err = v.run(input(EMAIL, "000000")).await.unwrap_err();
+        assert!(matches!(err, AppError::RateLimited { .. }), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn limiter_error_fails_closed_with_429() {
+        let store = MemStore::default();
+        let v = with_limiter(&store, DayOnly(MemRateLimiter::default(), true));
         let err = v.run(input(EMAIL, "000000")).await.unwrap_err();
         assert!(matches!(err, AppError::RateLimited { .. }), "{err:?}");
     }

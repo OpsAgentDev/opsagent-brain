@@ -31,14 +31,14 @@ pub trait Mailer: Send + Sync {
     async fn send(&self, mail: Mail) -> std::result::Result<(), String>;
 }
 
-/// Local default when neither `MAILER_SMTP_URL` nor `RESEND_API_KEY` is set: logs recipient and subject only.
-/// The body carries a magic-link or invite token, so it is emitted at debug in debug builds only.
+/// Local default when neither `MAILER_SMTP_URL` nor `RESEND_API_KEY` is set: logs the recipient only.
+/// The subject can carry a sign-in code and the body a magic-link or invite token, so it is emitted at debug in debug builds only.
 pub struct LogMailer;
 
 #[async_trait]
 impl Mailer for LogMailer {
     async fn send(&self, mail: Mail) -> std::result::Result<(), String> {
-        tracing::info!(to = %mail.to, subject = %mail.subject, "mail not sent (no MAILER_SMTP_URL or RESEND_API_KEY)");
+        tracing::info!(to = %mail.to, "mail not sent (no MAILER_SMTP_URL or RESEND_API_KEY)");
         // Development-only: the body holds a token. Compiled out of release builds.
         #[cfg(debug_assertions)]
         tracing::debug!(to = %mail.to, body = %mail.text, "mail body (development only)");
@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn log_mailer_at_info_never_logs_the_token() {
+    async fn log_mailer_at_info_never_logs_the_token_or_code() {
         let buf = Buf(Arc::default());
         let sub = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
@@ -239,17 +239,15 @@ mod tests {
         LogMailer
             .send(Mail {
                 to: "a@example.com".into(),
-                subject: "Sign in".into(),
+                subject: "Your OpsAgent sign-in code: 424242".into(),
                 text: "https://x.test/auth/callback?token=SECRET123".into(),
                 ..Default::default()
             })
             .await
             .unwrap();
         let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
-        assert!(
-            out.contains("a@example.com") && out.contains("Sign in"),
-            "{out}"
-        );
+        assert!(out.contains("a@example.com"), "{out}");
+        assert!(!out.contains("424242"), "{out}");
         assert!(!out.contains("SECRET123"), "{out}");
     }
 
