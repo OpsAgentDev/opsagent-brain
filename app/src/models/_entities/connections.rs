@@ -33,6 +33,7 @@ pub struct Model {
     pub verify_denied_streak: i32,
     pub verify_denied_first_at: Option<DateTimeWithTimeZone>,
     pub urgent_alerts: bool,
+    pub disconnected_at: Option<DateTimeWithTimeZone>,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }

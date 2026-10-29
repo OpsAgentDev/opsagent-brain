@@ -137,6 +137,8 @@ pub trait OrganisationsRepo: Send + Sync {
         token_hash: &str,
         expires_at: DateTime<Utc>,
     ) -> RepoResult<Invite>;
+    /// Pending invites to the organisation not expired at `now`.
+    async fn pending_invites(&self, organisation_id: Uuid, now: DateTime<Utc>) -> RepoResult<u64>;
     /// Marks a pending, unexpired invite accepted, once.
     async fn take_invite(&self, token_hash: &str, now: DateTime<Utc>)
         -> RepoResult<Option<Invite>>;

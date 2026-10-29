@@ -1,7 +1,9 @@
-//! Test-support adapters: swappable mailer and Slack cells.
+//! Test-support adapters: swappable mailer, Slack and billing-provider cells.
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
+use opsagent_core::billing::{BillingProvider, BillingResult, CheckoutRequest};
+use uuid::Uuid;
 
 use crate::{
     adapters::slack::{Channel, Install, SlackClient, SlackError},
@@ -66,8 +68,48 @@ impl SlackClient for Swappable<dyn SlackClient> {
     }
 }
 
-/// The cells `assemble` wraps the mailer and Slack client in under `test-support`.
+#[async_trait]
+impl BillingProvider for Swappable<dyn BillingProvider> {
+    async fn create_customer(
+        &self,
+        organisation_id: Uuid,
+        name: &str,
+        email: &str,
+        idem: &str,
+    ) -> BillingResult<String> {
+        let b = self.get();
+        b.create_customer(organisation_id, name, email, idem).await
+    }
+
+    async fn checkout_session(&self, req: &CheckoutRequest, idem: &str) -> BillingResult<String> {
+        self.get().checkout_session(req, idem).await
+    }
+
+    async fn portal_session(&self, customer_id: &str, return_url: &str) -> BillingResult<String> {
+        self.get().portal_session(customer_id, return_url).await
+    }
+
+    async fn set_quantity(
+        &self,
+        subscription_id: &str,
+        quantity: i32,
+        prorate: bool,
+        idem: &str,
+    ) -> BillingResult<()> {
+        let b = self.get();
+        b.set_quantity(subscription_id, quantity, prorate, idem)
+            .await
+    }
+
+    async fn cancel_subscription(&self, subscription_id: &str, idem: &str) -> BillingResult<()> {
+        self.get().cancel_subscription(subscription_id, idem).await
+    }
+}
+
+/// The cells `assemble` wraps the mailer, Slack client and billing provider in under
+/// `test-support`.
 pub struct Swaps {
     pub mailer: Arc<Swappable<dyn Mailer>>,
     pub slack: Arc<Swappable<dyn SlackClient>>,
+    pub billing: Arc<Swappable<dyn BillingProvider>>,
 }

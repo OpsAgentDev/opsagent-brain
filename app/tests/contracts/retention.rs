@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use opsagent_brain::adapters::memory::RunLink;
 use opsagent_core::{retention::TtlTable, run::RunStatus};
-use opsagent_deliver::schedule::RETENTION_CRON;
+use opsagent_deliver::schedule::{BILLING_SYNC_CRON, RETENTION_CRON};
 
 use super::{contract_suite, org_id, Seed};
 
@@ -126,6 +126,17 @@ contract_suite! {
         assert!(!exists(s, full).await && !exists(s, brief).await);
     }
 
+    async fn prunes_billing_runs_and_old_notice_markers(s, seed) {
+        let (o, c) = scope(s, seed).await;
+        let t = now();
+        let sync = seed.run_at(o, c, "billing_sync", RunStatus::Done, ago(t, 20, 0)).await;
+        let old = seed.run_at(o, c, "billing_notice", RunStatus::Done, ago(t, 61, 0)).await;
+        // A marker guarding a recent trial's or period's mails stays.
+        let kept = seed.run_at(o, c, "billing_notice", RunStatus::Done, ago(t, 59, 0)).await;
+        assert_eq!(s.retention().prune_runs(ago(t, 14, 0), 100).await.unwrap(), 2);
+        assert!(!exists(s, sync).await && !exists(s, old).await && exists(s, kept).await);
+    }
+
     async fn keeps_runs_newer_than_14_days(s, seed) {
         let (o, c) = scope(s, seed).await;
         let t = now();
@@ -172,18 +183,26 @@ contract_suite! {
         assert_eq!(seed.expiring_left(TtlTable::Sessions).await, 0);
     }
 
-    async fn global_retention_schedule_created_once(s) {
+    async fn global_schedules_created_once(s) {
         let at = now();
         s.schedules().backfill_defaults(at).await.unwrap();
         s.schedules().backfill_defaults(at).await.unwrap();
-        let ids = s.schedules().due_ids(at + Duration::days(2)).await.unwrap();
-        assert_eq!(ids.len(), 1);
-        let (key, cron, tz) = s.schedules().lock_due(ids[0], at + Duration::days(2)).await.unwrap().unwrap();
-        assert_eq!((key.organisation_id, key.connection_id), (None, None));
-        assert_eq!((key.job_type.as_str(), cron.as_str(), tz.as_str()), ("retention", RETENTION_CRON, "UTC"));
-        // 03:30 UTC, within the next day.
-        assert_eq!(key.scheduled_at.format("%H:%M").to_string(), "03:30");
-        assert!(key.scheduled_at > at && key.scheduled_at <= at + Duration::days(1));
+        let later = at + Duration::days(2);
+        let ids = s.schedules().due_ids(later).await.unwrap();
+        assert_eq!(ids.len(), 2);
+        let mut got = Vec::new();
+        for id in ids {
+            let (key, cron, tz) = s.schedules().lock_due(id, later).await.unwrap().unwrap();
+            assert_eq!((key.organisation_id, key.connection_id, tz.as_str()), (None, None, "UTC"));
+            assert!(key.scheduled_at > at && key.scheduled_at <= at + Duration::days(1));
+            got.push((key.job_type, cron, key.scheduled_at.format("%H:%M").to_string()));
+        }
+        got.sort();
+        let want = [
+            ("billing_sync".to_owned(), BILLING_SYNC_CRON.to_owned(), "04:00".to_owned()),
+            ("retention".to_owned(), RETENTION_CRON.to_owned(), "03:30".to_owned()),
+        ];
+        assert_eq!(got, want);
     }
 }
 

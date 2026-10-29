@@ -10,18 +10,24 @@ use opsagent_core::{
 use uuid::Uuid;
 
 use crate::{
-    actions::{orgs::OrgScope, uow::UnitOfWork},
+    actions::{
+        billing::{BillingGate, Seat},
+        orgs::OrgScope,
+        uow::UnitOfWork,
+    },
     error::{AppError, AppResult},
     mailers::{magic_link as mail, Mailer},
     tokens::{hash_token, new_token},
 };
 
-/// Creates a 7-day invite and mails its link (`{web_base_url}/invites/{token}`). Owners only.
+/// Creates a 7-day invite and mails its link (`{web_base_url}/invites/{token}`). Owners only;
+/// 402 `plan_limit` when members plus pending invites reach the tier's member limit.
 pub struct InviteMember {
     uow: Arc<dyn UnitOfWork>,
     mailer: Arc<dyn Mailer>,
     web_base_url: String,
     clock: Arc<dyn Clock>,
+    gate: BillingGate,
 }
 
 impl InviteMember {
@@ -30,12 +36,14 @@ impl InviteMember {
         mailer: Arc<dyn Mailer>,
         web_base_url: String,
         clock: Arc<dyn Clock>,
+        gate: BillingGate,
     ) -> Self {
         Self {
             uow,
             mailer,
             web_base_url,
             clock,
+            gate,
         }
     }
 
@@ -51,6 +59,10 @@ impl InviteMember {
         let role = Role::parse(role)
             .ok_or_else(|| AppError::Invalid("role must be owner or member".into()))?;
         let org = &scope.organisation;
+        let seat = Seat::Invite;
+        self.gate
+            .require_plan_room(&*self.uow, org.id, seat)
+            .await?;
         let token = new_token();
         let expires = self.clock.now() + Duration::days(7);
         let tx = self.uow.begin().await?;

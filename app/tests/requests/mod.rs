@@ -1,5 +1,7 @@
 mod agents;
 mod auth;
+pub mod billing;
+pub mod billing_gate;
 mod connections;
 mod contact;
 mod deliveries;

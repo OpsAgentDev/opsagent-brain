@@ -26,7 +26,7 @@ impl MemState {
         })
     }
 
-    fn org_mut(&mut self, organisation_id: Uuid) -> RepoResult<&mut Organisation> {
+    pub(super) fn org_mut(&mut self, organisation_id: Uuid) -> RepoResult<&mut Organisation> {
         let o = self.orgs.iter_mut().find(|o| o.id == organisation_id);
         o.ok_or(RepoError::NotFound)
     }
@@ -203,6 +203,14 @@ impl OrganisationsRepo for MemStore {
             pending: true,
         });
         Ok(invite)
+    }
+
+    async fn pending_invites(&self, organisation_id: Uuid, now: DateTime<Utc>) -> RepoResult<u64> {
+        let s = self.state();
+        let live = |i: &&InviteRow| {
+            i.pending && i.invite.organisation_id == organisation_id && i.invite.expires_at > now
+        };
+        Ok(s.invites.iter().filter(live).count() as u64)
     }
 
     async fn take_invite(

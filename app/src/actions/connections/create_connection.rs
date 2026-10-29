@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::TEMPLATE_VERSION;
 use crate::{
-    actions::uow::UnitOfWork,
+    actions::{billing::BillingGate, uow::UnitOfWork},
     creds::{Creds, Dek},
     error::{AppError, AppResult},
 };
@@ -22,16 +22,28 @@ pub struct Created {
     pub spec: ProviderSpec,
 }
 
-/// Creates a `pending` connection and its sealed credentials, for owner `actor`.
+/// Creates a `pending` connection and its sealed credentials, for owner `actor`; 402
+/// `trial_limit` when a trialing organisation already has its billable connection.
 pub struct CreateConnection {
     uow: Arc<dyn UnitOfWork>,
     kek: Arc<dyn Kek>,
     registry: Registry,
+    gate: BillingGate,
 }
 
 impl CreateConnection {
-    pub fn new(uow: Arc<dyn UnitOfWork>, kek: Arc<dyn Kek>, registry: Registry) -> Self {
-        Self { uow, kek, registry }
+    pub fn new(
+        uow: Arc<dyn UnitOfWork>,
+        kek: Arc<dyn Kek>,
+        registry: Registry,
+        gate: BillingGate,
+    ) -> Self {
+        Self {
+            uow,
+            kek,
+            registry,
+            gate,
+        }
     }
 
     pub async fn run(
@@ -45,6 +57,9 @@ impl CreateConnection {
             .registry
             .spec(provider)
             .map_err(|_| AppError::Invalid("provider must be aws".into()))?;
+        self.gate
+            .require_connection_room(&*self.uow, organisation_id)
+            .await?;
         let creds = registry::new_creds(provider, Uuid::new_v4().to_string(), &display_name);
         let tx = self.uow.begin().await?;
         let sealed = Dek::of(tx.orgs(), self.kek.as_ref(), organisation_id)

@@ -29,13 +29,15 @@ pub fn token(secret: &str, session_id: &str) -> String {
 pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Response {
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     // Anonymous by design: redeem, verify and passkey login have their own Origin check; recipient
-    // confirm and unsubscribe are authorised by their single-use token alone.
+    // confirm and unsubscribe are authorised by their single-use token alone; the Stripe webhook
+    // by its signature.
     let path = req.uri().path();
     let exempt = path == "/v1/auth/magic-link/redeem"
         || path == "/v1/auth/magic-link/verify"
         || path == "/v1/auth/passkeys/login/start"
         || path == "/v1/auth/passkeys/login/finish"
         || path == "/v1/recipients/confirm"
+        || path == "/v1/webhooks/stripe"
         || path.starts_with("/v1/unsubscribe/");
     if !safe && !exempt {
         if let Some(session) = req.extensions().get::<Session>() {

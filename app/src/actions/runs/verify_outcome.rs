@@ -21,7 +21,13 @@ use super::{
     verify_connection::{Step, VerifyConnection},
     verify_verdict::{decide, Verdict},
 };
-use crate::{actions::uow::Tx, models::enum_str};
+use crate::{
+    actions::{
+        billing::{enqueue_sync, TRIAL_LIMIT},
+        uow::Tx,
+    },
+    models::enum_str,
+};
 
 /// Access denied must repeat this often, spanning at least `DENIED_SPAN`, before `revoked`.
 const DENIED_TIMES: i32 = 3;
@@ -91,6 +97,11 @@ impl VerifyConnection {
         }
         // TODO(notify): email owners once on revoked.
         let (to, reason) = revoke.map_or((c.status, None), |to| (to, Some("access_denied")));
+        if revoke.is_some() {
+            enqueue_sync(&*tx, c.organisation_id, now)
+                .await
+                .map_err(lerr)?;
+        }
         let repo = tx.connections();
         let cas = repo.cas_status(c.organisation_id, c.id, c.status, to, reason);
         if !cas.await.map_err(lerr)? {
@@ -159,13 +170,26 @@ impl VerifyConnection {
             first_connected_at: first_connect.then_some(now),
         };
         let tx = self.fenced(step).await?;
+        if self
+            .trial_refuses(&*tx, c, to, v.account.as_deref())
+            .await?
+        {
+            return self.hold_for_trial(tx, step).await;
+        }
         let Some(written) = self.claim(&*tx, c, to, v).await? else {
             return Ok(false);
         };
         self.outcome_schedules(&*tx, c, written, now).await?;
+        if matches!(written, S::Connected | S::Degraded) {
+            enqueue_sync(&*tx, c.organisation_id, now)
+                .await
+                .map_err(lerr)?;
+        }
         self.record(&*tx, c, run.id, Some(o), &enum_str(written), None)
             .await?;
-        if first_connect && written == S::Connected {
+        let org = c.organisation_id;
+        let gated = self.gate.gated(&*tx, org).await.map_err(lerr)?;
+        if first_connect && written == S::Connected && !gated {
             let key = first_scan_key(c, now);
             // The first scan's run and job commit with the outcome.
             let out = self.dispatcher.create_and_enqueue(&*tx, key, now).await;
@@ -173,6 +197,55 @@ impl VerifyConnection {
         }
         tx.ledger()
             .set_status(run.id, step.fence, RunStatus::Done, None)
+            .await?;
+        tx.commit().await.map_err(lerr)?;
+        Ok(true)
+    }
+
+    /// `true` when `to` would make `c` (on `account`) a second distinct account paid for this
+    /// period in a trialing organisation (billing.md, Trial limit). Takes the organisation's
+    /// seat lock, so two verifies cannot both take the trial's one connection.
+    async fn trial_refuses(
+        &self,
+        tx: &dyn Tx,
+        c: &Connection,
+        to: S,
+        account: Option<&str>,
+    ) -> LResult<bool> {
+        let billable = |s: S| matches!(s, S::Connected | S::Degraded | S::Revoked);
+        if !self.gate.enforced() || !matches!(to, S::Connected | S::Degraded) || billable(c.status)
+        {
+            return Ok(false);
+        }
+        let org = c.organisation_id;
+        tx.billing().lock_seats(org).await.map_err(lerr)?;
+        let account = format!("{}:{}", c.provider, account.unwrap_or_default());
+        let refuses = self.gate.trial_refuses_account(tx, org, &account);
+        refuses.await.map_err(lerr)
+    }
+
+    /// Leaves the connection unconnected (`verifying` back to `pending`) with reason
+    /// `trial_limit`, so the dashboard can say why, and ends the run `Skipped` `trial_limit`;
+    /// verifying again after subscribing connects it.
+    async fn hold_for_trial(&self, tx: Box<dyn Tx>, step: &Step<'_>) -> LResult<bool> {
+        let (c, reason) = (step.c, TRIAL_LIMIT);
+        let back = match c.status {
+            S::Verifying => S::Pending,
+            s => s,
+        };
+        let cas =
+            tx.connections()
+                .cas_status(c.organisation_id, c.id, c.status, back, Some(reason));
+        if !cas.await.map_err(lerr)? {
+            return Ok(false);
+        }
+        tx.ledger()
+            .set_status(
+                step.run.id,
+                step.fence,
+                RunStatus::Skipped,
+                Some(reason.into()),
+            )
             .await?;
         tx.commit().await.map_err(lerr)?;
         Ok(true)

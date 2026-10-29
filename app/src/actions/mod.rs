@@ -1,5 +1,6 @@
 //! Use cases over repository traits (engineering principles, Layers).
 pub mod auth;
+pub mod billing;
 pub mod connections;
 pub mod contact;
 pub mod deliveries;
@@ -38,6 +39,7 @@ pub struct Actions {
     pub waitlist: waitlist::Waitlist,
     pub contact: contact::Contact,
     pub retention: retention::Retention,
+    pub billing: billing::Billing,
 }
 
 /// Fixed-window counters shared by every rate limit.

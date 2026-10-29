@@ -102,7 +102,8 @@ async fn update(
 }
 
 #[utoipa::path(delete, path = "/orgs/{org}", tag = "orgs", params(OrgPath),
-    responses((status = 204), (status = 403, body = Problem), (status = 404, body = Problem)))]
+    responses((status = 204), (status = 403, body = Problem), (status = 404, body = Problem),
+        (status = 502, body = Problem, description = "`billing_unavailable`: Stripe could not cancel the subscription")))]
 async fn delete(State(app): State<AppState>, scope: OrgScope) -> Result<StatusCode, ApiError> {
     let actor = scope.member.user_id;
     app.actions.orgs.delete_org.run(&scope, actor).await?;

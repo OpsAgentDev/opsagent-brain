@@ -1,5 +1,6 @@
 //! Domain core. Framework-free.
 pub mod audit;
+pub mod billing;
 pub mod connection;
 pub mod finding;
 pub mod lifecycle;

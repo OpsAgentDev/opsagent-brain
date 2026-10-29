@@ -250,3 +250,34 @@ pub async fn perform(
         )),
     }
 }
+
+/// Signs `email` in as a `member` of org `slug` (the current owner session is replaced).
+pub async fn as_member(
+    req: &mut TestServer,
+    ctx: &TestApp,
+    mail: &opsagent_brain::mailers::CaptureMailer,
+    org: &str,
+    email: &str,
+) -> String {
+    req.clear_cookies();
+    let t = sign_in(req, mail, email).await;
+    use opsagent_core::org::OrganisationsRepo;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let user = opsagent_brain::models::_entities::users::Entity::find()
+        .filter(opsagent_brain::models::_entities::users::Column::Email.eq(email))
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap();
+    let o = opsagent_brain::models::_entities::organisations::Entity::find()
+        .filter(opsagent_brain::models::_entities::organisations::Column::Slug.eq(org))
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap();
+    opsagent_brain::adapters::db::Pg::new(&ctx.db)
+        .add_member(o.id, user.id, opsagent_core::org::Role::Member)
+        .await
+        .unwrap();
+    t
+}

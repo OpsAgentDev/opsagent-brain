@@ -2,9 +2,9 @@
 //! transaction.
 use async_trait::async_trait;
 use opsagent_core::{
-    audit::AuditLog, connection::ConnectionsRepo, finding::FindingsRepo, oauth::OAuthRepo,
-    org::OrganisationsRepo, passkey::PasskeysRepo, repo::RepoResult, resource::ResourcesRepo,
-    retention::RetentionRepo, run::RunsRepo, user::UsersRepo,
+    audit::AuditLog, billing::BillingRepo, connection::ConnectionsRepo, finding::FindingsRepo,
+    oauth::OAuthRepo, org::OrganisationsRepo, passkey::PasskeysRepo, repo::RepoResult,
+    resource::ResourcesRepo, retention::RetentionRepo, run::RunsRepo, user::UsersRepo,
 };
 use opsagent_deliver::repo::{DeliveriesRepo, IntegrationsRepo, RecipientsRepo, SchedulesRepo};
 use opsagent_ledger::{Queue, Storage};
@@ -28,6 +28,8 @@ pub trait Repos: Send + Sync {
     fn passkeys(&self) -> &dyn PasskeysRepo;
     /// The nightly retention job's global deletes.
     fn retention(&self) -> &dyn RetentionRepo;
+    /// Organisation billing state and Stripe webhook idempotency.
+    fn billing(&self) -> &dyn BillingRepo;
 }
 
 /// Writes through a `Tx` are discarded unless it is committed.

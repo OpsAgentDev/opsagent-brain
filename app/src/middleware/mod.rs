@@ -1,6 +1,7 @@
 //! The HTTP middleware stack (app-shell.md): request id, request span, CSRF, session, CORS,
 //! secure headers, timeout, catch-panic and the body limit. The old framework's `x-powered-by`
 //! and etag are gone by ruling.
+pub mod billing_gate;
 pub mod csrf;
 pub mod org_scope;
 pub mod request_span;

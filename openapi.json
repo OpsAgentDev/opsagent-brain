@@ -746,6 +746,15 @@
               }
             }
           },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
             "content": {
               "application/json": {
@@ -1065,6 +1074,16 @@
                 }
               }
             }
+          },
+          "502": {
+            "description": "`billing_unavailable`: Stripe could not cancel the subscription",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       },
@@ -1100,6 +1119,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Org"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -1204,7 +1233,236 @@
         ],
         "responses": {
           "204": {},
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/billing": {
+      "get": {
+        "tags": [
+          "billing"
+        ],
+        "operationId": "billing_show",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingOut"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/billing/checkout": {
+      "post": {
+        "tags": [
+          "billing"
+        ],
+        "operationId": "billing_checkout",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionUrl"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`already_subscribed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/billing/portal": {
+      "post": {
+        "tags": [
+          "billing"
+        ],
+        "operationId": "billing_portal",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionUrl"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`no_customer`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
             "content": {
               "application/json": {
                 "schema": {
@@ -1289,6 +1547,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CreatedConnection"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -1414,6 +1682,16 @@
               }
             }
           },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
             "content": {
               "application/json": {
@@ -1475,6 +1753,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Connection"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -1554,6 +1842,16 @@
               }
             }
           },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "content": {
               "application/json": {
@@ -1598,6 +1896,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RunAccepted"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -1686,6 +1994,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RunAccepted"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -2059,6 +2377,16 @@
               }
             }
           },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "content": {
               "application/json": {
@@ -2112,6 +2440,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Finding"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -2175,6 +2513,16 @@
         },
         "responses": {
           "204": {},
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "content": {
               "application/json": {
@@ -2238,6 +2586,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Finding"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -2401,6 +2759,16 @@
               }
             }
           },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
             "content": {
               "application/json": {
@@ -2459,6 +2827,16 @@
         ],
         "responses": {
           "204": {},
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
             "content": {
               "application/json": {
@@ -2513,6 +2891,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Invite"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -2617,6 +3005,16 @@
         ],
         "responses": {
           "204": {},
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
             "content": {
               "application/json": {
@@ -2750,6 +3148,16 @@
               }
             }
           },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
             "content": {
               "application/json": {
@@ -2817,6 +3225,16 @@
         ],
         "responses": {
           "204": {},
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
             "content": {
               "application/json": {
@@ -3158,6 +3576,49 @@
           }
         }
       }
+    },
+    "/webhooks/stripe": {
+      "post": {
+        "tags": [
+          "billing"
+        ],
+        "operationId": "billing_stripe_webhook",
+        "requestBody": {
+          "description": "The Stripe event, verified against `Stripe-Signature`",
+          "content": {
+            "text/plain": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied, a repeat, or ignored"
+          },
+          "400": {
+            "description": "`bad_signature` or `bad_payload`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3230,6 +3691,66 @@
           }
         }
       },
+      "BillingOut": {
+        "type": "object",
+        "required": [
+          "status",
+          "quantity",
+          "over_limit",
+          "enforced"
+        ],
+        "properties": {
+          "current_period_end": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "enforced": {
+            "type": "boolean",
+            "description": "Billing state gates the organisation (`BILLING_ENFORCED`)."
+          },
+          "limits": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Limits",
+                "description": "The tier's limits; absent without a tier."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "over_limit": {
+            "type": "boolean",
+            "description": "More members or integrations than the tier allows: new ones are refused."
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Connections billed: at least 1 while subscribed, 0 otherwise."
+          },
+          "status": {
+            "type": "string",
+            "description": "`none`, `trialing`, `active`, `past_due`, `paused`, `canceled` or `trial_ended`."
+          },
+          "tier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`starter`, `team` or `scale`."
+          },
+          "trial_ends_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
       "BriefingPreview": {
         "type": "object",
         "required": [
@@ -3259,6 +3780,18 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "CheckoutIn": {
+        "type": "object",
+        "properties": {
+          "tier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`starter`, `team` (default) or `scale`. Only a first subscription on `team` gets the trial."
           }
         }
       },
@@ -3947,6 +4480,36 @@
           },
           "role": {
             "type": "string"
+          }
+        }
+      },
+      "Limits": {
+        "type": "object",
+        "description": "`None` is unlimited.",
+        "required": [
+          "investigations"
+        ],
+        "properties": {
+          "integrations": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "investigations": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "members": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
           }
         }
       },
@@ -4865,6 +5428,18 @@
           "status": {
             "type": "string",
             "description": "`queued`, `running`, `done`, `partial`, `failed` or `skipped`."
+          }
+        }
+      },
+      "SessionUrl": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The hosted Stripe page; it returns to `WEB_BASE_URL/settings/billing?status=…`."
           }
         }
       },

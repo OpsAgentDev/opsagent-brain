@@ -75,6 +75,18 @@ pub struct Config {
     pub request_timeout_secs: u64,
     /// Fixed recipient of contact-form mail; never taken from a request.
     pub contact_to: String,
+    /// Empty disables billing (`billing_unavailable`).
+    pub stripe_secret_key: String,
+    pub stripe_webhook_secret: String,
+    pub stripe_price_starter: String,
+    pub stripe_price_team: String,
+    pub stripe_price_scale: String,
+    pub stripe_api_base: String,
+    /// The pinned API version, sent as `Stripe-Version`.
+    pub stripe_api_version: String,
+    pub stripe_automatic_tax: bool,
+    /// Off: nothing is gated on billing state (the alpha organisations keep working).
+    pub billing_enforced: bool,
 }
 
 /// Required in production (no default there); the same list as deployment.md and deploy/README.md.
@@ -161,6 +173,15 @@ impl Config {
             worker_shutdown_grace_secs: p(&get, "WORKER_SHUTDOWN_GRACE_SECS", "30")?,
             request_timeout_secs: p(&get, "REQUEST_TIMEOUT_SECS", "30")?,
             contact_to: s("CONTACT_TO", "info@opsagent.dev"),
+            stripe_secret_key: s("STRIPE_SECRET_KEY", ""),
+            stripe_webhook_secret: s("STRIPE_WEBHOOK_SECRET", ""),
+            stripe_price_starter: s("STRIPE_PRICE_STARTER", ""),
+            stripe_price_team: s("STRIPE_PRICE_TEAM", ""),
+            stripe_price_scale: s("STRIPE_PRICE_SCALE", ""),
+            stripe_api_base: s("STRIPE_API_BASE", crate::adapters::stripe::API_BASE),
+            stripe_api_version: s("STRIPE_API_VERSION", "2025-09-30.clover"),
+            stripe_automatic_tax: p(&get, "STRIPE_AUTOMATIC_TAX", "false")?,
+            billing_enforced: p(&get, "BILLING_ENFORCED", "false")?,
         };
         if c.session_secret.len() < 16 {
             return Err(invalid("SESSION_SECRET", "must be at least 16 bytes"));
@@ -177,6 +198,26 @@ impl Config {
             return Err(invalid("UNSUBSCRIBE_SECRET", "must be at least 16 bytes"));
         }
         Ok(c)
+    }
+
+    /// Checkout, Portal and Stripe calls can work (`billing_unavailable` otherwise).
+    pub fn stripe_configured(&self) -> bool {
+        !self.stripe_secret_key.is_empty()
+    }
+
+    /// The webhook can verify signatures; it answers 503 otherwise.
+    pub fn webhook_configured(&self) -> bool {
+        self.stripe_configured() && !self.stripe_webhook_secret.is_empty()
+    }
+
+    /// The Stripe adapter's settings.
+    pub fn stripe_settings(&self) -> crate::adapters::stripe::StripeSettings {
+        crate::adapters::stripe::StripeSettings {
+            api_base: self.stripe_api_base.clone(),
+            secret_key: self.stripe_secret_key.clone(),
+            api_version: self.stripe_api_version.clone(),
+            automatic_tax: self.stripe_automatic_tax,
+        }
     }
 
     /// The unsubscribe HMAC secret: `UNSUBSCRIBE_SECRET`, else `SESSION_SECRET` (links issued
@@ -364,6 +405,27 @@ mod tests {
         assert_eq!(cfg(&production(&[])).connectors, ConnectorMode::Aws);
         assert_eq!(cfg(&[]).connectors, ConnectorMode::Aws);
         assert!(vars(&[("OPSAGENT_CONNECTORS", "bogus")]).is_err());
+    }
+
+    #[test]
+    fn billing_defaults_off_and_parses_flags() {
+        let c = cfg(&[]);
+        assert!(c.stripe_secret_key.is_empty() && !c.billing_enforced && !c.stripe_automatic_tax);
+        assert_eq!(c.stripe_api_base, "https://api.stripe.com");
+        let on = cfg(&[
+            ("BILLING_ENFORCED", "true"),
+            ("STRIPE_AUTOMATIC_TAX", "true"),
+        ]);
+        assert!(on.billing_enforced && on.stripe_automatic_tax);
+        assert!(vars(&[("BILLING_ENFORCED", "yes")]).is_err());
+        assert!(!c.stripe_configured() && !c.webhook_configured());
+        let key = cfg(&[("STRIPE_SECRET_KEY", "sk_test_x")]);
+        assert!(key.stripe_configured() && !key.webhook_configured());
+        let both = cfg(&[
+            ("STRIPE_SECRET_KEY", "sk_test_x"),
+            ("STRIPE_WEBHOOK_SECRET", "whsec_x"),
+        ]);
+        assert!(both.webhook_configured());
     }
 
     #[test]

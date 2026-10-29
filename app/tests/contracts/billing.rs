@@ -1,0 +1,269 @@
+use chrono::{DateTime, Duration, Utc};
+use opsagent_brain::actions::uow::Repos;
+use opsagent_core::{
+    billing::{BillingStatus as B, OrgBilling, SubscriptionState, Tier, REVOKED_AT_PERIOD_END},
+    connection::{ConnectionStatus as S, Verified},
+    repo::RepoError,
+};
+use uuid::Uuid;
+
+use super::connections::{connection, org};
+use super::contract_suite;
+
+fn at(secs: i64) -> DateTime<Utc> {
+    DateTime::from_timestamp(1_800_000_000 + secs, 0).unwrap()
+}
+
+fn sub(status: B, quantity: i32) -> SubscriptionState {
+    SubscriptionState {
+        subscription_id: "sub_1".into(),
+        status,
+        tier: Some(Tier::Team),
+        quantity,
+        trial_ends_at: Some(at(14 * 86_400)),
+        current_period_start: Some(at(0)),
+        current_period_end: Some(at(30 * 86_400)),
+    }
+}
+
+/// A connection on account `account`, moved to `status` (through `verifying`); connected once
+/// unless it stays `verifying`.
+async fn conn_in(s: &dyn Repos, o: Uuid, account: &str, status: S) -> Uuid {
+    let c = connection(s, o, account).await;
+    let repo = s.connections();
+    assert!(repo
+        .cas_status(o, c.id, S::Pending, S::Verifying, None)
+        .await
+        .unwrap());
+    let v = Verified {
+        account: Some(account.into()),
+        first_connected_at: (status != S::Verifying).then(Utc::now),
+        ..Default::default()
+    };
+    repo.record_verified(o, c.id, v).await.unwrap();
+    if status != S::Verifying {
+        assert!(repo
+            .cas_status(o, c.id, S::Verifying, status, None)
+            .await
+            .unwrap());
+    }
+    c.id
+}
+
+contract_suite! {
+    async fn billing_defaults_then_customer(s) {
+        let o = org(s).await;
+        assert_eq!(s.billing().billing(o).await.unwrap(), OrgBilling::default());
+        s.billing().set_customer(o, "cus_1").await.unwrap();
+        let b = s.billing().billing(o).await.unwrap();
+        assert_eq!((b.customer_id.as_deref(), b.status), (Some("cus_1"), B::None));
+        let missing = s.billing().billing(Uuid::new_v4()).await;
+        assert!(matches!(missing, Err(RepoError::NotFound)), "{missing:?}");
+        let missing = s.billing().set_customer(Uuid::new_v4(), "cus_2").await;
+        assert!(matches!(missing, Err(RepoError::NotFound)), "{missing:?}");
+    }
+
+    async fn apply_subscription_ignores_stale_event(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        let repo = s.billing();
+        assert!(repo.apply_subscription(o, &sub(B::Trialing, 1), at(10)).await.unwrap());
+        assert!(repo.apply_subscription(o, &sub(B::Active, 2), at(20)).await.unwrap());
+        // An older event delivered late changes nothing.
+        assert!(!repo.apply_subscription(o, &sub(B::Trialing, 1), at(15)).await.unwrap());
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.status, b.subscription), (B::Active, Some(sub(B::Active, 2))));
+        // Same second: applied (Stripe stamps whole seconds).
+        assert!(repo.apply_subscription(o, &sub(B::Active, 3), at(20)).await.unwrap());
+        assert_eq!(repo.billing(o).await.unwrap().subscription.unwrap().quantity, 3);
+        // Scoped to the organisation.
+        assert_eq!(repo.billing(other).await.unwrap(), OrgBilling::default());
+        let gone = repo.apply_subscription(Uuid::new_v4(), &sub(B::Active, 1), at(30)).await;
+        assert!(matches!(gone, Err(RepoError::NotFound)), "{gone:?}");
+    }
+
+    async fn past_due_since_kept_and_paused_survives_past_due(s) {
+        let o = org(s).await;
+        let repo = s.billing();
+        repo.apply_subscription(o, &sub(B::PastDue, 1), at(10)).await.unwrap();
+        repo.apply_subscription(o, &sub(B::PastDue, 1), at(20)).await.unwrap();
+        assert_eq!(repo.billing(o).await.unwrap().past_due_since, Some(at(10)));
+        let mut paused = sub(B::Paused, 1);
+        repo.apply_subscription(o, &paused, at(30)).await.unwrap();
+        repo.apply_subscription(o, &sub(B::PastDue, 1), at(40)).await.unwrap();
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.status, b.past_due_since), (B::Paused, Some(at(10))));
+        paused.status = B::Active;
+        repo.apply_subscription(o, &paused, at(50)).await.unwrap();
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.status, b.past_due_since), (B::Active, None));
+    }
+
+    async fn same_second_event_with_earlier_period_end_is_stale(s) {
+        let o = org(s).await;
+        let repo = s.billing();
+        let mut renewed = sub(B::Active, 2);
+        renewed.current_period_end = Some(at(60 * 86_400));
+        assert!(repo.apply_subscription(o, &renewed, at(20)).await.unwrap());
+        assert!(!repo.apply_subscription(o, &sub(B::PastDue, 1), at(20)).await.unwrap());
+        assert_eq!(repo.billing(o).await.unwrap().subscription, Some(renewed));
+    }
+
+    async fn subscribed_orgs_lists_live_subscribed_only(s) {
+        let (live, ended, none, gone) = (org(s).await, org(s).await, org(s).await, org(s).await);
+        let repo = s.billing();
+        repo.apply_subscription(live, &sub(B::PastDue, 1), at(10)).await.unwrap();
+        repo.apply_subscription(ended, &sub(B::Canceled, 1), at(10)).await.unwrap();
+        repo.apply_subscription(gone, &sub(B::Active, 1), at(10)).await.unwrap();
+        s.orgs().soft_delete(gone, Utc::now()).await.unwrap();
+        let ids = repo.subscribed_orgs().await.unwrap();
+        assert!(ids.contains(&live));
+        for o in [ended, none, gone] {
+            assert!(!ids.contains(&o), "{o}");
+        }
+    }
+
+    async fn pause_only_past_due_long_enough(s) {
+        let (o, active) = (org(s).await, org(s).await);
+        let repo = s.billing();
+        repo.apply_subscription(o, &sub(B::PastDue, 1), at(10)).await.unwrap();
+        repo.apply_subscription(active, &sub(B::Active, 1), at(10)).await.unwrap();
+        assert!(!repo.pause(o, at(9)).await.unwrap());
+        assert!(!repo.pause(active, at(100)).await.unwrap());
+        assert!(repo.pause(o, at(10)).await.unwrap());
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.status, b.past_due_since), (B::Paused, Some(at(10))));
+        assert_eq!(b.subscription.unwrap().status, B::Paused);
+        // Already paused: nothing to write.
+        assert!(!repo.pause(o, at(100)).await.unwrap());
+        assert_eq!(repo.billing(active).await.unwrap().status, B::Active);
+        // Payment clears it.
+        assert!(repo.apply_payment(o, B::Active, at(20)).await.unwrap());
+        assert_eq!(repo.billing(o).await.unwrap().status, B::Active);
+    }
+
+    async fn org_for_customer_finds_the_owner(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        let cus = format!("cus_{o}");
+        s.billing().set_customer(o, &cus).await.unwrap();
+        assert_eq!(s.billing().org_for_customer(&cus).await.unwrap(), Some(o));
+        assert_eq!(s.billing().org_for_customer("cus_nobody").await.unwrap(), None);
+        assert_ne!(s.billing().org_for_customer(&cus).await.unwrap(), Some(other));
+    }
+
+    async fn apply_payment_moves_status_only(s) {
+        let o = org(s).await;
+        let repo = s.billing();
+        // No subscription yet: nothing to mark.
+        assert!(!repo.apply_payment(o, B::PastDue, at(5)).await.unwrap());
+        assert!(repo.apply_subscription(o, &sub(B::Trialing, 1), at(10)).await.unwrap());
+        // A trial's paid $0 invoice does not end the trial.
+        assert!(!repo.apply_payment(o, B::Active, at(11)).await.unwrap());
+        assert!(repo.apply_payment(o, B::PastDue, at(20)).await.unwrap());
+        // The renewal created before the failure still lands its period, not its status.
+        let mut renewal = sub(B::Active, 2);
+        renewal.current_period_end = Some(at(60 * 86_400));
+        assert!(repo.apply_subscription(o, &renewal, at(15)).await.unwrap());
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.status, b.past_due_since), (B::PastDue, Some(at(20))));
+        let stored = b.subscription.unwrap();
+        assert_eq!((stored.quantity, stored.current_period_end), (2, Some(at(60 * 86_400))));
+        // Older than what was applied: skipped.
+        assert!(!repo.apply_payment(o, B::Active, at(12)).await.unwrap());
+        assert!(repo.apply_payment(o, B::Active, at(30)).await.unwrap());
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.status, b.past_due_since), (B::Active, None));
+        // A newer subscription event wins again.
+        assert!(repo.apply_subscription(o, &sub(B::PastDue, 2), at(40)).await.unwrap());
+        assert_eq!(repo.billing(o).await.unwrap().past_due_since, Some(at(40)));
+        let gone = repo.apply_payment(Uuid::new_v4(), B::PastDue, at(50)).await;
+        assert!(matches!(gone, Err(RepoError::NotFound)), "{gone:?}");
+    }
+
+    async fn record_event_dedupes(s) {
+        let repo = s.billing();
+        let id = format!("evt_{}", Uuid::new_v4());
+        assert!(repo.record_event(&id, "customer.subscription.updated").await.unwrap());
+        assert!(!repo.record_event(&id, "customer.subscription.updated").await.unwrap());
+        assert!(repo.record_event(&format!("{id}_2"), "invoice.paid").await.unwrap());
+    }
+
+    async fn billable_count_includes_disconnected_this_period(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        for (account, status) in [("1", S::Connected), ("2", S::Degraded), ("3", S::Revoked)] {
+            conn_in(s, o, account, status).await;
+        }
+        // Not billable: still verifying, blocked, or someone else's.
+        conn_in(s, o, "4", S::Verifying).await;
+        conn_in(s, o, "5", S::Blocked).await;
+        connection(s, o, "pending").await;
+        // Abandoned before it ever connected, then disconnected in the period.
+        let abandoned = conn_in(s, o, "8", S::Verifying).await;
+        assert!(s.connections().cas_status(o, abandoned, S::Verifying, S::Disconnected, None).await.unwrap());
+        conn_in(s, other, "6", S::Connected).await;
+        let gone = conn_in(s, o, "7", S::Connected).await;
+        assert!(s.connections().cas_status(o, gone, S::Connected, S::Disconnected, None).await.unwrap());
+        let d = s.connections().get(o, gone).await.unwrap().unwrap();
+        let when = d.disconnected_at.expect("disconnected_at stamped");
+        let count = |start| async move {
+            s.billing().billable_accounts(o, Some(start)).await.map(|a| a.len())
+        };
+        assert_eq!(count(when - Duration::hours(1)).await.unwrap(), 4);
+        assert_eq!(count(when).await.unwrap(), 4);
+        assert_eq!(count(when + Duration::hours(1)).await.unwrap(), 3);
+        // Reconnecting the same account in the period is not counted twice.
+        conn_in(s, o, "7", S::Connected).await;
+        assert_eq!(count(when - Duration::hours(1)).await.unwrap(), 4);
+        // Ended by billing_sync for being revoked through a period's end: not billed after it.
+        let revoked = conn_in(s, o, "9", S::Revoked).await;
+        assert_eq!(count(when - Duration::hours(1)).await.unwrap(), 5);
+        let reason = Some(REVOKED_AT_PERIOD_END);
+        assert!(s.connections().cas_status(o, revoked, S::Revoked, S::Disconnected, reason).await.unwrap());
+        assert_eq!(count(when - Duration::hours(1)).await.unwrap(), 4);
+        // Live only (the quantity target): connected, degraded, revoked.
+        let live = s.billing().billable_accounts(o, None).await.unwrap();
+        assert_eq!(live, ["aws:1", "aws:2", "aws:3", "aws:7"]);
+    }
+
+    async fn paid_quantity_resets_on_a_new_period(s) {
+        let o = org(s).await;
+        let repo = s.billing();
+        assert!(repo.apply_subscription(o, &sub(B::Active, 2), at(10)).await.unwrap());
+        assert_eq!(repo.billing(o).await.unwrap().paid_quantity, Some(2));
+        // billing_sync raised it to 3 and back down to 1 in the same period.
+        repo.record_quantity(o, 1, 3).await.unwrap();
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.subscription.unwrap().quantity, b.paid_quantity), (1, Some(3)));
+        // The same period's echo keeps what was paid.
+        assert!(repo.apply_subscription(o, &sub(B::Active, 1), at(20)).await.unwrap());
+        assert_eq!(repo.billing(o).await.unwrap().paid_quantity, Some(3));
+        // The renewal bills the quantity in place, which is now all that is paid.
+        let mut next = sub(B::Active, 1);
+        next.current_period_start = Some(at(30 * 86_400));
+        next.current_period_end = Some(at(60 * 86_400));
+        assert!(repo.apply_subscription(o, &next, at(30 * 86_400)).await.unwrap());
+        assert_eq!(repo.billing(o).await.unwrap().paid_quantity, Some(1));
+        // A late record of a lower quantity never lowers what was paid.
+        repo.record_quantity(o, 2, 2).await.unwrap();
+        repo.record_quantity(o, 1, 1).await.unwrap();
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.subscription.unwrap().quantity, b.paid_quantity), (1, Some(2)));
+        assert!(matches!(repo.record_quantity(Uuid::new_v4(), 1, 1).await, Err(RepoError::NotFound)));
+    }
+
+    async fn ending_status_beats_a_newer_payment(s) {
+        let o = org(s).await;
+        let repo = s.billing();
+        assert!(repo.apply_subscription(o, &sub(B::Active, 1), at(10)).await.unwrap());
+        assert!(repo.apply_payment(o, B::PastDue, at(30)).await.unwrap());
+        // Older than the payment, but it ends the subscription.
+        assert!(repo.apply_subscription(o, &sub(B::Canceled, 1), at(20)).await.unwrap());
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.status, b.past_due_since), (B::Canceled, None));
+        // A live status older than a payment still keeps the payment's.
+        let p = org(s).await;
+        assert!(repo.apply_subscription(p, &sub(B::Active, 1), at(10)).await.unwrap());
+        assert!(repo.apply_payment(p, B::PastDue, at(30)).await.unwrap());
+        assert!(repo.apply_subscription(p, &sub(B::Active, 2), at(20)).await.unwrap());
+        assert_eq!(repo.billing(p).await.unwrap().status, B::PastDue);
+    }
+}

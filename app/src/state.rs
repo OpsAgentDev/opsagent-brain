@@ -50,6 +50,11 @@ impl AppState {
     pub fn set_slack(&self, s: Arc<dyn crate::adapters::slack::SlackClient>) {
         self.swaps.slack.set(s);
     }
+
+    /// Swaps the billing provider every action calls.
+    pub fn set_billing(&self, b: Arc<dyn opsagent_core::billing::BillingProvider>) {
+        self.swaps.billing.set(b);
+    }
 }
 
 impl Deref for AppState {

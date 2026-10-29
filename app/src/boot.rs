@@ -3,7 +3,10 @@ use std::{sync::Arc, time::Duration};
 
 use migration::{Migrator, MigratorTrait};
 use opsagent_connectors::{aws::AwsOutbound, Registry};
-use opsagent_core::repo::{Clock, SystemClock};
+use opsagent_core::{
+    billing::BillingProvider,
+    repo::{Clock, SystemClock},
+};
 use opsagent_ledger::redis;
 use opsagent_secrets::{CachingKek, EnvKek, Kek};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
@@ -12,8 +15,8 @@ use axum::{middleware::from_fn_with_state, Router};
 
 use crate::{
     actions::{
-        auth, connections, contact, deliveries, findings, integrations, members, oauth, orgs,
-        recipients, resources, retention, runs, uow::UnitOfWork, waitlist, Actions,
+        auth, billing, connections, contact, deliveries, findings, integrations, members, oauth,
+        orgs, recipients, resources, retention, runs, uow::UnitOfWork, waitlist, Actions,
         ClientMetadataSource, ConnectorSource, RateLimiter,
     },
     adapters::{
@@ -22,13 +25,14 @@ use crate::{
         pg_queue::PgQueue,
         rate_limiter::RedisRateLimiter,
         slack::{HttpSlack, SlackClient},
+        stripe::StripeBilling,
     },
     config::{Config, ConnectorMode},
     controllers,
     error::{AppError, AppResult},
     jobs::{
-        DeliverAlertJob, DeliverBriefingJob, DeliverWeeklyJob, FullScanJob, JobHandler,
-        RetentionJob, Scheduler, VerifyJob, WatchScanJob, WorkerRunner,
+        BillingGated, BillingSyncJob, DeliverAlertJob, DeliverBriefingJob, DeliverWeeklyJob,
+        FullScanJob, JobHandler, RetentionJob, Scheduler, VerifyJob, WatchScanJob, WorkerRunner,
     },
     mailers::{self, Mailer},
     mcp, middleware,
@@ -55,6 +59,8 @@ pub struct Deps {
     pub registry: Registry,
     pub mailer: Arc<dyn Mailer>,
     pub slack: Arc<dyn SlackClient>,
+    /// Stripe; unusable (and unused) while `STRIPE_SECRET_KEY` is empty.
+    pub billing: Arc<dyn BillingProvider>,
     pub clock: Arc<dyn Clock>,
     /// Fetches Client ID Metadata Documents.
     pub client_metadata: Arc<dyn ClientMetadataSource>,
@@ -121,7 +127,10 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
     let registry = Registry::new(outbound, config.connectors == ConnectorMode::Fake);
     let slack = HttpSlack::new(&config.slack_api_base_url)
         .map_err(|_| internal("slack: HTTP client could not be built"))?;
+    let billing = StripeBilling::new(config.stripe_settings())
+        .map_err(|_| internal("stripe: HTTP client could not be built"))?;
     Ok(Deps {
+        billing: Arc::new(billing),
         webauthn: Arc::new(crate::webauthn::build(&config.web_base_url)?),
         mailer: mailers::from_config(&config).map_err(internal)?,
         config,
@@ -139,7 +148,8 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
 }
 
 /// The state over `deps`, with every action built from them, once. Under `test-support` the
-/// mailer and Slack client sit in cells `AppState::set_mailer`/`set_slack` swap.
+/// mailer, Slack client and billing provider sit in cells `AppState::set_mailer`/`set_slack`/
+/// `set_billing` swap.
 pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
     #[cfg(feature = "test-support")]
     let swaps = {
@@ -147,9 +157,11 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
         let swaps = Swaps {
             mailer: Swappable::new(deps.mailer.clone()),
             slack: Swappable::new(deps.slack.clone()),
+            billing: Swappable::new(deps.billing.clone()),
         };
         deps.mailer = swaps.mailer.clone();
         deps.slack = swaps.slack.clone();
+        deps.billing = swaps.billing.clone();
         swaps
     };
     let urls = OAuthUrls::new(&deps.config.api_base_url);
@@ -179,6 +191,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
     );
     // One guard for recipient confirms and delivery mail.
     let guard = Arc::new(recipients::MailGuard::new(d.uow.clone(), d.limiter.clone()));
+    let gate = billing::BillingGate::new(d.config.billing_enforced, d.clock.clone());
     Actions {
         waitlist: waitlist::Waitlist {
             join: waitlist::JoinWaitlist::new(
@@ -198,6 +211,34 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             ),
         },
         retention: retention::Retention::new(d.uow.clone(), d.redis.clone(), d.clock.clone()),
+        billing: {
+            let s = billing::BillingSettings::new(&d.config);
+            billing::Billing {
+                get_billing: billing::GetBilling::new(d.uow.clone(), s.clone()),
+                checkout: billing::StartCheckout::new(d.uow.clone(), d.billing.clone(), s.clone()),
+                portal: billing::OpenPortal::new(d.uow.clone(), d.billing.clone(), s.clone()),
+                webhook: billing::HandleWebhook::new(
+                    d.uow.clone(),
+                    d.billing.clone(),
+                    d.clock.clone(),
+                    s.clone(),
+                ),
+                sync: billing::BillingSync::new(
+                    d.uow.clone(),
+                    d.redis.clone(),
+                    d.billing.clone(),
+                    (d.mailer.clone(), guard.clone()),
+                    d.clock.clone(),
+                    s,
+                ),
+                gate: gate.clone(),
+                skip_gated: billing::SkipGatedRun::new(
+                    d.uow.clone(),
+                    d.redis.clone(),
+                    gate.clone(),
+                ),
+            }
+        },
         auth: auth::Auth {
             request_magic_link: auth::RequestMagicLink::new(
                 d.uow.clone(),
@@ -225,7 +266,12 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             list_orgs: orgs::ListOrgs::new(d.uow.clone()),
             get_org: orgs::GetOrg,
             update_org: orgs::UpdateOrg::new(d.uow.clone()),
-            delete_org: orgs::DeleteOrg::new(d.uow.clone(), d.clock.clone()),
+            delete_org: orgs::DeleteOrg::new(
+                d.uow.clone(),
+                d.clock.clone(),
+                d.billing.clone(),
+                d.config.stripe_configured(),
+            ),
             is_owner_anywhere: orgs::IsOwnerAnywhere::new(d.uow.clone()),
         },
         members: members::Members {
@@ -235,8 +281,9 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.mailer.clone(),
                 d.config.web_base_url.clone(),
                 d.clock.clone(),
+                gate.clone(),
             ),
-            accept_invite: members::AcceptInvite::new(d.uow.clone(), d.clock.clone()),
+            accept_invite: members::AcceptInvite::new(d.uow.clone(), d.clock.clone(), gate.clone()),
             remove_member: members::RemoveMember::new(d.uow.clone(), d.clock.clone()),
         },
         findings: findings::Findings {
@@ -256,6 +303,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.uow.clone(),
                 d.kek.clone(),
                 d.registry.clone(),
+                gate.clone(),
             ),
             list_connections: connections::ListConnections::new(d.uow.clone()),
             get_connection: connections::GetConnection::new(d.uow.clone()),
@@ -266,7 +314,10 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 dispatcher.clone(),
                 d.clock.clone(),
             ),
-            disconnect_connection: connections::DisconnectConnection::new(d.uow.clone()),
+            disconnect_connection: connections::DisconnectConnection::new(
+                d.uow.clone(),
+                d.clock.clone(),
+            ),
         },
         runs: runs::Runs {
             request_manual_scan: runs::RequestManualScan::new(
@@ -283,10 +334,12 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 connectors,
                 dispatcher.clone(),
                 d.clock.clone(),
+                gate.clone(),
             ),
             scheduler_tick: Arc::new(runs::SchedulerTick::new(
                 d.scheduler_uow.clone(),
                 dispatcher.clone(),
+                gate.clone(),
             )),
             dispatcher,
             scan_now: runs::ScanNow::new(d.uow.clone(), full_scan.clone(), d.clock.clone()),
@@ -294,7 +347,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             full_scan,
         },
         recipients: recipients(d, guard.clone()),
-        integrations: integrations(d),
+        integrations: integrations(d, gate.clone()),
         deliveries: deliveries(d, guard),
         oauth: oauth::OAuth {
             register_client: oauth::RegisterClient::new(
@@ -404,14 +457,18 @@ fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipi
     }
 }
 
-fn integrations(d: &Deps) -> integrations::Integrations {
+fn integrations(d: &Deps, gate: billing::BillingGate) -> integrations::Integrations {
     let slack = integrations::SlackSettings {
         client_id: d.config.slack_client_id.clone(),
         client_secret: d.config.slack_client_secret.clone(),
         api_base_url: d.config.api_base_url.clone(),
     };
     integrations::Integrations {
-        start_slack_install: integrations::StartSlackInstall::new(slack.clone()),
+        start_slack_install: integrations::StartSlackInstall::new(
+            slack.clone(),
+            d.uow.clone(),
+            gate,
+        ),
         finish_slack_install: integrations::FinishSlackInstall::new(
             d.uow.clone(),
             d.kek.clone(),
@@ -460,22 +517,33 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
     }
 }
 
-/// The job runner with the seven job handlers, the only registry of job kinds. The queue and
+/// The job runner with the eight job handlers, the only registry of job kinds. The queue and
 /// the job work share the state's one pool (`pool_size` with a worker).
 pub fn worker(state: &AppState) -> WorkerRunner {
     let (runs, deliveries) = (&state.actions.runs, &state.actions.deliveries);
+    // Scans and deliveries stop for a billing-gated organisation; verify and the global jobs never do.
+    let skip = Arc::new(state.actions.billing.skip_gated.clone());
+    let gated = |inner: Arc<dyn JobHandler>| -> Arc<dyn JobHandler> {
+        Arc::new(BillingGated {
+            inner,
+            skip: skip.clone(),
+        })
+    };
     let handlers: Vec<Arc<dyn JobHandler>> = vec![
         Arc::new(VerifyJob(Arc::new(runs.verify_connection.clone()))),
-        Arc::new(FullScanJob(Arc::new(runs.full_scan.clone()))),
-        Arc::new(WatchScanJob(Arc::new(runs.watch_scan.clone()))),
-        Arc::new(DeliverBriefingJob(Arc::new(
+        gated(Arc::new(FullScanJob(Arc::new(runs.full_scan.clone())))),
+        gated(Arc::new(WatchScanJob(Arc::new(runs.watch_scan.clone())))),
+        gated(Arc::new(DeliverBriefingJob(Arc::new(
             deliveries.deliver_briefing.clone(),
-        ))),
-        Arc::new(DeliverWeeklyJob(Arc::new(
+        )))),
+        gated(Arc::new(DeliverWeeklyJob(Arc::new(
             deliveries.deliver_weekly.clone(),
-        ))),
-        Arc::new(DeliverAlertJob(Arc::new(deliveries.deliver_alert.clone()))),
+        )))),
+        gated(Arc::new(DeliverAlertJob(Arc::new(
+            deliveries.deliver_alert.clone(),
+        )))),
         Arc::new(RetentionJob(Arc::new(state.actions.retention.clone()))),
+        Arc::new(BillingSyncJob(Arc::new(state.actions.billing.sync.clone()))),
     ];
     let source = Arc::new(PgQueue(state.db.clone()));
     WorkerRunner::new(source, handlers, &state.config, state.clock.clone())

@@ -7,10 +7,14 @@ use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 
 use super::{
-    agents, auth, connections, contact, deliveries, findings, integrations, members, oauth_consent,
-    orgs, passkeys, recipients, resources, runs, waitlist,
+    agents, auth, billing, connections, contact, deliveries, findings, integrations, members,
+    oauth_consent, orgs, passkeys, recipients, resources, runs, waitlist,
 };
-use crate::{api_error::ApiError, middleware::org_scope::AuthUser, state::AppState};
+use crate::{
+    api_error::ApiError,
+    middleware::{billing_gate, org_scope::AuthUser},
+    state::AppState,
+};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -41,6 +45,7 @@ fn api() -> OpenApiRouter<AppState> {
         .merge(oauth_consent::api())
         .merge(waitlist::api())
         .merge(contact::api())
+        .merge(billing::api())
 }
 
 /// utoipa names operations after handler fns (`list`, `show`), which repeat across controllers;
@@ -63,10 +68,43 @@ fn prefix_operation_ids(doc: &mut utoipa::openapi::OpenApi) {
     }
 }
 
+/// Every organisation-scoped write the read-only gate covers (`middleware::billing_gate`) can
+/// answer 402 (`billing_required`, `trial_limit`, `plan_limit`).
+fn add_payment_required(doc: &mut utoipa::openapi::OpenApi) {
+    use utoipa::openapi::{schema::Ref, ContentBuilder, ResponseBuilder};
+    let problem = ContentBuilder::new()
+        .schema(Some(Ref::from_schema_name("Problem")))
+        .build();
+    let res = ResponseBuilder::new()
+        .description("Billing required, or a trial or plan limit reached")
+        .content("application/json", problem)
+        .build();
+    for (path, item) in doc.paths.paths.iter_mut() {
+        if !path.starts_with("/orgs/{org}") {
+            continue;
+        }
+        let ops = [
+            ("PUT", &mut item.put),
+            ("POST", &mut item.post),
+            ("DELETE", &mut item.delete),
+            ("PATCH", &mut item.patch),
+        ];
+        for (method, op) in ops {
+            let Some(op) = op else { continue };
+            if !billing_gate::exempt(method, &format!("/v1{path}")) {
+                op.responses
+                    .responses
+                    .insert("402".into(), res.clone().into());
+            }
+        }
+    }
+}
+
 /// The committed `openapi.json` contents.
 pub fn document_json() -> String {
     let mut doc = api().into_openapi();
     prefix_operation_ids(&mut doc);
+    add_payment_required(&mut doc);
     let mut s = doc.to_pretty_json().expect("OpenAPI document serialises");
     s.push('\n');
     s

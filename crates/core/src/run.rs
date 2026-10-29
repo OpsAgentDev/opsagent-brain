@@ -49,10 +49,13 @@ pub struct RunFilter {
 }
 
 /// The read side of runs.
+/// Internal billing runs, not shown in an organisation's run history.
+pub const HIDDEN_JOB_TYPES: [&str; 2] = ["billing_sync", "billing_notice"];
+
 #[async_trait]
 pub trait RunsRepo: Send + Sync {
     async fn get(&self, organisation_id: Uuid, id: Uuid) -> RepoResult<Option<Run>>;
-    /// Newest `scheduled_at` first.
+    /// Newest `scheduled_at` first; `HIDDEN_JOB_TYPES` are never listed.
     async fn list(
         &self,
         organisation_id: Uuid,
