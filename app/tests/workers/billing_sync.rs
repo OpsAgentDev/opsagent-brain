@@ -143,6 +143,18 @@ async fn connect_increases_quantity_with_proration() {
         assert_eq!(status(&ctx, b).await, "degraded");
         let (n, done) = sync_runs(&ctx).await;
         assert_eq!((n, done), (2, 2));
+        // Internal billing runs stay out of the organisation's run history.
+        let runs: serde_json::Value = req.get(&format!("/v1/orgs/{org}/runs")).await.json();
+        let types: Vec<_> = runs["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["job_type"].clone())
+            .collect();
+        assert!(
+            !types.is_empty() && !types.contains(&json!("billing_sync")),
+            "{types:?}"
+        );
     })
     .await;
     api.verify().await;
@@ -240,6 +252,46 @@ async fn revoked_past_period_end_disconnected() {
         // Idempotent: a second night changes nothing.
         nightly(&ctx).await;
         assert_eq!(status(&ctx, recent).await, "revoked");
+    })
+    .await;
+    api.verify().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn rollover_ends_revoked_and_bills_one_less() {
+    let api = MockServer::start().await;
+    subscription_mock(&api).await;
+    expect_update(&api, 1, "none", 1).await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (t, org, id) = org_with_customer(&req, &ctx).await;
+        let old = secs(Utc::now() - Duration::days(31));
+        subscribe(&ctx, id, 2, old).await;
+        // The revoked one was connected (billable_from set), so only the reason keeps it unbilled.
+        let gone = connect(&req, &t, &org, "clean").await;
+        connect(&req, &t, &org, "degraded").await;
+        // Revoked during the period that is about to end.
+        let row = connections::Entity::find_by_id(gone).one(&ctx.db).await;
+        let mut a: connections::ActiveModel = row.unwrap().unwrap().into();
+        a.status = Set("revoked".into());
+        a.verify_denied_first_at = Set(Some((old + Duration::days(10)).into()));
+        a.update(&ctx.db).await.unwrap();
+        let new = secs(Utc::now() - Duration::hours(1));
+        let item = json!({ "id": "si_1", "quantity": 2, "price": { "id": "price_team" },
+            "current_period_start": new.timestamp(),
+            "current_period_end": (new + Duration::days(30)).timestamp() });
+        let object = json!({ "id": "sub_1", "object": "subscription", "customer": "cus_1",
+            "status": "active", "items": { "data": [item] } });
+        let created = Utc::now().timestamp() - at(0).timestamp();
+        deliver(
+            &req,
+            &event("evt_roll", "customer.subscription.updated", created, object),
+        )
+        .await;
+        ctx.drain_jobs().await;
+        assert_eq!(status(&ctx, gone).await, "disconnected");
+        // The nightly pass after it bills nothing more and changes nothing.
+        nightly(&ctx).await;
     })
     .await;
     api.verify().await;

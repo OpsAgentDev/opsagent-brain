@@ -126,6 +126,17 @@ contract_suite! {
         assert!(!exists(s, full).await && !exists(s, brief).await);
     }
 
+    async fn prunes_billing_runs_and_old_notice_markers(s, seed) {
+        let (o, c) = scope(s, seed).await;
+        let t = now();
+        let sync = seed.run_at(o, c, "billing_sync", RunStatus::Done, ago(t, 20, 0)).await;
+        let old = seed.run_at(o, c, "billing_notice", RunStatus::Done, ago(t, 61, 0)).await;
+        // A marker guarding a recent trial's or period's mails stays.
+        let kept = seed.run_at(o, c, "billing_notice", RunStatus::Done, ago(t, 59, 0)).await;
+        assert_eq!(s.retention().prune_runs(ago(t, 14, 0), 100).await.unwrap(), 2);
+        assert!(!exists(s, sync).await && !exists(s, old).await && exists(s, kept).await);
+    }
+
     async fn keeps_runs_newer_than_14_days(s, seed) {
         let (o, c) = scope(s, seed).await;
         let t = now();

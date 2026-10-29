@@ -81,7 +81,8 @@ fn invoice_event(id: &str, kind: &str, created: i64) -> Value {
         id,
         kind,
         created,
-        json!({ "id": "in_1", "object": "invoice", "customer": "cus_1" }),
+        json!({ "id": "in_1", "object": "invoice", "customer": "cus_1",
+            "parent": { "subscription_details": { "subscription": "sub_1" } } }),
     )
 }
 
@@ -730,4 +731,43 @@ async fn delete_org_fails_502_when_stripe_down() {
     })
     .await;
     api.verify().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn invoice_for_another_subscription_ignored_and_cancel_beats_newer_payment() {
+    serve_with(
+        stripe_on("http://127.0.0.1:9".into()),
+        |req, ctx| async move {
+            let (_, _, org) = org_with_customer(&req, &ctx).await;
+            let created = sub_event(
+                "evt_1",
+                "customer.subscription.created",
+                10,
+                "active",
+                1,
+                30,
+            );
+            deliver(&req, &created).await;
+            let mut other = invoice_event("evt_2", "invoice.payment_failed", 20);
+            other["data"]["object"]["parent"]["subscription_details"]["subscription"] =
+                "sub_other".into();
+            deliver(&req, &other).await;
+            assert_eq!(status_of(&ctx, org).await, B::Active);
+            deliver(&req, &invoice_event("evt_3", "invoice.payment_failed", 30)).await;
+            assert_eq!(status_of(&ctx, org).await, B::PastDue);
+            // Created before the failed payment, delivered after it: the cancel still wins.
+            let deleted = sub_event(
+                "evt_4",
+                "customer.subscription.deleted",
+                25,
+                "canceled",
+                1,
+                30,
+            );
+            deliver(&req, &deleted).await;
+            assert_eq!(status_of(&ctx, org).await, B::Canceled);
+        },
+    )
+    .await;
 }

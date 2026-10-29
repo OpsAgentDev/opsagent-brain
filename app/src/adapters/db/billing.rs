@@ -19,13 +19,16 @@ const BILLING: &str = "SELECT stripe_customer_id, stripe_subscription_id, billin
 // past_due_since keys off the incoming status: a stored `paused` stays (and keeps it) only
 // while Stripe still says past_due; any other incoming status clears it.
 // A payment status applied after this event's creation (`payment_event_at > $9`) is newer
-// than this event's status, so both status columns are kept.
+// than this event's status, so both status columns are kept, unless this event ends the
+// subscription (canceled, trial_ended, none): an ended subscription always wins.
 const APPLY: &str = "UPDATE organisations SET stripe_subscription_id = $2, \
-  billing_status = CASE WHEN coalesce(payment_event_at > $9, false) \
+  billing_status = CASE WHEN (coalesce(payment_event_at > $9, false) \
+      AND $3 IN ('active', 'past_due', 'trialing')) \
     OR ($3 = 'past_due' AND billing_status = 'paused') THEN billing_status ELSE $3 END, \
   billing_tier = $4, billing_quantity = $5, trial_ends_at = $6, current_period_start = $7, \
   current_period_end = $8, \
-  past_due_since = CASE WHEN coalesce(payment_event_at > $9, false) THEN past_due_since \
+  past_due_since = CASE WHEN coalesce(payment_event_at > $9, false) \
+      AND $3 IN ('active', 'past_due', 'trialing') THEN past_due_since \
     WHEN $3 IN ('past_due', 'paused') THEN coalesce(past_due_since, $9) END, \
   billing_event_at = $9, updated_at = now() \
   WHERE id = $1 AND (billing_event_at IS NULL OR billing_event_at < $9 \
@@ -40,11 +43,13 @@ const PAYMENT: &str = "UPDATE organisations SET billing_status = $2, \
     OR ($2 = 'active' AND billing_status IN ('past_due', 'paused')))";
 
 /// One per account (a reconnected account has a new row on the same account id). A
-/// disconnected row counts only if it was ever connected (`billable_from`).
+/// disconnected row counts only if it was ever connected (`billable_from`), and not when
+/// `billing_sync` ended it for being revoked through a period's end (not billed after it).
 const BILLABLE: &str =
     "SELECT count(DISTINCT provider || ':' || coalesce(external_account_id, id::text)) AS n \
   FROM connections WHERE organisation_id = $1 AND (status IN ('connected', 'degraded', 'revoked') \
-  OR (status = 'disconnected' AND billable_from IS NOT NULL AND disconnected_at >= $2))";
+  OR (status = 'disconnected' AND billable_from IS NOT NULL AND disconnected_at >= $2 \
+  AND status_reason IS DISTINCT FROM 'revoked_at_period_end'))";
 
 fn get<T: sea_orm::TryGetable>(r: &QueryResult, col: &str) -> RepoResult<T> {
     r.try_get("", col).map_err(db_err)

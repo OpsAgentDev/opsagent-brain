@@ -1,14 +1,18 @@
 //! The nightly `billing_sync` pass (billing.md, Build decisions 3, 8 and 17), per subscribed
 //! organisation: connections still `revoked` when a period ended are disconnected, the trial
 //! reminders go out on day 12 and day 14, and 7 days past due becomes `paused` with one
-//! notice. Each mail is sent once: its ledger key sits on a `billing_notice` marker run keyed
-//! by the organisation and the trial end (or period start), so later nights find it done.
+//! notice. Each mail is sent once per owner: its ledger key (`<key>:<owner id>`) sits on a
+//! `billing_notice` marker run keyed by the organisation and the trial end (or period start),
+//! so later nights find it done.
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
 use chrono::{DateTime, Duration, Utc};
 use opsagent_core::{
     audit::AuditEntry,
-    billing::{BillingStatus as B, OrgBilling, SubscriptionState, Tier},
+    billing::{
+        BillingStatus as B, OrgBilling, SubscriptionState, Tier,
+        REVOKED_AT_PERIOD_END as REVOKED_REASON,
+    },
     connection::ConnectionStatus as S,
     run::{RunKey, RunStatus},
 };
@@ -27,7 +31,6 @@ const TRIAL_DAYS: i64 = 14;
 const PAUSE_AFTER_DAYS: i64 = 7;
 /// The job type of the marker runs that hold the notices' ledger keys (no worker).
 const NOTICE_JOB: &str = "billing_notice";
-const REVOKED_REASON: &str = "revoked_at_period_end";
 
 #[derive(Debug, Default, Serialize)]
 struct Night {
@@ -92,7 +95,7 @@ impl BillingSync {
 
     /// Disconnects connections revoked since before the current period began (a period ended
     /// while they were revoked), or once the stored period is over; returns how many.
-    async fn end_revoked(
+    pub(super) async fn end_revoked(
         &self,
         org: Uuid,
         sub: &SubscriptionState,
@@ -178,8 +181,9 @@ impl BillingSync {
         Ok(out.run.id)
     }
 
-    /// Mails the owners once for ledger `key` on the marker at `anchor`; `true` when this call
-    /// sent it. A failed send is retried the next night (Resend dedupes on the key).
+    /// Mails each owner once for ledger key `<key>:<owner id>` on the marker at `anchor`, so a
+    /// failure part-way never resends to owners already mailed; `true` when this call sent
+    /// any. A failed send is retried the next night (Resend dedupes on the key).
     async fn mail_owners(
         &self,
         org: Uuid,
@@ -191,19 +195,24 @@ impl BillingSync {
         let marker = self.marker(org, anchor).await?;
         let owners = self.uow.recipients().owners(org).await.map_err(lerr)?;
         let sent = AtomicBool::new(false);
-        with_effect(self.uow.ledger(), marker, key, true, || async {
-            for o in owners {
-                let ok = self.guard.may_deliver(org, &o.email, o.member).await;
-                if !ok.map_err(lerr)? {
-                    continue;
-                }
-                let mail = Mail {
-                    to: o.email,
-                    subject: subject.into(),
-                    text: text.into(),
-                    idempotency_key: Some(format!("{marker}:{key}:{}", o.id)),
-                    ..Default::default()
-                };
+        for o in owners {
+            if !self
+                .guard
+                .may_deliver(org, &o.email, o.member)
+                .await
+                .map_err(lerr)?
+            {
+                continue;
+            }
+            let key = format!("{key}:{}", o.id);
+            let mail = Mail {
+                to: o.email,
+                subject: subject.into(),
+                text: text.into(),
+                idempotency_key: Some(format!("{marker}:{key}")),
+                ..Default::default()
+            };
+            with_effect(self.uow.ledger(), marker, &key, true, || async {
                 self.mailer.send(mail).await.map_err(|_| {
                     tracing::warn!(error_code = "mail_failed", "billing mail failed");
                     LedgerError::Job {
@@ -211,179 +220,14 @@ impl BillingSync {
                         retry: true,
                     }
                 })?;
-            }
-            sent.store(true, SeqCst);
-            Ok(None)
-        })
-        .await?;
+                sent.store(true, SeqCst);
+                Ok(None)
+            })
+            .await?;
+        }
         Ok(sent.load(SeqCst))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use async_trait::async_trait;
-    use chrono::TimeZone;
-    use opsagent_core::billing::{
-        BillingProvider, BillingRepo, BillingResult, CheckoutRequest, SubscriptionState,
-    };
-    use opsagent_ledger::redis;
-
-    use super::*;
-    use crate::{
-        actions::{billing::BillingSettings, orgs::test_support::owned_org, recipients::MailGuard},
-        adapters::memory::{FixedClock, MemRateLimiter, MemStore},
-        mailers::CaptureMailer,
-    };
-
-    /// The nightly pass makes no Stripe calls.
-    struct NoStripe;
-
-    #[async_trait]
-    impl BillingProvider for NoStripe {
-        async fn create_customer(
-            &self,
-            _: Uuid,
-            _: &str,
-            _: &str,
-            _: &str,
-        ) -> BillingResult<String> {
-            unreachable!()
-        }
-        async fn checkout_session(&self, _: &CheckoutRequest, _: &str) -> BillingResult<String> {
-            unreachable!()
-        }
-        async fn portal_session(&self, _: &str, _: &str) -> BillingResult<String> {
-            unreachable!()
-        }
-        async fn set_quantity(&self, _: &str, _: i32, _: bool, _: &str) -> BillingResult<()> {
-            unreachable!()
-        }
-        async fn cancel_subscription(&self, _: &str, _: &str) -> BillingResult<()> {
-            unreachable!()
-        }
-    }
-
-    fn settings() -> BillingSettings {
-        BillingSettings {
-            stripe_configured: true,
-            webhook_configured: true,
-            webhook_secret: "whsec".into(),
-            price_starter: "p_s".into(),
-            price_team: "p_t".into(),
-            price_scale: "p_x".into(),
-            web_base_url: "https://opsagent.test/".into(),
-            enforced: false,
-        }
-    }
-
-    fn sync(store: &MemStore, mail: &Arc<CaptureMailer>, now: DateTime<Utc>) -> BillingSync {
-        let uow = Arc::new(store.clone());
-        let guard = Arc::new(MailGuard::new(
-            uow.clone(),
-            Arc::new(MemRateLimiter::default()),
-        ));
-        BillingSync::new(
-            uow,
-            redis::Client::open("redis://localhost:1").unwrap(),
-            Arc::new(NoStripe),
-            (mail.clone(), guard),
-            Arc::new(FixedClock(now)),
-            settings(),
-        )
-    }
-
-    fn sub(status: B, ends: DateTime<Utc>) -> SubscriptionState {
-        SubscriptionState {
-            subscription_id: "sub_1".into(),
-            status,
-            tier: Some(Tier::Team),
-            quantity: 1,
-            trial_ends_at: Some(ends),
-            current_period_start: Some(ends - Duration::days(14)),
-            current_period_end: Some(ends),
-        }
-    }
-
-    async fn night(store: &MemStore, mail: &Arc<CaptureMailer>, now: DateTime<Utc>) {
-        let st = sync(store, mail, now).nightly(now).await.unwrap();
-        assert_eq!(st["failed"], 0, "{st}");
-    }
-
-    #[test]
-    fn reminder_days() {
-        let ends = Utc.with_ymd_and_hms(2026, 11, 12, 10, 0, 0).unwrap();
-        let at = |h: i64| reminder_day(ends, ends - Duration::hours(h));
-        assert_eq!(at(3 * 24 + 1), None); // day 11
-        assert_eq!(at(2 * 24 + 1), Some(12));
-        assert_eq!(at(24 + 1), Some(12)); // day 13: a missed day-12 reminder still goes
-        assert_eq!(at(1), Some(14));
-        assert_eq!(at(0), None);
-    }
-
-    #[tokio::test]
-    async fn trial_reminders_day_12_and_14_once() {
-        let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
-        let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
-        let ends = Utc.with_ymd_and_hms(2026, 11, 12, 10, 0, 0).unwrap();
-        let s = sub(B::Trialing, ends);
-        store
-            .apply_subscription(org.id, &s, ends - Duration::days(14))
-            .await
-            .unwrap();
-        let hours = |h: i64| ends - Duration::hours(h);
-        let mut sent = vec![];
-        for h in [3 * 24 + 6, 2 * 24 + 6, 2 * 24 + 5, 24 + 6, 6, 5] {
-            night(&store, &mail, hours(h)).await;
-            sent.push(mail.sent().len());
-        }
-        assert_eq!(sent, [0, 1, 1, 1, 2, 2]);
-        let m = mail.sent();
-        assert_eq!(m[0].to, "o@example.com");
-        assert_eq!(
-            m[0].text.lines().next().unwrap(),
-            "Your trial ends on 12 November 2026. You'll be charged $299 × 1 per month unless \
-             you change plan or cancel."
-        );
-        assert!(m[0]
-            .text
-            .ends_with("https://opsagent.test/settings/billing"));
-        assert_ne!(m[0].idempotency_key, m[1].idempotency_key);
-        // Converted: no more reminders for an active subscription.
-        let active = sub(B::Active, ends);
-        store
-            .apply_subscription(org.id, &active, ends)
-            .await
-            .unwrap();
-        night(&store, &mail, hours(1)).await;
-        assert_eq!(mail.sent().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn past_due_7_days_pauses_and_notifies_once() {
-        let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
-        let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
-        let t0 = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
-        let s = sub(B::Active, t0 + Duration::days(20));
-        store
-            .apply_subscription(org.id, &s, t0 - Duration::days(1))
-            .await
-            .unwrap();
-        assert!(store.apply_payment(org.id, B::PastDue, t0).await.unwrap());
-        let status = || async { store.billing(org.id).await.unwrap().status };
-        night(&store, &mail, t0 + Duration::days(6)).await;
-        assert_eq!((status().await, mail.sent().len()), (B::PastDue, 0));
-        night(&store, &mail, t0 + Duration::days(7)).await;
-        assert_eq!((status().await, mail.sent().len()), (B::Paused, 1));
-        assert!(mail.sent()[0].text.contains("paused"));
-        night(&store, &mail, t0 + Duration::days(8)).await;
-        assert_eq!((status().await, mail.sent().len()), (B::Paused, 1));
-        // Paid: active again, and no notice.
-        let paid = t0 + Duration::days(9);
-        assert!(store.apply_payment(org.id, B::Active, paid).await.unwrap());
-        night(&store, &mail, t0 + Duration::days(10)).await;
-        assert_eq!((status().await, mail.sent().len()), (B::Active, 1));
-    }
-}
+mod tests;

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use opsagent_brain::actions::uow::Repos;
 use opsagent_core::{
-    billing::{BillingStatus as B, OrgBilling, SubscriptionState, Tier},
+    billing::{BillingStatus as B, OrgBilling, SubscriptionState, Tier, REVOKED_AT_PERIOD_END},
     connection::{ConnectionStatus as S, Verified},
     repo::RepoError,
 };
@@ -211,5 +211,28 @@ contract_suite! {
         // Reconnecting the same account in the period is not counted twice.
         conn_in(s, o, "7", S::Connected).await;
         assert_eq!(count(when - Duration::hours(1)).await.unwrap(), 4);
+        // Ended by billing_sync for being revoked through a period's end: not billed after it.
+        let revoked = conn_in(s, o, "9", S::Revoked).await;
+        assert_eq!(count(when - Duration::hours(1)).await.unwrap(), 5);
+        let reason = Some(REVOKED_AT_PERIOD_END);
+        assert!(s.connections().cas_status(o, revoked, S::Revoked, S::Disconnected, reason).await.unwrap());
+        assert_eq!(count(when - Duration::hours(1)).await.unwrap(), 4);
+    }
+
+    async fn ending_status_beats_a_newer_payment(s) {
+        let o = org(s).await;
+        let repo = s.billing();
+        assert!(repo.apply_subscription(o, &sub(B::Active, 1), at(10)).await.unwrap());
+        assert!(repo.apply_payment(o, B::PastDue, at(30)).await.unwrap());
+        // Older than the payment, but it ends the subscription.
+        assert!(repo.apply_subscription(o, &sub(B::Canceled, 1), at(20)).await.unwrap());
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.status, b.past_due_since), (B::Canceled, None));
+        // A live status older than a payment still keeps the payment's.
+        let p = org(s).await;
+        assert!(repo.apply_subscription(p, &sub(B::Active, 1), at(10)).await.unwrap());
+        assert!(repo.apply_payment(p, B::PastDue, at(30)).await.unwrap());
+        assert!(repo.apply_subscription(p, &sub(B::Active, 2), at(20)).await.unwrap());
+        assert_eq!(repo.billing(p).await.unwrap().status, B::PastDue);
     }
 }

@@ -104,6 +104,7 @@ impl RunsRepo for MemStore {
             .iter()
             .filter(|r| r.in_org(organisation_id))
             .map(RunEntry::run)
+            .filter(|r| !opsagent_core::run::HIDDEN_JOB_TYPES.contains(&r.job_type.as_str()))
             .filter(|r| f.connection_id.is_none_or(|c| r.connection_id == Some(c)))
             .filter(|r| f.job_type.as_ref().is_none_or(|j| &r.job_type == j))
             .filter(|r| {

@@ -142,6 +142,10 @@ pub struct SubscriptionState {
     pub current_period_end: Option<DateTime<Utc>>,
 }
 
+/// The `status_reason` of a connection `billing_sync` disconnected because it was still
+/// revoked when a period ended; it is not billed for the next period.
+pub const REVOKED_AT_PERIOD_END: &str = "revoked_at_period_end";
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BillingError {
     /// The provider has no such object (a subscription already deleted).
@@ -211,7 +215,8 @@ pub trait BillingRepo: Send + Sync {
     /// `false` (writing nothing) when this one is stale. `past_due_since` is kept from the first
     /// past-due event and cleared by any other status; a `past_due` event leaves `paused` as it is.
     /// An event older than the last `apply_payment` keeps that payment's status (and
-    /// `past_due_since`) and writes the rest.
+    /// `past_due_since`) and writes the rest, unless it ends the subscription (`canceled`,
+    /// `trial_ended`, `none`), which always wins.
     async fn apply_subscription(
         &self,
         organisation_id: Uuid,
@@ -249,7 +254,7 @@ pub trait BillingRepo: Send + Sync {
     ) -> RepoResult<bool>;
 
     /// Distinct accounts in `connected`, `degraded` or `revoked`, plus those ever connected and
-    /// disconnected at or after `period_start`. The caller applies the minimum of 1 while subscribed.
+    /// disconnected at or after `period_start` (except with reason `REVOKED_AT_PERIOD_END`). The caller applies the minimum of 1 while subscribed.
     async fn billable_count(
         &self,
         organisation_id: Uuid,

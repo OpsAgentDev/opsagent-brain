@@ -51,6 +51,7 @@ impl<C: Conn> RunsRepo for Pg<C> {
         use runs::Column as Col;
         let q = runs::Entity::find()
             .filter(Col::OrganisationId.eq(organisation_id))
+            .filter(Col::JobType.is_not_in(opsagent_core::run::HIDDEN_JOB_TYPES))
             .apply_if(f.connection_id, |q, v| q.filter(Col::ConnectionId.eq(v)))
             .apply_if(f.job_type, |q, v| q.filter(Col::JobType.eq(v)));
         let key = |m: &runs::Model| (m.scheduled_at, m.id);

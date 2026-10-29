@@ -89,7 +89,7 @@ impl BillingSettings {
 }
 
 /// 503 `billing_unavailable`: Stripe is not configured.
-fn unavailable() -> AppError {
+pub(crate) fn unavailable() -> AppError {
     AppError::Refused {
         status: StatusCode::SERVICE_UNAVAILABLE,
         code: BILLING_UNAVAILABLE,

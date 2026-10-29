@@ -56,6 +56,14 @@ fn ts(v: &Value) -> Option<DateTime<Utc>> {
     v.as_i64().and_then(|s| DateTime::from_timestamp(s, 0))
 }
 
+/// The invoice's subscription: `parent.subscription_details.subscription` (Stripe-Version
+/// 2025-09-30.clover), else the older top-level `subscription`.
+fn invoice_subscription(o: &Value) -> Option<&str> {
+    o["parent"]["subscription_details"]["subscription"]
+        .as_str()
+        .or_else(|| o["subscription"].as_str())
+}
+
 /// Stripe's subscription status as ours; `None` for one we do not track (logged, ignored).
 fn status_of(stripe: &str) -> Option<B> {
     Some(match stripe {
@@ -169,8 +177,12 @@ impl HandleWebhook {
             _ => None,
         };
         if let Some(status) = paid {
-            if stored.subscription.is_none() {
+            let Some(sub) = stored.subscription.as_ref() else {
                 warn_skip(ev, "stripe invoice before any subscription");
+                return Ok(());
+            };
+            if invoice_subscription(&ev.data.object) != Some(sub.subscription_id.as_str()) {
+                warn_skip(ev, "stripe invoice for another subscription");
                 return Ok(());
             }
             // The repo moves only past_due <-> active; a trial's paid $0 invoice is a no-op.

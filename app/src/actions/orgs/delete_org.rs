@@ -9,13 +9,17 @@ use uuid::Uuid;
 
 use super::OrgScope;
 use crate::{
-    actions::{billing::provider_failed, connections::end_connection, uow::UnitOfWork},
+    actions::{
+        billing::{provider_failed, unavailable},
+        connections::end_connection,
+        uow::UnitOfWork,
+    },
     error::AppResult,
 };
 
 /// Soft-deletes the organisation, in one transaction: every connection is disconnected and
 /// every schedule disabled, so nothing is scanned for it again. Owners only. A live Stripe
-/// subscription is cancelled first; if Stripe fails, nothing is deleted (502).
+/// subscription is cancelled first; if Stripe fails, nothing is deleted (502, or 503 unconfigured).
 pub struct DeleteOrg {
     uow: Arc<dyn UnitOfWork>,
     clock: Arc<dyn Clock>,
@@ -62,11 +66,9 @@ impl DeleteOrg {
     }
 
     /// Cancels the subscription unless there is none (or it already ended); Stripe having no
-    /// such subscription (404) counts as cancelled.
+    /// such subscription (404) counts as cancelled. A live one with Stripe unconfigured is
+    /// refused (503): deleting would leave it billing.
     async fn cancel_subscription(&self, organisation_id: Uuid) -> AppResult<()> {
-        if !self.stripe_configured {
-            return Ok(());
-        }
         let b = self.uow.billing().billing(organisation_id).await?;
         let ended = matches!(
             b.status,
@@ -75,6 +77,9 @@ impl DeleteOrg {
         let Some(sub) = b.subscription.filter(|_| !ended) else {
             return Ok(());
         };
+        if !self.stripe_configured {
+            return Err(unavailable());
+        }
         let id = sub.subscription_id;
         let idem = format!("org_delete:{organisation_id}:{id}");
         match self.billing.cancel_subscription(&id, &idem).await {
@@ -338,5 +343,39 @@ mod tests {
             deleted.iter().filter(|e| e.action == "org.delete").count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn delete_org_refuses_503_with_live_subscription_and_no_stripe() {
+        use opsagent_core::billing::{BillingRepo, BillingStatus as B, SubscriptionState};
+        let store = MemStore::default();
+        let (owner, org) = owned_org(&store, "o@example.com", "Billed").await;
+        let mut s = SubscriptionState {
+            subscription_id: "sub_1".into(),
+            status: B::Active,
+            tier: None,
+            quantity: 1,
+            trial_ends_at: None,
+            current_period_start: None,
+            current_period_end: None,
+        };
+        let at = Utc::now();
+        store.apply_subscription(org.id, &s, at).await.unwrap();
+        let scope = scope(&store, &org, &owner).await;
+        let store_uow = Arc::new(store.clone());
+        let delete = DeleteOrg::new(store_uow, Arc::new(SystemClock), no_stripe(), false);
+        let err = delete.run(&scope, owner.id).await.unwrap_err();
+        assert!(
+            matches!(&err, AppError::Refused { status, code, .. }
+                if status.as_u16() == 503 && *code == "billing_unavailable"),
+            "{err:?}"
+        );
+        assert!(!store.is_deleted(org.id).await.unwrap());
+        // Ended: nothing to cancel, so the delete goes ahead.
+        s.status = B::Canceled;
+        let later = at + chrono::Duration::seconds(1);
+        store.apply_subscription(org.id, &s, later).await.unwrap();
+        delete.run(&scope, owner.id).await.unwrap();
+        assert!(store.is_deleted(org.id).await.unwrap());
     }
 }

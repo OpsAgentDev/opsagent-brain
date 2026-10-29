@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    billing::{BillingRepo, BillingStatus as B, OrgBilling, SubscriptionState},
+    billing::{
+        BillingRepo, BillingStatus as B, OrgBilling, SubscriptionState, REVOKED_AT_PERIOD_END,
+    },
     connection::ConnectionStatus as S,
     repo::RepoResult,
 };
@@ -55,7 +57,9 @@ impl BillingRepo for MemStore {
             }
             _ => {}
         }
-        let payment_newer = row.payment_at.is_some_and(|at| at > event_created);
+        // An ending status always wins over a newer payment status.
+        let live = matches!(sub.status, B::Active | B::PastDue | B::Trialing);
+        let payment_newer = live && row.payment_at.is_some_and(|at| at > event_created);
         let b = &mut row.billing;
         let mut sub = sub.clone();
         if payment_newer || (sub.status == B::PastDue && b.status == B::Paused) {
@@ -160,6 +164,7 @@ impl BillingRepo for MemStore {
                 S::Disconnected => {
                     c.billable_from.is_some()
                         && c.disconnected_at.is_some_and(|at| at >= period_start)
+                        && c.status_reason.as_deref() != Some(REVOKED_AT_PERIOD_END)
                 }
                 _ => false,
             })

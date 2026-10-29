@@ -187,6 +187,8 @@ impl RetentionRepo for MemStore {
     }
 
     async fn prune_runs(&self, older_than: DateTime<Utc>, batch: u64) -> RepoResult<u64> {
+        // As Pg: billing_notice markers (once-only mail keys) live 60 days, 46 past the 14.
+        let notice_cutoff = older_than - chrono::Duration::days(46);
         let mut s = self.state();
         let pinned = |id: Uuid| {
             let effect = s
@@ -209,7 +211,10 @@ impl RetentionRepo for MemStore {
                 let skipped = *st == RunStatus::Skipped;
                 k.scheduled_at < older_than
                     && !matches!(st, RunStatus::Queued | RunStatus::Running)
-                    && (skipped || ["watch_scan", "deliver_alert"].contains(&k.job_type.as_str()))
+                    && (skipped
+                        || ["watch_scan", "deliver_alert", "billing_sync"]
+                            .contains(&k.job_type.as_str())
+                        || (k.job_type == "billing_notice" && k.scheduled_at < notice_cutoff))
                     && !pinned(*id)
             })
             .map(|(k, _, id)| (k.scheduled_at, id))

@@ -123,9 +123,14 @@ impl BillingSync {
         let Some((sub, start)) = sub.and_then(|s| s.current_period_start.map(|p| (s, p))) else {
             return skip("not_subscribed");
         };
+        let rollover = run.key.scheduled_at == start;
+        if rollover {
+            // A connection revoked through the period that just ended is not billed for this
+            // one, even before the nightly pass gets to it.
+            self.end_revoked(org, &sub, self.clock.now()).await?;
+        }
         let count = self.uow.billing().billable_count(org, start).await;
         let target = i32::try_from(count.map_err(lerr)?.max(1)).unwrap_or(i32::MAX);
-        let rollover = run.key.scheduled_at == start;
         let prorate = match target.cmp(&sub.quantity) {
             Ordering::Greater => true,
             Ordering::Less if rollover => false,

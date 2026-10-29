@@ -26,7 +26,8 @@ const PRUNE_RUNS: &str = "WITH picked AS ( \
   SELECT r.id FROM runs r \
   WHERE r.scheduled_at < $1 \
     AND r.status IN ('done', 'partial', 'failed', 'skipped') \
-    AND (r.job_type IN ('watch_scan', 'deliver_alert') OR r.status = 'skipped') \
+    AND (r.job_type IN ('watch_scan', 'deliver_alert', 'billing_sync') OR r.status = 'skipped' \
+         OR (r.job_type = 'billing_notice' AND r.scheduled_at < $1 - interval '46 days')) \
     AND NOT EXISTS (SELECT 1 FROM finding_events e WHERE e.run_id = r.id) \
     AND NOT EXISTS (SELECT 1 FROM evidence v WHERE v.run_id = r.id) \
     AND NOT EXISTS (SELECT 1 FROM findings f WHERE f.first_seen_run_id = r.id) \
