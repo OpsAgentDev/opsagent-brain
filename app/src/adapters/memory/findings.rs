@@ -19,7 +19,7 @@ pub struct FindingRow {
     /// Oldest first.
     pub(super) events: Vec<FindingEvent>,
     /// Oldest first.
-    evidence: Vec<StoredEvidence>,
+    pub(super) evidence: Vec<StoredEvidence>,
 }
 
 impl FindingRow {

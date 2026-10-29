@@ -3,7 +3,10 @@ use chrono::{DateTime, NaiveTime, Utc};
 use opsagent_core::{connection::ConnectionStatus, repo::RepoResult, run::RunKey};
 use opsagent_deliver::{
     repo::{DueRun, SchedulesRepo, SinceFn},
-    schedule::{daily_at, next_after, BRIEFING, FULL_SCAN, VERIFY_WEEKLY, WATCH_CRON, WEEKLY},
+    schedule::{
+        daily_at, next_after, BRIEFING, FULL_SCAN, RETENTION_CRON, VERIFY_WEEKLY, WATCH_CRON,
+        WEEKLY,
+    },
 };
 use uuid::Uuid;
 
@@ -16,7 +19,8 @@ impl MemState {
     }
 
     fn due(&self, s: &ScheduleRow, now: DateTime<Utc>) -> bool {
-        s.enabled && s.next_due_at.is_some_and(|t| t <= now) && !self.org_deleted(s.organisation_id)
+        let deleted = s.organisation_id.is_some_and(|o| self.org_deleted(o));
+        s.enabled && s.next_due_at.is_some_and(|t| t <= now) && !deleted
     }
 
     fn schedule_mut(&mut self, id: Uuid) -> Option<&mut ScheduleRow> {
@@ -31,7 +35,7 @@ impl MemStore {
         let mine = s
             .schedules
             .iter()
-            .filter(|r| r.organisation_id == organisation_id);
+            .filter(|r| r.organisation_id == Some(organisation_id));
         mine.filter(|r| r.enabled).count()
     }
 }
@@ -65,13 +69,15 @@ impl SchedulesRepo for MemStore {
                 r.job_type == job
                     && match conn {
                         Some(c) => r.connection_id == Some(c),
-                        None => r.connection_id.is_none() && r.organisation_id == organisation_id,
+                        None => {
+                            r.connection_id.is_none() && r.organisation_id == Some(organisation_id)
+                        }
                     }
             });
             if !exists {
                 s.schedules.push(ScheduleRow {
                     id: Uuid::now_v7(),
-                    organisation_id,
+                    organisation_id: Some(organisation_id),
                     connection_id: conn,
                     job_type: job.into(),
                     cron_local: cron.into(),
@@ -95,7 +101,7 @@ impl SchedulesRepo for MemStore {
         let mut s = self.state();
         let found = s.schedules.iter_mut().find(|r| {
             (r.organisation_id, r.connection_id, r.job_type.as_str())
-                == (organisation_id, Some(connection_id), job_type)
+                == (Some(organisation_id), Some(connection_id), job_type)
                 && r.cron_local != cron
         });
         if let Some(r) = found {
@@ -110,13 +116,30 @@ impl SchedulesRepo for MemStore {
         let mine = s
             .schedules
             .iter_mut()
-            .filter(|r| r.organisation_id == organisation_id);
+            .filter(|r| r.organisation_id == Some(organisation_id));
         Ok(mine.map(|r| r.enabled = false).count() as u64)
     }
 
     async fn backfill_defaults(&self, now: DateTime<Utc>) -> RepoResult<u64> {
         let todo: Vec<_> = {
-            let s = self.state();
+            let mut s = self.state();
+            let global = |r: &ScheduleRow| r.organisation_id.is_none() && r.connection_id.is_none();
+            if !s
+                .schedules
+                .iter()
+                .any(|r| global(r) && r.job_type == "retention")
+            {
+                s.schedules.push(ScheduleRow {
+                    id: Uuid::now_v7(),
+                    organisation_id: None,
+                    connection_id: None,
+                    job_type: "retention".into(),
+                    cron_local: RETENTION_CRON.into(),
+                    timezone: "UTC".into(),
+                    next_due_at: next_after(RETENTION_CRON, "UTC", now),
+                    enabled: true,
+                });
+            }
             // The newest default schedule: a connection without it lacks some defaults.
             let current = |id| {
                 s.schedules
@@ -164,7 +187,7 @@ impl SchedulesRepo for MemStore {
         let found = s.schedules.iter().find(|r| r.id == id && s.due(r, now));
         Ok(found.map(|r| {
             let key = RunKey {
-                organisation_id: Some(r.organisation_id),
+                organisation_id: r.organisation_id,
                 connection_id: r.connection_id,
                 job_type: r.job_type.clone(),
                 scheduled_at: r.next_due_at.unwrap_or(now),

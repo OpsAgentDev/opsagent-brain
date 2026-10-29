@@ -13,6 +13,7 @@ mod page;
 mod passkeys;
 mod recipients;
 mod resources;
+mod retention;
 mod runs;
 mod schedules;
 mod users;
@@ -31,6 +32,7 @@ use opsagent_core::{
     passkey::PasskeysRepo,
     repo::{RepoError, RepoResult},
     resource::ResourcesRepo,
+    retention::RetentionRepo,
     run::RunsRepo,
     user::{Email, UsersRepo},
 };
@@ -149,6 +151,9 @@ impl<C: Conn> Repos for Pg<C> {
         self
     }
     fn passkeys(&self) -> &dyn PasskeysRepo {
+        self
+    }
+    fn retention(&self) -> &dyn RetentionRepo {
         self
     }
 }

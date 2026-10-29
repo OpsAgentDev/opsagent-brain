@@ -178,6 +178,9 @@ mod tests {
                 fn passkeys(&self) -> &dyn opsagent_core::passkey::PasskeysRepo {
                     self.0.passkeys()
                 }
+                fn retention(&self) -> &dyn opsagent_core::retention::RetentionRepo {
+                    self.0.retention()
+                }
             }
         };
     }

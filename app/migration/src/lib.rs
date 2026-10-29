@@ -20,6 +20,8 @@ mod m20261028_000015_contact;
 mod m20261028_000016_sign_in;
 mod m20261028_000017_urgent_alerts;
 mod m20261028_000018_resource_history_run_idx;
+mod m20261028_000019_retention;
+mod m20261028_000020_audit_purge;
 
 pub struct Migrator;
 
@@ -45,6 +47,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20261028_000016_sign_in::Migration),
             Box::new(m20261028_000017_urgent_alerts::Migration),
             Box::new(m20261028_000018_resource_history_run_idx::Migration),
+            Box::new(m20261028_000019_retention::Migration),
+            Box::new(m20261028_000020_audit_purge::Migration),
             // inject-above (do not remove this comment)
         ]
     }

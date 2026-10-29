@@ -3,7 +3,10 @@ use chrono::{DateTime, NaiveTime, Utc};
 use opsagent_core::{repo::RepoResult, run::RunKey};
 use opsagent_deliver::{
     repo::{DueRun, SchedulesRepo, SinceFn},
-    schedule::{daily_at, next_after, BRIEFING, FULL_SCAN, VERIFY_WEEKLY, WATCH_CRON, WEEKLY},
+    schedule::{
+        daily_at, next_after, BRIEFING, FULL_SCAN, RETENTION_CRON, VERIFY_WEEKLY, WATCH_CRON,
+        WEEKLY,
+    },
 };
 use sea_orm::{ConnectionTrait, QueryResult};
 use uuid::Uuid;
@@ -136,6 +139,20 @@ impl<C: Conn> SchedulesRepo for Pg<C> {
     }
 
     async fn backfill_defaults(&self, now: DateTime<Utc>) -> RepoResult<u64> {
+        self.db()
+            .execute_raw(stmt(
+                // tenancy: the one global schedule; organisation_id is NULL by design.
+                "INSERT INTO schedules (id, job_type, cron_local, timezone, next_due_at) \
+                 VALUES ($1, 'retention', $2, 'UTC', $3) \
+                 ON CONFLICT (job_type) WHERE organisation_id IS NULL AND connection_id IS NULL DO NOTHING",
+                vec![
+                    Uuid::now_v7().into(),
+                    RETENTION_CRON.into(),
+                    next_after(RETENTION_CRON, "UTC", now).into(),
+                ],
+            ))
+            .await
+            .map_err(db_err)?;
         let rows = self
             .db()
             .query_all_raw(stmt(

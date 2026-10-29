@@ -8,5 +8,6 @@ pub mod org;
 pub mod passkey;
 pub mod repo;
 pub mod resource;
+pub mod retention;
 pub mod run;
 pub mod user;
