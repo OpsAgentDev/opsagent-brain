@@ -73,6 +73,14 @@ impl BillingStatus {
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|t| t.as_str() == s)
     }
+
+    /// A subscription exists and is not over (paying, trialing, or behind on payment).
+    pub fn is_subscribed(self) -> bool {
+        matches!(
+            self,
+            Self::Trialing | Self::Active | Self::PastDue | Self::Paused
+        )
+    }
 }
 
 /// `None` is unlimited. Investigation caps are stored only; nothing enforces them yet.
@@ -189,8 +197,9 @@ pub trait BillingRepo: Send + Sync {
 
     async fn set_customer(&self, organisation_id: Uuid, customer_id: &str) -> RepoResult<()>;
 
-    /// Writes `s` unless an event created after `event_created` was already applied; `false`
-    /// (writing nothing) when this one is stale. `past_due_since` is kept from the first
+    /// Writes `s` unless an event created after `event_created` was already applied, or one
+    /// from the same second with a later `current_period_end` (Stripe stamps whole seconds);
+    /// `false` (writing nothing) when this one is stale. `past_due_since` is kept from the first
     /// past-due event and cleared by any other status; a `past_due` event leaves `paused` as it is.
     async fn apply_subscription(
         &self,
@@ -198,6 +207,9 @@ pub trait BillingRepo: Send + Sync {
         s: &SubscriptionState,
         event_created: DateTime<Utc>,
     ) -> RepoResult<bool>;
+
+    /// The organisation (live or deleted) whose provider customer is `customer_id`.
+    async fn org_for_customer(&self, customer_id: &str) -> RepoResult<Option<Uuid>>;
 
     /// Records a provider event; `false` when it was already recorded.
     async fn record_event(&self, event_id: &str, event_type: &str) -> RepoResult<bool>;

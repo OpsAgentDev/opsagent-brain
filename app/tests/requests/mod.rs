@@ -1,5 +1,6 @@
 mod agents;
 mod auth;
+mod billing;
 mod connections;
 mod contact;
 mod deliveries;

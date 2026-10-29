@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod auth;
+pub mod billing;
 pub mod connections;
 pub mod contact;
 pub mod deliveries;

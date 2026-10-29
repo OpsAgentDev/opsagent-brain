@@ -46,8 +46,13 @@ impl BillingRepo for MemStore {
     ) -> RepoResult<bool> {
         let mut s = self.state();
         let row = s.billing_mut(organisation_id)?;
-        if row.event_at.is_some_and(|at| at > event_created) {
-            return Ok(false);
+        let ends = (sub.current_period_end, row.billing.subscription.as_ref());
+        let earlier_end = matches!(ends, (Some(new), Some(old)) if old.current_period_end.is_some_and(|o| new < o));
+        match row.event_at {
+            Some(at) if at > event_created || (at == event_created && earlier_end) => {
+                return Ok(false)
+            }
+            _ => {}
         }
         let b = &mut row.billing;
         let mut sub = sub.clone();
@@ -62,6 +67,13 @@ impl BillingRepo for MemStore {
         b.subscription = Some(sub);
         row.event_at = Some(event_created);
         Ok(true)
+    }
+
+    async fn org_for_customer(&self, customer_id: &str) -> RepoResult<Option<Uuid>> {
+        let s = self.state();
+        let mut hits = s.billing.iter();
+        let found = hits.find(|(_, r)| r.billing.customer_id.as_deref() == Some(customer_id));
+        Ok(found.map(|(id, _)| *id))
     }
 
     async fn record_event(&self, event_id: &str, _event_type: &str) -> RepoResult<bool> {

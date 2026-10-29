@@ -14,10 +14,10 @@ use opsagent_brain::{
     },
     mailers::CaptureMailer,
     models::_entities::{
-        audit_events, email_suppressions, integrations, organisations, recipients, users,
+        audit_events, email_suppressions, integrations, organisations, recipients,
     },
 };
-use opsagent_core::org::{OrganisationsRepo, Role};
+
 use sea_orm::{entity::prelude::*, Set};
 use serde_json::{json, Value};
 use serial_test::serial;
@@ -107,35 +107,6 @@ async fn audits(ctx: &TestApp, action: &str) -> u64 {
         .count(&ctx.db)
         .await
         .unwrap()
-}
-
-/// Signs `email` in as a `member` of org `slug` (the current owner session is replaced).
-async fn as_member(
-    req: &mut TestServer,
-    ctx: &TestApp,
-    mail: &CaptureMailer,
-    org: &str,
-    email: &str,
-) -> String {
-    req.clear_cookies();
-    let t = sign_in(req, mail, email).await;
-    let user = users::Entity::find()
-        .filter(users::Column::Email.eq(email))
-        .one(&ctx.db)
-        .await
-        .unwrap()
-        .unwrap();
-    let o = organisations::Entity::find()
-        .filter(organisations::Column::Slug.eq(org))
-        .one(&ctx.db)
-        .await
-        .unwrap()
-        .unwrap();
-    Pg::new(&ctx.db)
-        .add_member(o.id, user.id, Role::Member)
-        .await
-        .unwrap();
-    t
 }
 
 #[tokio::test]

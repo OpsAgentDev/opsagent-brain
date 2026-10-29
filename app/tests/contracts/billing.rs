@@ -98,6 +98,25 @@ contract_suite! {
         assert_eq!((b.status, b.past_due_since), (B::Active, None));
     }
 
+    async fn same_second_event_with_earlier_period_end_is_stale(s) {
+        let o = org(s).await;
+        let repo = s.billing();
+        let mut renewed = sub(B::Active, 2);
+        renewed.current_period_end = Some(at(60 * 86_400));
+        assert!(repo.apply_subscription(o, &renewed, at(20)).await.unwrap());
+        assert!(!repo.apply_subscription(o, &sub(B::PastDue, 1), at(20)).await.unwrap());
+        assert_eq!(repo.billing(o).await.unwrap().subscription, Some(renewed));
+    }
+
+    async fn org_for_customer_finds_the_owner(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        let cus = format!("cus_{o}");
+        s.billing().set_customer(o, &cus).await.unwrap();
+        assert_eq!(s.billing().org_for_customer(&cus).await.unwrap(), Some(o));
+        assert_eq!(s.billing().org_for_customer("cus_nobody").await.unwrap(), None);
+        assert_ne!(s.billing().org_for_customer(&cus).await.unwrap(), Some(other));
+    }
+
     async fn record_event_dedupes(s) {
         let repo = s.billing();
         let id = format!("evt_{}", Uuid::new_v4());

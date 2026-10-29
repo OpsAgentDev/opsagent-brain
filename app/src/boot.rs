@@ -15,8 +15,8 @@ use axum::{middleware::from_fn_with_state, Router};
 
 use crate::{
     actions::{
-        auth, connections, contact, deliveries, findings, integrations, members, oauth, orgs,
-        recipients, resources, retention, runs, uow::UnitOfWork, waitlist, Actions,
+        auth, billing, connections, contact, deliveries, findings, integrations, members, oauth,
+        orgs, recipients, resources, retention, runs, uow::UnitOfWork, waitlist, Actions,
         ClientMetadataSource, ConnectorSource, RateLimiter,
     },
     adapters::{
@@ -210,6 +210,15 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             ),
         },
         retention: retention::Retention::new(d.uow.clone(), d.redis.clone(), d.clock.clone()),
+        billing: {
+            let s = billing::BillingSettings::new(&d.config);
+            billing::Billing {
+                get_billing: billing::GetBilling::new(d.uow.clone(), s.clone()),
+                checkout: billing::StartCheckout::new(d.uow.clone(), d.billing.clone(), s.clone()),
+                portal: billing::OpenPortal::new(d.uow.clone(), d.billing.clone(), s.clone()),
+                webhook: billing::HandleWebhook::new(d.uow.clone(), d.clock.clone(), s),
+            }
+        },
         auth: auth::Auth {
             request_magic_link: auth::RequestMagicLink::new(
                 d.uow.clone(),

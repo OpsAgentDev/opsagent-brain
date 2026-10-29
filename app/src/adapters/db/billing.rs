@@ -24,7 +24,8 @@ const APPLY: &str = "UPDATE organisations SET stripe_subscription_id = $2, \
   current_period_end = $8, \
   past_due_since = CASE WHEN $3 IN ('past_due', 'paused') THEN coalesce(past_due_since, $9) END, \
   billing_event_at = $9, updated_at = now() \
-  WHERE id = $1 AND (billing_event_at IS NULL OR billing_event_at <= $9)";
+  WHERE id = $1 AND (billing_event_at IS NULL OR billing_event_at < $9 \
+  OR (billing_event_at = $9 AND coalesce($8 >= current_period_end, true)))";
 
 /// One per account (a reconnected account has a new row on the same account id). A
 /// disconnected row counts only if it was ever connected (`billable_from`).
@@ -125,6 +126,12 @@ impl<C: Conn> BillingRepo for Pg<C> {
             true => Ok(false),
             false => Err(RepoError::NotFound),
         }
+    }
+
+    async fn org_for_customer(&self, customer_id: &str) -> RepoResult<Option<Uuid>> {
+        let sql = "SELECT id FROM organisations WHERE stripe_customer_id = $1";
+        let r = self.db().query_one_raw(stmt(sql, vec![customer_id.into()]));
+        r.await.map_err(db_err)?.map(|r| get(&r, "id")).transpose()
     }
 
     async fn record_event(&self, event_id: &str, event_type: &str) -> RepoResult<bool> {
