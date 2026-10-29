@@ -22,6 +22,18 @@ pub struct Model {
     #[sea_orm(column_type = "VarBinary(StringLen::None)", nullable)]
     pub wrapped_dek: Option<Vec<u8>>,
     pub deleted_at: Option<DateTimeWithTimeZone>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub stripe_subscription_id: Option<String>,
+    #[sea_orm(column_type = "Text")]
+    pub billing_status: String,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub billing_tier: Option<String>,
+    pub billing_quantity: Option<i32>,
+    pub trial_ends_at: Option<DateTimeWithTimeZone>,
+    pub current_period_start: Option<DateTimeWithTimeZone>,
+    pub current_period_end: Option<DateTimeWithTimeZone>,
+    pub past_due_since: Option<DateTimeWithTimeZone>,
+    pub billing_event_at: Option<DateTimeWithTimeZone>,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }

@@ -1,6 +1,7 @@
 //! In-memory fakes of every repository, for tests. `begin` snapshots the whole state and
 //! `commit` writes the snapshot back, so a dropped transaction leaves nothing behind.
 mod audit;
+mod billing;
 mod connections;
 mod deliveries;
 mod findings;
@@ -20,7 +21,7 @@ mod users;
 pub use retention::RunLink;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -28,6 +29,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     audit::{AuditEntry, AuditLog},
+    billing::BillingRepo,
     connection::{Connection, ConnectionsRepo, SealedCreds, Verification},
     finding::FindingsRepo,
     oauth::{AccessToken, ConsentRequest, Grant, OAuthClient, OAuthRepo, RefreshToken},
@@ -150,6 +152,9 @@ pub struct MemState {
     expiring: Vec<(TtlTable, DateTime<Utc>)>,
     /// When each `org.purged` record (by organisation) was made.
     purged_at: Vec<(Uuid, DateTime<Utc>)>,
+    billing: HashMap<Uuid, billing::BillingRow>,
+    /// Recorded Stripe event ids.
+    stripe_events: HashSet<String>,
     /// Test hooks: `purge_org` of this organisation fails; `delete_expired` takes this long.
     fail_purge: Option<Uuid>,
     ttl_delay: Option<std::time::Duration>,
@@ -209,6 +214,9 @@ impl Repos for MemStore {
         self
     }
     fn retention(&self) -> &dyn RetentionRepo {
+        self
+    }
+    fn billing(&self) -> &dyn BillingRepo {
         self
     }
 }
@@ -275,6 +283,9 @@ impl Repos for MemTx {
         &self.work
     }
     fn retention(&self) -> &dyn RetentionRepo {
+        &self.work
+    }
+    fn billing(&self) -> &dyn BillingRepo {
         &self.work
     }
 }

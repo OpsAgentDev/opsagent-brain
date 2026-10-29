@@ -26,7 +26,7 @@ impl MemState {
         })
     }
 
-    fn org_mut(&mut self, organisation_id: Uuid) -> RepoResult<&mut Organisation> {
+    pub(super) fn org_mut(&mut self, organisation_id: Uuid) -> RepoResult<&mut Organisation> {
         let o = self.orgs.iter_mut().find(|o| o.id == organisation_id);
         o.ok_or(RepoError::NotFound)
     }

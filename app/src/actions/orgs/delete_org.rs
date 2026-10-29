@@ -181,6 +181,9 @@ mod tests {
                 fn retention(&self) -> &dyn opsagent_core::retention::RetentionRepo {
                     self.0.retention()
                 }
+                fn billing(&self) -> &dyn opsagent_core::billing::BillingRepo {
+                    self.0.billing()
+                }
             }
         };
     }

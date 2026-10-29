@@ -76,6 +76,7 @@ impl ConnectionsRepo for MemStore {
             verify_denied_streak: 0,
             verify_denied_first_at: None,
             urgent_alerts: true,
+            disconnected_at: None,
             created_at: now,
             updated_at: now,
         };
@@ -170,6 +171,9 @@ impl ConnectionsRepo for MemStore {
             c.status_reason = Some(r.into());
         }
         c.updated_at = Utc::now();
+        if to == ConnectionStatus::Disconnected {
+            c.disconnected_at = Some(c.updated_at);
+        }
         Ok(true)
     }
 

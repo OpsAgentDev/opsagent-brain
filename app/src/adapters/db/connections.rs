@@ -55,6 +55,7 @@ fn connection(m: connections::Model) -> RepoResult<Connection> {
         verify_denied_streak: m.verify_denied_streak,
         verify_denied_first_at: m.verify_denied_first_at.map(utc),
         urgent_alerts: m.urgent_alerts,
+        disconnected_at: m.disconnected_at.map(utc),
         created_at: utc(m.created_at),
         updated_at: utc(m.updated_at),
     })
@@ -118,6 +119,7 @@ impl<C: Conn> ConnectionsRepo for Pg<C> {
             verify_denied_streak: Set(0),
             verify_denied_first_at: Set(None),
             urgent_alerts: Set(true),
+            disconnected_at: Set(None),
             created_at: Set(now()),
             updated_at: Set(now()),
         }
@@ -238,6 +240,10 @@ impl<C: Conn> ConnectionsRepo for Pg<C> {
         let q = match reason {
             Some(r) => q.col_expr(Col::StatusReason, r.into()),
             None => q,
+        };
+        let q = match to {
+            ConnectionStatus::Disconnected => q.col_expr(Col::DisconnectedAt, now().into()),
+            _ => q,
         };
         let r = q.exec(self.db()).await.map_err(claim_err)?;
         Ok(r.rows_affected == 1)

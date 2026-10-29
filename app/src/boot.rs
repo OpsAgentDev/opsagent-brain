@@ -3,7 +3,10 @@ use std::{sync::Arc, time::Duration};
 
 use migration::{Migrator, MigratorTrait};
 use opsagent_connectors::{aws::AwsOutbound, Registry};
-use opsagent_core::repo::{Clock, SystemClock};
+use opsagent_core::{
+    billing::BillingProvider,
+    repo::{Clock, SystemClock},
+};
 use opsagent_ledger::redis;
 use opsagent_secrets::{CachingKek, EnvKek, Kek};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
@@ -22,6 +25,7 @@ use crate::{
         pg_queue::PgQueue,
         rate_limiter::RedisRateLimiter,
         slack::{HttpSlack, SlackClient},
+        stripe::StripeBilling,
     },
     config::{Config, ConnectorMode},
     controllers,
@@ -55,6 +59,8 @@ pub struct Deps {
     pub registry: Registry,
     pub mailer: Arc<dyn Mailer>,
     pub slack: Arc<dyn SlackClient>,
+    /// Stripe; unusable (and unused) while `STRIPE_SECRET_KEY` is empty.
+    pub billing: Arc<dyn BillingProvider>,
     pub clock: Arc<dyn Clock>,
     /// Fetches Client ID Metadata Documents.
     pub client_metadata: Arc<dyn ClientMetadataSource>,
@@ -121,7 +127,10 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
     let registry = Registry::new(outbound, config.connectors == ConnectorMode::Fake);
     let slack = HttpSlack::new(&config.slack_api_base_url)
         .map_err(|_| internal("slack: HTTP client could not be built"))?;
+    let billing = StripeBilling::new(config.stripe_settings())
+        .map_err(|_| internal("stripe: HTTP client could not be built"))?;
     Ok(Deps {
+        billing: Arc::new(billing),
         webauthn: Arc::new(crate::webauthn::build(&config.web_base_url)?),
         mailer: mailers::from_config(&config).map_err(internal)?,
         config,
@@ -139,7 +148,8 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
 }
 
 /// The state over `deps`, with every action built from them, once. Under `test-support` the
-/// mailer and Slack client sit in cells `AppState::set_mailer`/`set_slack` swap.
+/// mailer, Slack client and billing provider sit in cells `AppState::set_mailer`/`set_slack`/
+/// `set_billing` swap.
 pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
     #[cfg(feature = "test-support")]
     let swaps = {
@@ -147,9 +157,11 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
         let swaps = Swaps {
             mailer: Swappable::new(deps.mailer.clone()),
             slack: Swappable::new(deps.slack.clone()),
+            billing: Swappable::new(deps.billing.clone()),
         };
         deps.mailer = swaps.mailer.clone();
         deps.slack = swaps.slack.clone();
+        deps.billing = swaps.billing.clone();
         swaps
     };
     let urls = OAuthUrls::new(&deps.config.api_base_url);

@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
+    billing::BillingStatus,
     org::{
         Invite, Member, NewOrganisation, Organisation, OrganisationPatch, OrganisationsRepo, Role,
     },
@@ -87,9 +88,18 @@ impl<C: Conn> OrganisationsRepo for Pg<C> {
             timezone: Set(new.timezone),
             plan: Set(None),
             stripe_customer_id: Set(None),
+            stripe_subscription_id: Set(None),
+            billing_tier: Set(None),
+            billing_quantity: Set(None),
+            trial_ends_at: Set(None),
+            current_period_start: Set(None),
+            current_period_end: Set(None),
+            past_due_since: Set(None),
+            billing_event_at: Set(None),
             kek_version: Set(Some(new.kek_version)),
             wrapped_dek: Set(Some(new.wrapped_dek)),
             deleted_at: Set(None),
+            billing_status: Set(BillingStatus::None.as_str().into()),
             created_at: Set(now()),
             updated_at: Set(now()),
         };

@@ -17,6 +17,7 @@ use opsagent_core::{
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
 use uuid::Uuid;
 
+mod billing;
 mod connections;
 mod deliveries;
 mod findings;

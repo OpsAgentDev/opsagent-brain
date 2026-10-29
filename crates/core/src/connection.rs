@@ -86,6 +86,8 @@ pub struct Connection {
     pub verify_denied_first_at: Option<DateTime<Utc>>,
     /// Tell the owners right away about new critical findings.
     pub urgent_alerts: bool,
+    /// When it moved to `disconnected` (billable until the end of that period).
+    pub disconnected_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
