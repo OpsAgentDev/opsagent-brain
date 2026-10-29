@@ -3,8 +3,8 @@ use chrono::{DateTime, Utc};
 use opsagent_core::{
     audit::{Actor, AuditEntry},
     finding::{Finding, FindingEvent, FindingKey, Severity, StoredEvidence},
-    repo::RepoResult,
-    retention::{PurgeCounts, RetentionRepo, TtlTable, ORG_PURGED},
+    repo::{RepoError, RepoResult},
+    retention::{DueOrg, PurgeCounts, RetentionRepo, TtlTable, ORG_PURGED},
     run::{RunKey, RunStatus},
 };
 use opsagent_ledger::Storage;
@@ -65,6 +65,16 @@ impl MemStore {
     /// Adds one `table` row expiring (or observed) at `at`.
     pub fn seed_expiring(&self, table: TtlTable, at: DateTime<Utc>) {
         self.state().expiring.push((table, at));
+    }
+
+    /// Makes every later `purge_org` of `org` fail.
+    pub fn fail_purge_of(&self, org: Uuid) {
+        self.state().fail_purge = Some(org);
+    }
+
+    /// Makes every `delete_expired` take `d` first (tests of the run's deadline).
+    pub fn slow_ttl(&self, d: std::time::Duration) {
+        self.state().ttl_delay = Some(d);
     }
 
     /// How many `table` rows are left.
@@ -142,6 +152,18 @@ impl MemStore {
     }
 }
 
+impl super::MemState {
+    /// `org` has a queued run, or a running one started after `busy_since`.
+    fn busy(&self, org: Uuid, busy_since: DateTime<Utc>) -> bool {
+        self.runs.iter().any(|r| {
+            let started = r.started_at.unwrap_or(r.row.key.scheduled_at);
+            r.row.key.organisation_id == Some(org)
+                && (r.row.status == RunStatus::Queued
+                    || (r.row.status == RunStatus::Running && started > busy_since))
+        })
+    }
+}
+
 #[async_trait]
 impl RetentionRepo for MemStore {
     async fn delete_expired(
@@ -150,6 +172,10 @@ impl RetentionRepo for MemStore {
         cutoff: DateTime<Utc>,
         batch: u64,
     ) -> RepoResult<u64> {
+        let delay = self.state().ttl_delay;
+        if let Some(d) = delay {
+            tokio::time::sleep(d).await;
+        }
         let mut s = self.state();
         let mut left = batch;
         s.expiring.retain(|&(t, at)| {
@@ -198,33 +224,42 @@ impl RetentionRepo for MemStore {
         Ok(ids.len() as u64)
     }
 
-    async fn purgeable_orgs(
+    async fn due_orgs(
         &self,
         deleted_before: DateTime<Utc>,
         busy_since: DateTime<Utc>,
-    ) -> RepoResult<Vec<Uuid>> {
+    ) -> RepoResult<Vec<DueOrg>> {
         let s = self.state();
-        let busy = |o: Uuid| {
-            s.runs.iter().any(|r| {
-                let started = r.started_at.unwrap_or(r.row.key.scheduled_at);
-                r.row.key.organisation_id == Some(o)
-                    && (r.row.status == RunStatus::Queued
-                        || (r.row.status == RunStatus::Running && started > busy_since))
-            })
-        };
         let mut due: Vec<_> = s
             .orgs
             .iter()
             .filter_map(|o| o.deleted_at.map(|at| (at, o.id)))
-            .filter(|&(at, id)| at < deleted_before && !busy(id))
+            .filter(|&(at, _)| at < deleted_before)
             .collect();
         due.sort();
-        Ok(due.into_iter().map(|d| d.1).collect())
+        let due = due.into_iter().map(|(_, id)| DueOrg {
+            id,
+            busy: s.busy(id, busy_since),
+        });
+        Ok(due.collect())
     }
 
-    async fn purge_org(&self, org: Uuid, at: DateTime<Utc>) -> RepoResult<Option<PurgeCounts>> {
+    async fn purge_org(
+        &self,
+        org: Uuid,
+        deleted_before: DateTime<Utc>,
+        busy_since: DateTime<Utc>,
+        at: DateTime<Utc>,
+    ) -> RepoResult<Option<PurgeCounts>> {
         let mut s = self.state();
-        if !s.orgs.iter().any(|o| o.id == org && o.deleted_at.is_some()) {
+        if s.fail_purge == Some(org) {
+            return Err(RepoError::Storage("injected purge failure".into()));
+        }
+        let due = s
+            .orgs
+            .iter()
+            .any(|o| o.id == org && o.deleted_at.is_some_and(|d| d < deleted_before));
+        if !due || s.busy(org, busy_since) {
             return Ok(None);
         }
         let counts = s.purge(org);

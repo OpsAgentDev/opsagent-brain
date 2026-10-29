@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     repo::{RepoError, RepoResult},
-    retention::{PurgeCounts, RetentionRepo, TtlTable, ORG_PURGED},
+    retention::{DueOrg, PurgeCounts, RetentionRepo, TtlTable, ORG_PURGED},
 };
 use sea_orm::ConnectionTrait;
 use uuid::Uuid;
@@ -40,12 +40,28 @@ raw AS (DELETE FROM api_calls_raw WHERE run_id IN (SELECT id FROM picked)), \
 rh AS (DELETE FROM resource_history WHERE run_id IN (SELECT id FROM picked)) \
 DELETE FROM runs WHERE id IN (SELECT id FROM picked)";
 
-/// Deleted organisations past the cutoff with no queued run and no live running one.
-const PURGEABLE: &str = "SELECT o.id FROM organisations o WHERE o.deleted_at < $1 \
-  AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.organisation_id = o.id \
-    AND (r.status = 'queued' \
-         OR (r.status = 'running' AND coalesce(r.started_at, r.scheduled_at) > $2))) \
-  ORDER BY o.deleted_at";
+/// Organisation `o` has a queued run, or a running one started after $2 (maybe still live).
+macro_rules! busy {
+    () => {
+        "EXISTS (SELECT 1 FROM runs r WHERE r.organisation_id = o.id \
+           AND (r.status = 'queued' \
+                OR (r.status = 'running' AND coalesce(r.started_at, r.scheduled_at) > $2)))"
+    };
+}
+
+/// Deleted organisations past the cutoff $1, each with whether it is busy.
+const DUE: &str = concat!(
+    "SELECT o.id, ",
+    busy!(),
+    " AS busy FROM organisations o WHERE o.deleted_at < $1 ORDER BY o.deleted_at"
+);
+
+/// Locks organisation $3 if it is still due and not busy.
+const LOCK_DUE: &str = concat!(
+    "SELECT o.id FROM organisations o WHERE o.id = $3 AND o.deleted_at < $1 AND NOT ",
+    busy!(),
+    " FOR UPDATE"
+);
 
 /// The purged organisation's members who belong to no other organisation.
 macro_rules! orphans {
@@ -142,31 +158,39 @@ impl<C: Conn> RetentionRepo for Pg<C> {
         Ok(done.rows_affected())
     }
 
-    async fn purgeable_orgs(
+    async fn due_orgs(
         &self,
         deleted_before: DateTime<Utc>,
         busy_since: DateTime<Utc>,
-    ) -> RepoResult<Vec<Uuid>> {
+    ) -> RepoResult<Vec<DueOrg>> {
         let rows = self
             .db()
-            .query_all_raw(stmt(
-                PURGEABLE,
-                vec![deleted_before.into(), busy_since.into()],
-            ))
+            .query_all_raw(stmt(DUE, vec![deleted_before.into(), busy_since.into()]))
             .await
             .map_err(db_err)?;
         rows.iter()
-            .map(|r| r.try_get("", "id").map_err(db_err))
+            .map(|r| {
+                Ok(DueOrg {
+                    id: r.try_get("", "id").map_err(db_err)?,
+                    busy: r.try_get("", "busy").map_err(db_err)?,
+                })
+            })
             .collect()
     }
 
-    async fn purge_org(&self, org: Uuid, at: DateTime<Utc>) -> RepoResult<Option<PurgeCounts>> {
+    async fn purge_org(
+        &self,
+        org: Uuid,
+        deleted_before: DateTime<Utc>,
+        busy_since: DateTime<Utc>,
+        at: DateTime<Utc>,
+    ) -> RepoResult<Option<PurgeCounts>> {
         self.purge_mode().await?;
         let locked = self
             .db()
             .query_one_raw(stmt(
-                "SELECT id FROM organisations WHERE id = $1 AND deleted_at IS NOT NULL FOR UPDATE",
-                vec![org.into()],
+                LOCK_DUE,
+                vec![deleted_before.into(), busy_since.into(), org.into()],
             ))
             .await
             .map_err(db_err)?;

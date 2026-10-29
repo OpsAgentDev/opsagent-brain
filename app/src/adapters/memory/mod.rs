@@ -150,6 +150,9 @@ pub struct MemState {
     expiring: Vec<(TtlTable, DateTime<Utc>)>,
     /// When each `org.purged` record (by organisation) was made.
     purged_at: Vec<(Uuid, DateTime<Utc>)>,
+    /// Test hooks: `purge_org` of this organisation fails; `delete_expired` takes this long.
+    fail_purge: Option<Uuid>,
+    ttl_delay: Option<std::time::Duration>,
 }
 
 #[derive(Clone, Default)]

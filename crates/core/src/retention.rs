@@ -57,6 +57,14 @@ impl TtlTable {
 /// Rows one organisation's purge deleted, per table; the purge record's only metadata.
 pub type PurgeCounts = BTreeMap<&'static str, u64>;
 
+/// An organisation soft-deleted before the purge cutoff. `busy`: it has a queued run or a
+/// running one that may still be live, so its purge waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DueOrg {
+    pub id: Uuid,
+    pub busy: bool,
+}
+
 /// The purge record's audit action.
 pub const ORG_PURGED: &str = "org.purged";
 
@@ -77,19 +85,27 @@ pub trait RetentionRepo: Send + Sync {
     /// evidence, no finding pointing at it and no `alert:baseline` side effect.
     async fn prune_runs(&self, older_than: DateTime<Utc>, batch: u64) -> RepoResult<u64>;
 
-    /// Organisations soft-deleted before `deleted_before` with no queued run and no running
-    /// run started (or, unstarted, scheduled) after `busy_since`; oldest deletion first.
-    async fn purgeable_orgs(
+    /// Organisations soft-deleted before `deleted_before`, oldest deletion first; busy when
+    /// they have a queued run or a running run started (or, unstarted, scheduled) after
+    /// `busy_since`.
+    async fn due_orgs(
         &self,
         deleted_before: DateTime<Utc>,
         busy_since: DateTime<Utc>,
-    ) -> RepoResult<Vec<Uuid>>;
+    ) -> RepoResult<Vec<DueOrg>>;
 
-    /// Within the caller's transaction: deletes every row of soft-deleted organisation `org`
-    /// (its `audit_events` too), its members' users that have no other membership left, then
-    /// the organisation, and records one `org.purged` entry at `at` holding the counts.
-    /// `None`, writing nothing, when `org` is not a soft-deleted organisation (already purged).
-    async fn purge_org(&self, org: Uuid, at: DateTime<Utc>) -> RepoResult<Option<PurgeCounts>>;
+    /// Within the caller's transaction: deletes every row of `org` (its `audit_events` too),
+    /// its members' users that have no other membership left, then the organisation, and
+    /// records one `org.purged` entry at `at` holding the counts. `None`, writing nothing,
+    /// unless `org` is, when locked, due and not busy (as in `due_orgs`): already purged,
+    /// live, deleted too recently, or busy since it was listed.
+    async fn purge_org(
+        &self,
+        org: Uuid,
+        deleted_before: DateTime<Utc>,
+        busy_since: DateTime<Utc>,
+        at: DateTime<Utc>,
+    ) -> RepoResult<Option<PurgeCounts>>;
 
     /// Within the caller's transaction: deletes `org.purged` records made before `before`.
     async fn delete_old_purge_records(&self, before: DateTime<Utc>) -> RepoResult<u64>;

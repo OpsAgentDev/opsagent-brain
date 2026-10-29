@@ -76,12 +76,21 @@ mod tests {
     #[test]
     fn cutoffs_follow_the_spec() {
         let now = Utc::now();
-        let days = |t| (now - cutoff(t, now)).num_days();
-        assert_eq!(days(TtlTable::ResourceHistory), 90);
-        assert_eq!(days(TtlTable::Evidence), 0);
-        assert_eq!(days(TtlTable::Sessions), 1);
-        assert_eq!(days(TtlTable::OauthAccessTokens), 7);
-        assert_eq!(days(TtlTable::OauthRefreshTokens), 30);
-        assert_eq!(days(TtlTable::EmailSuppressions), 0);
+        let want = [
+            (TtlTable::ResourceHistory, 90),
+            (TtlTable::Evidence, 0),
+            (TtlTable::ApiCallsRaw, 90),
+            (TtlTable::Sessions, 1),
+            (TtlTable::MagicLinks, 7),
+            (TtlTable::OauthConsentRequests, 7),
+            (TtlTable::OauthAccessTokens, 7),
+            (TtlTable::OauthRefreshTokens, 30),
+            (TtlTable::Invites, 30),
+            (TtlTable::EmailSuppressions, 0),
+        ];
+        assert_eq!(want.map(|w| w.0), TtlTable::ALL);
+        for (t, days) in want {
+            assert_eq!(cutoff(t, now), now - Duration::days(days), "{t:?}");
+        }
     }
 }

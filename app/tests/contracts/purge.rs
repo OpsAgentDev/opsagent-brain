@@ -1,7 +1,7 @@
 //! Organisation purge (retention.md, goal 5): both adapters; the full table sweep and the
 //! audit trigger are Pg only, below.
 use chrono::{DateTime, Duration, Utc};
-use opsagent_brain::actions::uow::UnitOfWork;
+use opsagent_brain::actions::uow::{Repos, UnitOfWork};
 use opsagent_core::{
     audit::AuditEntry, org::Role, passkey::StoredPasskey, retention::PurgeCounts, run::RunStatus,
     user::Email,
@@ -40,8 +40,21 @@ async fn member(s: &dyn UnitOfWork, email: &str, orgs: &[Uuid]) -> Uuid {
 
 /// The organisations purgeable at `t` (30 days deleted, no run busy within 24 hours).
 async fn purgeable(s: &dyn UnitOfWork, t: DateTime<Utc>) -> Vec<Uuid> {
-    let r = s.retention();
-    r.purgeable_orgs(t - Duration::days(30), t - Duration::hours(24))
+    let (cutoff, busy_since) = window(t);
+    let due = s.retention().due_orgs(cutoff, busy_since).await.unwrap();
+    due.into_iter().filter(|o| !o.busy).map(|o| o.id).collect()
+}
+
+/// The purge cutoff and busy window at `t`: 30 days deleted, runs within 24 hours.
+fn window(t: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+    (t - Duration::days(30), t - Duration::hours(24))
+}
+
+/// `purge_org` of `org` at `at` (its window), in the caller's transaction.
+async fn purge_in(tx: &dyn Repos, org: Uuid, at: DateTime<Utc>) -> Option<PurgeCounts> {
+    let (cutoff, busy_since) = window(at);
+    tx.retention()
+        .purge_org(org, cutoff, busy_since, at)
         .await
         .unwrap()
 }
@@ -49,7 +62,7 @@ async fn purgeable(s: &dyn UnitOfWork, t: DateTime<Utc>) -> Vec<Uuid> {
 /// Purges `org` in a committed transaction, recording at `at`.
 async fn purge(s: &dyn UnitOfWork, org: Uuid, at: DateTime<Utc>) -> Option<PurgeCounts> {
     let tx = s.begin().await.unwrap();
-    let counts = tx.retention().purge_org(org, at).await.unwrap();
+    let counts = purge_in(tx.as_ref(), org, at).await;
     tx.commit().await.unwrap();
     counts
 }
@@ -145,6 +158,22 @@ contract_suite! {
         assert_eq!(purgeable(s, t + Duration::days(2)).await, vec![recent]);
     }
 
+    async fn purge_skips_org_busy_or_recent_when_locked(s, seed) {
+        let t = now();
+        let raced = deleted_org(s, "raced", t, 31).await;
+        let recent = deleted_org(s, "recent", t, 29).await;
+        // Due when listed; a run queued before its purge locks it means it waits.
+        assert_eq!(purgeable(s, t).await, vec![raced]);
+        let c = seed.connection(raced).await;
+        seed.run_at(raced, c, "full_scan", RunStatus::Queued, t).await;
+        assert_eq!(purge(s, raced, t).await, None);
+        let (cutoff, busy_since) = window(t);
+        assert!(s.retention().due_orgs(cutoff, busy_since).await.unwrap()[0].busy);
+        // Asked for directly, an organisation inside the 30 days is never purged.
+        assert_eq!(purge(s, recent, t).await, None);
+        assert_eq!(seed.purge_records().await.len(), 0);
+    }
+
     async fn purge_rerun_is_noop_with_one_record(s, seed) {
         let t = now();
         let doomed = deleted_org(s, "doomed", t, 31).await;
@@ -152,7 +181,7 @@ contract_suite! {
         activity(s, seed, doomed, t).await;
         // A crash mid-purge: the transaction never commits, and nothing is gone.
         let tx = s.begin().await.unwrap();
-        assert!(tx.retention().purge_org(doomed, t).await.unwrap().is_some());
+        assert!(purge_in(tx.as_ref(), doomed, t).await.is_some());
         drop(tx);
         assert!(s.orgs().get(doomed).await.unwrap().is_some());
         assert_eq!(seed.purge_records().await.len(), 0);
@@ -173,7 +202,7 @@ contract_suite! {
     async fn old_purge_records_deleted_after_a_year(s, seed) {
         let t = now();
         let old = deleted_org(s, "old", t, 500).await;
-        let young = deleted_org(s, "young", t, 40).await;
+        let young = deleted_org(s, "young", t, 41).await;
         purge(s, old, t - Duration::days(400)).await.unwrap();
         purge(s, young, t - Duration::days(10)).await.unwrap();
         // An ordinary global audit entry is never a purge record.
@@ -329,7 +358,9 @@ async fn purge_outside_a_transaction_deletes_nothing() {
     let t = now();
     let doomed = deleted_org(s, "doomed", t, 31).await;
     let user = member(s, "solo@example.com", &[doomed]).await;
-    assert!(s.retention().purge_org(doomed, t).await.is_err());
+    let (cutoff, busy_since) = window(t);
+    let r = s.retention();
+    assert!(r.purge_org(doomed, cutoff, busy_since, t).await.is_err());
     assert!(s.retention().delete_old_purge_records(t).await.is_err());
     assert!(s.orgs().get(doomed).await.unwrap().is_some());
     assert!(s.users().get(user).await.unwrap().is_some());
