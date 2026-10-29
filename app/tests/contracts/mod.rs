@@ -24,6 +24,7 @@ mod integrations;
 mod oauth;
 mod orgs;
 mod passkeys;
+mod purge;
 mod recipients;
 mod resources;
 mod retention;
@@ -72,6 +73,10 @@ pub trait Seed: Sync {
     async fn run_link(&self, o: Uuid, c: Uuid, run: Uuid, link: RunLink);
     /// Rows still pointing at `run`.
     async fn run_links_left(&self, run: Uuid) -> u64;
+    /// Audit entries of organisation `o` (`None`: global entries).
+    async fn audit_count(&self, o: Option<Uuid>) -> u64;
+    /// The metadata of every `org.purged` entry, oldest first.
+    async fn purge_records(&self) -> Vec<serde_json::Value>;
 }
 
 /// Seeds the lane database over its own connection (the app pool has one connection).
@@ -295,6 +300,27 @@ impl Seed for PgSeed {
         row.try_get::<i64>("", "n").unwrap() as u64
     }
 
+    async fn audit_count(&self, o: Option<Uuid>) -> u64 {
+        let st = sea_orm::Statement::from_sql_and_values(
+            sea_orm::DbBackend::Postgres,
+            "SELECT count(*) AS n FROM audit_events WHERE organisation_id IS NOT DISTINCT FROM $1",
+            vec![o.into()],
+        );
+        let row = self.raw().query_one_raw(st).await.unwrap().unwrap();
+        row.try_get::<i64>("", "n").unwrap() as u64
+    }
+
+    async fn purge_records(&self) -> Vec<serde_json::Value> {
+        let st = sea_orm::Statement::from_string(
+            sea_orm::DbBackend::Postgres,
+            "SELECT metadata FROM audit_events WHERE action = 'org.purged' ORDER BY created_at",
+        );
+        let rows = self.raw().query_all_raw(st).await.unwrap();
+        rows.iter()
+            .map(|r| r.try_get("", "metadata").unwrap())
+            .collect()
+    }
+
     async fn resource_gone(&self, organisation_id: Uuid, identity: &str) {
         self.raw()
             .execute_unprepared(&format!(
@@ -347,6 +373,17 @@ impl Seed for MemStore {
 
     async fn run_links_left(&self, run: Uuid) -> u64 {
         MemStore::run_links_left(self, run)
+    }
+
+    async fn audit_count(&self, o: Option<Uuid>) -> u64 {
+        let all = self.audit_entries();
+        all.iter().filter(|e| e.organisation_id == o).count() as u64
+    }
+
+    async fn purge_records(&self) -> Vec<serde_json::Value> {
+        let all = self.audit_entries();
+        let purged = all.into_iter().filter(|e| e.action == "org.purged");
+        purged.map(|e| e.meta).collect()
     }
 
     async fn resource_gone(&self, organisation_id: Uuid, identity: &str) {

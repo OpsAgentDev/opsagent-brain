@@ -1,5 +1,6 @@
 //! `retention` (retention.md): the global nightly run. Each step deletes in batches until
 //! nothing is left or the run cap is reached; whatever is left waits for the next night.
+mod purge;
 mod runs;
 mod ttl;
 
@@ -92,6 +93,7 @@ impl Retention {
         let repo = self.uow.retention();
         ttl::run(repo, now, self.batch, deadline, &mut stats).await?;
         runs::run(repo, now, self.batch, deadline, &mut stats).await?;
+        purge::run(self.uow.as_ref(), now, deadline, &mut stats).await?;
         Ok(stats)
     }
 

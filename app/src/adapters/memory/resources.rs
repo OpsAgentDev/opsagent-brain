@@ -10,7 +10,7 @@ use super::{page, MemState, MemStore};
 
 #[derive(Clone)]
 pub struct ResourceMem {
-    organisation_id: Uuid,
+    pub(super) organisation_id: Uuid,
     row: ResourceRow,
     attributes: serde_json::Value,
     /// Runs that wrote a history row.

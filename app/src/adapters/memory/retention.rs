@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
+    audit::{Actor, AuditEntry},
     finding::{Finding, FindingEvent, FindingKey, Severity, StoredEvidence},
     repo::RepoResult,
-    retention::{RetentionRepo, TtlTable},
+    retention::{PurgeCounts, RetentionRepo, TtlTable, ORG_PURGED},
     run::{RunKey, RunStatus},
 };
 use opsagent_ledger::Storage;
@@ -195,5 +196,61 @@ impl RetentionRepo for MemStore {
         s.jobs.retain(|j| !ids.contains(&j.run_id));
         s.runs.retain(|r| !ids.contains(&r.row.id));
         Ok(ids.len() as u64)
+    }
+
+    async fn purgeable_orgs(
+        &self,
+        deleted_before: DateTime<Utc>,
+        busy_since: DateTime<Utc>,
+    ) -> RepoResult<Vec<Uuid>> {
+        let s = self.state();
+        let busy = |o: Uuid| {
+            s.runs.iter().any(|r| {
+                let started = r.started_at.unwrap_or(r.row.key.scheduled_at);
+                r.row.key.organisation_id == Some(o)
+                    && (r.row.status == RunStatus::Queued
+                        || (r.row.status == RunStatus::Running && started > busy_since))
+            })
+        };
+        let mut due: Vec<_> = s
+            .orgs
+            .iter()
+            .filter_map(|o| o.deleted_at.map(|at| (at, o.id)))
+            .filter(|&(at, id)| at < deleted_before && !busy(id))
+            .collect();
+        due.sort();
+        Ok(due.into_iter().map(|d| d.1).collect())
+    }
+
+    async fn purge_org(&self, org: Uuid, at: DateTime<Utc>) -> RepoResult<Option<PurgeCounts>> {
+        let mut s = self.state();
+        if !s.orgs.iter().any(|o| o.id == org && o.deleted_at.is_some()) {
+            return Ok(None);
+        }
+        let counts = s.purge(org);
+        s.audit.push(AuditEntry {
+            organisation_id: None,
+            actor: Actor::System,
+            action: ORG_PURGED.into(),
+            target: Some(("organisation", org.to_string())),
+            outcome: "success".into(),
+            meta: serde_json::json!({ "counts": counts }),
+        });
+        s.purged_at.push((org, at));
+        Ok(Some(counts))
+    }
+
+    async fn delete_old_purge_records(&self, before: DateTime<Utc>) -> RepoResult<u64> {
+        let s = &mut *self.state();
+        let old: Vec<String> = s
+            .purged_at
+            .iter()
+            .filter(|p| p.1 < before)
+            .map(|p| p.0.to_string())
+            .collect();
+        s.purged_at.retain(|p| p.1 >= before);
+        Ok(super::purge::drain(&mut s.audit, |e| {
+            e.action == ORG_PURGED && e.target.as_ref().is_some_and(|t| old.contains(&t.1))
+        }))
     }
 }

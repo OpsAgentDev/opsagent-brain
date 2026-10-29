@@ -16,7 +16,7 @@ use super::{MemState, MemStore};
 #[derive(Clone)]
 pub(super) struct RunEntry {
     pub(super) row: RunRow,
-    started_at: Option<DateTime<Utc>>,
+    pub(super) started_at: Option<DateTime<Utc>>,
     pub(super) finished_at: Option<DateTime<Utc>>,
     next_attempt_at: Option<DateTime<Utc>>,
 }

@@ -39,6 +39,19 @@ async fn retention_run_records_counts_in_stats() {
         )
         .await;
     }
+    // One organisation deleted past the 30-day grace, one inside it.
+    for (slug, days) in [("gone", 31), ("grace", 29)] {
+        sql(
+            &ctx,
+            "INSERT INTO organisations (id, name, slug, deleted_at) VALUES ($1, $2, $2, $3)",
+            vec![
+                Uuid::now_v7().into(),
+                slug.into(),
+                (Utc::now() - Duration::days(days)).into(),
+            ],
+        )
+        .await;
+    }
     let key = RunKey {
         organisation_id: None,
         connection_id: None,
@@ -53,6 +66,10 @@ async fn retention_run_records_counts_in_stats() {
     assert_eq!(st["sessions"], 2);
     assert_eq!(st["magic_links"], 0);
     assert_eq!(st["runs"], 1);
+    assert_eq!(
+        (st["organisations"].as_u64(), st["purge_records"].as_u64()),
+        (Some(1), Some(0))
+    );
     let left = ctx
         .db
         .query_one_raw(sea_orm::Statement::from_string(

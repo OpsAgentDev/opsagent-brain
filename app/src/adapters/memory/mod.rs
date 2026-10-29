@@ -8,6 +8,7 @@ mod integrations;
 mod oauth;
 mod orgs;
 mod passkeys;
+mod purge;
 mod rate_limiter;
 mod recipients;
 mod resources;
@@ -147,6 +148,8 @@ pub struct MemState {
     jobs: Vec<NewJob>,
     /// Rows the retention job expires: `(table, expiry instant)`.
     expiring: Vec<(TtlTable, DateTime<Utc>)>,
+    /// When each `org.purged` record (by organisation) was made.
+    purged_at: Vec<(Uuid, DateTime<Utc>)>,
 }
 
 #[derive(Clone, Default)]
