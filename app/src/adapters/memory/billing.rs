@@ -16,6 +16,7 @@ use super::{MemState, MemStore};
 pub(super) struct BillingRow {
     billing: OrgBilling,
     event_at: Option<DateTime<Utc>>,
+    payment_at: Option<DateTime<Utc>>,
 }
 
 impl MemState {
@@ -54,18 +55,50 @@ impl BillingRepo for MemStore {
             }
             _ => {}
         }
+        let payment_newer = row.payment_at.is_some_and(|at| at > event_created);
         let b = &mut row.billing;
         let mut sub = sub.clone();
-        if sub.status == B::PastDue && b.status == B::Paused {
-            sub.status = B::Paused;
+        if payment_newer || (sub.status == B::PastDue && b.status == B::Paused) {
+            sub.status = b.status;
         }
-        b.past_due_since = match sub.status {
-            B::PastDue | B::Paused => b.past_due_since.or(Some(event_created)),
-            _ => None,
-        };
+        if !payment_newer {
+            b.past_due_since = match sub.status {
+                B::PastDue | B::Paused => b.past_due_since.or(Some(event_created)),
+                _ => None,
+            };
+        }
         b.status = sub.status;
         b.subscription = Some(sub);
         row.event_at = Some(event_created);
+        Ok(true)
+    }
+
+    async fn apply_payment(
+        &self,
+        organisation_id: Uuid,
+        status: B,
+        at: DateTime<Utc>,
+    ) -> RepoResult<bool> {
+        let mut s = self.state();
+        let row = s.billing_mut(organisation_id)?;
+        let newer = |t: Option<DateTime<Utc>>| t.is_some_and(|t| t > at);
+        let b = &mut row.billing;
+        let moves = matches!(
+            (status, b.status),
+            (B::PastDue, B::Trialing | B::Active) | (B::Active, B::PastDue | B::Paused)
+        );
+        if b.subscription.is_none() || newer(row.event_at) || newer(row.payment_at) || !moves {
+            return Ok(false);
+        }
+        b.status = status;
+        if let Some(sub) = b.subscription.as_mut() {
+            sub.status = status;
+        }
+        b.past_due_since = match status {
+            B::PastDue => b.past_due_since.or(Some(at)),
+            _ => None,
+        };
+        row.payment_at = Some(at);
         Ok(true)
     }
 

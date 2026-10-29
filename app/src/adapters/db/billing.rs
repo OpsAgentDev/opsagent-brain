@@ -18,14 +18,26 @@ const BILLING: &str = "SELECT stripe_customer_id, stripe_subscription_id, billin
 /// `billing_sync`) in place, and `past_due_since` keeps the first past-due instant.
 // past_due_since keys off the incoming status: a stored `paused` stays (and keeps it) only
 // while Stripe still says past_due; any other incoming status clears it.
+// A payment status applied after this event's creation (`payment_event_at > $9`) is newer
+// than this event's status, so both status columns are kept.
 const APPLY: &str = "UPDATE organisations SET stripe_subscription_id = $2, \
-  billing_status = CASE WHEN $3 = 'past_due' AND billing_status = 'paused' THEN 'paused' ELSE $3 END, \
+  billing_status = CASE WHEN coalesce(payment_event_at > $9, false) \
+    OR ($3 = 'past_due' AND billing_status = 'paused') THEN billing_status ELSE $3 END, \
   billing_tier = $4, billing_quantity = $5, trial_ends_at = $6, current_period_start = $7, \
   current_period_end = $8, \
-  past_due_since = CASE WHEN $3 IN ('past_due', 'paused') THEN coalesce(past_due_since, $9) END, \
+  past_due_since = CASE WHEN coalesce(payment_event_at > $9, false) THEN past_due_since \
+    WHEN $3 IN ('past_due', 'paused') THEN coalesce(past_due_since, $9) END, \
   billing_event_at = $9, updated_at = now() \
   WHERE id = $1 AND (billing_event_at IS NULL OR billing_event_at < $9 \
   OR (billing_event_at = $9 AND coalesce($8 >= current_period_end, true)))";
+
+const PAYMENT: &str = "UPDATE organisations SET billing_status = $2, \
+  past_due_since = CASE WHEN $2 = 'past_due' THEN coalesce(past_due_since, $3) END, \
+  payment_event_at = $3, updated_at = now() \
+  WHERE id = $1 AND stripe_subscription_id IS NOT NULL \
+  AND coalesce(billing_event_at <= $3, true) AND coalesce(payment_event_at <= $3, true) \
+  AND (($2 = 'past_due' AND billing_status IN ('trialing', 'active')) \
+    OR ($2 = 'active' AND billing_status IN ('past_due', 'paused')))";
 
 /// One per account (a reconnected account has a new row on the same account id). A
 /// disconnected row counts only if it was ever connected (`billable_from`).
@@ -120,6 +132,23 @@ impl<C: Conn> BillingRepo for Pg<C> {
             .await
             .map_err(db_err)?;
         if r.rows_affected() == 1 {
+            return Ok(true);
+        }
+        match self.org_exists(organisation_id).await? {
+            true => Ok(false),
+            false => Err(RepoError::NotFound),
+        }
+    }
+
+    async fn apply_payment(
+        &self,
+        organisation_id: Uuid,
+        status: BillingStatus,
+        at: DateTime<Utc>,
+    ) -> RepoResult<bool> {
+        let values = vec![organisation_id.into(), status.as_str().into(), at.into()];
+        let r = self.db().execute_raw(stmt(PAYMENT, values));
+        if r.await.map_err(db_err)?.rows_affected() == 1 {
             return Ok(true);
         }
         match self.org_exists(organisation_id).await? {

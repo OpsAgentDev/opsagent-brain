@@ -34,6 +34,7 @@ pub struct Model {
     pub current_period_end: Option<DateTimeWithTimeZone>,
     pub past_due_since: Option<DateTimeWithTimeZone>,
     pub billing_event_at: Option<DateTimeWithTimeZone>,
+    pub payment_event_at: Option<DateTimeWithTimeZone>,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }

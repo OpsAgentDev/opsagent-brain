@@ -201,11 +201,24 @@ pub trait BillingRepo: Send + Sync {
     /// from the same second with a later `current_period_end` (Stripe stamps whole seconds);
     /// `false` (writing nothing) when this one is stale. `past_due_since` is kept from the first
     /// past-due event and cleared by any other status; a `past_due` event leaves `paused` as it is.
+    /// An event older than the last `apply_payment` keeps that payment's status (and
+    /// `past_due_since`) and writes the rest.
     async fn apply_subscription(
         &self,
         organisation_id: Uuid,
         s: &SubscriptionState,
         event_created: DateTime<Utc>,
+    ) -> RepoResult<bool>;
+
+    /// An invoice outcome: `PastDue` from `trialing`/`active`, or `Active` from
+    /// `past_due`/`paused`; any other pair, no stored subscription, or a subscription or
+    /// payment event newer than `at` already applied writes nothing (`false`). Only the status
+    /// and `past_due_since` change; the subscription-event order (`apply_subscription`) is kept.
+    async fn apply_payment(
+        &self,
+        organisation_id: Uuid,
+        status: BillingStatus,
+        at: DateTime<Utc>,
     ) -> RepoResult<bool>;
 
     /// The organisation (live or deleted) whose provider customer is `customer_id`.

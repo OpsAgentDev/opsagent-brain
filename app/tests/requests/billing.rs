@@ -54,10 +54,12 @@ async fn post_raw(req: &TestServer, body: &str, sig: &str) -> TestResponse {
         .await
 }
 
-/// Posts `event` signed now.
+/// Posts `event` signed now and asserts Stripe gets a 200 (anything else is retried).
 async fn deliver(req: &TestServer, event: &Value) -> TestResponse {
     let body = event.to_string();
-    post_raw(req, &body, &sign(&body, Utc::now().timestamp())).await
+    let res = post_raw(req, &body, &sign(&body, Utc::now().timestamp())).await;
+    assert_eq!(res.status_code(), 200, "{}: {}", event["id"], res.text());
+    res
 }
 
 fn event(id: &str, kind: &str, created: i64, object: Value) -> Value {
@@ -544,5 +546,87 @@ async fn billing_503_when_unconfigured() {
         let res = post_raw(&req, &body, &sign(&body, Utc::now().timestamp())).await;
         assert_eq!(res.status_code(), 503);
     })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn invoice_failure_before_renewal_keeps_the_new_period() {
+    serve_with(
+        stripe_on("http://127.0.0.1:9".into()),
+        |req, ctx| async move {
+            let (_, org_slug, org) = org_with_customer(&req, &ctx).await;
+            deliver(
+                &req,
+                &sub_event(
+                    "evt_1",
+                    "customer.subscription.created",
+                    10,
+                    "active",
+                    1,
+                    30,
+                ),
+            )
+            .await;
+            // The renewal invoice fails (T+1) and Stripe delivers that before the renewal (T).
+            deliver(&req, &invoice_event("evt_3", "invoice.payment_failed", 101)).await;
+            deliver(
+                &req,
+                &sub_event(
+                    "evt_2",
+                    "customer.subscription.updated",
+                    100,
+                    "active",
+                    1,
+                    60,
+                ),
+            )
+            .await;
+            let b = Pg::new(&ctx.db).billing(org).await.unwrap();
+            assert_eq!((b.status, b.past_due_since), (B::PastDue, Some(at(101))));
+            let page = get_billing(&req, &org_slug).await;
+            assert_eq!(page["current_period_end"], json!(at(60)));
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn checkout_completed_mismatch_is_ignored() {
+    serve_with(
+        stripe_on("http://127.0.0.1:9".into()),
+        |req, ctx| async move {
+            let (t, _, org) = org_with_customer(&req, &ctx).await;
+            let other = create_org(&req, &t, "Other").await;
+            let other: Uuid = other["id"].as_str().unwrap().parse().unwrap();
+            let session = |id: &str, org: String, customer: &str| {
+                event(
+                    id,
+                    "checkout.session.completed",
+                    10,
+                    json!({ "id": "cs_1",
+                "object": "checkout.session", "client_reference_id": org, "customer": customer }),
+                )
+            };
+            // Another organisation's customer, a customer that differs from the stored one, and an
+            // organisation that does not exist: acknowledged, nothing written.
+            deliver(&req, &session("evt_1", other.to_string(), "cus_1")).await;
+            deliver(&req, &session("evt_2", org.to_string(), "cus_other")).await;
+            deliver(&req, &session("evt_3", Uuid::new_v4().to_string(), "cus_9")).await;
+            let repo = Pg::new(&ctx.db);
+            assert_eq!(repo.billing(other).await.unwrap().customer_id, None);
+            assert_eq!(
+                repo.billing(org).await.unwrap().customer_id.as_deref(),
+                Some("cus_1")
+            );
+            // A matching session fills a missing customer.
+            deliver(&req, &session("evt_4", other.to_string(), "cus_2")).await;
+            assert_eq!(
+                repo.billing(other).await.unwrap().customer_id.as_deref(),
+                Some("cus_2")
+            );
+        },
+    )
     .await;
 }

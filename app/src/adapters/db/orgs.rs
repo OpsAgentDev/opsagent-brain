@@ -96,6 +96,7 @@ impl<C: Conn> OrganisationsRepo for Pg<C> {
             current_period_end: Set(None),
             past_due_since: Set(None),
             billing_event_at: Set(None),
+            payment_event_at: Set(None),
             kek_version: Set(Some(new.kek_version)),
             wrapped_dek: Set(Some(new.wrapped_dek)),
             deleted_at: Set(None),

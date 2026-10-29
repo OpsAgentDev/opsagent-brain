@@ -117,6 +117,35 @@ contract_suite! {
         assert_ne!(s.billing().org_for_customer(&cus).await.unwrap(), Some(other));
     }
 
+    async fn apply_payment_moves_status_only(s) {
+        let o = org(s).await;
+        let repo = s.billing();
+        // No subscription yet: nothing to mark.
+        assert!(!repo.apply_payment(o, B::PastDue, at(5)).await.unwrap());
+        assert!(repo.apply_subscription(o, &sub(B::Trialing, 1), at(10)).await.unwrap());
+        // A trial's paid $0 invoice does not end the trial.
+        assert!(!repo.apply_payment(o, B::Active, at(11)).await.unwrap());
+        assert!(repo.apply_payment(o, B::PastDue, at(20)).await.unwrap());
+        // The renewal created before the failure still lands its period, not its status.
+        let mut renewal = sub(B::Active, 2);
+        renewal.current_period_end = Some(at(60 * 86_400));
+        assert!(repo.apply_subscription(o, &renewal, at(15)).await.unwrap());
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.status, b.past_due_since), (B::PastDue, Some(at(20))));
+        let stored = b.subscription.unwrap();
+        assert_eq!((stored.quantity, stored.current_period_end), (2, Some(at(60 * 86_400))));
+        // Older than what was applied: skipped.
+        assert!(!repo.apply_payment(o, B::Active, at(12)).await.unwrap());
+        assert!(repo.apply_payment(o, B::Active, at(30)).await.unwrap());
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.status, b.past_due_since), (B::Active, None));
+        // A newer subscription event wins again.
+        assert!(repo.apply_subscription(o, &sub(B::PastDue, 2), at(40)).await.unwrap());
+        assert_eq!(repo.billing(o).await.unwrap().past_due_since, Some(at(40)));
+        let gone = repo.apply_payment(Uuid::new_v4(), B::PastDue, at(50)).await;
+        assert!(matches!(gone, Err(RepoError::NotFound)), "{gone:?}");
+    }
+
     async fn record_event_dedupes(s) {
         let repo = s.billing();
         let id = format!("evt_{}", Uuid::new_v4());

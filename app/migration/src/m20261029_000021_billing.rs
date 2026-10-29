@@ -16,7 +16,8 @@ ALTER TABLE organisations
   ADD COLUMN current_period_start timestamptz,
   ADD COLUMN current_period_end timestamptz,
   ADD COLUMN past_due_since timestamptz,
-  ADD COLUMN billing_event_at timestamptz;
+  ADD COLUMN billing_event_at timestamptz,
+  ADD COLUMN payment_event_at timestamptz;
 CREATE UNIQUE INDEX organisations_stripe_customer_idx ON organisations (stripe_customer_id)
   WHERE stripe_customer_id IS NOT NULL;
 CREATE TABLE stripe_events (
@@ -35,7 +36,8 @@ DROP INDEX organisations_stripe_customer_idx;
 ALTER TABLE organisations
   DROP COLUMN stripe_subscription_id, DROP COLUMN billing_status, DROP COLUMN billing_tier,
   DROP COLUMN billing_quantity, DROP COLUMN trial_ends_at, DROP COLUMN current_period_start,
-  DROP COLUMN current_period_end, DROP COLUMN past_due_since, DROP COLUMN billing_event_at;
+  DROP COLUMN current_period_end, DROP COLUMN past_due_since, DROP COLUMN billing_event_at,
+  DROP COLUMN payment_event_at;
 "#;
 
 #[async_trait::async_trait]

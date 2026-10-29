@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     billing::{BillingStatus as B, SubscriptionState},
-    repo::Clock,
+    repo::{Clock, RepoError},
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -46,6 +46,10 @@ fn bad_request(code: &'static str, detail: &str) -> AppError {
         code,
         detail: detail.into(),
     }
+}
+
+fn warn_skip(ev: &Event, msg: &str) {
+    tracing::warn!(event_id = %ev.id, "{msg}");
 }
 
 fn ts(v: &Value) -> Option<DateTime<Utc>> {
@@ -101,28 +105,53 @@ impl HandleWebhook {
         if !tx.billing().record_event(&ev.id, &ev.kind).await? {
             return Ok(());
         }
-        match self.org_of(tx.as_ref(), &ev).await? {
-            Some(org) => self.apply(tx.as_ref(), org, &ev, created).await?,
-            None => tracing::warn!(event_id = %ev.id, "stripe event for an unknown customer"),
+        if ev.kind == "checkout.session.completed" {
+            self.checkout_completed(tx.as_ref(), &ev).await?;
+        } else {
+            let customer = ev.data.object["customer"].as_str();
+            match customer {
+                Some(c) => match tx.billing().org_for_customer(c).await? {
+                    Some(org) => self.apply(tx.as_ref(), org, &ev, created).await?,
+                    None => warn_skip(&ev, "stripe event for an unknown customer"),
+                },
+                None => warn_skip(&ev, "stripe event without a customer"),
+            }
         }
         tx.commit().await?;
         Ok(())
     }
 
-    /// Checkout names the organisation (`client_reference_id`); everything else carries the
-    /// Stripe customer.
-    async fn org_of(&self, tx: &dyn Tx, ev: &Event) -> AppResult<Option<Uuid>> {
+    /// The customer is saved before Checkout, so this only fills a gap. A session whose
+    /// organisation is gone, or whose customer disagrees with what is stored, is ignored.
+    async fn checkout_completed(&self, tx: &dyn Tx, ev: &Event) -> AppResult<()> {
         let o = &ev.data.object;
-        let by_ref = o["client_reference_id"]
+        let org: Option<Uuid> = o["client_reference_id"]
             .as_str()
             .and_then(|r| r.parse().ok());
-        if let Some(org) = by_ref.filter(|_| ev.kind == "checkout.session.completed") {
-            return Ok(Some(org));
+        let (Some(org), Some(customer)) = (org, o["customer"].as_str()) else {
+            warn_skip(ev, "checkout session without organisation or customer");
+            return Ok(());
+        };
+        let repo = tx.billing();
+        let stored = match repo.billing(org).await {
+            Err(RepoError::NotFound) => {
+                warn_skip(ev, "checkout session for an unknown organisation");
+                return Ok(());
+            }
+            r => r?,
+        };
+        let owner = repo.org_for_customer(customer).await?;
+        let theirs = owner.is_some_and(|o| o != org);
+        let differs = stored.customer_id.as_deref().is_some_and(|c| c != customer);
+        if theirs || differs {
+            warn_skip(
+                ev,
+                "checkout session customer does not match the organisation",
+            );
+        } else if stored.customer_id.is_none() {
+            repo.set_customer(org, customer).await?;
         }
-        match o["customer"].as_str() {
-            Some(c) => Ok(tx.billing().org_for_customer(c).await?),
-            None => Ok(None),
-        }
+        Ok(())
     }
 
     async fn apply(
@@ -132,45 +161,42 @@ impl HandleWebhook {
         ev: &Event,
         created: DateTime<Utc>,
     ) -> AppResult<()> {
-        let o = &ev.data.object;
         let repo = tx.billing();
         let stored = repo.billing(org).await?;
-        let next = match ev.kind.as_str() {
-            "checkout.session.completed" => {
-                // The customer is saved before Checkout; this only fills a gap.
-                if let (None, Some(c)) = (&stored.customer_id, o["customer"].as_str()) {
-                    repo.set_customer(org, c).await?;
-                }
-                return Ok(());
-            }
-            "invoice.payment_failed" if stored.status.is_subscribed() => {
-                stored.subscription.map(|s| SubscriptionState {
-                    status: B::PastDue,
-                    ..s
-                })
-            }
-            // A trial's $0 invoice is paid too; only a payment that ends arrears counts.
-            "invoice.payment_succeeded" if matches!(stored.status, B::PastDue | B::Paused) => {
-                stored.subscription.map(|s| SubscriptionState {
-                    status: B::Active,
-                    ..s
-                })
-            }
-            k if k.starts_with("customer.subscription.") => self.subscription(o, stored.status),
+        let paid = match ev.kind.as_str() {
+            "invoice.payment_failed" => Some(B::PastDue),
+            "invoice.payment_succeeded" => Some(B::Active),
             _ => None,
         };
-        if let Some(s) = next {
-            repo.apply_subscription(org, &s, created).await?;
-        } else if ev.kind.starts_with("customer.subscription.") {
-            tracing::warn!(event_id = %ev.id, "stripe subscription event not applied");
+        if let Some(status) = paid {
+            if stored.subscription.is_none() {
+                warn_skip(ev, "stripe invoice before any subscription");
+                return Ok(());
+            }
+            // The repo moves only past_due <-> active; a trial's paid $0 invoice is a no-op.
+            repo.apply_payment(org, status, created).await?;
+            return Ok(());
+        }
+        match self.subscription(ev, stored.status) {
+            Some(s) => {
+                repo.apply_subscription(org, &s, created).await?;
+            }
+            None => warn_skip(ev, "stripe subscription event not applied"),
         }
         Ok(())
     }
 
     /// The subscription object as our state. The period lives on the one item (Stripe-Version
     /// 2025-09-30.clover). Ending while `stored` is trialing is `trial_ended`.
-    fn subscription(&self, o: &Value, stored: B) -> Option<SubscriptionState> {
+    fn subscription(&self, ev: &Event, stored: B) -> Option<SubscriptionState> {
+        let o = &ev.data.object;
         let item = &o["items"]["data"][0];
+        let price = item["price"]["id"].as_str();
+        let tier = price.and_then(|p| self.settings.tier_of(p));
+        if tier.is_none() {
+            let price = price.unwrap_or("");
+            tracing::warn!(event_id = %ev.id, price_id = %price, "stripe price matches no tier");
+        }
         let status = match status_of(o["status"].as_str()?)? {
             B::Canceled if stored == B::Trialing => B::TrialEnded,
             s => s,
@@ -178,9 +204,7 @@ impl HandleWebhook {
         Some(SubscriptionState {
             subscription_id: o["id"].as_str()?.to_owned(),
             status,
-            tier: item["price"]["id"]
-                .as_str()
-                .and_then(|p| self.settings.tier_of(p)),
+            tier,
             quantity: item["quantity"].as_i64().and_then(|q| q.try_into().ok())?,
             trial_ends_at: ts(&o["trial_end"]),
             current_period_start: ts(&item["current_period_start"]),
