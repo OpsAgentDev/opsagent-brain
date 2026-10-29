@@ -150,3 +150,39 @@ async fn seat_lock_does_not_block_run_inserts() {
     })
     .await;
 }
+
+/// Quantity syncs of one organisation queue on their own lock, apart from the seat lock.
+#[tokio::test]
+#[serial]
+async fn quantity_lock_serialises_and_is_apart_from_seats() {
+    use opsagent_brain::{actions::uow::UnitOfWork, adapters::db::Pg};
+    serve(|req, ctx| async move {
+        let (_, _, org) = owner_org(&req, &prepare(&ctx)).await;
+        let pg = Pg::new(ctx.db.clone());
+        let holder = pg.begin().await.unwrap();
+        holder.billing().lock_quantity(org).await.unwrap();
+        let seats = async {
+            let tx = pg.begin().await.unwrap();
+            tx.billing().lock_seats(org).await.unwrap();
+        };
+        let ok = tokio::time::timeout(std::time::Duration::from_secs(3), seats).await;
+        assert!(ok.is_ok(), "the seat lock waited on the quantity lock");
+        let second = async {
+            let tx = pg.begin().await.unwrap();
+            tx.billing().lock_quantity(org).await.unwrap();
+        };
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(300), second).await;
+        assert!(waited.is_err(), "the quantity lock did not serialise");
+        holder.commit().await.unwrap();
+        let tx = pg.begin().await.unwrap();
+        let after = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            tx.billing().lock_quantity(org),
+        );
+        assert!(
+            after.await.is_ok(),
+            "the quantity lock outlived its transaction"
+        );
+    })
+    .await;
+}

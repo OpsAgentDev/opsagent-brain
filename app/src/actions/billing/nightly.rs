@@ -22,16 +22,16 @@ use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::BillingSync;
+use super::{enqueue_sync, BillingSync};
 use crate::{
     actions::runs::classify::{lerr, LResult},
     mailers::Mail,
 };
 
 const TRIAL_DAYS: i64 = 14;
-/// A revoked connection is disconnected once its period ends within this many hours: the
-/// nightly runs every 24, so this always lands before the renewal.
-const RENEWAL_WINDOW_HOURS: i64 = 26;
+/// A revoked connection is disconnected once its period ends within this many hours: two
+/// nightly runs, so one failed or missed night still lands before the renewal.
+const RENEWAL_WINDOW_HOURS: i64 = 50;
 /// The job type of the marker runs that hold the notices' ledger keys (no worker).
 const NOTICE_JOB: &str = "billing_notice";
 
@@ -106,7 +106,8 @@ impl BillingSync {
     }
 
     /// Disconnects connections still revoked once the stored period ends within
-    /// `RENEWAL_WINDOW_HOURS`; returns how many.
+    /// `RENEWAL_WINDOW_HOURS`, each with an organisation `billing_sync` run (retried by the
+    /// ledger if the nightly's own sync fails); returns how many.
     async fn end_revoked(
         &self,
         org: Uuid,
@@ -131,6 +132,7 @@ impl BillingSync {
                 let entry =
                     AuditEntry::system(org, "connection.disconnect", target, REVOKED_REASON);
                 tx.audit().record(entry).await.map_err(lerr)?;
+                enqueue_sync(&*tx, org, now).await.map_err(lerr)?;
                 n += 1;
             }
             tx.commit().await.map_err(lerr)?;

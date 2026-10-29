@@ -138,6 +138,10 @@ impl BillingRepo for MemStore {
         Ok(()) // a transaction already holds a private snapshot
     }
 
+    async fn lock_quantity(&self, _organisation_id: Uuid) -> RepoResult<()> {
+        Ok(()) // shortcut: no cross-task lock here; the Postgres adapter's is tested.
+    }
+
     async fn pause(
         &self,
         organisation_id: Uuid,
@@ -195,7 +199,7 @@ impl BillingRepo for MemStore {
         if let Some(sub) = b.subscription.as_mut() {
             sub.quantity = quantity;
         }
-        b.paid_quantity = Some(paid);
+        b.paid_quantity = Some(b.paid_quantity.map_or(paid, |p| p.max(paid)));
         Ok(())
     }
 }

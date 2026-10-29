@@ -324,3 +324,72 @@ async fn nightly_reconciles_a_drifted_quantity() {
     .await;
     api.verify().await;
 }
+
+#[tokio::test]
+#[serial]
+async fn failed_pre_renewal_decrease_is_retried_before_period_end() {
+    let api = MockServer::start().await;
+    subscription_mock(&api).await;
+    // Connecting both: down to 1 alone, back to 2; then the retried pre-renewal 1.
+    expect_update(&api, 1, "none", 2).await;
+    expect_update(&api, 2, "none", 1).await;
+    let mock = &api;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (t, org, id) = org_with_customer(&req, &ctx).await;
+        // The period ends in 40 hours: inside the window on the first of two nights.
+        let start = Utc::now() - Duration::days(30) + Duration::hours(40);
+        subscribe(&ctx, id, 2, start).await;
+        let gone = connect(&req, &t, &org, "clean").await;
+        connect(&req, &t, &org, "degraded").await;
+        let row = connections::Entity::find_by_id(gone).one(&ctx.db).await;
+        let mut a: connections::ActiveModel = row.unwrap().unwrap().into();
+        a.status = Set("revoked".into());
+        a.update(&ctx.db).await.unwrap();
+        // The nightly's own write fails once; the organisation run it enqueued retries it.
+        Mock::given(method("POST"))
+            .and(path("/v1/subscriptions/sub_1"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({})))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .named("first nightly write fails")
+            .mount(mock)
+            .await;
+        nightly(&ctx).await;
+        assert_eq!(status(&ctx, gone).await, "disconnected");
+        ctx.drain_jobs().await;
+        // The failed write (expected once above) was followed by the run's successful one.
+        assert_eq!(quantities(&ctx, id).await, (1, Some(2)));
+        let sql = "SELECT count(*) AS n FROM runs WHERE job_type = 'billing_sync' \
+                   AND organisation_id IS NOT NULL AND status = 'done'";
+        let r = ctx.db.query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DbBackend::Postgres,
+            sql,
+        ));
+        let n: i64 = r.await.unwrap().unwrap().try_get("", "n").unwrap();
+        // Two connects, and the pre-renewal run the nightly enqueued.
+        assert_eq!(n, 3);
+    })
+    .await;
+    api.verify().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn increase_after_unapplied_renewal_is_prorated() {
+    let api = MockServer::start().await;
+    subscription_mock(&api).await;
+    expect_update(&api, 2, "create_prorations", 1).await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (t, org, id) = org_with_customer(&req, &ctx).await;
+        // The stored period ended a day ago; its rollover webhook has not arrived yet.
+        subscribe(&ctx, id, 1, Utc::now() - Duration::days(31)).await;
+        Pg::new(&ctx.db).record_quantity(id, 1, 3).await.unwrap();
+        connect(&req, &t, &org, "clean").await;
+        // The old period's paid 3 does not cover the new one.
+        connect(&req, &t, &org, "degraded").await;
+        assert_eq!(quantities(&ctx, id).await.0, 2);
+    })
+    .await;
+    api.verify().await;
+}

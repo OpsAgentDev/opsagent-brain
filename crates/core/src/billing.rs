@@ -283,6 +283,10 @@ pub trait BillingRepo: Send + Sync {
     /// blocked, so it cannot deadlock with them. A no-op outside a transaction.
     async fn lock_seats(&self, organisation_id: Uuid) -> RepoResult<()>;
 
+    /// Serialises the organisation's quantity syncs until the transaction ends (a lock apart
+    /// from `lock_seats`). A no-op outside a transaction.
+    async fn lock_quantity(&self, organisation_id: Uuid) -> RepoResult<()>;
+
     /// Distinct accounts (`provider:account`) in `connected`, `degraded` or `revoked`, plus,
     /// with `since`, those ever connected and disconnected at or after it (except with reason
     /// `REVOKED_AT_PERIOD_END`): the accounts paid for this period.
@@ -292,7 +296,8 @@ pub trait BillingRepo: Send + Sync {
         since: Option<DateTime<Utc>>,
     ) -> RepoResult<Vec<String>>;
 
-    /// Records a quantity `billing_sync` set at the provider, and the period's `paid` quantity.
+    /// Records a quantity `billing_sync` set at the provider; `paid_quantity` only rises (to
+    /// `paid`), so a late record never lowers what the period paid for.
     async fn record_quantity(
         &self,
         organisation_id: Uuid,

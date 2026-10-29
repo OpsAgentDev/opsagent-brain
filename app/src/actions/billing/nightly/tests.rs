@@ -167,7 +167,7 @@ async fn revoked_before_renewal_is_disconnected_and_audited() {
         .apply_subscription(org.id, &s, ends - Duration::days(14))
         .await
         .unwrap();
-    // Revoked inside the stored period: kept until the renewal is within 26 hours.
+    // Revoked inside the stored period: kept until the renewal is within 50 hours.
     let c = connected(&store, org.id).await;
     let repo = store.connections();
     assert!(repo
@@ -185,9 +185,13 @@ async fn revoked_before_renewal_is_disconnected_and_audited() {
             .unwrap()
             .unwrap()
     };
-    night(&store, &mail, ends - Duration::hours(27)).await;
+    night(&store, &mail, ends - Duration::hours(51)).await;
     assert_eq!(get().await.status, S::Revoked);
-    night(&store, &mail, ends - Duration::hours(25)).await;
+    night(&store, &mail, ends - Duration::hours(49)).await;
+    // An organisation billing_sync run backs up the nightly's own quantity sync.
+    let jobs = store.jobs();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].kind, opsagent_ledger::JobKind::BillingSync);
     let now = get().await;
     let reason = now.status_reason.as_deref();
     assert_eq!(

@@ -123,47 +123,69 @@ impl BillingSync {
 
     /// Brings Stripe's quantity to the target under run `run_id`'s ledger: each write has its
     /// own effect key (`billing:quantity:<org>:<quantity>:<proration>`) and Idempotency-Key, and
-    /// records the quantity (and `paid_quantity`) it set.
+    /// records the quantity (and `paid_quantity`) it set. All of it runs in one transaction
+    /// holding the organisation's quantity lock, so concurrent syncs reach Stripe and storage
+    /// in the same order, and each reads the state the previous one committed. A failure rolls
+    /// back the records with their effects; the retry replays the same Idempotency-Keys.
     pub(super) async fn sync_quantity(&self, run_id: Uuid, org: Uuid) -> LResult<Value> {
-        let b = self.uow.billing().billing(org).await.map_err(lerr)?;
+        let tx = self.uow.begin().await.map_err(lerr)?;
+        tx.billing().lock_quantity(org).await.map_err(lerr)?;
+        let out = self.sync_locked(&*tx, run_id, org).await?;
+        tx.commit().await.map_err(lerr)?;
+        Ok(out)
+    }
+
+    async fn sync_locked(&self, tx: &dyn Tx, run_id: Uuid, org: Uuid) -> LResult<Value> {
+        let b = tx.billing().billing(org).await.map_err(lerr)?;
         let Some(sub) = b.subscription.filter(|s| s.status.is_subscribed()) else {
             return Ok(json!({ "skipped": "not_subscribed" }));
         };
-        let live = self.uow.billing().billable_accounts(org, None).await;
+        let live = tx.billing().billable_accounts(org, None).await;
         let target = i32::try_from(live.map_err(lerr)?.len().max(1)).unwrap_or(i32::MAX);
-        let (current, paid) = (sub.quantity, b.paid_quantity.unwrap_or(sub.quantity));
+        let current = sub.quantity;
+        // Renewed but the rollover not yet applied: the new period has paid only `current`.
+        let renewed = sub
+            .current_period_end
+            .is_some_and(|e| e <= self.clock.now());
+        let paid = match renewed {
+            true => current,
+            false => b.paid_quantity.unwrap_or(current),
+        };
         if target == current {
             return Ok(json!({ "quantity": current, "changed": false }));
         }
-        let id = sub.subscription_id.as_str();
+        let w = Write {
+            tx,
+            run_id,
+            org,
+            subscription_id: sub.subscription_id.as_str(),
+        };
         if target <= paid {
-            self.write(run_id, org, id, (target, paid), false).await?;
+            self.write(&w, (target, paid), false).await?;
             return Ok(json!({ "quantity": target, "prorate": false, "changed": true }));
         }
         // Above what this period paid for: back to it free, then prorate only the rest.
         if current < paid {
-            self.write(run_id, org, id, (paid, paid), false).await?;
+            self.write(&w, (paid, paid), false).await?;
         }
-        self.write(run_id, org, id, (target, target), true).await?;
+        self.write(&w, (target, target), true).await?;
         Ok(json!({ "quantity": target, "prorate": true, "changed": true }))
     }
 
-    /// One quantity write at Stripe, then the stored `(quantity, paid)`.
+    /// One quantity write at Stripe, then the stored `(quantity, paid)`, on `w.tx`.
     async fn write(
         &self,
-        run_id: Uuid,
-        org: Uuid,
-        subscription_id: &str,
+        w: &Write<'_>,
         (quantity, paid): (i32, i32),
         prorate: bool,
     ) -> LResult<()> {
         let proration = if prorate { "create_prorations" } else { "none" };
-        let key = format!("billing:quantity:{org}:{quantity}:{proration}");
-        let idem = format!("{run_id}:{key}");
+        let key = format!("billing:quantity:{}:{quantity}:{proration}", w.org);
+        let idem = format!("{}:{key}", w.run_id);
         let provider = &self.provider;
-        with_effect(self.uow.ledger(), run_id, &key, true, || async {
+        with_effect(w.tx.ledger(), w.run_id, &key, true, || async {
             match provider
-                .set_quantity(subscription_id, quantity, prorate, &idem)
+                .set_quantity(w.subscription_id, quantity, prorate, &idem)
                 .await
             {
                 Ok(()) => {}
@@ -176,8 +198,8 @@ impl BillingSync {
                     return Err(LedgerError::Job { code, retry: true });
                 }
             }
-            let repo = self.uow.billing();
-            repo.record_quantity(org, quantity, paid)
+            let repo = w.tx.billing();
+            repo.record_quantity(w.org, quantity, paid)
                 .await
                 .map_err(lerr)?;
             Ok(None)
@@ -185,4 +207,12 @@ impl BillingSync {
         .await?;
         Ok(())
     }
+}
+
+/// Where a quantity write goes: the locked transaction, the run's ledger, the subscription.
+struct Write<'a> {
+    tx: &'a dyn Tx,
+    run_id: Uuid,
+    org: Uuid,
+    subscription_id: &'a str,
 }

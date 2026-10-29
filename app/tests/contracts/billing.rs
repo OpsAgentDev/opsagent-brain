@@ -242,6 +242,11 @@ contract_suite! {
         next.current_period_end = Some(at(60 * 86_400));
         assert!(repo.apply_subscription(o, &next, at(30 * 86_400)).await.unwrap());
         assert_eq!(repo.billing(o).await.unwrap().paid_quantity, Some(1));
+        // A late record of a lower quantity never lowers what was paid.
+        repo.record_quantity(o, 2, 2).await.unwrap();
+        repo.record_quantity(o, 1, 1).await.unwrap();
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.subscription.unwrap().quantity, b.paid_quantity), (1, Some(2)));
         assert!(matches!(repo.record_quantity(Uuid::new_v4(), 1, 1).await, Err(RepoError::NotFound)));
     }
 
