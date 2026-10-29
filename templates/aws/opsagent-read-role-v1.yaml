@@ -48,10 +48,15 @@ Resources:
               AWS: !Ref OpsAgentPrincipal
             Action:
               - sts:AssumeRole
-              - sts:TagSession
             Condition:
               StringEquals:
                 sts:ExternalId: !Ref ExternalId
+          # sts:ExternalId is not in the TagSession request context, so tagging needs its own statement.
+          - Effect: Allow
+            Principal:
+              AWS: !Ref OpsAgentPrincipal
+            Action:
+              - sts:TagSession
       Policies:
         - PolicyName: OpsAgentReadAllowlist
           PolicyDocument:

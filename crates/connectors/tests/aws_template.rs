@@ -46,13 +46,20 @@ fn trust_requires_external_id_and_allows_tag_session() {
     );
     let t = render_template_v1(&params(None)).unwrap().trust;
     assert_eq!(
-        t["Statement"][0],
-        json!({
-            "Effect": "Allow",
-            "Principal": {"AWS": "arn:aws:iam::999999999999:role/opsagent-outbound"},
-            "Action": ["sts:AssumeRole", "sts:TagSession"],
-            "Condition": {"StringEquals": {"sts:ExternalId": "ext-1"}}
-        })
+        t["Statement"],
+        json!([
+            {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::999999999999:role/opsagent-outbound"},
+                "Action": ["sts:AssumeRole"],
+                "Condition": {"StringEquals": {"sts:ExternalId": "ext-1"}}
+            },
+            {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::999999999999:role/opsagent-outbound"},
+                "Action": ["sts:TagSession"]
+            }
+        ])
     );
 }
 
