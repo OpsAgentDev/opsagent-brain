@@ -97,7 +97,7 @@ pub struct TokenPath {
 }
 
 #[utoipa::path(post, path = "/invites/{token}/accept", tag = "members", params(TokenPath),
-    responses((status = 200, body = Membership), (status = 401, body = Problem), (status = 403, body = Problem),
+    responses((status = 200, body = Membership), (status = 401, body = Problem), (status = 402, body = Problem), (status = 403, body = Problem),
         (status = 410, body = Problem)))]
 async fn accept(
     State(app): State<AppState>,

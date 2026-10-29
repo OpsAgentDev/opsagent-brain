@@ -60,7 +60,7 @@ mod tests {
         let store = Arc::new(MemStore::default());
         let dispatcher = Arc::new(RunDispatcher::new(store.clone()));
         let clock = Arc::new(crate::adapters::memory::FixedClock(Utc::now()));
-        let gate = crate::actions::billing::BillingGate::new(store.clone(), false, clock);
+        let gate = crate::actions::billing::BillingGate::new(false, clock);
         let tick = Arc::new(SchedulerTick::new(store, dispatcher, gate));
         let every = Duration::from_secs(60);
         let buf = Buf::default();

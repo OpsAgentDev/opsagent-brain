@@ -24,7 +24,7 @@ use super::{
     RunDispatcher,
 };
 use crate::{
-    actions::{uow::UnitOfWork, ConnectorSource},
+    actions::{billing::BillingGate, uow::UnitOfWork, ConnectorSource},
     creds,
     error::AppResult,
 };
@@ -39,6 +39,7 @@ pub struct VerifyConnection {
     connectors: Arc<dyn ConnectorSource>,
     pub(super) dispatcher: Arc<RunDispatcher>,
     pub(super) clock: Arc<dyn Clock>,
+    pub(super) gate: BillingGate,
 }
 
 /// Serves every provider with one connector.
@@ -67,6 +68,7 @@ impl VerifyConnection {
         connectors: Arc<dyn ConnectorSource>,
         dispatcher: Arc<RunDispatcher>,
         clock: Arc<dyn Clock>,
+        gate: BillingGate,
     ) -> Self {
         Self {
             uow,
@@ -75,6 +77,7 @@ impl VerifyConnection {
             connectors,
             dispatcher,
             clock,
+            gate,
         }
     }
 

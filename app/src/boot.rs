@@ -31,8 +31,8 @@ use crate::{
     controllers,
     error::{AppError, AppResult},
     jobs::{
-        BillingSyncJob, DeliverAlertJob, DeliverBriefingJob, DeliverWeeklyJob, FullScanJob,
-        JobHandler, RetentionJob, Scheduler, VerifyJob, WatchScanJob, WorkerRunner,
+        BillingGated, BillingSyncJob, DeliverAlertJob, DeliverBriefingJob, DeliverWeeklyJob,
+        FullScanJob, JobHandler, RetentionJob, Scheduler, VerifyJob, WatchScanJob, WorkerRunner,
     },
     mailers::{self, Mailer},
     mcp, middleware,
@@ -191,7 +191,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
     );
     // One guard for recipient confirms and delivery mail.
     let guard = Arc::new(recipients::MailGuard::new(d.uow.clone(), d.limiter.clone()));
-    let gate = billing::BillingGate::new(d.uow.clone(), d.config.billing_enforced, d.clock.clone());
+    let gate = billing::BillingGate::new(d.config.billing_enforced, d.clock.clone());
     Actions {
         waitlist: waitlist::Waitlist {
             join: waitlist::JoinWaitlist::new(
@@ -227,6 +227,11 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                     s,
                 ),
                 gate: gate.clone(),
+                skip_gated: billing::SkipGatedRun::new(
+                    d.uow.clone(),
+                    d.redis.clone(),
+                    gate.clone(),
+                ),
             }
         },
         auth: auth::Auth {
@@ -273,7 +278,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.clock.clone(),
                 gate.clone(),
             ),
-            accept_invite: members::AcceptInvite::new(d.uow.clone(), d.clock.clone()),
+            accept_invite: members::AcceptInvite::new(d.uow.clone(), d.clock.clone(), gate.clone()),
             remove_member: members::RemoveMember::new(d.uow.clone(), d.clock.clone()),
         },
         findings: findings::Findings {
@@ -324,6 +329,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 connectors,
                 dispatcher.clone(),
                 d.clock.clone(),
+                gate.clone(),
             ),
             scheduler_tick: Arc::new(runs::SchedulerTick::new(
                 d.scheduler_uow.clone(),
@@ -453,7 +459,11 @@ fn integrations(d: &Deps, gate: billing::BillingGate) -> integrations::Integrati
         api_base_url: d.config.api_base_url.clone(),
     };
     integrations::Integrations {
-        start_slack_install: integrations::StartSlackInstall::new(slack.clone(), gate),
+        start_slack_install: integrations::StartSlackInstall::new(
+            slack.clone(),
+            d.uow.clone(),
+            gate,
+        ),
         finish_slack_install: integrations::FinishSlackInstall::new(
             d.uow.clone(),
             d.kek.clone(),
@@ -506,17 +516,27 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
 /// the job work share the state's one pool (`pool_size` with a worker).
 pub fn worker(state: &AppState) -> WorkerRunner {
     let (runs, deliveries) = (&state.actions.runs, &state.actions.deliveries);
+    // Scans and deliveries stop for a billing-gated organisation; verify and the global jobs never do.
+    let skip = Arc::new(state.actions.billing.skip_gated.clone());
+    let gated = |inner: Arc<dyn JobHandler>| -> Arc<dyn JobHandler> {
+        Arc::new(BillingGated {
+            inner,
+            skip: skip.clone(),
+        })
+    };
     let handlers: Vec<Arc<dyn JobHandler>> = vec![
         Arc::new(VerifyJob(Arc::new(runs.verify_connection.clone()))),
-        Arc::new(FullScanJob(Arc::new(runs.full_scan.clone()))),
-        Arc::new(WatchScanJob(Arc::new(runs.watch_scan.clone()))),
-        Arc::new(DeliverBriefingJob(Arc::new(
+        gated(Arc::new(FullScanJob(Arc::new(runs.full_scan.clone())))),
+        gated(Arc::new(WatchScanJob(Arc::new(runs.watch_scan.clone())))),
+        gated(Arc::new(DeliverBriefingJob(Arc::new(
             deliveries.deliver_briefing.clone(),
-        ))),
-        Arc::new(DeliverWeeklyJob(Arc::new(
+        )))),
+        gated(Arc::new(DeliverWeeklyJob(Arc::new(
             deliveries.deliver_weekly.clone(),
-        ))),
-        Arc::new(DeliverAlertJob(Arc::new(deliveries.deliver_alert.clone()))),
+        )))),
+        gated(Arc::new(DeliverAlertJob(Arc::new(
+            deliveries.deliver_alert.clone(),
+        )))),
         Arc::new(RetentionJob(Arc::new(state.actions.retention.clone()))),
         Arc::new(BillingSyncJob(Arc::new(state.actions.billing.sync.clone()))),
     ];

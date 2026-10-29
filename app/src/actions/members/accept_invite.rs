@@ -9,21 +9,26 @@ use opsagent_core::{
 use uuid::Uuid;
 
 use crate::{
-    actions::uow::{Tx, UnitOfWork},
+    actions::{
+        billing::{BillingGate, Seat},
+        uow::{Tx, UnitOfWork},
+    },
     error::{AppError, AppResult},
     tokens::hash_token,
 };
 
 /// Accepts an invite for the signed-in user; the organisation and the role held. One
-/// transaction: a refused accept leaves the invite pending.
+/// transaction: a refused accept leaves the invite pending. A new member of a read-only
+/// organisation gets 402 `billing_required`, one past the tier's member limit `plan_limit`.
 pub struct AcceptInvite {
     uow: Arc<dyn UnitOfWork>,
     clock: Arc<dyn Clock>,
+    gate: BillingGate,
 }
 
 impl AcceptInvite {
-    pub fn new(uow: Arc<dyn UnitOfWork>, clock: Arc<dyn Clock>) -> Self {
-        Self { uow, clock }
+    pub fn new(uow: Arc<dyn UnitOfWork>, clock: Arc<dyn Clock>, gate: BillingGate) -> Self {
+        Self { uow, clock, gate }
     }
 
     pub async fn run(&self, user_id: Uuid, token: &str) -> AppResult<(Organisation, Role)> {
@@ -52,6 +57,15 @@ impl AcceptInvite {
             .await?
             .filter(|o| o.deleted_at.is_none())
             .ok_or_else(gone)?;
+        if tx.orgs().membership(&org.slug, user_id).await?.is_none() {
+            // Serialises concurrent accepts, so two cannot both take the last seat.
+            tx.orgs().lock(org.id).await?;
+            self.gate.require_writable(tx.as_ref(), org.id).await?;
+            let seat = Seat::Member;
+            self.gate
+                .require_plan_room(tx.as_ref(), org.id, seat)
+                .await?;
+        }
         let role = join(tx.as_ref(), &org, user_id, inv.role).await?;
         let target = Some(("invite", inv.id.to_string()));
         let entry = AuditEntry::member(Some(org.id), user_id, "invite.accept", target);
@@ -102,7 +116,7 @@ mod tests {
             mail.clone(),
             "https://web.test".into(),
             at(0),
-            BillingGate::new(Arc::new(store.clone()), false, at(0)),
+            BillingGate::new(false, at(0)),
         );
         invite
             .run(&scope, owner.id, "new@example.com", "member")
@@ -118,12 +132,20 @@ mod tests {
             .unwrap();
         let invitee = user(&store, "new@example.com").await;
 
-        let late = AcceptInvite::new(Arc::new(store.clone()), at(8));
+        let late = AcceptInvite::new(
+            Arc::new(store.clone()),
+            at(8),
+            BillingGate::new(false, at(8)),
+        );
         let err = late.run(invitee.id, token).await.unwrap_err();
         assert!(matches!(err, AppError::Gone("invite_invalid")), "{err:?}");
 
         // Still pending: within the week it is accepted.
-        let in_time = AcceptInvite::new(Arc::new(store.clone()), at(6));
+        let in_time = AcceptInvite::new(
+            Arc::new(store.clone()),
+            at(6),
+            BillingGate::new(false, at(6)),
+        );
         let (joined, role) = in_time.run(invitee.id, token).await.unwrap();
         assert_eq!((joined.id, role), (org.id, Role::Member));
     }

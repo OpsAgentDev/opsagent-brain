@@ -32,5 +32,7 @@ pub async fn read_only(app: &AppState, scope: &OrgScope, parts: &Parts) -> Resul
         return Ok(());
     }
     let gate = &app.actions.billing.gate;
-    Ok(gate.require_writable(scope.organisation.id).await?)
+    Ok(gate
+        .require_writable(&*app.uow, scope.organisation.id)
+        .await?)
 }

@@ -57,7 +57,9 @@ impl CreateConnection {
             .registry
             .spec(provider)
             .map_err(|_| AppError::Invalid("provider must be aws".into()))?;
-        self.gate.require_connection_room(organisation_id).await?;
+        self.gate
+            .require_connection_room(&*self.uow, organisation_id)
+            .await?;
         let creds = registry::new_creds(provider, Uuid::new_v4().to_string(), &display_name);
         let tx = self.uow.begin().await?;
         let sealed = Dek::of(tx.orgs(), self.kek.as_ref(), organisation_id)

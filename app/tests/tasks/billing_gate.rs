@@ -97,3 +97,18 @@ async fn not_enforced_scheduler_runs_canceled_org() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn past_due_7_days_skipped_before_the_nightly() {
+    serve_with(enforced, |req, ctx| async move {
+        reset(&ctx).await;
+        let (_, _, org) = owner_org(&req, &prepare(&ctx)).await;
+        set_billing(&ctx, org, "past_due", "team", 7).await;
+        due_scan(&ctx, org).await;
+        tick(&ctx).await;
+        assert_eq!(count(&ctx, SKIPPED).await, 1);
+        assert_eq!(count(&ctx, JOBS).await, 0);
+    })
+    .await;
+}

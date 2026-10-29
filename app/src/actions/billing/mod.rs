@@ -5,6 +5,7 @@ mod checkout;
 mod gate;
 mod nightly;
 mod portal;
+mod skip_gated;
 mod sync;
 mod webhook;
 
@@ -16,8 +17,9 @@ use opsagent_core::billing::{plan_limits, BillingError, BillingStatus, PlanLimit
 use uuid::Uuid;
 
 pub use checkout::StartCheckout;
-pub use gate::{BillingGate, BILLING_REQUIRED, PLAN_LIMIT, TRIAL_LIMIT};
+pub use gate::{trial_limit, BillingGate, Seat, BILLING_REQUIRED, PLAN_LIMIT, TRIAL_LIMIT};
 pub use portal::OpenPortal;
+pub use skip_gated::SkipGatedRun;
 pub use sync::{enqueue_sync, BillingSync};
 pub use webhook::HandleWebhook;
 
@@ -36,6 +38,7 @@ pub struct Billing {
     pub webhook: HandleWebhook,
     pub sync: BillingSync,
     pub gate: BillingGate,
+    pub skip_gated: SkipGatedRun,
 }
 
 /// What the billing actions read from `Config`. No `Debug`: it holds the webhook secret.

@@ -10,7 +10,7 @@ use chrono::{DateTime, Duration, Utc};
 use opsagent_core::{
     audit::AuditEntry,
     billing::{
-        BillingStatus as B, OrgBilling, SubscriptionState, Tier,
+        BillingStatus as B, OrgBilling, SubscriptionState, Tier, PAUSE_AFTER_DAYS,
         REVOKED_AT_PERIOD_END as REVOKED_REASON,
     },
     connection::ConnectionStatus as S,
@@ -28,7 +28,6 @@ use crate::{
 };
 
 const TRIAL_DAYS: i64 = 14;
-const PAUSE_AFTER_DAYS: i64 = 7;
 /// The job type of the marker runs that hold the notices' ledger keys (no worker).
 const NOTICE_JOB: &str = "billing_notice";
 

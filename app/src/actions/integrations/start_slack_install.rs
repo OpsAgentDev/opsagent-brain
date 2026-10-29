@@ -1,8 +1,13 @@
+use std::sync::Arc;
+
 use uuid::Uuid;
 
 use super::{configured, not_configured, redirect_uri, SlackSettings};
 use crate::{
-    actions::billing::BillingGate,
+    actions::{
+        billing::{BillingGate, Seat},
+        uow::UnitOfWork,
+    },
     adapters::slack::{AUTHORIZE_URL, BOT_SCOPES},
     error::AppResult,
 };
@@ -12,17 +17,24 @@ use crate::{
 /// session) to check the callback against.
 pub struct StartSlackInstall {
     settings: SlackSettings,
+    uow: Arc<dyn UnitOfWork>,
     gate: BillingGate,
 }
 
 impl StartSlackInstall {
-    pub fn new(settings: SlackSettings, gate: BillingGate) -> Self {
-        Self { settings, gate }
+    pub fn new(settings: SlackSettings, uow: Arc<dyn UnitOfWork>, gate: BillingGate) -> Self {
+        Self {
+            settings,
+            uow,
+            gate,
+        }
     }
 
     pub async fn run(&self, organisation_id: Uuid, state: &str) -> AppResult<String> {
-        // Only when already over: an install replaces the one Slack integration, adding none.
-        self.gate.require_plan_room(organisation_id, false).await?;
+        let seat = Seat::Integration;
+        self.gate
+            .require_plan_room(&*self.uow, organisation_id, seat)
+            .await?;
         let s = &self.settings;
         if !configured(s) {
             return Err(not_configured());

@@ -12,7 +12,10 @@ use uuid::Uuid;
 
 use super::RunDispatcher;
 use crate::{
-    actions::{billing::BillingGate, uow::UnitOfWork},
+    actions::{
+        billing::BillingGate,
+        uow::{Tx, UnitOfWork},
+    },
     error::AppResult,
 };
 
@@ -54,10 +57,10 @@ impl SchedulerTick {
     }
 
     /// `true` when `key`'s job is one a billing-gated organisation does not get.
-    async fn gated(&self, key: &opsagent_core::run::RunKey) -> AppResult<bool> {
+    async fn gated(&self, tx: &dyn Tx, key: &opsagent_core::run::RunKey) -> AppResult<bool> {
         let gated_kind = JobKind::parse(&key.job_type).is_some_and(|k| GATED.contains(&k));
         match (gated_kind, key.organisation_id) {
-            (true, Some(org)) => self.gate.gated(org).await,
+            (true, Some(org)) => self.gate.gated(tx, org).await,
             _ => Ok(false),
         }
     }
@@ -89,7 +92,7 @@ impl SchedulerTick {
             tx.commit().await?;
             return Ok(false);
         }
-        if self.gated(&key).await? {
+        if self.gated(&*tx, &key).await? {
             // The run is recorded (history shows why nothing ran) but never enqueued.
             let out = tx.ledger().create_run(key).await?;
             if out.created {
@@ -178,7 +181,7 @@ mod tests {
         let pool = Database::connect(url).await.unwrap();
         let uow = Arc::new(Pg::new(pool));
         let clock = Arc::new(crate::adapters::memory::FixedClock(Utc::now()));
-        let tick = SchedulerTick::new(uow.clone(), dispatcher, BillingGate::new(uow, false, clock));
+        let tick = SchedulerTick::new(uow.clone(), dispatcher, BillingGate::new(false, clock));
         assert_eq!(tick.run(Utc::now()).await.unwrap(), None);
         held.commit().await.unwrap();
     }

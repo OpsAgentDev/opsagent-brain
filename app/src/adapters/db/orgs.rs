@@ -313,6 +313,16 @@ impl<C: Conn> OrganisationsRepo for Pg<C> {
         invite(row)
     }
 
+    async fn pending_invites(&self, organisation_id: Uuid, now: DateTime<Utc>) -> RepoResult<u64> {
+        invites::Entity::find()
+            .filter(invites::Column::OrganisationId.eq(organisation_id))
+            .filter(invites::Column::Status.eq("pending"))
+            .filter(invites::Column::ExpiresAt.gt(DateTimeWithTimeZone::from(now)))
+            .count(self.db())
+            .await
+            .map_err(db_err)
+    }
+
     async fn take_invite(
         &self,
         token_hash: &str,

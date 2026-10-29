@@ -205,6 +205,14 @@ impl OrganisationsRepo for MemStore {
         Ok(invite)
     }
 
+    async fn pending_invites(&self, organisation_id: Uuid, now: DateTime<Utc>) -> RepoResult<u64> {
+        let s = self.state();
+        let live = |i: &&InviteRow| {
+            i.pending && i.invite.organisation_id == organisation_id && i.invite.expires_at > now
+        };
+        Ok(s.invites.iter().filter(live).count() as u64)
+    }
+
     async fn take_invite(
         &self,
         token_hash: &str,

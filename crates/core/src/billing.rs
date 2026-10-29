@@ -127,6 +127,10 @@ pub const fn plan_limits(tier: Tier) -> PlanLimits {
     }
 }
 
+/// Past due this many days or more is `paused` (`billing_sync` writes it nightly; the gate
+/// reads it from `past_due_since` before then).
+pub const PAUSE_AFTER_DAYS: i64 = 7;
+
 /// An organisation's stored billing state; webhooks are its writers.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct OrgBilling {
@@ -134,6 +138,17 @@ pub struct OrgBilling {
     pub subscription: Option<SubscriptionState>,
     pub status: BillingStatus,
     pub past_due_since: Option<DateTime<Utc>>,
+}
+
+impl OrgBilling {
+    /// `BillingStatus::in_good_standing` at `now`, except a `past_due` that started
+    /// `PAUSE_AFTER_DAYS` or more ago (the nightly has not paused it yet).
+    pub fn in_good_standing(&self, now: DateTime<Utc>) -> bool {
+        let cutoff = now - chrono::Duration::days(PAUSE_AFTER_DAYS);
+        let overdue = self.status == BillingStatus::PastDue
+            && self.past_due_since.is_some_and(|t| t <= cutoff);
+        self.status.in_good_standing() && !overdue
+    }
 }
 
 /// A subscription as the latest applied Stripe event described it.
@@ -305,5 +320,24 @@ mod tests {
             .collect();
         use BillingStatus as B;
         assert_eq!(good, [B::Trialing, B::Active, B::PastDue]);
+    }
+
+    #[test]
+    fn past_due_7_days_is_not_good_standing() {
+        let now = Utc::now();
+        let since = |d: chrono::Duration| OrgBilling {
+            status: BillingStatus::PastDue,
+            past_due_since: Some(now - d),
+            ..Default::default()
+        };
+        let day = chrono::Duration::days(1);
+        assert!(since(day * 7 - chrono::Duration::seconds(1)).in_good_standing(now));
+        assert!(!since(day * 7).in_good_standing(now));
+        let active = OrgBilling {
+            status: BillingStatus::Active,
+            past_due_since: Some(now - day * 30),
+            ..Default::default()
+        };
+        assert!(active.in_good_standing(now));
     }
 }

@@ -22,7 +22,10 @@ use super::{
     verify_verdict::{decide, Verdict},
 };
 use crate::{
-    actions::{billing::enqueue_sync, uow::Tx},
+    actions::{
+        billing::{enqueue_sync, TRIAL_LIMIT},
+        uow::Tx,
+    },
     models::enum_str,
 };
 
@@ -167,6 +170,9 @@ impl VerifyConnection {
             first_connected_at: first_connect.then_some(now),
         };
         let tx = self.fenced(step).await?;
+        if self.trial_refuses(&*tx, c, to).await? {
+            return self.hold_for_trial(tx, step).await;
+        }
         let Some(written) = self.claim(&*tx, c, to, v).await? else {
             return Ok(false);
         };
@@ -178,7 +184,9 @@ impl VerifyConnection {
         }
         self.record(&*tx, c, run.id, Some(o), &enum_str(written), None)
             .await?;
-        if first_connect && written == S::Connected {
+        let org = c.organisation_id;
+        let gated = self.gate.gated(&*tx, org).await.map_err(lerr)?;
+        if first_connect && written == S::Connected && !gated {
             let key = first_scan_key(c, now);
             // The first scan's run and job commit with the outcome.
             let out = self.dispatcher.create_and_enqueue(&*tx, key, now).await;
@@ -186,6 +194,47 @@ impl VerifyConnection {
         }
         tx.ledger()
             .set_status(run.id, step.fence, RunStatus::Done, None)
+            .await?;
+        tx.commit().await.map_err(lerr)?;
+        Ok(true)
+    }
+
+    /// `true` when `to` would make `c` billable in a trialing organisation that already has
+    /// its one billable connection (billing.md, Trial limit). Locks the organisation row, so
+    /// two verifies cannot both take the trial's one connection.
+    async fn trial_refuses(&self, tx: &dyn Tx, c: &Connection, to: S) -> LResult<bool> {
+        let billable = |s: S| matches!(s, S::Connected | S::Degraded | S::Revoked);
+        if !self.gate.enforced() || !matches!(to, S::Connected | S::Degraded) || billable(c.status)
+        {
+            return Ok(false);
+        }
+        let org = c.organisation_id;
+        tx.orgs().lock(org).await.map_err(lerr)?;
+        self.gate.trial_full(tx, org, false).await.map_err(lerr)
+    }
+
+    /// Leaves the connection unconnected (`verifying` back to `pending`) with reason
+    /// `trial_limit`, so the dashboard can say why, and ends the run `Skipped` `trial_limit`;
+    /// verifying again after subscribing connects it.
+    async fn hold_for_trial(&self, tx: Box<dyn Tx>, step: &Step<'_>) -> LResult<bool> {
+        let (c, reason) = (step.c, TRIAL_LIMIT);
+        let back = match c.status {
+            S::Verifying => S::Pending,
+            s => s,
+        };
+        let cas =
+            tx.connections()
+                .cas_status(c.organisation_id, c.id, c.status, back, Some(reason));
+        if !cas.await.map_err(lerr)? {
+            return Ok(false);
+        }
+        tx.ledger()
+            .set_status(
+                step.run.id,
+                step.fence,
+                RunStatus::Skipped,
+                Some(reason.into()),
+            )
             .await?;
         tx.commit().await.map_err(lerr)?;
         Ok(true)

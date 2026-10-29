@@ -187,3 +187,191 @@ async fn over_member_limit_blocks_invite() {
     })
     .await;
 }
+
+async fn invite(req: &TestServer, csrf: &str, org: &str, email: &str) -> TestResponse {
+    let body = json!({ "email": email, "role": "member" });
+    post(req, csrf, &format!("/v1/orgs/{org}/invites"), body).await
+}
+
+#[tokio::test]
+#[serial]
+async fn pending_invites_count_toward_member_limit() {
+    serve_with(enforced, |req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, id) = owner_org(&req, &mail).await;
+        set_billing(&ctx, id, "active", "starter", 0).await;
+        // Owner plus one pending invite fills the starter's 2 seats.
+        assert_eq!(
+            invite(&req, &t, &org, "a@example.com").await.status_code(),
+            201
+        );
+        refused(&invite(&req, &t, &org, "b@example.com").await, "plan_limit");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn accept_refused_over_limit_or_read_only() {
+    serve_with(enforced, |mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, id) = owner_org(&req, &mail).await;
+        set_billing(&ctx, id, "active", "team", 0).await;
+        assert_eq!(
+            invite(&req, &t, &org, "late@example.com")
+                .await
+                .status_code(),
+            201
+        );
+        let accept = format!("/v1/invites/{}/accept", token_of(&last_link(&mail)));
+        // Downgraded to starter, and the second seat taken meanwhile.
+        set_billing(&ctx, id, "active", "starter", 0).await;
+        as_member(&mut req, &ctx, &mail, &org, "member@example.com").await;
+        req.clear_cookies();
+        let tl = sign_in(&req, &mail, "late@example.com").await;
+        let res = req.post(&accept).add_header("X-CSRF-Token", &tl).await;
+        refused(&res, "plan_limit");
+        // Read-only refuses too; the invite stayed pending, so it can still be accepted later.
+        set_billing(&ctx, id, "canceled", "team", 0).await;
+        let res = req.post(&accept).add_header("X-CSRF-Token", &tl).await;
+        refused(&res, "billing_required");
+        set_billing(&ctx, id, "active", "team", 0).await;
+        let res = req.post(&accept).add_header("X-CSRF-Token", &tl).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+    })
+    .await;
+}
+
+async fn connection_row(ctx: &TestApp, id: &str) -> (String, Option<String>) {
+    let r = ctx
+        .db
+        .query_one_raw(stmt(
+            "SELECT status, status_reason FROM connections WHERE id = $1::uuid",
+            vec![id.into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    (
+        r.try_get("", "status").unwrap(),
+        r.try_get("", "status_reason").unwrap(),
+    )
+}
+
+async fn count(ctx: &TestApp, sql: &str) -> i64 {
+    let r = ctx
+        .db
+        .query_one_raw(stmt(sql, vec![]))
+        .await
+        .unwrap()
+        .unwrap();
+    r.try_get("", "n").unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn trial_pending_connection_counts_and_verify_holds_second() {
+    serve_with(enforced, |req, ctx| async move {
+        let (t, org, id) = owner_org(&req, &prepare(&ctx)).await;
+        set_billing(&ctx, id, "trialing", "team", 0).await;
+        assert_eq!(new_connection(&req, &t, &org).await.status_code(), 201);
+        // Still pending, it is the trial's one connection.
+        refused(&new_connection(&req, &t, &org).await, "trial_limit");
+
+        // Two pending from before the trial: the second to verify stays pending.
+        ctx.db
+            .execute_raw(stmt(
+                "UPDATE connections SET status = 'disconnected', disconnected_at = now() \
+                 WHERE organisation_id = $1",
+                vec![id.into()],
+            ))
+            .await
+            .unwrap();
+        set_billing(&ctx, id, "active", "team", 0).await;
+        let a = create_connection(&req, &t, &org, "fake", "clean").await;
+        let b = create_connection(&req, &t, &org, "fake", "noisy").await;
+        let (a, b) = (a["id"].as_str().unwrap(), b["id"].as_str().unwrap());
+        set_billing(&ctx, id, "trialing", "team", 0).await;
+        assert_eq!(verify(&req, &t, &org, a, "").await.status_code(), 202);
+        assert_eq!(connection_row(&ctx, a).await.0, "connected");
+        assert_eq!(verify(&req, &t, &org, b, "").await.status_code(), 202);
+        assert_eq!(
+            connection_row(&ctx, b).await,
+            ("pending".into(), Some("trial_limit".into()))
+        );
+        let q = format!(
+            "SELECT count(*) n FROM runs WHERE connection_id = '{b}' AND job_type = 'verify' \
+             AND status = 'skipped' AND partial_reason = 'trial_limit'"
+        );
+        assert_eq!(count(&ctx, &q).await, 1);
+        // Subscribed: verifying again connects it (a later minute, so a new verify run).
+        set_billing(&ctx, id, "active", "team", 0).await;
+        let earlier = format!(
+            "UPDATE runs SET scheduled_at = scheduled_at - interval '1 hour' WHERE connection_id = '{b}'"
+        );
+        ctx.db.execute_raw(stmt(&earlier, vec![])).await.unwrap();
+        assert_eq!(verify(&req, &t, &org, b, "").await.status_code(), 202);
+        assert_eq!(connection_row(&ctx, b).await.0, "connected");
+    })
+    .await;
+}
+
+fn key(org: Uuid, conn: &str, job: &str) -> opsagent_core::run::RunKey {
+    opsagent_core::run::RunKey {
+        organisation_id: Some(org),
+        connection_id: Some(conn.parse().unwrap()),
+        job_type: job.into(),
+        scheduled_at: chrono::Utc::now(),
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn worker_skips_gated_jobs_but_verifies_without_first_scan() {
+    serve_with(enforced, |req, ctx| async move {
+        let (t, org, id) = owner_org(&req, &prepare(&ctx)).await;
+        set_billing(&ctx, id, "active", "team", 0).await;
+        let c = create_connection(&req, &t, &org, "fake", "clean").await;
+        let c = c["id"].as_str().unwrap();
+        set_billing(&ctx, id, "paused", "team", 8).await;
+        let d = actions(&ctx).unwrap().runs.dispatcher.clone();
+        // As `POST .../verify` leaves it (that route is read-only now).
+        ctx.db
+            .execute_raw(stmt(
+                "UPDATE connections SET status = 'verifying' WHERE id = $1::uuid",
+                vec![c.into()],
+            ))
+            .await
+            .unwrap();
+        // Verify is not gated: the connection connects, but no first scan is queued.
+        d.enqueue(key(id, c, "verify"), chrono::Utc::now()).await.unwrap();
+        ctx.drain_jobs().await;
+        assert_eq!(connection_row(&ctx, c).await.0, "connected");
+        let scans = format!("SELECT count(*) n FROM runs WHERE connection_id = '{c}' AND job_type = 'full_scan'");
+        assert_eq!(count(&ctx, &scans).await, 0);
+        // Jobs already queued (or retried, or continued) end skipped when a worker picks them up.
+        for job in ["full_scan", "deliver_briefing"] {
+            d.enqueue(key(id, c, job), chrono::Utc::now()).await.unwrap();
+        }
+        ctx.drain_jobs().await;
+        let skipped = format!(
+            "SELECT count(*) n FROM runs WHERE connection_id = '{c}' \
+             AND job_type IN ('full_scan', 'deliver_briefing') AND status = 'skipped' AND partial_reason = 'billing'"
+        );
+        assert_eq!(count(&ctx, &skipped).await, 2);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn past_due_7_days_is_read_only_before_the_nightly() {
+    serve_with(enforced, |req, ctx| async move {
+        let (t, org, id) = owner_org(&req, &prepare(&ctx)).await;
+        set_billing(&ctx, id, "past_due", "team", 6).await;
+        assert_eq!(new_connection(&req, &t, &org).await.status_code(), 201);
+        set_billing(&ctx, id, "past_due", "team", 7).await;
+        refused(&new_connection(&req, &t, &org).await, "billing_required");
+    })
+    .await;
+}

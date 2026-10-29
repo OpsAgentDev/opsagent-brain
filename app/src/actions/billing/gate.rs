@@ -6,12 +6,13 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use opsagent_core::{
     billing::{plan_limits, BillingStatus, PlanLimits},
+    connection::{Connection, ConnectionStatus as S},
     repo::Clock,
 };
 use uuid::Uuid;
 
 use crate::{
-    actions::uow::UnitOfWork,
+    actions::uow::Repos,
     error::{AppError, AppResult},
 };
 
@@ -34,7 +35,7 @@ pub(super) struct Usage {
 }
 
 impl Usage {
-    pub async fn of(repos: &dyn UnitOfWork, organisation_id: Uuid) -> AppResult<Self> {
+    pub async fn of(repos: &dyn Repos, organisation_id: Uuid) -> AppResult<Self> {
         let members = repos.orgs().members(organisation_id).await?.len();
         let integrations = repos.integrations().list(organisation_id).await?;
         let integrations = integrations.iter().filter(|i| i.status == "active").count();
@@ -51,35 +52,47 @@ impl Usage {
     }
 }
 
+/// What a plan-limit check is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seat {
+    /// A new invite: members plus pending invites must stay under the member limit.
+    Invite,
+    /// An accepted invite: members must stay under the member limit.
+    Member,
+    /// A Slack install: it replaces the one Slack integration, so only "already over" refuses.
+    Integration,
+}
+
+/// The checks take the repositories to read from, so a caller can run them inside its
+/// transaction (`AcceptInvite`, the verify outcome) or on the pool.
 #[derive(Clone)]
 pub struct BillingGate {
-    uow: Arc<dyn UnitOfWork>,
     enforced: bool,
     clock: Arc<dyn Clock>,
 }
 
 impl BillingGate {
-    pub fn new(uow: Arc<dyn UnitOfWork>, enforced: bool, clock: Arc<dyn Clock>) -> Self {
-        Self {
-            uow,
-            enforced,
-            clock,
-        }
+    pub fn new(enforced: bool, clock: Arc<dyn Clock>) -> Self {
+        Self { enforced, clock }
+    }
+
+    pub fn enforced(&self) -> bool {
+        self.enforced
     }
 
     /// `true` when the organisation's scans, deliveries and writes are stopped: enforced and
-    /// not trialing, active or past due under 7 days.
-    pub async fn gated(&self, organisation_id: Uuid) -> AppResult<bool> {
+    /// not in good standing (`OrgBilling::in_good_standing`).
+    pub async fn gated(&self, r: &dyn Repos, organisation_id: Uuid) -> AppResult<bool> {
         if !self.enforced {
             return Ok(false);
         }
-        let b = self.uow.billing().billing(organisation_id).await?;
-        Ok(!b.status.in_good_standing())
+        let b = r.billing().billing(organisation_id).await?;
+        Ok(!b.in_good_standing(self.clock.now()))
     }
 
     /// 402 `billing_required` when `gated`.
-    pub async fn require_writable(&self, organisation_id: Uuid) -> AppResult<()> {
-        match self.gated(organisation_id).await? {
+    pub async fn require_writable(&self, r: &dyn Repos, organisation_id: Uuid) -> AppResult<()> {
+        match self.gated(r, organisation_id).await? {
             true => Err(payment_required(
                 BILLING_REQUIRED,
                 "This organisation is read-only until billing is set up.",
@@ -88,44 +101,70 @@ impl BillingGate {
         }
     }
 
-    /// 402 `trial_limit` when a trialing organisation already has its one billable connection.
-    pub async fn require_connection_room(&self, organisation_id: Uuid) -> AppResult<()> {
+    /// `true` when the organisation is trialing and already has its one connection: a
+    /// billable one, or (`count_pending`) one still pending or verifying.
+    pub async fn trial_full(
+        &self,
+        r: &dyn Repos,
+        organisation_id: Uuid,
+        count_pending: bool,
+    ) -> AppResult<bool> {
         if !self.enforced {
-            return Ok(());
+            return Ok(false);
         }
-        let b = self.uow.billing().billing(organisation_id).await?;
+        let b = r.billing().billing(organisation_id).await?;
         if b.status != BillingStatus::Trialing {
-            return Ok(());
+            return Ok(false);
         }
         let since = b.subscription.and_then(|s| s.current_period_start);
         let since = since.unwrap_or_else(|| self.clock.now());
-        let billable = self.uow.billing().billable_count(organisation_id, since);
-        match billable.await? >= 1 {
-            true => Err(payment_required(
-                TRIAL_LIMIT,
-                "A trial covers one connection; subscribe to add more.",
-            )),
+        let mut n = r.billing().billable_count(organisation_id, since).await?;
+        if count_pending {
+            let all = r.connections().list(organisation_id).await?;
+            let pending = |c: &&Connection| matches!(c.status, S::Pending | S::Verifying);
+            n += all.iter().filter(pending).count() as i64;
+        }
+        Ok(n >= 1)
+    }
+
+    /// 402 `trial_limit` when `trial_full`, pending connections included.
+    pub async fn require_connection_room(
+        &self,
+        r: &dyn Repos,
+        organisation_id: Uuid,
+    ) -> AppResult<()> {
+        match self.trial_full(r, organisation_id, true).await? {
+            true => Err(trial_limit()),
             false => Ok(()),
         }
     }
 
     /// 402 `plan_limit` when the organisation is over its tier's member or integration limit,
-    /// or (`adding_member`) already at its member limit.
+    /// or `seat` would take it past its member limit.
     pub async fn require_plan_room(
         &self,
+        r: &dyn Repos,
         organisation_id: Uuid,
-        adding_member: bool,
+        seat: Seat,
     ) -> AppResult<()> {
         if !self.enforced {
             return Ok(());
         }
-        let b = self.uow.billing().billing(organisation_id).await?;
+        let b = r.billing().billing(organisation_id).await?;
         let Some(limits) = b.subscription.and_then(|s| s.tier).map(plan_limits) else {
             return Ok(());
         };
-        let u = Usage::of(&*self.uow, organisation_id).await?;
-        let at_members = limits.members.is_some_and(|c| u.members >= c as usize);
-        match u.over(limits) || (adding_member && at_members) {
+        let u = Usage::of(r, organisation_id).await?;
+        let seats = match seat {
+            Seat::Invite => {
+                let pending = r.orgs().pending_invites(organisation_id, self.clock.now());
+                Some(u.members + pending.await? as usize)
+            }
+            Seat::Member => Some(u.members),
+            Seat::Integration => None,
+        };
+        let full = seats.is_some_and(|n| limits.members.is_some_and(|c| n >= c as usize));
+        match u.over(limits) || full {
             true => Err(payment_required(
                 PLAN_LIMIT,
                 "Your plan's member or integration limit is reached; upgrade to add more.",
@@ -133,4 +172,12 @@ impl BillingGate {
             false => Ok(()),
         }
     }
+}
+
+/// 402 `trial_limit`.
+pub fn trial_limit() -> AppError {
+    payment_required(
+        TRIAL_LIMIT,
+        "A trial covers one connection; subscribe to add more.",
+    )
 }

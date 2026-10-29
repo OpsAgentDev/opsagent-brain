@@ -12,6 +12,8 @@ mod scheduler;
 mod verify;
 mod watch_scan;
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use opsagent_core::run::RunStatus;
 use opsagent_ledger::{JobKind, LedgerError};
@@ -34,6 +36,27 @@ pub use watch_scan::WatchScanJob;
 pub trait JobHandler: Send + Sync {
     fn kind(&self) -> JobKind;
     async fn handle(&self, run_id: Uuid) -> AppResult<()>;
+}
+
+/// Wraps a scan or delivery handler: a billing-gated organisation's run ends `Skipped`
+/// `billing` (`SkipGatedRun`) instead of running.
+pub struct BillingGated {
+    pub inner: Arc<dyn JobHandler>,
+    pub skip: Arc<crate::actions::billing::SkipGatedRun>,
+}
+
+#[async_trait]
+impl JobHandler for BillingGated {
+    fn kind(&self) -> JobKind {
+        self.inner.kind()
+    }
+
+    async fn handle(&self, run_id: Uuid) -> AppResult<()> {
+        if self.skip.run(run_id).await? {
+            return Ok(());
+        }
+        self.inner.handle(run_id).await
+    }
 }
 
 /// A chunked run's result as a job's: another worker holding or having taken over the run

@@ -127,6 +127,21 @@ contract_suite! {
         assert!(s.orgs().take_invite("unknown", now).await.unwrap().is_none());
     }
 
+    async fn pending_invites_counts_live_ones(s) {
+        let o = org(s, "pend").await;
+        let e = opsagent_core::user::Email::parse("p@example.com").unwrap();
+        let now = Utc::now();
+        assert_eq!(s.orgs().pending_invites(o.id, now).await.unwrap(), 0);
+        s.orgs().insert_invite(o.id, &e, Role::Member, "p1", now + Duration::days(7)).await.unwrap();
+        s.orgs().insert_invite(o.id, &e, Role::Member, "p2", now + Duration::days(7)).await.unwrap();
+        s.orgs().insert_invite(o.id, &e, Role::Member, "p3", now - Duration::seconds(1)).await.unwrap();
+        assert_eq!(s.orgs().pending_invites(o.id, now).await.unwrap(), 2);
+        s.orgs().take_invite("p1", now).await.unwrap().unwrap();
+        assert_eq!(s.orgs().pending_invites(o.id, now).await.unwrap(), 1);
+        let other = org(s, "pend-other").await;
+        assert_eq!(s.orgs().pending_invites(other.id, now).await.unwrap(), 0);
+    }
+
     async fn rollback_discards_writes(s) {
         let tx = s.begin().await.unwrap();
         let o = tx.orgs().insert(new_org("acme")).await.unwrap();
