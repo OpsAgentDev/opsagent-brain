@@ -28,7 +28,8 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
-/// `{org}` (slug) resolved against the session user; 404 unless they are a member of it.
+/// `{org}` (slug) resolved against the session user; 404 unless they are a member of it,
+/// then the billing read-only gate (`billing_gate`).
 impl FromRequestParts<AppState> for OrgScope {
     type Rejection = ApiError;
     async fn from_request_parts(parts: &mut Parts, app: &AppState) -> Result<Self, ApiError> {
@@ -37,6 +38,8 @@ impl FromRequestParts<AppState> for OrgScope {
             .await
             .map_err(|_| ApiError::not_found())?;
         let slug = p.get("org").ok_or_else(ApiError::not_found)?;
-        Ok(app.actions.orgs.resolve_scope.run(user_id, slug).await?)
+        let scope = app.actions.orgs.resolve_scope.run(user_id, slug).await?;
+        super::billing_gate::read_only(app, &scope, parts).await?;
+        Ok(scope)
     }
 }

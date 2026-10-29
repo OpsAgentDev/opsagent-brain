@@ -90,6 +90,12 @@ impl BillingStatus {
             Self::Trialing | Self::Active | Self::PastDue | Self::Paused
         )
     }
+
+    /// Scans, deliveries and writes run (billing.md, Gating): trialing, active, or past due
+    /// under 7 days (`billing_sync` moves 7 days or more to `paused`).
+    pub fn in_good_standing(self) -> bool {
+        matches!(self, Self::Trialing | Self::Active | Self::PastDue)
+    }
 }
 
 /// `None` is unlimited. Investigation caps are stored only; nothing enforces them yet.
@@ -289,5 +295,15 @@ mod tests {
         }
         assert_eq!(Tier::parse("gold"), None);
         assert_eq!(BillingStatus::parse("unpaid"), None);
+    }
+
+    #[test]
+    fn good_standing_is_trialing_active_or_past_due() {
+        let good: Vec<_> = BillingStatus::ALL
+            .into_iter()
+            .filter(|s| s.in_good_standing())
+            .collect();
+        use BillingStatus as B;
+        assert_eq!(good, [B::Trialing, B::Active, B::PastDue]);
     }
 }

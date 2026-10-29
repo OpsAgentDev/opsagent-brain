@@ -191,6 +191,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
     );
     // One guard for recipient confirms and delivery mail.
     let guard = Arc::new(recipients::MailGuard::new(d.uow.clone(), d.limiter.clone()));
+    let gate = billing::BillingGate::new(d.uow.clone(), d.config.billing_enforced, d.clock.clone());
     Actions {
         waitlist: waitlist::Waitlist {
             join: waitlist::JoinWaitlist::new(
@@ -225,6 +226,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                     d.clock.clone(),
                     s,
                 ),
+                gate: gate.clone(),
             }
         },
         auth: auth::Auth {
@@ -269,6 +271,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.mailer.clone(),
                 d.config.web_base_url.clone(),
                 d.clock.clone(),
+                gate.clone(),
             ),
             accept_invite: members::AcceptInvite::new(d.uow.clone(), d.clock.clone()),
             remove_member: members::RemoveMember::new(d.uow.clone(), d.clock.clone()),
@@ -290,6 +293,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.uow.clone(),
                 d.kek.clone(),
                 d.registry.clone(),
+                gate.clone(),
             ),
             list_connections: connections::ListConnections::new(d.uow.clone()),
             get_connection: connections::GetConnection::new(d.uow.clone()),
@@ -324,6 +328,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             scheduler_tick: Arc::new(runs::SchedulerTick::new(
                 d.scheduler_uow.clone(),
                 dispatcher.clone(),
+                gate.clone(),
             )),
             dispatcher,
             scan_now: runs::ScanNow::new(d.uow.clone(), full_scan.clone(), d.clock.clone()),
@@ -331,7 +336,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             full_scan,
         },
         recipients: recipients(d, guard.clone()),
-        integrations: integrations(d),
+        integrations: integrations(d, gate.clone()),
         deliveries: deliveries(d, guard),
         oauth: oauth::OAuth {
             register_client: oauth::RegisterClient::new(
@@ -441,14 +446,14 @@ fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipi
     }
 }
 
-fn integrations(d: &Deps) -> integrations::Integrations {
+fn integrations(d: &Deps, gate: billing::BillingGate) -> integrations::Integrations {
     let slack = integrations::SlackSettings {
         client_id: d.config.slack_client_id.clone(),
         client_secret: d.config.slack_client_secret.clone(),
         api_base_url: d.config.api_base_url.clone(),
     };
     integrations::Integrations {
-        start_slack_install: integrations::StartSlackInstall::new(slack.clone()),
+        start_slack_install: integrations::StartSlackInstall::new(slack.clone(), gate),
         finish_slack_install: integrations::FinishSlackInstall::new(
             d.uow.clone(),
             d.kek.clone(),

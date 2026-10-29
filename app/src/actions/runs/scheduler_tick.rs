@@ -1,5 +1,8 @@
 //! `SchedulerTick`: enqueue due schedules and due retries, then advance `next_due_at`.
 //! The scheduler holds no state; the unique run key makes a repeated tick a no-op (jobs.md).
+//! A billing-gated organisation's per-connection work (scans and deliveries) ends `Skipped`
+//! with reason `billing`; verify and the global jobs (retention, `billing_sync`, which sends
+//! the one paused notice) are never gated.
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -8,7 +11,19 @@ use opsagent_ledger::JobKind;
 use uuid::Uuid;
 
 use super::RunDispatcher;
-use crate::{actions::uow::UnitOfWork, error::AppResult};
+use crate::{
+    actions::{billing::BillingGate, uow::UnitOfWork},
+    error::AppResult,
+};
+
+/// What a gated organisation does not get (billing.md, Gating).
+const GATED: [JobKind; 5] = [
+    JobKind::FullScan,
+    JobKind::WatchScan,
+    JobKind::DeliverBriefing,
+    JobKind::DeliverWeekly,
+    JobKind::DeliverAlert,
+];
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct TickReport {
@@ -22,11 +37,29 @@ pub struct SchedulerTick {
     /// whole tick, the other does the per-schedule work.
     uow: Arc<dyn UnitOfWork>,
     dispatcher: Arc<RunDispatcher>,
+    gate: BillingGate,
 }
 
 impl SchedulerTick {
-    pub fn new(uow: Arc<dyn UnitOfWork>, dispatcher: Arc<RunDispatcher>) -> Self {
-        Self { uow, dispatcher }
+    pub fn new(
+        uow: Arc<dyn UnitOfWork>,
+        dispatcher: Arc<RunDispatcher>,
+        gate: BillingGate,
+    ) -> Self {
+        Self {
+            uow,
+            dispatcher,
+            gate,
+        }
+    }
+
+    /// `true` when `key`'s job is one a billing-gated organisation does not get.
+    async fn gated(&self, key: &opsagent_core::run::RunKey) -> AppResult<bool> {
+        let gated_kind = JobKind::parse(&key.job_type).is_some_and(|k| GATED.contains(&k));
+        match (gated_kind, key.organisation_id) {
+            (true, Some(org)) => self.gate.gated(org).await,
+            _ => Ok(false),
+        }
     }
 
     /// One tick at `now`. `None` when another scheduler holds the advisory lock.
@@ -53,6 +86,16 @@ impl SchedulerTick {
         if next.is_none() {
             tracing::error!(schedule = %id, cron, tz, "invalid schedule, disabling");
             tx.schedules().advance(id, None).await?;
+            tx.commit().await?;
+            return Ok(false);
+        }
+        if self.gated(&key).await? {
+            // The run is recorded (history shows why nothing ran) but never enqueued.
+            let out = tx.ledger().create_run(key).await?;
+            if out.created {
+                tx.ledger().skip_run(out.run.id, "billing").await?;
+            }
+            tx.schedules().advance(id, next).await?;
             tx.commit().await?;
             return Ok(false);
         }
@@ -133,7 +176,9 @@ mod tests {
         let store = Arc::new(MemStore::default());
         let dispatcher = Arc::new(RunDispatcher::new(store));
         let pool = Database::connect(url).await.unwrap();
-        let tick = SchedulerTick::new(Arc::new(Pg::new(pool)), dispatcher);
+        let uow = Arc::new(Pg::new(pool));
+        let clock = Arc::new(crate::adapters::memory::FixedClock(Utc::now()));
+        let tick = SchedulerTick::new(uow.clone(), dispatcher, BillingGate::new(uow, false, clock));
         assert_eq!(tick.run(Utc::now()).await.unwrap(), None);
         held.commit().await.unwrap();
     }

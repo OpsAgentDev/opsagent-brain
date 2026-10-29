@@ -59,7 +59,9 @@ mod tests {
     async fn scheduler_loop_ticks_on_interval() {
         let store = Arc::new(MemStore::default());
         let dispatcher = Arc::new(RunDispatcher::new(store.clone()));
-        let tick = Arc::new(SchedulerTick::new(store, dispatcher));
+        let clock = Arc::new(crate::adapters::memory::FixedClock(Utc::now()));
+        let gate = crate::actions::billing::BillingGate::new(store.clone(), false, clock);
+        let tick = Arc::new(SchedulerTick::new(store, dispatcher, gate));
         let every = Duration::from_secs(60);
         let buf = Buf::default();
         let sub = tracing_subscriber::fmt()

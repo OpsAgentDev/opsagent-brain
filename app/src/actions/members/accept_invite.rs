@@ -85,7 +85,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        actions::{members::InviteMember, orgs::test_support::*},
+        actions::{billing::BillingGate, members::InviteMember, orgs::test_support::*},
         adapters::memory::{FixedClock, MemStore},
         mailers::CaptureMailer,
     };
@@ -102,6 +102,7 @@ mod tests {
             mail.clone(),
             "https://web.test".into(),
             at(0),
+            BillingGate::new(Arc::new(store.clone()), false, at(0)),
         );
         invite
             .run(&scope, owner.id, "new@example.com", "member")

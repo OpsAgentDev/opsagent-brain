@@ -42,7 +42,8 @@ async fn slack_start(
 ) -> Result<Json<SlackStart>, ApiError> {
     scope.require_owner()?;
     let state = new_token();
-    let authorize_url = app.actions.integrations.start_slack_install.run(&state)?;
+    let start = &app.actions.integrations.start_slack_install;
+    let authorize_url = start.run(scope.organisation.id, &state).await?;
     // Overwrites any earlier state, so only the latest start can complete.
     session
         .insert(SLACK_KEY, (state, scope.organisation.id))

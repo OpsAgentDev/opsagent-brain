@@ -2,6 +2,7 @@
 //! Stripe Checkout and Portal sessions, and the Stripe webhook, which is the only writer of
 //! billing state.
 mod checkout;
+mod gate;
 mod nightly;
 mod portal;
 mod sync;
@@ -15,6 +16,7 @@ use opsagent_core::billing::{plan_limits, BillingError, BillingStatus, PlanLimit
 use uuid::Uuid;
 
 pub use checkout::StartCheckout;
+pub use gate::{BillingGate, BILLING_REQUIRED, PLAN_LIMIT, TRIAL_LIMIT};
 pub use portal::OpenPortal;
 pub use sync::{enqueue_sync, BillingSync};
 pub use webhook::HandleWebhook;
@@ -33,6 +35,7 @@ pub struct Billing {
     pub portal: OpenPortal,
     pub webhook: HandleWebhook,
     pub sync: BillingSync,
+    pub gate: BillingGate,
 }
 
 /// What the billing actions read from `Config`. No `Debug`: it holds the webhook secret.
@@ -152,7 +155,7 @@ impl GetBilling {
             false => 0,
         };
         let over_limit = match limits {
-            Some(l) => self.over_limit(organisation_id, l).await?,
+            Some(l) => gate::Usage::of(&*self.uow, organisation_id).await?.over(l),
             None => false,
         };
         Ok(BillingView {
@@ -165,13 +168,5 @@ impl GetBilling {
             over_limit,
             enforced: self.settings.enforced,
         })
-    }
-
-    async fn over_limit(&self, organisation_id: Uuid, l: PlanLimits) -> AppResult<bool> {
-        let over = |cap: Option<u32>, n: usize| cap.is_some_and(|c| n > c as usize);
-        let members = self.uow.orgs().members(organisation_id).await?.len();
-        let integrations = self.uow.integrations().list(organisation_id).await?;
-        let active = integrations.iter().filter(|i| i.status == "active").count();
-        Ok(over(l.members, members) || over(l.integrations, active))
     }
 }
