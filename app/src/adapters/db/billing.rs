@@ -12,7 +12,7 @@ use super::{db_err, Conn, Pg};
 
 const BILLING: &str = "SELECT stripe_customer_id, stripe_subscription_id, billing_status, \
   billing_tier, billing_quantity, trial_ends_at, current_period_start, current_period_end, \
-  past_due_since FROM organisations WHERE id = $1";
+  past_due_since, paid_quantity FROM organisations WHERE id = $1";
 
 /// Skips events older than the last one applied; a `past_due` event leaves `paused` (set by
 /// `billing_sync`) in place, and `past_due_since` keeps the first past-due instant.
@@ -27,6 +27,8 @@ const APPLY: &str = "UPDATE organisations SET stripe_subscription_id = $2, \
     OR ($3 = 'past_due' AND billing_status = 'paused') THEN billing_status ELSE $3 END, \
   billing_tier = $4, billing_quantity = $5, trial_ends_at = $6, current_period_start = $7, \
   current_period_end = $8, \
+  paid_quantity = CASE WHEN paid_quantity IS NULL OR current_period_start IS DISTINCT FROM $7 \
+    THEN $5 ELSE paid_quantity END, \
   past_due_since = CASE WHEN coalesce(payment_event_at > $9, false) \
       AND $3 IN ('active', 'past_due', 'trialing') THEN past_due_since \
     WHEN $3 IN ('past_due', 'paused') THEN coalesce(past_due_since, $9) END, \
@@ -42,14 +44,14 @@ const PAYMENT: &str = "UPDATE organisations SET billing_status = $2, \
   AND (($2 = 'past_due' AND billing_status IN ('trialing', 'active')) \
     OR ($2 = 'active' AND billing_status IN ('past_due', 'paused')))";
 
-/// One per account (a reconnected account has a new row on the same account id). A
-/// disconnected row counts only if it was ever connected (`billable_from`), and not when
-/// `billing_sync` ended it for being revoked through a period's end (not billed after it).
+/// One per account (a reconnected account has a new row on the same account id). With a
+/// `since` ($2), a disconnected row counts only if it was ever connected (`billable_from`), and
+/// not when `billing_sync` ended it for being revoked at a period's end (not billed after it).
 const BILLABLE: &str =
-    "SELECT count(DISTINCT provider || ':' || coalesce(external_account_id, id::text)) AS n \
+    "SELECT DISTINCT provider || ':' || coalesce(external_account_id, id::text) AS k \
   FROM connections WHERE organisation_id = $1 AND (status IN ('connected', 'degraded', 'revoked') \
   OR (status = 'disconnected' AND billable_from IS NOT NULL AND disconnected_at >= $2 \
-  AND status_reason IS DISTINCT FROM 'revoked_at_period_end'))";
+  AND status_reason IS DISTINCT FROM 'revoked_at_period_end')) ORDER BY k";
 
 fn get<T: sea_orm::TryGetable>(r: &QueryResult, col: &str) -> RepoResult<T> {
     r.try_get("", col).map_err(db_err)
@@ -77,6 +79,7 @@ fn billing_of(r: &QueryResult) -> RepoResult<OrgBilling> {
         subscription,
         status,
         past_due_since: get(r, "past_due_since")?,
+        paid_quantity: get(r, "paid_quantity")?,
     })
 }
 
@@ -210,20 +213,33 @@ impl<C: Conn> BillingRepo for Pg<C> {
         Ok(r.await.map_err(db_err)?.rows_affected() == 1)
     }
 
-    async fn billable_count(
+    async fn billable_accounts(
         &self,
         organisation_id: Uuid,
-        period_start: DateTime<Utc>,
-    ) -> RepoResult<i64> {
-        let values = vec![organisation_id.into(), period_start.into()];
-        let r = self
-            .db()
-            .query_one_raw(stmt(BILLABLE, values))
-            .await
-            .map_err(db_err)?;
-        get(
-            &r.ok_or_else(|| RepoError::Storage("count returned no row".into()))?,
-            "n",
-        )
+        since: Option<DateTime<Utc>>,
+    ) -> RepoResult<Vec<String>> {
+        let values = vec![organisation_id.into(), since.into()];
+        let rows = self.db().query_all_raw(stmt(BILLABLE, values));
+        rows.await
+            .map_err(db_err)?
+            .iter()
+            .map(|r| get(r, "k"))
+            .collect()
+    }
+
+    async fn record_quantity(
+        &self,
+        organisation_id: Uuid,
+        quantity: i32,
+        paid: i32,
+    ) -> RepoResult<()> {
+        let sql = "UPDATE organisations SET billing_quantity = $2, paid_quantity = $3, \
+          updated_at = now() WHERE id = $1";
+        let values = vec![organisation_id.into(), quantity.into(), paid.into()];
+        let r = self.db().execute_raw(stmt(sql, values));
+        match r.await.map_err(db_err)?.rows_affected() {
+            0 => Err(RepoError::NotFound),
+            _ => Ok(()),
+        }
     }
 }

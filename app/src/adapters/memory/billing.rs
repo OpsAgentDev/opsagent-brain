@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -70,6 +70,10 @@ impl BillingRepo for MemStore {
                 B::PastDue | B::Paused => b.past_due_since.or(Some(event_created)),
                 _ => None,
             };
+        }
+        let old_start = b.subscription.as_ref().and_then(|o| o.current_period_start);
+        if b.paid_quantity.is_none() || old_start != sub.current_period_start {
+            b.paid_quantity = Some(sub.quantity);
         }
         b.status = sub.status;
         b.subscription = Some(sub);
@@ -152,13 +156,13 @@ impl BillingRepo for MemStore {
         Ok(true)
     }
 
-    async fn billable_count(
+    async fn billable_accounts(
         &self,
         organisation_id: Uuid,
-        period_start: DateTime<Utc>,
-    ) -> RepoResult<i64> {
+        since: Option<DateTime<Utc>>,
+    ) -> RepoResult<Vec<String>> {
         let s = self.state();
-        let accounts: HashSet<_> = s
+        let accounts: BTreeSet<_> = s
             .connections
             .iter()
             .map(|(c, _)| c)
@@ -167,18 +171,31 @@ impl BillingRepo for MemStore {
                 S::Connected | S::Degraded | S::Revoked => true,
                 S::Disconnected => {
                     c.billable_from.is_some()
-                        && c.disconnected_at.is_some_and(|at| at >= period_start)
+                        && since.is_some_and(|p| c.disconnected_at.is_some_and(|at| at >= p))
                         && c.status_reason.as_deref() != Some(REVOKED_AT_PERIOD_END)
                 }
                 _ => false,
             })
             .map(|c| {
-                (
-                    c.provider.clone(),
-                    c.external_account_id.clone().unwrap_or(c.id.to_string()),
-                )
+                let account = c.external_account_id.clone();
+                format!("{}:{}", c.provider, account.unwrap_or(c.id.to_string()))
             })
             .collect();
-        Ok(accounts.len() as i64)
+        Ok(accounts.into_iter().collect())
+    }
+
+    async fn record_quantity(
+        &self,
+        organisation_id: Uuid,
+        quantity: i32,
+        paid: i32,
+    ) -> RepoResult<()> {
+        let mut s = self.state();
+        let b = &mut s.billing_mut(organisation_id)?.billing;
+        if let Some(sub) = b.subscription.as_mut() {
+            sub.quantity = quantity;
+        }
+        b.paid_quantity = Some(paid);
+        Ok(())
     }
 }

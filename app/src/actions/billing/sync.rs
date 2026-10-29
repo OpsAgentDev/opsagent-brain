@@ -1,8 +1,10 @@
-//! `billing_sync` (billing.md, Build decisions 3 and 13). An organisation's run sets Stripe's
-//! quantity to the billable count: up at once with proration, down only in the run the period
-//! rollover enqueued (keyed at the new `current_period_start`), without proration. The global
-//! run is the nightly pass (`nightly`).
-use std::{cmp::Ordering, sync::Arc};
+//! `billing_sync` (billing.md, Build decisions 3 and 13; PRD 7.9). Stripe bills each period
+//! in advance, so an organisation's run sets Stripe's quantity to its live accounts, at least
+//! one, at once: down without proration (no refund; the next renewal bills less), up without
+//! proration while within the period's `paid_quantity` (a reconnect is not charged twice),
+//! and above it with proration. The global run is the nightly pass (`nightly`), which also
+//! reconciles each organisation this way.
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use opsagent_core::{
@@ -29,8 +31,7 @@ use crate::{
 };
 
 /// Creates (once per key) and enqueues the organisation's `billing_sync` run at `at`, on
-/// `tx`, when the organisation is subscribed. Called where the billable count may change, and
-/// with the new period start on a rollover.
+/// `tx`, when the organisation is subscribed. Called where the live connections may change.
 pub async fn enqueue_sync(tx: &dyn Tx, organisation_id: Uuid, at: DateTime<Utc>) -> AppResult<()> {
     if !tx
         .billing()
@@ -102,7 +103,7 @@ impl BillingSync {
             let now = self.clock.now();
             let stats = match run.key.organisation_id {
                 Some(org) => self.sync_org(&run, org).await?,
-                None => self.nightly(now).await?,
+                None => self.nightly(run.id, now).await?,
             };
             Ok(ChunkOutcome {
                 stats,
@@ -114,45 +115,74 @@ impl BillingSync {
 
     /// Sets the quantity for organisation run `run`; its stats say what was set.
     async fn sync_org(&self, run: &RunRow, org: Uuid) -> LResult<Value> {
-        let skip = |why: &str| Ok(json!({ "skipped": why }));
         if !self.settings.stripe_configured {
-            return skip("stripe_unconfigured");
+            return Ok(json!({ "skipped": "stripe_unconfigured" }));
         }
+        self.sync_quantity(run.id, org).await
+    }
+
+    /// Brings Stripe's quantity to the target under run `run_id`'s ledger: each write has its
+    /// own effect key (`billing:quantity:<org>:<quantity>:<proration>`) and Idempotency-Key, and
+    /// records the quantity (and `paid_quantity`) it set.
+    pub(super) async fn sync_quantity(&self, run_id: Uuid, org: Uuid) -> LResult<Value> {
         let b = self.uow.billing().billing(org).await.map_err(lerr)?;
-        let sub = b.subscription.filter(|_| b.status.is_subscribed());
-        let Some((sub, start)) = sub.and_then(|s| s.current_period_start.map(|p| (s, p))) else {
-            return skip("not_subscribed");
+        let Some(sub) = b.subscription.filter(|s| s.status.is_subscribed()) else {
+            return Ok(json!({ "skipped": "not_subscribed" }));
         };
-        let rollover = run.key.scheduled_at == start;
-        if rollover {
-            // A connection revoked through the period that just ended is not billed for this
-            // one, even before the nightly pass gets to it.
-            self.end_revoked(org, &sub, self.clock.now()).await?;
+        let live = self.uow.billing().billable_accounts(org, None).await;
+        let target = i32::try_from(live.map_err(lerr)?.len().max(1)).unwrap_or(i32::MAX);
+        let (current, paid) = (sub.quantity, b.paid_quantity.unwrap_or(sub.quantity));
+        if target == current {
+            return Ok(json!({ "quantity": current, "changed": false }));
         }
-        let count = self.uow.billing().billable_count(org, start).await;
-        let target = i32::try_from(count.map_err(lerr)?.max(1)).unwrap_or(i32::MAX);
-        let prorate = match target.cmp(&sub.quantity) {
-            Ordering::Greater => true,
-            Ordering::Less if rollover => false,
-            _ => return Ok(json!({ "quantity": sub.quantity, "changed": false })),
-        };
-        let key = format!("billing:quantity:{target}");
-        let idem = format!("{}:{key}", run.id);
-        let (provider, id) = (&self.provider, sub.subscription_id.as_str());
-        with_effect(self.uow.ledger(), run.id, &key, true, || async {
-            match provider.set_quantity(id, target, prorate, &idem).await {
-                Ok(()) => Ok(None),
+        let id = sub.subscription_id.as_str();
+        if target <= paid {
+            self.write(run_id, org, id, (target, paid), false).await?;
+            return Ok(json!({ "quantity": target, "prorate": false, "changed": true }));
+        }
+        // Above what this period paid for: back to it free, then prorate only the rest.
+        if current < paid {
+            self.write(run_id, org, id, (paid, paid), false).await?;
+        }
+        self.write(run_id, org, id, (target, target), true).await?;
+        Ok(json!({ "quantity": target, "prorate": true, "changed": true }))
+    }
+
+    /// One quantity write at Stripe, then the stored `(quantity, paid)`.
+    async fn write(
+        &self,
+        run_id: Uuid,
+        org: Uuid,
+        subscription_id: &str,
+        (quantity, paid): (i32, i32),
+        prorate: bool,
+    ) -> LResult<()> {
+        let proration = if prorate { "create_prorations" } else { "none" };
+        let key = format!("billing:quantity:{org}:{quantity}:{proration}");
+        let idem = format!("{run_id}:{key}");
+        let provider = &self.provider;
+        with_effect(self.uow.ledger(), run_id, &key, true, || async {
+            match provider
+                .set_quantity(subscription_id, quantity, prorate, &idem)
+                .await
+            {
+                Ok(()) => {}
                 Err(BillingError::NotFound) => {
                     tracing::warn!(error_code = "not_found", "stripe subscription gone");
-                    Ok(None)
+                    return Ok(None);
                 }
                 Err(BillingError::Other(code)) => {
                     tracing::warn!(error_code = %code, "stripe quantity update failed");
-                    Err(LedgerError::Job { code, retry: true })
+                    return Err(LedgerError::Job { code, retry: true });
                 }
             }
+            let repo = self.uow.billing();
+            repo.record_quantity(org, quantity, paid)
+                .await
+                .map_err(lerr)?;
+            Ok(None)
         })
         .await?;
-        Ok(json!({ "quantity": target, "prorate": prorate, "changed": true }))
+        Ok(())
     }
 }

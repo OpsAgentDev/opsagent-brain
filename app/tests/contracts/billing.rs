@@ -204,7 +204,9 @@ contract_suite! {
         assert!(s.connections().cas_status(o, gone, S::Connected, S::Disconnected, None).await.unwrap());
         let d = s.connections().get(o, gone).await.unwrap().unwrap();
         let when = d.disconnected_at.expect("disconnected_at stamped");
-        let count = |start| s.billing().billable_count(o, start);
+        let count = |start| async move {
+            s.billing().billable_accounts(o, Some(start)).await.map(|a| a.len())
+        };
         assert_eq!(count(when - Duration::hours(1)).await.unwrap(), 4);
         assert_eq!(count(when).await.unwrap(), 4);
         assert_eq!(count(when + Duration::hours(1)).await.unwrap(), 3);
@@ -217,6 +219,30 @@ contract_suite! {
         let reason = Some(REVOKED_AT_PERIOD_END);
         assert!(s.connections().cas_status(o, revoked, S::Revoked, S::Disconnected, reason).await.unwrap());
         assert_eq!(count(when - Duration::hours(1)).await.unwrap(), 4);
+        // Live only (the quantity target): connected, degraded, revoked.
+        let live = s.billing().billable_accounts(o, None).await.unwrap();
+        assert_eq!(live, ["aws:1", "aws:2", "aws:3", "aws:7"]);
+    }
+
+    async fn paid_quantity_resets_on_a_new_period(s) {
+        let o = org(s).await;
+        let repo = s.billing();
+        assert!(repo.apply_subscription(o, &sub(B::Active, 2), at(10)).await.unwrap());
+        assert_eq!(repo.billing(o).await.unwrap().paid_quantity, Some(2));
+        // billing_sync raised it to 3 and back down to 1 in the same period.
+        repo.record_quantity(o, 1, 3).await.unwrap();
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.subscription.unwrap().quantity, b.paid_quantity), (1, Some(3)));
+        // The same period's echo keeps what was paid.
+        assert!(repo.apply_subscription(o, &sub(B::Active, 1), at(20)).await.unwrap());
+        assert_eq!(repo.billing(o).await.unwrap().paid_quantity, Some(3));
+        // The renewal bills the quantity in place, which is now all that is paid.
+        let mut next = sub(B::Active, 1);
+        next.current_period_start = Some(at(30 * 86_400));
+        next.current_period_end = Some(at(60 * 86_400));
+        assert!(repo.apply_subscription(o, &next, at(30 * 86_400)).await.unwrap());
+        assert_eq!(repo.billing(o).await.unwrap().paid_quantity, Some(1));
+        assert!(matches!(repo.record_quantity(Uuid::new_v4(), 1, 1).await, Err(RepoError::NotFound)));
     }
 
     async fn ending_status_beats_a_newer_payment(s) {

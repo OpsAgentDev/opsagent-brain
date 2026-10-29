@@ -22,7 +22,7 @@ use crate::{
 };
 
 /// The nightly pass makes no Stripe calls.
-struct NoStripe;
+pub(in crate::actions::billing) struct NoStripe;
 
 #[async_trait]
 impl BillingProvider for NoStripe {
@@ -43,7 +43,7 @@ impl BillingProvider for NoStripe {
     }
 }
 
-fn settings() -> BillingSettings {
+pub(in crate::actions::billing) fn settings() -> BillingSettings {
     BillingSettings {
         stripe_configured: true,
         webhook_configured: true,
@@ -85,7 +85,10 @@ fn sub(status: B, ends: DateTime<Utc>) -> SubscriptionState {
 }
 
 async fn night(store: &MemStore, mail: &Arc<CaptureMailer>, now: DateTime<Utc>) {
-    let st = sync(store, mail, now).nightly(now).await.unwrap();
+    let st = sync(store, mail, now)
+        .nightly(Uuid::new_v4(), now)
+        .await
+        .unwrap();
     assert_eq!(st["failed"], 0, "{st}");
 }
 
@@ -155,7 +158,7 @@ async fn trial_reminders_day_12_and_14_once() {
 }
 
 #[tokio::test]
-async fn revoked_past_period_end_is_disconnected_and_audited() {
+async fn revoked_before_renewal_is_disconnected_and_audited() {
     let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
     let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
     let ends = Utc.with_ymd_and_hms(2026, 11, 12, 10, 0, 0).unwrap();
@@ -164,7 +167,7 @@ async fn revoked_past_period_end_is_disconnected_and_audited() {
         .apply_subscription(org.id, &s, ends - Duration::days(14))
         .await
         .unwrap();
-    // Revoked inside the stored period: kept until that period is over.
+    // Revoked inside the stored period: kept until the renewal is within 26 hours.
     let c = connected(&store, org.id).await;
     let repo = store.connections();
     assert!(repo
@@ -182,9 +185,9 @@ async fn revoked_past_period_end_is_disconnected_and_audited() {
             .unwrap()
             .unwrap()
     };
-    night(&store, &mail, ends - Duration::hours(1)).await;
+    night(&store, &mail, ends - Duration::hours(27)).await;
     assert_eq!(get().await.status, S::Revoked);
-    night(&store, &mail, ends).await;
+    night(&store, &mail, ends - Duration::hours(25)).await;
     let now = get().await;
     let reason = now.status_reason.as_deref();
     assert_eq!(

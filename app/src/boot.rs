@@ -217,7 +217,12 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 get_billing: billing::GetBilling::new(d.uow.clone(), s.clone()),
                 checkout: billing::StartCheckout::new(d.uow.clone(), d.billing.clone(), s.clone()),
                 portal: billing::OpenPortal::new(d.uow.clone(), d.billing.clone(), s.clone()),
-                webhook: billing::HandleWebhook::new(d.uow.clone(), d.clock.clone(), s.clone()),
+                webhook: billing::HandleWebhook::new(
+                    d.uow.clone(),
+                    d.billing.clone(),
+                    d.clock.clone(),
+                    s.clone(),
+                ),
                 sync: billing::BillingSync::new(
                     d.uow.clone(),
                     d.redis.clone(),

@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
+use chrono::{DateTime, Utc};
 use opsagent_core::{
     billing::{plan_limits, BillingStatus, PlanLimits},
     connection::{Connection, ConnectionStatus as S},
@@ -101,39 +102,66 @@ impl BillingGate {
         }
     }
 
-    /// `true` when the organisation is trialing and already has its one connection: a
-    /// billable one, or (`count_pending`) one still pending or verifying.
-    pub async fn trial_full(
+    /// The trial's stored period start when enforced and trialing (`None` otherwise).
+    async fn trial_since(
         &self,
         r: &dyn Repos,
         organisation_id: Uuid,
-        count_pending: bool,
-    ) -> AppResult<bool> {
+    ) -> AppResult<Option<DateTime<Utc>>> {
         if !self.enforced {
-            return Ok(false);
+            return Ok(None);
         }
         let b = r.billing().billing(organisation_id).await?;
         if b.status != BillingStatus::Trialing {
-            return Ok(false);
+            return Ok(None);
         }
         let since = b.subscription.and_then(|s| s.current_period_start);
-        let since = since.unwrap_or_else(|| self.clock.now());
-        let mut n = r.billing().billable_count(organisation_id, since).await?;
-        if count_pending {
-            let all = r.connections().list(organisation_id).await?;
-            let pending = |c: &&Connection| matches!(c.status, S::Pending | S::Verifying);
-            n += all.iter().filter(pending).count() as i64;
-        }
-        Ok(n >= 1)
+        Ok(Some(since.unwrap_or_else(|| self.clock.now())))
     }
 
-    /// 402 `trial_limit` when `trial_full`, pending connections included.
+    /// `true` when connecting `account` (`provider:account`) would make the trialing
+    /// organisation pay for more than one distinct account this period; reconnecting the
+    /// account it already has is allowed.
+    pub async fn trial_refuses_account(
+        &self,
+        r: &dyn Repos,
+        organisation_id: Uuid,
+        account: &str,
+    ) -> AppResult<bool> {
+        let Some(since) = self.trial_since(r, organisation_id).await? else {
+            return Ok(false);
+        };
+        let mut paid = r
+            .billing()
+            .billable_accounts(organisation_id, Some(since))
+            .await?;
+        paid.retain(|a| a != account);
+        Ok(!paid.is_empty())
+    }
+
+    /// 402 `trial_limit` when the trialing organisation already has a live connection
+    /// (`connected`, `degraded`, `revoked`, or one still `pending` or `verifying`).
     pub async fn require_connection_room(
         &self,
         r: &dyn Repos,
         organisation_id: Uuid,
     ) -> AppResult<()> {
-        match self.trial_full(r, organisation_id, true).await? {
+        if self.trial_since(r, organisation_id).await?.is_none() {
+            return Ok(());
+        }
+        let live = |c: &Connection| {
+            matches!(
+                c.status,
+                S::Connected | S::Degraded | S::Revoked | S::Pending | S::Verifying
+            )
+        };
+        match r
+            .connections()
+            .list(organisation_id)
+            .await?
+            .iter()
+            .any(live)
+        {
             true => Err(trial_limit()),
             false => Ok(()),
         }

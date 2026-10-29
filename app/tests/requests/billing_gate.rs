@@ -316,6 +316,48 @@ async fn trial_pending_connection_counts_and_verify_holds_second() {
     .await;
 }
 
+#[tokio::test]
+#[serial]
+async fn trial_reconnects_its_account_but_not_another() {
+    serve_with(enforced, |req, ctx| async move {
+        let (t, org, id) = owner_org(&req, &prepare(&ctx)).await;
+        set_billing(&ctx, id, "trialing", "team", 0).await;
+        let disconnect = |c: String| {
+            let (req, t, org) = (&req, &t, &org);
+            async move {
+                let res = req
+                    .delete(&format!("/v1/orgs/{org}/connections/{c}"))
+                    .add_header("X-CSRF-Token", t)
+                    .await;
+                assert_eq!(res.status_code(), 200, "{}", res.text());
+            }
+        };
+        let connect = |account: &'static str| {
+            let (req, t, org) = (&req, &t, &org);
+            async move {
+                let c = create_connection(req, t, org, "fake", account).await;
+                let c = c["id"].as_str().unwrap().to_owned();
+                assert_eq!(verify(req, t, org, &c, "").await.status_code(), 202);
+                c
+            }
+        };
+        let first = connect("clean").await;
+        assert_eq!(connection_row(&ctx, &first).await.0, "connected");
+        disconnect(first).await;
+        // The same account again in the trial: allowed, it is already the one paid for.
+        let again = connect("clean").await;
+        assert_eq!(connection_row(&ctx, &again).await.0, "connected");
+        disconnect(again).await;
+        // A different account would be a second one this period.
+        let other = connect("noisy").await;
+        assert_eq!(
+            connection_row(&ctx, &other).await,
+            ("pending".into(), Some("trial_limit".into()))
+        );
+    })
+    .await;
+}
+
 fn key(org: Uuid, conn: &str, job: &str) -> opsagent_core::run::RunKey {
     opsagent_core::run::RunKey {
         organisation_id: Some(org),

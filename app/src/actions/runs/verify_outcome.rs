@@ -170,7 +170,10 @@ impl VerifyConnection {
             first_connected_at: first_connect.then_some(now),
         };
         let tx = self.fenced(step).await?;
-        if self.trial_refuses(&*tx, c, to).await? {
+        if self
+            .trial_refuses(&*tx, c, to, v.account.as_deref())
+            .await?
+        {
             return self.hold_for_trial(tx, step).await;
         }
         let Some(written) = self.claim(&*tx, c, to, v).await? else {
@@ -199,10 +202,16 @@ impl VerifyConnection {
         Ok(true)
     }
 
-    /// `true` when `to` would make `c` billable in a trialing organisation that already has
-    /// its one billable connection (billing.md, Trial limit). Takes the organisation's seat lock,
-    /// so two verifies cannot both take the trial's one connection.
-    async fn trial_refuses(&self, tx: &dyn Tx, c: &Connection, to: S) -> LResult<bool> {
+    /// `true` when `to` would make `c` (on `account`) a second distinct account paid for this
+    /// period in a trialing organisation (billing.md, Trial limit). Takes the organisation's
+    /// seat lock, so two verifies cannot both take the trial's one connection.
+    async fn trial_refuses(
+        &self,
+        tx: &dyn Tx,
+        c: &Connection,
+        to: S,
+        account: Option<&str>,
+    ) -> LResult<bool> {
         let billable = |s: S| matches!(s, S::Connected | S::Degraded | S::Revoked);
         if !self.gate.enforced() || !matches!(to, S::Connected | S::Degraded) || billable(c.status)
         {
@@ -210,7 +219,9 @@ impl VerifyConnection {
         }
         let org = c.organisation_id;
         tx.billing().lock_seats(org).await.map_err(lerr)?;
-        self.gate.trial_full(tx, org, false).await.map_err(lerr)
+        let account = format!("{}:{}", c.provider, account.unwrap_or_default());
+        let refuses = self.gate.trial_refuses_account(tx, org, &account);
+        refuses.await.map_err(lerr)
     }
 
     /// Leaves the connection unconnected (`verifying` back to `pending`) with reason

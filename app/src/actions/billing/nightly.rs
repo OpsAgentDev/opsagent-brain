@@ -1,5 +1,6 @@
 //! The nightly `billing_sync` pass (billing.md, Build decisions 3, 8 and 17), per subscribed
-//! organisation: connections still `revoked` when a period ended are disconnected, the trial
+//! organisation: connections still `revoked` within `RENEWAL_WINDOW` of the period's end are
+//! disconnected and the quantity is reconciled (so the renewal does not bill them), the trial
 //! reminders go out on day 12 and day 14, and 7 days past due becomes `paused` with one
 //! notice. Each mail is sent once per owner: its ledger key (`<key>:<owner id>`) sits on a
 //! `billing_notice` marker run keyed by the organisation and the trial end (or period start),
@@ -28,6 +29,9 @@ use crate::{
 };
 
 const TRIAL_DAYS: i64 = 14;
+/// A revoked connection is disconnected once its period ends within this many hours: the
+/// nightly runs every 24, so this always lands before the renewal.
+const RENEWAL_WINDOW_HOURS: i64 = 26;
 /// The job type of the marker runs that hold the notices' ledger keys (no worker).
 const NOTICE_JOB: &str = "billing_notice";
 
@@ -56,11 +60,11 @@ fn reminder_day(ends: DateTime<Utc>, now: DateTime<Utc>) -> Option<i64> {
 
 impl BillingSync {
     /// Every subscribed organisation in turn; one failing is counted and does not stop the rest.
-    pub(super) async fn nightly(&self, now: DateTime<Utc>) -> LResult<Value> {
+    pub(super) async fn nightly(&self, run_id: Uuid, now: DateTime<Utc>) -> LResult<Value> {
         let orgs = self.uow.billing().subscribed_orgs().await.map_err(lerr)?;
         let mut night = Night::default();
         for org in orgs {
-            if let Err(e) = self.night_org(org, now, &mut night).await {
+            if let Err(e) = self.night_org(run_id, org, now, &mut night).await {
                 night.failed += 1;
                 tracing::warn!(organisation_id = %org, error = %e, "billing nightly pass failed");
             }
@@ -69,13 +73,22 @@ impl BillingSync {
         serde_json::to_value(night).map_err(lerr)
     }
 
-    async fn night_org(&self, org: Uuid, now: DateTime<Utc>, night: &mut Night) -> LResult<()> {
+    async fn night_org(
+        &self,
+        run_id: Uuid,
+        org: Uuid,
+        now: DateTime<Utc>,
+        night: &mut Night,
+    ) -> LResult<()> {
         let repo = self.uow.billing();
         let b = repo.billing(org).await.map_err(lerr)?;
         let Some(sub) = b.subscription.as_ref() else {
             return Ok(());
         };
         night.disconnected += self.end_revoked(org, sub, now).await?;
+        if self.settings.stripe_configured {
+            self.sync_quantity(run_id, org).await?;
+        }
         let day = sub.trial_ends_at.and_then(|t| reminder_day(t, now));
         if let (B::Trialing, Some(day)) = (b.status, day) {
             night.reminders += u64::from(self.trial_reminder(org, sub, day).await?);
@@ -92,20 +105,21 @@ impl BillingSync {
         Ok(())
     }
 
-    /// Disconnects connections revoked since before the current period began (a period ended
-    /// while they were revoked), or once the stored period is over; returns how many.
-    pub(super) async fn end_revoked(
+    /// Disconnects connections still revoked once the stored period ends within
+    /// `RENEWAL_WINDOW_HOURS`; returns how many.
+    async fn end_revoked(
         &self,
         org: Uuid,
         sub: &SubscriptionState,
         now: DateTime<Utc>,
     ) -> LResult<u64> {
-        let (start, end) = (sub.current_period_start, sub.current_period_end);
+        let window = Duration::hours(RENEWAL_WINDOW_HOURS);
+        if !sub.current_period_end.is_some_and(|e| now >= e - window) {
+            return Ok(0);
+        }
         let mut n = 0;
         for c in self.uow.connections().list(org).await.map_err(lerr)? {
-            let since = c.verify_denied_first_at.unwrap_or(c.updated_at);
-            let ended = start.is_some_and(|s| since < s) || end.is_some_and(|e| now >= e);
-            if c.status != S::Revoked || !ended {
+            if c.status != S::Revoked {
                 continue;
             }
             let tx = self.uow.begin().await.map_err(lerr)?;
@@ -229,4 +243,4 @@ impl BillingSync {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

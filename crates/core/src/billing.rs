@@ -138,6 +138,9 @@ pub struct OrgBilling {
     pub subscription: Option<SubscriptionState>,
     pub status: BillingStatus,
     pub past_due_since: Option<DateTime<Utc>>,
+    /// The highest quantity paid for in the current period (reset to the subscription's
+    /// quantity when a new period starts); an increase up to it is not charged again.
+    pub paid_quantity: Option<i32>,
 }
 
 impl OrgBilling {
@@ -164,7 +167,7 @@ pub struct SubscriptionState {
 }
 
 /// The `status_reason` of a connection `billing_sync` disconnected because it was still
-/// revoked when a period ended; it is not billed for the next period.
+/// revoked as its period was about to end; it is not billed for the next period.
 pub const REVOKED_AT_PERIOD_END: &str = "revoked_at_period_end";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -211,7 +214,7 @@ pub trait BillingProvider: Send + Sync {
     async fn portal_session(&self, customer_id: &str, return_url: &str) -> BillingResult<String>;
 
     /// Sets the subscription's one item to `quantity`; `prorate` charges the difference now,
-    /// otherwise it applies from the next period.
+    /// otherwise nothing is charged or credited now and the next renewal bills `quantity`.
     async fn set_quantity(
         &self,
         subscription_id: &str,
@@ -233,7 +236,8 @@ pub trait BillingRepo: Send + Sync {
 
     /// Writes `s` unless an event created after `event_created` was already applied, or one
     /// from the same second with a later `current_period_end` (Stripe stamps whole seconds);
-    /// `false` (writing nothing) when this one is stale. `past_due_since` is kept from the first
+    /// `false` (writing nothing) when this one is stale. A new `current_period_start` (or none
+    /// stored) resets `paid_quantity` to `s.quantity`. `past_due_since` is kept from the first
     /// past-due event and cleared by any other status; a `past_due` event leaves `paused` as it is.
     /// An event older than the last `apply_payment` keeps that payment's status (and
     /// `past_due_since`) and writes the rest, unless it ends the subscription (`canceled`,
@@ -279,13 +283,22 @@ pub trait BillingRepo: Send + Sync {
     /// blocked, so it cannot deadlock with them. A no-op outside a transaction.
     async fn lock_seats(&self, organisation_id: Uuid) -> RepoResult<()>;
 
-    /// Distinct accounts in `connected`, `degraded` or `revoked`, plus those ever connected and
-    /// disconnected at or after `period_start` (except with reason `REVOKED_AT_PERIOD_END`). The caller applies the minimum of 1 while subscribed.
-    async fn billable_count(
+    /// Distinct accounts (`provider:account`) in `connected`, `degraded` or `revoked`, plus,
+    /// with `since`, those ever connected and disconnected at or after it (except with reason
+    /// `REVOKED_AT_PERIOD_END`): the accounts paid for this period.
+    async fn billable_accounts(
         &self,
         organisation_id: Uuid,
-        period_start: DateTime<Utc>,
-    ) -> RepoResult<i64>;
+        since: Option<DateTime<Utc>>,
+    ) -> RepoResult<Vec<String>>;
+
+    /// Records a quantity `billing_sync` set at the provider, and the period's `paid` quantity.
+    async fn record_quantity(
+        &self,
+        organisation_id: Uuid,
+        quantity: i32,
+        paid: i32,
+    ) -> RepoResult<()>;
 }
 
 #[cfg(test)]

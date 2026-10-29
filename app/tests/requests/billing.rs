@@ -771,3 +771,52 @@ async fn invoice_for_another_subscription_ignored_and_cancel_beats_newer_payment
     )
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn second_live_subscription_is_cancelled_and_the_stored_one_kept() {
+    let api = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/v1/subscriptions/sub_2"))
+        .and(wiremock::matchers::header(
+            "Idempotency-Key",
+            "billing:cancel:sub_2",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "sub_2" })))
+        .expect(1)
+        .mount(&api)
+        .await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (_, _, org) = org_with_customer(&req, &ctx).await;
+        let first = sub_event(
+            "evt_1",
+            "customer.subscription.created",
+            10,
+            "active",
+            1,
+            30,
+        );
+        deliver(&req, &first).await;
+        let second = |id: &str, kind: &str, created: i64, status: &str| {
+            let mut ev = sub_event(id, kind, created, status, 1, 30);
+            ev["data"]["object"]["id"] = "sub_2".into();
+            ev
+        };
+        deliver(
+            &req,
+            &second("evt_2", "customer.subscription.created", 20, "active"),
+        )
+        .await;
+        // Its own deletion afterwards is not applied either.
+        deliver(
+            &req,
+            &second("evt_3", "customer.subscription.deleted", 30, "canceled"),
+        )
+        .await;
+        let b = Pg::new(&ctx.db).billing(org).await.unwrap();
+        let sub = b.subscription.unwrap().subscription_id;
+        assert_eq!((sub.as_str(), b.status), ("sub_1", B::Active));
+    })
+    .await;
+    api.verify().await;
+}

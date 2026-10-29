@@ -91,6 +91,7 @@ impl<C: Conn> OrganisationsRepo for Pg<C> {
             stripe_subscription_id: Set(None),
             billing_tier: Set(None),
             billing_quantity: Set(None),
+            paid_quantity: Set(None),
             trial_ends_at: Set(None),
             current_period_start: Set(None),
             current_period_end: Set(None),

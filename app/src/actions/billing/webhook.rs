@@ -3,14 +3,14 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    billing::{BillingStatus as B, SubscriptionState},
+    billing::{BillingError, BillingProvider, BillingStatus as B, SubscriptionState},
     repo::{Clock, RepoError},
 };
 use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::{enqueue_sync, unavailable, BillingSettings};
+use super::{provider_failed, unavailable, BillingSettings};
 use crate::{
     actions::uow::{Tx, UnitOfWork},
     adapters::stripe::verify_stripe_signature,
@@ -82,14 +82,21 @@ fn status_of(stripe: &str) -> Option<B> {
 /// unknown customers are acknowledged and ignored. 503 until the webhook secret is set.
 pub struct HandleWebhook {
     uow: Arc<dyn UnitOfWork>,
+    provider: Arc<dyn BillingProvider>,
     clock: Arc<dyn Clock>,
     settings: BillingSettings,
 }
 
 impl HandleWebhook {
-    pub fn new(uow: Arc<dyn UnitOfWork>, clock: Arc<dyn Clock>, settings: BillingSettings) -> Self {
+    pub fn new(
+        uow: Arc<dyn UnitOfWork>,
+        provider: Arc<dyn BillingProvider>,
+        clock: Arc<dyn Clock>,
+        settings: BillingSettings,
+    ) -> Self {
         Self {
             uow,
+            provider,
             clock,
             settings,
         }
@@ -119,7 +126,12 @@ impl HandleWebhook {
             let customer = ev.data.object["customer"].as_str();
             match customer {
                 Some(c) => match tx.billing().org_for_customer(c).await? {
-                    Some(org) => self.apply(tx.as_ref(), org, &ev, created).await?,
+                    Some(org) => match self.apply(tx.as_ref(), org, &ev, created).await {
+                        Err(AppError::Repo(RepoError::NotFound)) => {
+                            warn_skip(&ev, "stripe event for an organisation that is gone");
+                        }
+                        r => r?,
+                    },
                     None => warn_skip(&ev, "stripe event for an unknown customer"),
                 },
                 None => warn_skip(&ev, "stripe event without a customer"),
@@ -189,21 +201,48 @@ impl HandleWebhook {
             repo.apply_payment(org, status, created).await?;
             return Ok(());
         }
-        match self.subscription(ev, stored.status) {
-            Some(s) => {
-                let before = stored.subscription.and_then(|o| o.current_period_start);
-                let applied = repo.apply_subscription(org, &s, created).await?;
-                // A new period: the quantity may come down now, without proration.
-                let renewed = (before.is_some() && s.current_period_start != before)
-                    .then_some(s.current_period_start)
-                    .flatten();
-                if let (true, Some(start)) = (applied, renewed) {
-                    enqueue_sync(tx, org, start).await?;
-                }
+        let Some(s) = self.subscription(ev, stored.status) else {
+            warn_skip(ev, "stripe subscription event not applied");
+            return Ok(());
+        };
+        match stored
+            .subscription
+            .filter(|_| stored.status.is_subscribed())
+        {
+            Some(kept) if kept.subscription_id != s.subscription_id => {
+                self.second_subscription(ev, &kept.subscription_id, &s)
+                    .await
             }
-            None => warn_skip(ev, "stripe subscription event not applied"),
+            _ => repo
+                .apply_subscription(org, &s, created)
+                .await
+                .map(|_| ())
+                .map_err(Into::into),
         }
-        Ok(())
+    }
+
+    /// An event for a subscription other than the organisation's live one is not applied; a
+    /// live one would bill the organisation twice, so it is cancelled (idempotent on its id).
+    async fn second_subscription(
+        &self,
+        ev: &Event,
+        kept: &str,
+        s: &SubscriptionState,
+    ) -> AppResult<()> {
+        let other = s.subscription_id.as_str();
+        if !s.status.is_subscribed() {
+            warn_skip(ev, "stripe event for an ended second subscription");
+            return Ok(());
+        }
+        tracing::error!(
+            event_id = %ev.id, kept_subscription_id = %kept, cancelled_subscription_id = %other,
+            "second live stripe subscription for an organisation; cancelling it"
+        );
+        let idem = format!("billing:cancel:{other}");
+        match self.provider.cancel_subscription(other, &idem).await {
+            Ok(()) | Err(BillingError::NotFound) => Ok(()),
+            Err(e) => Err(provider_failed(e)),
+        }
     }
 
     /// The subscription object as our state. The period lives on the one item (Stripe-Version
@@ -230,5 +269,55 @@ impl HandleWebhook {
             current_period_start: ts(&item["current_period_start"]),
             current_period_end: ts(&item["current_period_end"]),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hmac::{Hmac, Mac};
+    use opsagent_core::billing::BillingRepo;
+    use serde_json::json;
+    use sha2::Sha256;
+
+    use super::*;
+    use crate::{
+        actions::{
+            billing::nightly::tests::{settings, NoStripe},
+            orgs::test_support::owned_org,
+        },
+        adapters::memory::{FixedClock, MemStore},
+    };
+
+    #[tokio::test]
+    async fn event_for_an_organisation_gone_mid_way_is_acknowledged() {
+        let store = MemStore::default();
+        let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+        store.set_customer(org.id, "cus_1").await.unwrap();
+        store.forget_org(org.id);
+        let now = Utc::now();
+        let item = json!({ "quantity": 1, "price": { "id": "p_t" } });
+        let object = json!({ "id": "sub_1", "customer": "cus_1", "status": "active",
+            "items": { "data": [item] } });
+        let body = json!({ "id": "evt_1", "type": "customer.subscription.updated",
+            "created": now.timestamp(), "data": { "object": object } })
+        .to_string();
+        let mut m = Hmac::<Sha256>::new_from_slice(b"whsec").unwrap();
+        m.update(format!("{}.{body}", now.timestamp()).as_bytes());
+        let v1: String = m
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let sig = format!("t={},v1={v1}", now.timestamp());
+        let hook = HandleWebhook::new(
+            Arc::new(store.clone()),
+            Arc::new(NoStripe),
+            Arc::new(FixedClock(now)),
+            settings(),
+        );
+        hook.run(Some(&sig), body.as_bytes()).await.unwrap();
+        // Recorded with the transaction, so Stripe's redelivery is a no-op.
+        assert!(!store.record_event("evt_1", "x").await.unwrap());
     }
 }

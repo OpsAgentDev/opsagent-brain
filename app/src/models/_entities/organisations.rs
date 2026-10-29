@@ -29,6 +29,7 @@ pub struct Model {
     #[sea_orm(column_type = "Text", nullable)]
     pub billing_tier: Option<String>,
     pub billing_quantity: Option<i32>,
+    pub paid_quantity: Option<i32>,
     pub trial_ends_at: Option<DateTimeWithTimeZone>,
     pub current_period_start: Option<DateTimeWithTimeZone>,
     pub current_period_end: Option<DateTimeWithTimeZone>,

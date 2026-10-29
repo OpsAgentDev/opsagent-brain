@@ -12,6 +12,7 @@ ALTER TABLE organisations
     ('none','trialing','active','past_due','paused','canceled','trial_ended')),
   ADD COLUMN billing_tier text CHECK (billing_tier IN ('starter','team','scale')),
   ADD COLUMN billing_quantity integer,
+  ADD COLUMN paid_quantity integer,
   ADD COLUMN trial_ends_at timestamptz,
   ADD COLUMN current_period_start timestamptz,
   ADD COLUMN current_period_end timestamptz,
@@ -35,7 +36,7 @@ DROP TABLE stripe_events;
 DROP INDEX organisations_stripe_customer_idx;
 ALTER TABLE organisations
   DROP COLUMN stripe_subscription_id, DROP COLUMN billing_status, DROP COLUMN billing_tier,
-  DROP COLUMN billing_quantity, DROP COLUMN trial_ends_at, DROP COLUMN current_period_start,
+  DROP COLUMN billing_quantity, DROP COLUMN paid_quantity, DROP COLUMN trial_ends_at, DROP COLUMN current_period_start,
   DROP COLUMN current_period_end, DROP COLUMN past_due_since, DROP COLUMN billing_event_at,
   DROP COLUMN payment_event_at;
 "#;

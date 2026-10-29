@@ -324,6 +324,13 @@ impl MemStore {
     pub fn jobs(&self) -> Vec<NewJob> {
         self.state().jobs.clone()
     }
+
+    /// Test hook: removes the organisation row only, as if it were purged between a webhook's
+    /// customer lookup and its write.
+    #[cfg(test)]
+    pub(crate) fn forget_org(&self, organisation_id: Uuid) {
+        self.state().orgs.retain(|o| o.id != organisation_id);
+    }
 }
 
 /// One page of `rows` (already tenant-filtered), newest first by `key`, as `db::page` does.

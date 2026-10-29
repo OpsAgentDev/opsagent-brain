@@ -1,5 +1,6 @@
-//! `billing_sync` (billing.md, Build decisions 3, 8 and 13): quantity sync at connection
-//! lifecycle points and at period rollover, and the nightly revoked-connection sweep.
+//! `billing_sync` (billing.md, Build decisions 3, 8 and 13; PRD 7.9): quantity sync at
+//! connection lifecycle points against the period's paid quantity, and the nightly sweep of
+//! revoked connections before renewal.
 use axum_test::TestServer;
 use chrono::{DateTime, Duration, DurationRound, Utc};
 use opsagent_brain::models::_entities::connections;
@@ -67,17 +68,6 @@ async fn expect_update(api: &MockServer, quantity: i32, proration: &str, n: u64)
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "sub_1" })))
         .expect(n)
         .named(format!("quantity {quantity} {proration}"))
-        .mount(api)
-        .await;
-}
-
-/// No quantity update at all.
-async fn expect_no_update(api: &MockServer) {
-    Mock::given(method("POST"))
-        .and(path("/v1/subscriptions/sub_1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "sub_1" })))
-        .expect(0)
-        .named("no quantity update")
         .mount(api)
         .await;
 }
@@ -160,27 +150,55 @@ async fn connect_increases_quantity_with_proration() {
     api.verify().await;
 }
 
+/// Expects no prorated update at all.
+async fn expect_no_proration(api: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/v1/subscriptions/sub_1"))
+        .and(body_string_contains("proration_behavior=create_prorations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "sub_1" })))
+        .expect(0)
+        .named("no proration")
+        .mount(api)
+        .await;
+}
+
+async fn disconnect(req: &TestServer, csrf: &str, org: &str, id: Uuid) {
+    let res = req
+        .delete(&format!("/v1/orgs/{org}/connections/{id}"))
+        .add_header("X-CSRF-Token", csrf)
+        .await;
+    assert_eq!(res.status_code(), 200, "{}", res.text());
+}
+
+/// (stored quantity, paid quantity).
+async fn quantities(ctx: &TestApp, org: Uuid) -> (i32, Option<i32>) {
+    let b = Pg::new(&ctx.db).billing(org).await.unwrap();
+    (b.subscription.unwrap().quantity, b.paid_quantity)
+}
+
 #[tokio::test]
 #[serial]
-async fn disconnect_reconnect_same_period_no_extra_charge() {
+async fn disconnect_decreases_at_once_and_reconnect_is_not_charged_again() {
     let api = MockServer::start().await;
     subscription_mock(&api).await;
-    expect_no_update(&api).await;
+    expect_no_proration(&api).await;
+    // Each twice: the first connect alone is below the 2 paid, then the second brings it back.
+    expect_update(&api, 1, "none", 2).await;
+    expect_update(&api, 2, "none", 2).await;
     serve_with(stripe_on(api.uri()), |req, ctx| async move {
         let (t, org, id) = org_with_customer(&req, &ctx).await;
-        subscribe(&ctx, id, 1, Utc::now() - Duration::days(1)).await;
-        let first = connect(&req, &t, &org, "clean").await;
-        let res = req
-            .delete(&format!("/v1/orgs/{org}/connections/{first}"))
-            .add_header("X-CSRF-Token", &t)
-            .await;
-        assert_eq!(res.status_code(), 200, "{}", res.text());
-        assert_eq!(status(&ctx, first).await, "disconnected");
-        // The same account again, inside the period: still one billable connection.
-        let again = connect(&req, &t, &org, "clean").await;
-        assert_eq!(status(&ctx, again).await, "connected");
-        // Connect, disconnect, reconnect each synced, and none changed the quantity.
-        assert_eq!(sync_runs(&ctx).await, (3, 3));
+        subscribe(&ctx, id, 2, Utc::now() - Duration::days(1)).await;
+        connect(&req, &t, &org, "clean").await;
+        let second = connect(&req, &t, &org, "degraded").await;
+        // Stripe bills the next period in advance: the decrease goes now, with no refund.
+        disconnect(&req, &t, &org, second).await;
+        assert_eq!(status(&ctx, second).await, "disconnected");
+        assert_eq!(quantities(&ctx, id).await, (1, Some(2)));
+        // The same account back inside the period: already paid for, so no charge.
+        let again = connect(&req, &t, &org, "degraded").await;
+        assert_eq!(status(&ctx, again).await, "degraded");
+        assert_eq!(quantities(&ctx, id).await, (2, Some(2)));
+        assert_eq!(sync_runs(&ctx).await, (4, 4));
     })
     .await;
     api.verify().await;
@@ -188,96 +206,20 @@ async fn disconnect_reconnect_same_period_no_extra_charge() {
 
 #[tokio::test]
 #[serial]
-async fn rollover_decreases_without_proration() {
+async fn rollover_resets_paid_quantity_without_a_write() {
     let api = MockServer::start().await;
     subscription_mock(&api).await;
     expect_update(&api, 1, "none", 1).await;
+    expect_update(&api, 2, "create_prorations", 1).await;
     serve_with(stripe_on(api.uri()), |req, ctx| async move {
         let (t, org, id) = org_with_customer(&req, &ctx).await;
         let old = secs(Utc::now() - Duration::days(31));
         subscribe(&ctx, id, 3, old).await;
-        // Fewer connections than paid for: no change until the period rolls over.
+        // Fewer connections than paid for: down at once, the paid quantity kept.
         connect(&req, &t, &org, "clean").await;
+        assert_eq!(quantities(&ctx, id).await, (1, Some(3)));
         let new = secs(Utc::now() - Duration::hours(1));
-        let item = json!({ "id": "si_1", "quantity": 3, "price": { "id": "price_team" },
-            "current_period_start": new.timestamp(),
-            "current_period_end": (new + Duration::days(30)).timestamp() });
-        let object = json!({ "id": "sub_1", "object": "subscription", "customer": "cus_1",
-            "status": "active", "items": { "data": [item] } });
-        let created = Utc::now().timestamp() - at(0).timestamp();
-        let ev = event("evt_roll", "customer.subscription.updated", created, object);
-        deliver(&req, &ev).await;
-        ctx.drain_jobs().await;
-        // A redelivery of the same rollover adds no second decrease.
-        let mut dup = ev.clone();
-        dup["id"] = "evt_roll_2".into();
-        deliver(&req, &dup).await;
-        ctx.drain_jobs().await;
-        assert_eq!(sync_runs(&ctx).await, (2, 2));
-    })
-    .await;
-    api.verify().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn revoked_past_period_end_disconnected() {
-    let api = MockServer::start().await;
-    subscription_mock(&api).await;
-    expect_no_update(&api).await;
-    serve_with(stripe_on(api.uri()), |req, ctx| async move {
-        let (t, org, id) = org_with_customer(&req, &ctx).await;
-        let start = Utc::now() - Duration::days(2);
-        subscribe(&ctx, id, 2, start).await;
-        let old = connect(&req, &t, &org, "clean").await;
-        let recent = connect(&req, &t, &org, "degraded").await;
-        // Revoked before this period began (its period ended revoked), and during it.
-        for (c, since) in [
-            (old, start - Duration::days(3)),
-            (recent, start + Duration::days(1)),
-        ] {
-            let row = connections::Entity::find_by_id(c).one(&ctx.db).await;
-            let mut a: connections::ActiveModel = row.unwrap().unwrap().into();
-            a.status = Set("revoked".into());
-            a.verify_denied_streak = Set(3);
-            a.verify_denied_first_at = Set(Some(since.into()));
-            a.update(&ctx.db).await.unwrap();
-        }
-        nightly(&ctx).await;
-        assert_eq!(status(&ctx, old).await, "disconnected");
-        let row = connections::Entity::find_by_id(old).one(&ctx.db).await;
-        let reason = row.unwrap().unwrap().status_reason;
-        assert_eq!(reason.as_deref(), Some("revoked_at_period_end"));
-        assert_eq!(status(&ctx, recent).await, "revoked");
-        // Idempotent: a second night changes nothing.
-        nightly(&ctx).await;
-        assert_eq!(status(&ctx, recent).await, "revoked");
-    })
-    .await;
-    api.verify().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn rollover_ends_revoked_and_bills_one_less() {
-    let api = MockServer::start().await;
-    subscription_mock(&api).await;
-    expect_update(&api, 1, "none", 1).await;
-    serve_with(stripe_on(api.uri()), |req, ctx| async move {
-        let (t, org, id) = org_with_customer(&req, &ctx).await;
-        let old = secs(Utc::now() - Duration::days(31));
-        subscribe(&ctx, id, 2, old).await;
-        // The revoked one was connected (billable_from set), so only the reason keeps it unbilled.
-        let gone = connect(&req, &t, &org, "clean").await;
-        connect(&req, &t, &org, "degraded").await;
-        // Revoked during the period that is about to end.
-        let row = connections::Entity::find_by_id(gone).one(&ctx.db).await;
-        let mut a: connections::ActiveModel = row.unwrap().unwrap().into();
-        a.status = Set("revoked".into());
-        a.verify_denied_first_at = Set(Some((old + Duration::days(10)).into()));
-        a.update(&ctx.db).await.unwrap();
-        let new = secs(Utc::now() - Duration::hours(1));
-        let item = json!({ "id": "si_1", "quantity": 2, "price": { "id": "price_team" },
+        let item = json!({ "id": "si_1", "quantity": 1, "price": { "id": "price_team" },
             "current_period_start": new.timestamp(),
             "current_period_end": (new + Duration::days(30)).timestamp() });
         let object = json!({ "id": "sub_1", "object": "subscription", "customer": "cus_1",
@@ -289,9 +231,95 @@ async fn rollover_ends_revoked_and_bills_one_less() {
         )
         .await;
         ctx.drain_jobs().await;
-        assert_eq!(status(&ctx, gone).await, "disconnected");
-        // The nightly pass after it bills nothing more and changes nothing.
+        // The renewal billed 1: that is all this period has paid for.
+        assert_eq!(quantities(&ctx, id).await, (1, Some(1)));
+        assert_eq!(sync_runs(&ctx).await, (1, 1));
+        connect(&req, &t, &org, "degraded").await;
+        assert_eq!(quantities(&ctx, id).await, (2, Some(2)));
+    })
+    .await;
+    api.verify().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn increase_past_paid_restores_free_then_prorates_the_rest() {
+    let api = MockServer::start().await;
+    subscription_mock(&api).await;
+    expect_update(&api, 1, "none", 2).await;
+    expect_update(&api, 2, "none", 2).await;
+    expect_update(&api, 3, "create_prorations", 1).await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (t, org, id) = org_with_customer(&req, &ctx).await;
+        subscribe(&ctx, id, 2, Utc::now() - Duration::days(1)).await;
+        let a = connect(&req, &t, &org, "clean").await;
+        let b = connect(&req, &t, &org, "degraded").await;
+        disconnect(&req, &t, &org, a).await;
+        disconnect(&req, &t, &org, b).await;
+        assert_eq!(quantities(&ctx, id).await, (1, Some(2)));
+        // Three at once (a dropped connection from before): back to 2 free, then prorate 3.
+        for c in [a, b] {
+            let row = connections::Entity::find_by_id(c).one(&ctx.db).await;
+            let mut m: connections::ActiveModel = row.unwrap().unwrap().into();
+            m.status = Set("connected".into());
+            m.update(&ctx.db).await.unwrap();
+        }
+        connect(&req, &t, &org, "noisy").await;
+        assert_eq!(quantities(&ctx, id).await, (3, Some(3)));
+    })
+    .await;
+    api.verify().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn revoked_through_period_end_disconnected_before_renewal() {
+    let api = MockServer::start().await;
+    subscription_mock(&api).await;
+    expect_no_proration(&api).await;
+    expect_update(&api, 1, "none", 1).await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (t, org, id) = org_with_customer(&req, &ctx).await;
+        // The period ends in 12 hours.
+        let start = Utc::now() - Duration::days(30) + Duration::hours(12);
+        subscribe(&ctx, id, 2, start).await;
+        let gone = connect(&req, &t, &org, "clean").await;
+        let kept = connect(&req, &t, &org, "degraded").await;
+        let row = connections::Entity::find_by_id(gone).one(&ctx.db).await;
+        let mut a: connections::ActiveModel = row.unwrap().unwrap().into();
+        a.status = Set("revoked".into());
+        a.verify_denied_streak = Set(3);
+        a.verify_denied_first_at = Set(Some((start + Duration::days(10)).into()));
+        a.update(&ctx.db).await.unwrap();
         nightly(&ctx).await;
+        assert_eq!(status(&ctx, gone).await, "disconnected");
+        let row = connections::Entity::find_by_id(gone).one(&ctx.db).await;
+        let reason = row.unwrap().unwrap().status_reason;
+        assert_eq!(reason.as_deref(), Some("revoked_at_period_end"));
+        assert_eq!(status(&ctx, kept).await, "degraded");
+        // Down to 1 before the period ends, so the renewal does not bill it.
+        assert_eq!(quantities(&ctx, id).await, (1, Some(2)));
+        // Idempotent: a second night changes nothing.
+        nightly(&ctx).await;
+    })
+    .await;
+    api.verify().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn nightly_reconciles_a_drifted_quantity() {
+    let api = MockServer::start().await;
+    subscription_mock(&api).await;
+    expect_update(&api, 1, "none", 1).await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (t, org, id) = org_with_customer(&req, &ctx).await;
+        subscribe(&ctx, id, 1, Utc::now() - Duration::days(1)).await;
+        connect(&req, &t, &org, "clean").await;
+        // Stripe reports 3 (changed outside billing_sync) for one live connection.
+        Pg::new(&ctx.db).record_quantity(id, 3, 3).await.unwrap();
+        nightly(&ctx).await;
+        assert_eq!(quantities(&ctx, id).await, (1, Some(3)));
     })
     .await;
     api.verify().await;
