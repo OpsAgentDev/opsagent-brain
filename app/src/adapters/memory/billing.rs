@@ -130,6 +130,10 @@ impl BillingRepo for MemStore {
         Ok(ids)
     }
 
+    async fn lock_seats(&self, _organisation_id: Uuid) -> RepoResult<()> {
+        Ok(()) // a transaction already holds a private snapshot
+    }
+
     async fn pause(
         &self,
         organisation_id: Uuid,

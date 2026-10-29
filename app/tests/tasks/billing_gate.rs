@@ -112,3 +112,41 @@ async fn past_due_7_days_skipped_before_the_nightly() {
     })
     .await;
 }
+
+/// The seat lock serialises seat checks but, unlike the org row's `FOR UPDATE`, does not block
+/// the FK `KEY SHARE` of a runs insert (`DisconnectConnection` -> `enqueue_sync` while a
+/// verify holds it: no deadlock).
+#[tokio::test]
+#[serial]
+async fn seat_lock_does_not_block_run_inserts() {
+    use opsagent_brain::{actions::uow::UnitOfWork, adapters::db::Pg};
+    use opsagent_core::run::RunKey;
+    serve(|req, ctx| async move {
+        let (_, _, org) = owner_org(&req, &prepare(&ctx)).await;
+        let pg = Pg::new(ctx.db.clone());
+        let holder = pg.begin().await.unwrap();
+        holder.billing().lock_seats(org).await.unwrap();
+        let insert = async {
+            let tx = pg.begin().await.unwrap();
+            let key = RunKey {
+                organisation_id: Some(org),
+                connection_id: None,
+                job_type: "billing_sync".into(),
+                scheduled_at: Utc::now(),
+            };
+            tx.ledger().create_run(key).await.unwrap();
+            tx.commit().await.unwrap();
+        };
+        let ok = tokio::time::timeout(std::time::Duration::from_secs(3), insert).await;
+        assert!(ok.is_ok(), "a runs insert waited on the seat lock");
+        // A second seat check waits for the first.
+        let second = async {
+            let tx = pg.begin().await.unwrap();
+            tx.billing().lock_seats(org).await.unwrap();
+        };
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(300), second).await;
+        assert!(waited.is_err(), "the seat lock did not serialise");
+        holder.commit().await.unwrap();
+    })
+    .await;
+}

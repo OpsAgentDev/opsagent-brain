@@ -57,9 +57,9 @@ impl AcceptInvite {
             .await?
             .filter(|o| o.deleted_at.is_none())
             .ok_or_else(gone)?;
-        if tx.orgs().membership(&org.slug, user_id).await?.is_none() {
+        if self.gate.enforced() && tx.orgs().membership(&org.slug, user_id).await?.is_none() {
             // Serialises concurrent accepts, so two cannot both take the last seat.
-            tx.orgs().lock(org.id).await?;
+            tx.billing().lock_seats(org.id).await?;
             self.gate.require_writable(tx.as_ref(), org.id).await?;
             let seat = Seat::Member;
             self.gate

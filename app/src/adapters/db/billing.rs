@@ -99,6 +99,15 @@ impl<C: Conn> BillingRepo for Pg<C> {
         billing_of(&r.await.map_err(db_err)?.ok_or(RepoError::NotFound)?)
     }
 
+    async fn lock_seats(&self, organisation_id: Uuid) -> RepoResult<()> {
+        let sql = "SELECT pg_advisory_xact_lock(hashtext('billing_seats:' || $1::text))";
+        self.db()
+            .execute_raw(stmt(sql, vec![organisation_id.into()]))
+            .await
+            .map(|_| ())
+            .map_err(db_err)
+    }
+
     async fn set_customer(&self, organisation_id: Uuid, customer_id: &str) -> RepoResult<()> {
         let sql =
             "UPDATE organisations SET stripe_customer_id = $2, updated_at = now() WHERE id = $1";

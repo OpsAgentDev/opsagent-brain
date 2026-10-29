@@ -274,6 +274,11 @@ pub trait BillingRepo: Send + Sync {
         past_due_before: DateTime<Utc>,
     ) -> RepoResult<bool>;
 
+    /// Serialises the organisation's seat checks (trial connection, member limit) until the
+    /// transaction ends. Not a row lock: FK inserts referencing the organisation (runs) are not
+    /// blocked, so it cannot deadlock with them. A no-op outside a transaction.
+    async fn lock_seats(&self, organisation_id: Uuid) -> RepoResult<()>;
+
     /// Distinct accounts in `connected`, `degraded` or `revoked`, plus those ever connected and
     /// disconnected at or after `period_start` (except with reason `REVOKED_AT_PERIOD_END`). The caller applies the minimum of 1 while subscribed.
     async fn billable_count(

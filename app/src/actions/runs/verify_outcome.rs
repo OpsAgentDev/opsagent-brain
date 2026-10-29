@@ -200,8 +200,8 @@ impl VerifyConnection {
     }
 
     /// `true` when `to` would make `c` billable in a trialing organisation that already has
-    /// its one billable connection (billing.md, Trial limit). Locks the organisation row, so
-    /// two verifies cannot both take the trial's one connection.
+    /// its one billable connection (billing.md, Trial limit). Takes the organisation's seat lock,
+    /// so two verifies cannot both take the trial's one connection.
     async fn trial_refuses(&self, tx: &dyn Tx, c: &Connection, to: S) -> LResult<bool> {
         let billable = |s: S| matches!(s, S::Connected | S::Degraded | S::Revoked);
         if !self.gate.enforced() || !matches!(to, S::Connected | S::Degraded) || billable(c.status)
@@ -209,7 +209,7 @@ impl VerifyConnection {
             return Ok(false);
         }
         let org = c.organisation_id;
-        tx.orgs().lock(org).await.map_err(lerr)?;
+        tx.billing().lock_seats(org).await.map_err(lerr)?;
         self.gate.trial_full(tx, org, false).await.map_err(lerr)
     }
 
