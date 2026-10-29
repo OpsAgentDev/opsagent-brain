@@ -108,6 +108,39 @@ contract_suite! {
         assert_eq!(repo.billing(o).await.unwrap().subscription, Some(renewed));
     }
 
+    async fn subscribed_orgs_lists_live_subscribed_only(s) {
+        let (live, ended, none, gone) = (org(s).await, org(s).await, org(s).await, org(s).await);
+        let repo = s.billing();
+        repo.apply_subscription(live, &sub(B::PastDue, 1), at(10)).await.unwrap();
+        repo.apply_subscription(ended, &sub(B::Canceled, 1), at(10)).await.unwrap();
+        repo.apply_subscription(gone, &sub(B::Active, 1), at(10)).await.unwrap();
+        s.orgs().soft_delete(gone, Utc::now()).await.unwrap();
+        let ids = repo.subscribed_orgs().await.unwrap();
+        assert!(ids.contains(&live));
+        for o in [ended, none, gone] {
+            assert!(!ids.contains(&o), "{o}");
+        }
+    }
+
+    async fn pause_only_past_due_long_enough(s) {
+        let (o, active) = (org(s).await, org(s).await);
+        let repo = s.billing();
+        repo.apply_subscription(o, &sub(B::PastDue, 1), at(10)).await.unwrap();
+        repo.apply_subscription(active, &sub(B::Active, 1), at(10)).await.unwrap();
+        assert!(!repo.pause(o, at(9)).await.unwrap());
+        assert!(!repo.pause(active, at(100)).await.unwrap());
+        assert!(repo.pause(o, at(10)).await.unwrap());
+        let b = repo.billing(o).await.unwrap();
+        assert_eq!((b.status, b.past_due_since), (B::Paused, Some(at(10))));
+        assert_eq!(b.subscription.unwrap().status, B::Paused);
+        // Already paused: nothing to write.
+        assert!(!repo.pause(o, at(100)).await.unwrap());
+        assert_eq!(repo.billing(active).await.unwrap().status, B::Active);
+        // Payment clears it.
+        assert!(repo.apply_payment(o, B::Active, at(20)).await.unwrap());
+        assert_eq!(repo.billing(o).await.unwrap().status, B::Active);
+    }
+
     async fn org_for_customer_finds_the_owner(s) {
         let (o, other) = (org(s).await, org(s).await);
         let cus = format!("cus_{o}");

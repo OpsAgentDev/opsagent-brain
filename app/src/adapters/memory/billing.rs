@@ -113,6 +113,37 @@ impl BillingRepo for MemStore {
         Ok(self.state().stripe_events.insert(event_id.into()))
     }
 
+    async fn subscribed_orgs(&self) -> RepoResult<Vec<Uuid>> {
+        let s = self.state();
+        let live = |id: &Uuid| s.orgs.iter().any(|o| o.id == *id && o.deleted_at.is_none());
+        let mut ids: Vec<Uuid> = s
+            .billing
+            .iter()
+            .filter(|(id, r)| r.billing.status.is_subscribed() && live(id))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort();
+        Ok(ids)
+    }
+
+    async fn pause(
+        &self,
+        organisation_id: Uuid,
+        past_due_before: DateTime<Utc>,
+    ) -> RepoResult<bool> {
+        let mut s = self.state();
+        let b = &mut s.billing_mut(organisation_id)?.billing;
+        let due = b.past_due_since.is_some_and(|t| t <= past_due_before);
+        if b.status != B::PastDue || !due {
+            return Ok(false);
+        }
+        b.status = B::Paused;
+        if let Some(sub) = b.subscription.as_mut() {
+            sub.status = B::Paused;
+        }
+        Ok(true)
+    }
+
     async fn billable_count(
         &self,
         organisation_id: Uuid,

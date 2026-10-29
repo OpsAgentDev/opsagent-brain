@@ -29,6 +29,15 @@ impl Tier {
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|t| t.as_str() == s)
     }
+
+    /// The list price per billable connection per month, in US dollars (billing.md, Plans).
+    pub const fn monthly_usd(self) -> u32 {
+        match self {
+            Self::Starter => 99,
+            Self::Team => 299,
+            Self::Scale => 599,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -226,6 +235,18 @@ pub trait BillingRepo: Send + Sync {
 
     /// Records a provider event; `false` when it was already recorded.
     async fn record_event(&self, event_id: &str, event_type: &str) -> RepoResult<bool>;
+
+    /// Live organisations whose status `is_subscribed`, for the nightly `billing_sync`.
+    /// tenancy: the nightly pass; each organisation scopes its own work.
+    async fn subscribed_orgs(&self) -> RepoResult<Vec<Uuid>>;
+
+    /// `past_due` to `paused` when past due since at or before `past_due_before` (the only
+    /// status `billing_sync` writes); `false` otherwise.
+    async fn pause(
+        &self,
+        organisation_id: Uuid,
+        past_due_before: DateTime<Utc>,
+    ) -> RepoResult<bool>;
 
     /// Distinct accounts in `connected`, `degraded` or `revoked`, plus those ever connected and
     /// disconnected at or after `period_start`. The caller applies the minimum of 1 while subscribed.

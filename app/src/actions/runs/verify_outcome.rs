@@ -21,7 +21,10 @@ use super::{
     verify_connection::{Step, VerifyConnection},
     verify_verdict::{decide, Verdict},
 };
-use crate::{actions::uow::Tx, models::enum_str};
+use crate::{
+    actions::{billing::enqueue_sync, uow::Tx},
+    models::enum_str,
+};
 
 /// Access denied must repeat this often, spanning at least `DENIED_SPAN`, before `revoked`.
 const DENIED_TIMES: i32 = 3;
@@ -91,6 +94,11 @@ impl VerifyConnection {
         }
         // TODO(notify): email owners once on revoked.
         let (to, reason) = revoke.map_or((c.status, None), |to| (to, Some("access_denied")));
+        if revoke.is_some() {
+            enqueue_sync(&*tx, c.organisation_id, now)
+                .await
+                .map_err(lerr)?;
+        }
         let repo = tx.connections();
         let cas = repo.cas_status(c.organisation_id, c.id, c.status, to, reason);
         if !cas.await.map_err(lerr)? {
@@ -163,6 +171,11 @@ impl VerifyConnection {
             return Ok(false);
         };
         self.outcome_schedules(&*tx, c, written, now).await?;
+        if matches!(written, S::Connected | S::Degraded) {
+            enqueue_sync(&*tx, c.organisation_id, now)
+                .await
+                .map_err(lerr)?;
+        }
         self.record(&*tx, c, run.id, Some(o), &enum_str(written), None)
             .await?;
         if first_connect && written == S::Connected {

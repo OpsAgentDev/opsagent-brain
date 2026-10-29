@@ -19,7 +19,7 @@ use super::support::*;
 const SECRET: &str = "whsec_test";
 
 /// Stripe configured, pointed at `api`.
-fn stripe_on(api: String) -> impl FnOnce(&mut opsagent_brain::config::Config) {
+pub fn stripe_on(api: String) -> impl FnOnce(&mut opsagent_brain::config::Config) {
     move |c| {
         c.stripe_secret_key = "sk_test_x".into();
         c.stripe_webhook_secret = SECRET.into();
@@ -30,7 +30,7 @@ fn stripe_on(api: String) -> impl FnOnce(&mut opsagent_brain::config::Config) {
     }
 }
 
-fn at(secs: i64) -> DateTime<Utc> {
+pub fn at(secs: i64) -> DateTime<Utc> {
     DateTime::from_timestamp(1_800_000_000 + secs, 0).unwrap()
 }
 
@@ -55,14 +55,14 @@ async fn post_raw(req: &TestServer, body: &str, sig: &str) -> TestResponse {
 }
 
 /// Posts `event` signed now and asserts Stripe gets a 200 (anything else is retried).
-async fn deliver(req: &TestServer, event: &Value) -> TestResponse {
+pub async fn deliver(req: &TestServer, event: &Value) -> TestResponse {
     let body = event.to_string();
     let res = post_raw(req, &body, &sign(&body, Utc::now().timestamp())).await;
     assert_eq!(res.status_code(), 200, "{}: {}", event["id"], res.text());
     res
 }
 
-fn event(id: &str, kind: &str, created: i64, object: Value) -> Value {
+pub fn event(id: &str, kind: &str, created: i64, object: Value) -> Value {
     json!({ "id": id, "object": "event", "type": kind, "created": at(created).timestamp(),
         "data": { "object": object } })
 }
@@ -86,7 +86,7 @@ fn invoice_event(id: &str, kind: &str, created: i64) -> Value {
 }
 
 /// Signs in an owner and creates an org whose Stripe customer is `cus_1`; (csrf, slug, id).
-async fn org_with_customer(req: &TestServer, ctx: &TestApp) -> (String, String, Uuid) {
+pub async fn org_with_customer(req: &TestServer, ctx: &TestApp) -> (String, String, Uuid) {
     let mail = prepare(ctx);
     let t = sign_in(req, &mail, "owner@example.com").await;
     let org = create_org(req, &t, "Acme").await;
@@ -629,4 +629,105 @@ async fn checkout_completed_mismatch_is_ignored() {
         },
     )
     .await;
+}
+
+/// Signs in an owner of an org with an active subscription `sub_1`; (csrf, slug, id).
+async fn subscribed_org(req: &TestServer, ctx: &TestApp, status: B) -> (String, String, Uuid) {
+    let (t, slug, id) = org_with_customer(req, ctx).await;
+    let s = SubscriptionState {
+        subscription_id: "sub_1".into(),
+        status,
+        tier: Some(Tier::Team),
+        quantity: 1,
+        trial_ends_at: None,
+        current_period_start: Some(at(0)),
+        current_period_end: Some(at(30 * 86_400)),
+    };
+    let repo = Pg::new(&ctx.db);
+    assert!(repo.apply_subscription(id, &s, at(10)).await.unwrap());
+    (t, slug, id)
+}
+
+async fn delete_org(req: &TestServer, csrf: &str, slug: &str) -> TestResponse {
+    req.delete(&format!("/v1/orgs/{slug}"))
+        .add_header("X-CSRF-Token", csrf)
+        .await
+}
+
+async fn is_deleted(ctx: &TestApp, org: Uuid) -> bool {
+    use opsagent_core::org::OrganisationsRepo;
+    Pg::new(&ctx.db).is_deleted(org).await.unwrap()
+}
+
+/// `DELETE /v1/subscriptions/sub_1` answers `status`, `n` times.
+async fn cancel_mock(api: &MockServer, status: u16, n: u64) {
+    Mock::given(method("DELETE"))
+        .and(path("/v1/subscriptions/sub_1"))
+        .and(wiremock::matchers::header_exists("Idempotency-Key"))
+        .respond_with(ResponseTemplate::new(status).set_body_json(json!({ "id": "sub_1" })))
+        .expect(n)
+        .mount(api)
+        .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn delete_org_cancels_subscription_first() {
+    let api = MockServer::start().await;
+    cancel_mock(&api, 200, 1).await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (t, slug, id) = subscribed_org(&req, &ctx, B::Trialing).await;
+        let res = delete_org(&req, &t, &slug).await;
+        assert_eq!(res.status_code(), 204, "{}", res.text());
+        assert!(is_deleted(&ctx, id).await);
+    })
+    .await;
+    api.verify().await;
+
+    // Nothing to cancel: an ended subscription, or none at all.
+    let api = MockServer::start().await;
+    cancel_mock(&api, 200, 0).await;
+    serve_with(stripe_on(api.uri()), |mut req, ctx| async move {
+        let (t, ended, id) = subscribed_org(&req, &ctx, B::Canceled).await;
+        assert_eq!(delete_org(&req, &t, &ended).await.status_code(), 204);
+        assert!(is_deleted(&ctx, id).await);
+        req.clear_cookies();
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "plain@example.com").await;
+        let org = create_org(&req, &t, "Plain").await;
+        assert_eq!(delete_org(&req, &t, &slug(&org)).await.status_code(), 204);
+    })
+    .await;
+    api.verify().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn delete_org_tolerates_stripe_404() {
+    let api = MockServer::start().await;
+    cancel_mock(&api, 404, 1).await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (t, slug, id) = subscribed_org(&req, &ctx, B::Active).await;
+        let res = delete_org(&req, &t, &slug).await;
+        assert_eq!(res.status_code(), 204, "{}", res.text());
+        assert!(is_deleted(&ctx, id).await);
+    })
+    .await;
+    api.verify().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn delete_org_fails_502_when_stripe_down() {
+    let api = MockServer::start().await;
+    cancel_mock(&api, 500, 1).await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (t, slug, id) = subscribed_org(&req, &ctx, B::Active).await;
+        let res = delete_org(&req, &t, &slug).await;
+        assert_eq!(res.status_code(), 502, "{}", res.text());
+        assert_eq!(res.json::<Value>()["code"], "billing_unavailable");
+        assert!(!is_deleted(&ctx, id).await);
+    })
+    .await;
+    api.verify().await;
 }

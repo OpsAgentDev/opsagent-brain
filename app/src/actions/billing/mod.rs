@@ -2,7 +2,9 @@
 //! Stripe Checkout and Portal sessions, and the Stripe webhook, which is the only writer of
 //! billing state.
 mod checkout;
+mod nightly;
 mod portal;
+mod sync;
 mod webhook;
 
 use std::sync::Arc;
@@ -14,6 +16,7 @@ use uuid::Uuid;
 
 pub use checkout::StartCheckout;
 pub use portal::OpenPortal;
+pub use sync::{enqueue_sync, BillingSync};
 pub use webhook::HandleWebhook;
 
 use crate::{
@@ -29,6 +32,7 @@ pub struct Billing {
     pub checkout: StartCheckout,
     pub portal: OpenPortal,
     pub webhook: HandleWebhook,
+    pub sync: BillingSync,
 }
 
 /// What the billing actions read from `Config`. No `Debug`: it holds the webhook secret.
@@ -94,7 +98,7 @@ fn unavailable() -> AppError {
 }
 
 /// 502 `billing_unavailable`: a Stripe call failed. Only the stable code is logged.
-fn provider_failed(e: BillingError) -> AppError {
+pub(crate) fn provider_failed(e: BillingError) -> AppError {
     tracing::warn!(error = %e, "stripe call failed");
     AppError::Refused {
         status: StatusCode::BAD_GATEWAY,

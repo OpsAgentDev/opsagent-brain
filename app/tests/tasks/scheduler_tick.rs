@@ -23,7 +23,7 @@ pub(super) async fn count(ctx: &TestApp, sql: &str) -> i64 {
 }
 
 /// Drops every schedule and run (and what hangs off runs, such as a first scan's rows). The
-/// global retention schedule stays, disabled, so the tick's backfill does not add a due one.
+/// global schedules stay, disabled, so the tick's backfill does not add due ones.
 pub(super) async fn reset(ctx: &TestApp) {
     ctx.db
         .execute_raw(stmt("TRUNCATE schedules, runs CASCADE", vec![]))
@@ -32,8 +32,8 @@ pub(super) async fn reset(ctx: &TestApp) {
     ctx.db
         .execute_raw(stmt(
             "INSERT INTO schedules (id, job_type, cron_local, enabled) \
-             VALUES ($1, 'retention', '30 3 * * *', false)",
-            vec![Uuid::new_v4().into()],
+             VALUES ($1, 'retention', '30 3 * * *', false), ($2, 'billing_sync', '0 4 * * *', false)",
+            vec![Uuid::new_v4().into(), Uuid::new_v4().into()],
         ))
         .await
         .unwrap();

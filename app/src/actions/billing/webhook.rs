@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::{unavailable, BillingSettings};
+use super::{enqueue_sync, unavailable, BillingSettings};
 use crate::{
     actions::uow::{Tx, UnitOfWork},
     adapters::stripe::verify_stripe_signature,
@@ -179,7 +179,15 @@ impl HandleWebhook {
         }
         match self.subscription(ev, stored.status) {
             Some(s) => {
-                repo.apply_subscription(org, &s, created).await?;
+                let before = stored.subscription.and_then(|o| o.current_period_start);
+                let applied = repo.apply_subscription(org, &s, created).await?;
+                // A new period: the quantity may come down now, without proration.
+                let renewed = (before.is_some() && s.current_period_start != before)
+                    .then_some(s.current_period_start)
+                    .flatten();
+                if let (true, Some(start)) = (applied, renewed) {
+                    enqueue_sync(tx, org, start).await?;
+                }
             }
             None => warn_skip(ev, "stripe subscription event not applied"),
         }

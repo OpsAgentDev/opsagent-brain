@@ -31,8 +31,8 @@ use crate::{
     controllers,
     error::{AppError, AppResult},
     jobs::{
-        DeliverAlertJob, DeliverBriefingJob, DeliverWeeklyJob, FullScanJob, JobHandler,
-        RetentionJob, Scheduler, VerifyJob, WatchScanJob, WorkerRunner,
+        BillingSyncJob, DeliverAlertJob, DeliverBriefingJob, DeliverWeeklyJob, FullScanJob,
+        JobHandler, RetentionJob, Scheduler, VerifyJob, WatchScanJob, WorkerRunner,
     },
     mailers::{self, Mailer},
     mcp, middleware,
@@ -216,7 +216,15 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 get_billing: billing::GetBilling::new(d.uow.clone(), s.clone()),
                 checkout: billing::StartCheckout::new(d.uow.clone(), d.billing.clone(), s.clone()),
                 portal: billing::OpenPortal::new(d.uow.clone(), d.billing.clone(), s.clone()),
-                webhook: billing::HandleWebhook::new(d.uow.clone(), d.clock.clone(), s),
+                webhook: billing::HandleWebhook::new(d.uow.clone(), d.clock.clone(), s.clone()),
+                sync: billing::BillingSync::new(
+                    d.uow.clone(),
+                    d.redis.clone(),
+                    d.billing.clone(),
+                    (d.mailer.clone(), guard.clone()),
+                    d.clock.clone(),
+                    s,
+                ),
             }
         },
         auth: auth::Auth {
@@ -246,7 +254,12 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             list_orgs: orgs::ListOrgs::new(d.uow.clone()),
             get_org: orgs::GetOrg,
             update_org: orgs::UpdateOrg::new(d.uow.clone()),
-            delete_org: orgs::DeleteOrg::new(d.uow.clone(), d.clock.clone()),
+            delete_org: orgs::DeleteOrg::new(
+                d.uow.clone(),
+                d.clock.clone(),
+                d.billing.clone(),
+                d.config.stripe_configured(),
+            ),
             is_owner_anywhere: orgs::IsOwnerAnywhere::new(d.uow.clone()),
         },
         members: members::Members {
@@ -287,7 +300,10 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 dispatcher.clone(),
                 d.clock.clone(),
             ),
-            disconnect_connection: connections::DisconnectConnection::new(d.uow.clone()),
+            disconnect_connection: connections::DisconnectConnection::new(
+                d.uow.clone(),
+                d.clock.clone(),
+            ),
         },
         runs: runs::Runs {
             request_manual_scan: runs::RequestManualScan::new(
@@ -481,7 +497,7 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
     }
 }
 
-/// The job runner with the seven job handlers, the only registry of job kinds. The queue and
+/// The job runner with the eight job handlers, the only registry of job kinds. The queue and
 /// the job work share the state's one pool (`pool_size` with a worker).
 pub fn worker(state: &AppState) -> WorkerRunner {
     let (runs, deliveries) = (&state.actions.runs, &state.actions.deliveries);
@@ -497,6 +513,7 @@ pub fn worker(state: &AppState) -> WorkerRunner {
         ))),
         Arc::new(DeliverAlertJob(Arc::new(deliveries.deliver_alert.clone()))),
         Arc::new(RetentionJob(Arc::new(state.actions.retention.clone()))),
+        Arc::new(BillingSyncJob(Arc::new(state.actions.billing.sync.clone()))),
     ];
     let source = Arc::new(PgQueue(state.db.clone()));
     WorkerRunner::new(source, handlers, &state.config, state.clock.clone())

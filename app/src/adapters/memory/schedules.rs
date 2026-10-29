@@ -4,8 +4,7 @@ use opsagent_core::{connection::ConnectionStatus, repo::RepoResult, run::RunKey}
 use opsagent_deliver::{
     repo::{DueRun, SchedulesRepo, SinceFn},
     schedule::{
-        daily_at, next_after, BRIEFING, FULL_SCAN, RETENTION_CRON, VERIFY_WEEKLY, WATCH_CRON,
-        WEEKLY,
+        daily_at, next_after, BRIEFING, FULL_SCAN, GLOBAL, VERIFY_WEEKLY, WATCH_CRON, WEEKLY,
     },
 };
 use uuid::Uuid;
@@ -124,21 +123,19 @@ impl SchedulesRepo for MemStore {
         let todo: Vec<_> = {
             let mut s = self.state();
             let global = |r: &ScheduleRow| r.organisation_id.is_none() && r.connection_id.is_none();
-            if !s
-                .schedules
-                .iter()
-                .any(|r| global(r) && r.job_type == "retention")
-            {
-                s.schedules.push(ScheduleRow {
-                    id: Uuid::now_v7(),
-                    organisation_id: None,
-                    connection_id: None,
-                    job_type: "retention".into(),
-                    cron_local: RETENTION_CRON.into(),
-                    timezone: "UTC".into(),
-                    next_due_at: next_after(RETENTION_CRON, "UTC", now),
-                    enabled: true,
-                });
+            for (job, cron) in GLOBAL {
+                if !s.schedules.iter().any(|r| global(r) && r.job_type == job) {
+                    s.schedules.push(ScheduleRow {
+                        id: Uuid::now_v7(),
+                        organisation_id: None,
+                        connection_id: None,
+                        job_type: job.into(),
+                        cron_local: cron.into(),
+                        timezone: "UTC".into(),
+                        next_due_at: next_after(cron, "UTC", now),
+                        enabled: true,
+                    });
+                }
             }
             // The newest default schedule: a connection without it lacks some defaults.
             let current = |id| {

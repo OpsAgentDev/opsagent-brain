@@ -1,30 +1,47 @@
 use std::sync::Arc;
 
-use opsagent_core::{audit::AuditEntry, repo::Clock};
+use opsagent_core::{
+    audit::AuditEntry,
+    billing::{BillingError, BillingProvider, BillingStatus},
+    repo::Clock,
+};
 use uuid::Uuid;
 
 use super::OrgScope;
 use crate::{
-    actions::{connections::end_connection, uow::UnitOfWork},
+    actions::{billing::provider_failed, connections::end_connection, uow::UnitOfWork},
     error::AppResult,
 };
 
 /// Soft-deletes the organisation, in one transaction: every connection is disconnected and
-/// every schedule disabled, so nothing is scanned for it again. Owners only.
+/// every schedule disabled, so nothing is scanned for it again. Owners only. A live Stripe
+/// subscription is cancelled first; if Stripe fails, nothing is deleted (502).
 pub struct DeleteOrg {
     uow: Arc<dyn UnitOfWork>,
     clock: Arc<dyn Clock>,
+    billing: Arc<dyn BillingProvider>,
+    stripe_configured: bool,
 }
 
 impl DeleteOrg {
-    pub fn new(uow: Arc<dyn UnitOfWork>, clock: Arc<dyn Clock>) -> Self {
-        Self { uow, clock }
+    pub fn new(
+        uow: Arc<dyn UnitOfWork>,
+        clock: Arc<dyn Clock>,
+        billing: Arc<dyn BillingProvider>,
+        stripe_configured: bool,
+    ) -> Self {
+        Self {
+            uow,
+            clock,
+            billing,
+            stripe_configured,
+        }
     }
 
     pub async fn run(&self, scope: &OrgScope, actor: Uuid) -> AppResult<()> {
         scope.require_owner()?;
-        // TODO(billing): cancel the Stripe subscription before marking the org deleted.
         let organisation_id = scope.organisation.id;
+        self.cancel_subscription(organisation_id).await?;
         let tx = self.uow.begin().await?;
         tx.orgs().lock(organisation_id).await?;
         tx.orgs()
@@ -42,6 +59,28 @@ impl DeleteOrg {
         tx.audit().record(entry).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Cancels the subscription unless there is none (or it already ended); Stripe having no
+    /// such subscription (404) counts as cancelled.
+    async fn cancel_subscription(&self, organisation_id: Uuid) -> AppResult<()> {
+        if !self.stripe_configured {
+            return Ok(());
+        }
+        let b = self.uow.billing().billing(organisation_id).await?;
+        let ended = matches!(
+            b.status,
+            BillingStatus::Canceled | BillingStatus::TrialEnded
+        );
+        let Some(sub) = b.subscription.filter(|_| !ended) else {
+            return Ok(());
+        };
+        let id = sub.subscription_id;
+        let idem = format!("org_delete:{organisation_id}:{id}");
+        match self.billing.cancel_subscription(&id, &idem).await {
+            Ok(()) | Err(BillingError::NotFound) => Ok(()),
+            Err(e) => Err(provider_failed(e)),
+        }
     }
 }
 
@@ -123,6 +162,18 @@ mod tests {
         async fn try_lock_scheduler(&self) -> RepoResult<bool> {
             Err(broken())
         }
+    }
+
+    /// Stripe unconfigured: never called.
+    fn no_stripe() -> Arc<dyn opsagent_core::billing::BillingProvider> {
+        use crate::adapters::stripe::{StripeBilling, StripeSettings};
+        let s = StripeSettings {
+            api_base: "http://127.0.0.1:9".into(),
+            secret_key: String::new(),
+            api_version: String::new(),
+            automatic_tax: false,
+        };
+        Arc::new(StripeBilling::new(s).unwrap())
     }
 
     fn broken() -> RepoError {
@@ -252,7 +303,7 @@ mod tests {
 
         // A failing schedule write after the soft delete and the disconnect rolls back both.
         let broken = WithBrokenSchedules(Arc::new(store.clone()));
-        let refused = DeleteOrg::new(Arc::new(broken), Arc::new(SystemClock));
+        let refused = DeleteOrg::new(Arc::new(broken), Arc::new(SystemClock), no_stripe(), false);
         let err = refused.run(&scope, owner.id).await.unwrap_err();
         assert!(
             matches!(err, AppError::Repo(RepoError::Storage(_))),
@@ -269,7 +320,12 @@ mod tests {
             .all(|e| e.action != "org.delete"));
         assert_eq!(store.enabled_schedules(org.id), schedules);
 
-        let delete = DeleteOrg::new(Arc::new(store.clone()), Arc::new(SystemClock));
+        let delete = DeleteOrg::new(
+            Arc::new(store.clone()),
+            Arc::new(SystemClock),
+            no_stripe(),
+            false,
+        );
         delete.run(&scope, owner.id).await.unwrap();
         assert!(store.is_deleted(org.id).await.unwrap());
         assert_eq!(

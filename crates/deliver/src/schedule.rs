@@ -20,6 +20,13 @@ pub const BRIEFING: &str = "0 8 * * *";
 pub const WEEKLY: &str = "0 9 * * 1";
 /// The global nightly retention run, 03:30 UTC (retention.md).
 pub const RETENTION_CRON: &str = "30 3 * * *";
+/// The global nightly `billing_sync` run, 04:00 UTC (billing.md).
+pub const BILLING_SYNC_CRON: &str = "0 4 * * *";
+/// The global schedules: (job type, cron in UTC).
+pub const GLOBAL: [(&str, &str); 2] = [
+    ("retention", RETENTION_CRON),
+    ("billing_sync", BILLING_SYNC_CRON),
+];
 
 /// `HH:MM` local as a daily cron (`M H * * *`).
 pub fn daily_at(t: NaiveTime) -> String {

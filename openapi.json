@@ -1065,6 +1065,16 @@
                 }
               }
             }
+          },
+          "502": {
+            "description": "`billing_unavailable`: Stripe could not cancel the subscription",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       },

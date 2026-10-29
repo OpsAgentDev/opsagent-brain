@@ -172,6 +172,30 @@ impl<C: Conn> BillingRepo for Pg<C> {
         Ok(r.await.map_err(db_err)?.rows_affected() == 1)
     }
 
+    async fn subscribed_orgs(&self) -> RepoResult<Vec<Uuid>> {
+        // tenancy: the nightly billing_sync pass; each organisation scopes its own work.
+        let sql = "SELECT id FROM organisations WHERE deleted_at IS NULL \
+          AND billing_status IN ('trialing', 'active', 'past_due', 'paused') ORDER BY id";
+        let rows = self.db().query_all_raw(stmt(sql, vec![]));
+        rows.await
+            .map_err(db_err)?
+            .iter()
+            .map(|r| get(r, "id"))
+            .collect()
+    }
+
+    async fn pause(
+        &self,
+        organisation_id: Uuid,
+        past_due_before: DateTime<Utc>,
+    ) -> RepoResult<bool> {
+        let sql = "UPDATE organisations SET billing_status = 'paused', updated_at = now() \
+          WHERE id = $1 AND billing_status = 'past_due' AND past_due_since <= $2";
+        let values = vec![organisation_id.into(), past_due_before.into()];
+        let r = self.db().execute_raw(stmt(sql, values));
+        Ok(r.await.map_err(db_err)?.rows_affected() == 1)
+    }
+
     async fn billable_count(
         &self,
         organisation_id: Uuid,
