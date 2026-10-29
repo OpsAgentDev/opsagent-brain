@@ -141,6 +141,8 @@ impl BillingProvider for StripeBilling {
         }
         if self.s.automatic_tax {
             form.push(("automatic_tax[enabled]", "true".into()));
+            // Stripe Tax needs the existing customer's address, saved from what Checkout collects.
+            form.push(("customer_update[address]", "auto".into()));
         }
         field(&self.post("checkout/sessions", form, idem).await?, "url")
     }
@@ -223,6 +225,10 @@ pub fn verify_stripe_signature(
             Some(("v1", v)) => sigs.extend(hex(v)),
             _ => {}
         }
+    }
+    // An empty key would let anyone forge signatures; an unset secret verifies nothing.
+    if secret.is_empty() {
+        return Err(SigError::Mismatch);
     }
     let t = t.ok_or(SigError::Malformed)?;
     if sigs.is_empty() {

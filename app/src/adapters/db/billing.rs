@@ -16,6 +16,8 @@ const BILLING: &str = "SELECT stripe_customer_id, stripe_subscription_id, billin
 
 /// Skips events older than the last one applied; a `past_due` event leaves `paused` (set by
 /// `billing_sync`) in place, and `past_due_since` keeps the first past-due instant.
+// past_due_since keys off the incoming status: a stored `paused` stays (and keeps it) only
+// while Stripe still says past_due; any other incoming status clears it.
 const APPLY: &str = "UPDATE organisations SET stripe_subscription_id = $2, \
   billing_status = CASE WHEN $3 = 'past_due' AND billing_status = 'paused' THEN 'paused' ELSE $3 END, \
   billing_tier = $4, billing_quantity = $5, trial_ends_at = $6, current_period_start = $7, \

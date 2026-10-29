@@ -200,6 +200,16 @@ impl Config {
         Ok(c)
     }
 
+    /// Checkout, Portal and Stripe calls can work (`billing_unavailable` otherwise).
+    pub fn stripe_configured(&self) -> bool {
+        !self.stripe_secret_key.is_empty()
+    }
+
+    /// The webhook can verify signatures; it answers 503 otherwise.
+    pub fn webhook_configured(&self) -> bool {
+        self.stripe_configured() && !self.stripe_webhook_secret.is_empty()
+    }
+
     /// The Stripe adapter's settings.
     pub fn stripe_settings(&self) -> crate::adapters::stripe::StripeSettings {
         crate::adapters::stripe::StripeSettings {
@@ -408,6 +418,14 @@ mod tests {
         ]);
         assert!(on.billing_enforced && on.stripe_automatic_tax);
         assert!(vars(&[("BILLING_ENFORCED", "yes")]).is_err());
+        assert!(!c.stripe_configured() && !c.webhook_configured());
+        let key = cfg(&[("STRIPE_SECRET_KEY", "sk_test_x")]);
+        assert!(key.stripe_configured() && !key.webhook_configured());
+        let both = cfg(&[
+            ("STRIPE_SECRET_KEY", "sk_test_x"),
+            ("STRIPE_WEBHOOK_SECRET", "whsec_x"),
+        ]);
+        assert!(both.webhook_configured());
     }
 
     #[test]

@@ -38,13 +38,14 @@ fn form(r: &Request) -> Vec<(String, String)> {
 
 /// Matches when the form has every pair in `want` and none of the keys in `absent`.
 fn form_has(
-    want: &'static [(&'static str, &'static str)],
+    want: impl AsRef<[(&'static str, &'static str)]> + Send + Sync + 'static,
     absent: &'static [&'static str],
 ) -> impl Fn(&Request) -> bool + Send + Sync {
     move |r| {
         let f = form(r);
         let has = |k: &str, v: &str| f.iter().any(|(a, b)| a == k && b == v);
-        want.iter().all(|(k, v)| has(k, v)) && absent.iter().all(|k| f.iter().all(|(a, _)| a != k))
+        want.as_ref().iter().all(|(k, v)| has(k, v))
+            && absent.iter().all(|k| f.iter().all(|(a, _)| a != k))
     }
 }
 
@@ -99,7 +100,7 @@ async fn stripe_checkout_sends_trial_params() {
                     "https://opsagent.dev/settings/billing?status=cancel",
                 ),
             ],
-            &["automatic_tax[enabled]"],
+            &["automatic_tax[enabled]", "customer_update[address]"],
         ))
         .respond_with(session())
         .expect(1)
@@ -119,6 +120,7 @@ async fn checkout_without_trial_and_with_tax() {
         .and(form_has(
             &[
                 ("automatic_tax[enabled]", "true"),
+                ("customer_update[address]", "auto"),
                 ("payment_method_collection", "always"),
             ],
             &["subscription_data[trial_period_days]"],
@@ -187,19 +189,11 @@ async fn set_quantity_proration_flag() {
             ))
             .mount(&server)
             .await;
-        let want: &'static [(&str, &str)] = if prorate {
-            &[
-                ("items[0][id]", "si_1"),
-                ("items[0][quantity]", "3"),
-                ("proration_behavior", "create_prorations"),
-            ]
-        } else {
-            &[
-                ("items[0][id]", "si_1"),
-                ("items[0][quantity]", "3"),
-                ("proration_behavior", "none"),
-            ]
-        };
+        let want = vec![
+            ("items[0][id]", "si_1"),
+            ("items[0][quantity]", "3"),
+            ("proration_behavior", behaviour),
+        ];
         Mock::given(method("POST"))
             .and(path("/v1/subscriptions/sub_1"))
             .and(header("idempotency-key", "qty:1"))
@@ -285,6 +279,12 @@ fn signature_valid_tampered_expired_cases() {
     assert_eq!(check(&good, body, at(-300)), Ok(()));
     assert_eq!(check(&good, body, at(301)), Err(SigError::Expired));
     assert_eq!(check(&good, body, at(-301)), Err(SigError::Expired));
+    // An unset secret verifies nothing, even a signature made with the empty key.
+    let empty = format!("t={t},v1={}", sign("", t, body));
+    assert_eq!(
+        verify_stripe_signature(&empty, body.as_bytes(), "", now),
+        Err(SigError::Mismatch)
+    );
     // Malformed headers.
     for h in [
         "",
