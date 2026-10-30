@@ -329,10 +329,33 @@ async fn topup_503_without_stripe() {
 
 #[tokio::test]
 #[serial]
+async fn topup_503_without_opsagent_key() {
+    serve_with(
+        stripe_on("http://127.0.0.1:1".into()),
+        |req, ctx| async move {
+            let (t, org) = owner(&req, &ctx).await;
+            assert_eq!(status(&req, &org).await["topup_available"], false);
+            let res = req
+                .post(&format!("/v1/orgs/{org}/ai/topup"))
+                .add_header("X-CSRF-Token", &t)
+                .await;
+            assert_eq!(res.status_code(), 503);
+            assert_eq!(res.json::<Value>()["code"], "billing_unavailable");
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn topup_checkout_sends_payment_mode() {
     let api = MockServer::start().await;
     let base = api.uri();
-    serve_with(stripe_on(base), |req, ctx| async move {
+    let config = |c: &mut opsagent_brain::config::Config| {
+        stripe_on(base)(c);
+        c.anthropic_api_key = "sk-ant-test".into();
+    };
+    serve_with(config, |req, ctx| async move {
         let (t, org, id) = org_with_customer(&req, &ctx).await;
         Mock::given(method("POST"))
             .and(path("/v1/checkout/sessions"))

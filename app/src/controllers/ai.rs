@@ -61,7 +61,7 @@ pub struct AiStatusOut {
     pub source: Option<String>,
     pub usage: AiUsageOut,
     pub key: Option<AiKeyOut>,
-    /// Stripe is configured, so top-ups can be bought.
+    /// Stripe and OpsAgent's key are configured, so top-ups can be bought.
     pub topup_available: bool,
 }
 

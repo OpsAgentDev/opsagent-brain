@@ -115,7 +115,7 @@ impl Env {
         let s = AiSettings {
             opsagent_key: self.opsagent_key.then(|| OPSAGENT_KEY.to_owned().into()),
             billing_enforced: false,
-            stripe_configured: false,
+            topups: false,
             web_base_url: "https://web.test/".into(),
             backoff: vec![std::time::Duration::ZERO; 3],
         };

@@ -71,8 +71,9 @@ pub struct AiSettings {
     /// set (the fake serves as OpsAgent's key, so its empty key is fine).
     pub opsagent_key: Option<Zeroizing<String>>,
     pub billing_enforced: bool,
-    /// The top-up button shows only then.
-    pub stripe_configured: bool,
+    /// Top-ups need Stripe and OpsAgent's key: credits pay only for OpsAgent's key, so
+    /// with customers' own keys only (no `OPSAGENT_ANTHROPIC_API_KEY`) there is nothing to buy.
+    pub topups: bool,
     pub web_base_url: String,
     /// The waits between retries of a rate-limited call (plan ruling 15).
     pub backoff: Vec<Duration>,
@@ -85,7 +86,7 @@ impl AiSettings {
         Self {
             opsagent_key: set.then(|| Zeroizing::new(m.anthropic_api_key.clone())),
             billing_enforced: c.billing_enforced,
-            stripe_configured: c.stripe_configured(),
+            topups: set && c.stripe_configured(),
             web_base_url: c.web_base_url.clone(),
             backoff: [1, 2, 4].map(Duration::from_secs).to_vec(),
         }
