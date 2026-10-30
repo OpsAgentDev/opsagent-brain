@@ -55,10 +55,13 @@ pub fn current_hash(f: &Finding, evidence: &[StoredEvidence]) -> String {
     })
 }
 
-/// `text` truncated to `max` bytes at a character boundary, wrapped as untrusted data. A
-/// closing tag inside the data is defused, so the data cannot end its own wrapper.
+/// `text` with its markup escaped, truncated to `max` bytes at a character boundary, wrapped
+/// as untrusted data: no tag inside the data can end or open a wrapper.
 pub(super) fn untrusted(source: &str, text: &str, max: usize) -> String {
-    let mut text = text.replace("</untrusted", "<\\/untrusted");
+    let mut text = text
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
     if text.len() > max {
         let mut cut = max;
         while !text.is_char_boundary(cut) {

@@ -480,14 +480,17 @@ async fn history_is_last_20_text_messages_only() {
         w.turn(id, "two").await;
         let reqs = w.fake.requests();
         let last = &reqs[2];
-        assert_eq!(last.messages.len(), 20);
+        // The last 20 stored, less the leading assistant answer: user first, alternating.
+        assert_eq!(last.messages.len(), 19);
+        assert_eq!(last.messages[0].role, MsgRole::User);
+        assert!(last.messages.windows(2).all(|p| p[0].role != p[1].role));
         for m in &last.messages {
             assert_eq!(m.parts.len(), 1);
             assert!(matches!(m.parts[0], Part::Text(_)), "{m:?}");
         }
-        assert_eq!(last.messages[19].parts[0], Part::Text("two".into()));
+        assert_eq!(last.messages[18].parts[0], Part::Text("two".into()));
         assert_eq!(
-            last.messages[18].parts[0],
+            last.messages[17].parts[0],
             Part::Text("first answer".into())
         );
         let stored = w.stored(id).await;
@@ -703,4 +706,39 @@ async fn chat_turn_logs_no_prompt_text() {
     ] {
         assert!(!out.contains(gone), "{gone} logged");
     }
+}
+
+#[tokio::test]
+#[serial]
+async fn fourth_concurrent_turn_gets_429_ai_busy() {
+    serve_with(opsagent_key, |req, ctx| async move {
+        let w = World::new(req, ctx, vec![text("never")]).await;
+        let id = w.session(None).await;
+        let chat = w.ctx.state.chat.clone();
+        let mut running = Vec::new();
+        for i in 0..3 {
+            let t = chat.start(w.owner_scope().await, id, format!("q{i}")).await;
+            running.push(t.unwrap());
+        }
+        let res = w.say(id, "fourth").await;
+        assert_eq!(res.status_code(), 429);
+        assert_eq!(res.json::<Value>()["code"], "ai_busy");
+        drop(running);
+        assert_eq!(w.turn(id, "now").await.last().unwrap().0, "done");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn post_message_without_csrf_is_403() {
+    serve_with(opsagent_key, |req, ctx| async move {
+        let w = World::new(req, ctx, vec![text("never")]).await;
+        let id = w.session(None).await;
+        let url = format!("{}/{id}/messages", w.base());
+        let res = w.req.post(&url).json(&json!({ "text": "hi" })).await;
+        assert_eq!(res.status_code(), 403);
+        assert!(w.fake.requests().is_empty());
+    })
+    .await;
 }
