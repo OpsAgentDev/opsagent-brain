@@ -102,8 +102,8 @@ pub struct Explanation {
 const BASE_QUOTA: u32 = 1000;
 
 /// Credits on OpsAgent's key per period (Global Constraints, Quota): the tier's credits per
-/// account paid for while `active` or `past_due`; 1,000 while `trialing` (whatever the tier) or,
-/// unenforced, with no subscription; 0 otherwise.
+/// account paid for while `active` or `past_due`; 1,000 while `trialing` (whatever the tier);
+/// any other status gets 1,000 while billing is not enforced (alpha) and 0 once it is.
 pub fn period_quota(b: &OrgBilling, enforced: bool) -> u32 {
     match b.status {
         BillingStatus::Trialing => BASE_QUOTA,
@@ -112,7 +112,7 @@ pub fn period_quota(b: &OrgBilling, enforced: bool) -> u32 {
             let per_account = plan_limits(tier.unwrap_or(Tier::Starter)).ai_credits;
             per_account * b.paid_quantity.unwrap_or(1).max(1) as u32
         }
-        BillingStatus::None if !enforced => BASE_QUOTA,
+        _ if !enforced => BASE_QUOTA,
         _ => 0,
     }
 }
@@ -278,7 +278,7 @@ mod tests {
         assert_eq!(q(B::PastDue, Some(Tier::Team), Some(2), true), 10000);
         for s in [B::Paused, B::Canceled, B::TrialEnded] {
             assert_eq!(q(s, Some(Tier::Team), Some(1), true), 0, "{s:?}");
-            assert_eq!(q(s, Some(Tier::Team), Some(1), false), 0, "{s:?}");
+            assert_eq!(q(s, Some(Tier::Team), Some(1), false), 1000, "{s:?}");
         }
         assert_eq!(q(B::None, None, None, true), 0);
         assert_eq!(q(B::None, None, None, false), 1000);

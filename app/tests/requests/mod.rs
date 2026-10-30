@@ -1,4 +1,5 @@
 mod agents;
+mod ai;
 mod auth;
 pub mod billing;
 pub mod billing_gate;

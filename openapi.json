@@ -1255,6 +1255,470 @@
         }
       }
     },
+    "/orgs/{org}/ai": {
+      "get": {
+        "tags": [
+          "ai"
+        ],
+        "operationId": "ai_show",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiStatusOut"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "ai"
+        ],
+        "operationId": "ai_set_enabled",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnableIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiStatusOut"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/ai/key": {
+      "put": {
+        "tags": [
+          "ai"
+        ],
+        "operationId": "ai_put_key",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiStatusOut"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`ai_key_invalid` or `invalid`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`ai_provider_outage`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "ai"
+        ],
+        "operationId": "ai_delete_key",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "ai"
+        ],
+        "operationId": "ai_patch_key",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyPatchIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiStatusOut"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid`: unknown model, a chat model without tools, or a negative ceiling",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/ai/key/models": {
+      "get": {
+        "tags": [
+          "ai"
+        ],
+        "operationId": "ai_key_models",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/KeyModelOut"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`ai_key_failing` or `ai_provider_outage`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/ai/topup": {
+      "post": {
+        "tags": [
+          "ai"
+        ],
+        "operationId": "ai_topup",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopupUrl"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`billing_unavailable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs/{org}/billing": {
       "get": {
         "tags": [
@@ -3680,6 +4144,119 @@
           }
         }
       },
+      "AiKeyOut": {
+        "type": "object",
+        "required": [
+          "provider",
+          "last4",
+          "status",
+          "models"
+        ],
+        "properties": {
+          "last4": {
+            "type": "string"
+          },
+          "models": {
+            "$ref": "#/components/schemas/RoleModelsOut"
+          },
+          "monthly_credit_ceiling": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "description": "`anthropic` or `openai`."
+          },
+          "status": {
+            "type": "string",
+            "description": "`ok`, `failing` or `provider_outage`."
+          }
+        }
+      },
+      "AiStatusOut": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "state",
+          "usage",
+          "topup_available"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "key": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AiKeyOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`opsagent`, `byok`, or null when neither key is there."
+          },
+          "state": {
+            "type": "string",
+            "description": "`ready`, `ai_disabled`, `ai_unavailable`, `ai_key_failing` or `ai_quota_reached`."
+          },
+          "topup_available": {
+            "type": "boolean",
+            "description": "Stripe is configured, so top-ups can be bought."
+          },
+          "usage": {
+            "$ref": "#/components/schemas/AiUsageOut"
+          }
+        }
+      },
+      "AiUsageOut": {
+        "type": "object",
+        "required": [
+          "used",
+          "quota",
+          "topup_balance",
+          "period_start",
+          "period_end",
+          "byok_used_this_month",
+          "estimated"
+        ],
+        "properties": {
+          "byok_used_this_month": {
+            "type": "string",
+            "description": "Credits on the organisation's own key this calendar month (UTC)."
+          },
+          "estimated": {
+            "type": "boolean",
+            "description": "The own key's models have no list price: its credits are estimates."
+          },
+          "period_end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "period_start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "quota": {
+            "type": "string"
+          },
+          "topup_balance": {
+            "type": "string"
+          },
+          "used": {
+            "type": "string",
+            "description": "Credits used on OpsAgent's key this period."
+          }
+        }
+      },
       "AuthorizeUrl": {
         "type": "object",
         "required": [
@@ -4180,6 +4757,17 @@
           }
         }
       },
+      "EnableIn": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
       "EvidenceItem": {
         "type": "object",
         "required": [
@@ -4480,6 +5068,69 @@
           },
           "role": {
             "type": "string"
+          }
+        }
+      },
+      "KeyIn": {
+        "type": "object",
+        "required": [
+          "provider",
+          "api_key"
+        ],
+        "properties": {
+          "api_key": {
+            "type": "string",
+            "description": "Sent once; only its last 4 characters are ever shown again."
+          },
+          "provider": {
+            "type": "string",
+            "description": "`anthropic` or `openai`."
+          }
+        }
+      },
+      "KeyModelOut": {
+        "type": "object",
+        "required": [
+          "id",
+          "tools"
+        ],
+        "properties": {
+          "default_for": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`routine`, `chat`, or null: the role the picker preselects it for."
+          },
+          "id": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "boolean",
+            "description": "It can call tools (required for chat)."
+          }
+        }
+      },
+      "KeyPatchIn": {
+        "type": "object",
+        "properties": {
+          "models": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleModelsOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "monthly_credit_ceiling": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Credits per calendar month (UTC); null removes it."
           }
         }
       },
@@ -5339,6 +5990,21 @@
           }
         }
       },
+      "RoleModelsOut": {
+        "type": "object",
+        "required": [
+          "routine",
+          "chat"
+        ],
+        "properties": {
+          "chat": {
+            "type": "string"
+          },
+          "routine": {
+            "type": "string"
+          }
+        }
+      },
       "Run": {
         "allOf": [
           {
@@ -5465,6 +6131,18 @@
             "type": "string",
             "format": "date-time",
             "description": "At most 30 days ahead."
+          }
+        }
+      },
+      "TopupUrl": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The hosted Stripe page; it returns to `WEB_BASE_URL/settings/ai?topup=…`."
           }
         }
       },

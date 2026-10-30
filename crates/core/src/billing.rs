@@ -210,6 +210,17 @@ pub trait BillingProvider: Send + Sync {
     /// Returns the hosted Checkout URL.
     async fn checkout_session(&self, req: &CheckoutRequest, idem: &str) -> BillingResult<String>;
 
+    /// Returns the hosted Checkout URL for one AI top-up (1,000 credits for US$15, one-time
+    /// payment, `metadata[purpose]=ai_topup`).
+    async fn topup_session(
+        &self,
+        customer_id: &str,
+        organisation_id: Uuid,
+        success_url: &str,
+        cancel_url: &str,
+        idem: &str,
+    ) -> BillingResult<String>;
+
     /// Returns the hosted Customer Portal URL.
     async fn portal_session(&self, customer_id: &str, return_url: &str) -> BillingResult<String>;
 

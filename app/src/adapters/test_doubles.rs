@@ -92,6 +92,19 @@ impl BillingProvider for Swappable<dyn BillingProvider> {
         self.get().portal_session(customer_id, return_url).await
     }
 
+    async fn topup_session(
+        &self,
+        customer_id: &str,
+        organisation_id: Uuid,
+        success_url: &str,
+        cancel_url: &str,
+        idem: &str,
+    ) -> BillingResult<String> {
+        let b = self.get();
+        b.topup_session(customer_id, organisation_id, success_url, cancel_url, idem)
+            .await
+    }
+
     async fn set_quantity(
         &self,
         subscription_id: &str,

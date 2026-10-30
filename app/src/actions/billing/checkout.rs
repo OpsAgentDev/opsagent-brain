@@ -52,7 +52,7 @@ impl StartCheckout {
         }
         let customer_id = match b.customer_id {
             Some(c) => c,
-            None => self.create_customer(scope).await?,
+            None => create_customer(&*self.uow, &*self.provider, scope).await?,
         };
         let req = CheckoutRequest {
             organisation_id: org.id,
@@ -67,17 +67,20 @@ impl StartCheckout {
         let url = self.provider.checkout_session(&req, &idem).await;
         url.map_err(provider_failed)
     }
+}
 
-    /// Keyed on the organisation, so a retry after a failed save reuses the same customer.
-    async fn create_customer(&self, scope: &OrgScope) -> AppResult<String> {
-        let org = &scope.organisation;
-        let email = scope.member.email.as_str();
-        let idem = format!("customer:{}", org.id);
-        let made = self
-            .provider
-            .create_customer(org.id, &org.name, email, &idem);
-        let id = made.await.map_err(provider_failed)?;
-        self.uow.billing().set_customer(org.id, &id).await?;
-        Ok(id)
-    }
+/// The organisation's new Stripe customer, saved; keyed on the organisation, so a retry
+/// after a failed save reuses the same customer. Also the AI top-up's.
+pub(crate) async fn create_customer(
+    uow: &dyn UnitOfWork,
+    provider: &dyn BillingProvider,
+    scope: &OrgScope,
+) -> AppResult<String> {
+    let org = &scope.organisation;
+    let email = scope.member.email.as_str();
+    let idem = format!("customer:{}", org.id);
+    let made = provider.create_customer(org.id, &org.name, email, &idem);
+    let id = made.await.map_err(provider_failed)?;
+    uow.billing().set_customer(org.id, &id).await?;
+    Ok(id)
 }

@@ -16,8 +16,8 @@ use axum::{middleware::from_fn_with_state, Router};
 
 use crate::{
     actions::{
-        auth, billing, connections, contact, deliveries, findings, integrations, members, oauth,
-        orgs, recipients, resources, retention, runs, uow::UnitOfWork, waitlist, Actions,
+        ai, auth, billing, connections, contact, deliveries, findings, integrations, members,
+        oauth, orgs, recipients, resources, retention, runs, uow::UnitOfWork, waitlist, Actions,
         ClientMetadataSource, ConnectorSource, RateLimiter,
     },
     adapters::{
@@ -240,6 +240,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.config.contact_to.clone(),
             ),
         },
+        ai: build_ai(d, guard.clone()),
         retention: retention::Retention::new(d.uow.clone(), d.redis.clone(), d.clock.clone()),
         billing: {
             let s = billing::BillingSettings::new(&d.config);
@@ -460,6 +461,26 @@ pub fn build_prompts(d: &Deps, a: &Actions) -> PromptRegistry {
         )),
     ];
     PromptRegistry::new(prompts, d.uow.clone())
+}
+
+fn build_ai(d: &Deps, guard: Arc<recipients::MailGuard>) -> ai::Ai {
+    let access = Arc::new(ai::AiAccess::new(
+        d.uow.clone(),
+        d.kek.clone(),
+        d.models.clone(),
+        ai::Notices::new(d.uow.clone(), d.mailer.clone(), guard),
+        d.clock.clone(),
+        ai::AiSettings::new(&d.config),
+    ));
+    ai::Ai {
+        set_enabled: ai::SetEnabled::new(access.clone()),
+        put_key: ai::PutKey::new(access.clone()),
+        list_key_models: ai::ListKeyModels::new(access.clone()),
+        patch_key: ai::PatchKey::new(access.clone()),
+        delete_key: ai::DeleteKey::new(access.clone()),
+        topup: ai::StartTopup::new(access.clone(), d.billing.clone()),
+        access,
+    }
 }
 
 fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipients {

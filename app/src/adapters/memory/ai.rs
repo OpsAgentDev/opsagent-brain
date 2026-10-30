@@ -50,6 +50,11 @@ impl AiState {
 }
 
 impl MemStore {
+    /// Every metered call, oldest first.
+    pub fn ai_usage_rows(&self) -> Vec<UsageRow> {
+        self.state().ai.usage.iter().map(|u| u.0.clone()).collect()
+    }
+
     fn key_mut<T>(&self, org: Uuid, f: impl FnOnce(&mut ModelKey) -> T) -> Option<T> {
         let mut s = self.state();
         s.ai.keys

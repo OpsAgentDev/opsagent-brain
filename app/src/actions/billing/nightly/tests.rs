@@ -35,6 +35,16 @@ impl BillingProvider for NoStripe {
     async fn portal_session(&self, _: &str, _: &str) -> BillingResult<String> {
         unreachable!()
     }
+    async fn topup_session(
+        &self,
+        _: &str,
+        _: Uuid,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> BillingResult<String> {
+        unreachable!()
+    }
     async fn set_quantity(&self, _: &str, _: i32, _: bool, _: &str) -> BillingResult<()> {
         unreachable!()
     }

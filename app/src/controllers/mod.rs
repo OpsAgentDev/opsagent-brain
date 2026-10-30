@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod ai;
 pub mod auth;
 pub mod billing;
 pub mod connections;
