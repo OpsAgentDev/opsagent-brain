@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// A Stripe Checkout URL for one top-up of 1,000 credits (owner only; the caller checks).
-/// 503 `billing_unavailable` while Stripe is not configured. The Stripe customer is created
+/// 503 `billing_unavailable` while Stripe or OpsAgent's key is not configured. The Stripe customer is created
 /// on first use, as for a subscription; the webhook grants the credits.
 pub struct StartTopup {
     access: Arc<AiAccess>,
@@ -27,7 +27,7 @@ impl StartTopup {
 
     pub async fn run(&self, scope: &OrgScope) -> AppResult<String> {
         let s = &self.access.s;
-        if !s.stripe_configured {
+        if !s.topups {
             return Err(unavailable());
         }
         let uow = &*self.access.uow;

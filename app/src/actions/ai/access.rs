@@ -162,7 +162,7 @@ impl AiAccess {
             byok_used_this_month: snap.byok_month,
             estimated,
             key: snap.key,
-            topup_available: self.s.stripe_configured,
+            topup_available: self.s.topups,
         })
     }
 

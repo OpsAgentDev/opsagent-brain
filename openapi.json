@@ -4645,7 +4645,7 @@
           },
           "topup_available": {
             "type": "boolean",
-            "description": "Stripe is configured, so top-ups can be bought."
+            "description": "Stripe and OpsAgent's key are configured, so top-ups can be bought."
           },
           "usage": {
             "$ref": "#/components/schemas/AiUsageOut"
