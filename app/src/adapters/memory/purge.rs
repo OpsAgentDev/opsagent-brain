@@ -88,6 +88,9 @@ impl MemState {
             "email_suppressions",
             drain(&mut s.suppressions, |x| x.organisation_id == one),
         );
+        let (sessions, messages) = s.drop_sessions(|c| c.organisation_id == org);
+        put("chat_sessions", sessions);
+        put("chat_messages", messages);
         put(
             "members",
             drain(&mut s.members, |m| m.organisation_id == org),
@@ -107,6 +110,7 @@ impl MemState {
         );
         put("users", drain(&mut s.users, |u| orphans.contains(&u.id)));
         put("organisations", drain(&mut s.orgs, |o| o.id == org));
+        s.ai.purge(org, &mut c);
         c
     }
 

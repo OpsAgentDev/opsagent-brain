@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
 use opsagent_core::{
+    ai::evidence_hash,
     finding::{dedupe, FindingDraft, Severity},
     lifecycle::{Next, RecentEvents, SeenFinding, FLAP_SPAN},
     repo::RepoResult,
@@ -68,7 +69,7 @@ pub(super) async fn upsert_seen(
                 f.id
             }
         };
-        evidence(db, id, run_id, d, now).await?;
+        evidence(db, c, id, run_id, d, now).await?;
     }
     Ok(())
 }
@@ -262,9 +263,11 @@ async fn event(
     .await
 }
 
-/// Replaces this run's evidence for the finding, redacted.
+/// Replaces this run's evidence for the finding, redacted, and stores the finding's evidence
+/// hash over the redacted excerpts.
 async fn evidence(
     db: &impl ConnectionTrait,
+    c: Target,
     finding_id: Uuid,
     run_id: Uuid,
     d: &FindingDraft,
@@ -276,9 +279,11 @@ async fn evidence(
         vec![finding_id.into(), run_id.into()],
     )
     .await?;
+    let mut excerpts = Vec::with_capacity(d.evidence.len());
     for e in &d.evidence {
         let (source, a) = redact(&e.source);
         let (excerpt, b) = redact(&e.excerpt);
+        excerpts.push(excerpt.clone());
         exec(
             db,
             "INSERT INTO evidence (id, finding_id, run_id, source, excerpt, redacted, expires_at) \
@@ -295,5 +300,12 @@ async fn evidence(
         )
         .await?;
     }
-    Ok(())
+    let k = &d.key;
+    let hash = evidence_hash(&k.check_id, &k.variant, &k.resource_identity, &excerpts);
+    exec(
+        db,
+        "UPDATE findings SET evidence_hash = $3 WHERE id = $1 AND organisation_id = $2",
+        vec![finding_id.into(), c.organisation_id.into(), hash.into()],
+    )
+    .await
 }

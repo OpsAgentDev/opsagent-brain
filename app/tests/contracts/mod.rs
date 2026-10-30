@@ -17,7 +17,9 @@ use opsagent_core::{
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
 use uuid::Uuid;
 
+mod ai;
 mod billing;
+mod chat;
 mod connections;
 mod deliveries;
 mod findings;
@@ -202,6 +204,28 @@ impl Seed for PgSeed {
             TtlTable::EmailSuppressions => (
                 "INSERT INTO email_suppressions (id, email_hash, reason, expires_at) VALUES ($1, $2, 'confirm_blocked', $3)",
                 vec![id.into(), id.to_string().into(), at.into()],
+            ),
+            TtlTable::ChatSessions => {
+                let member = Uuid::now_v7();
+                self.exec(
+                    "INSERT INTO users (id, email) VALUES ($1, $2)",
+                    vec![member.into(), format!("{member}@example.com").into()],
+                )
+                .await;
+                self.exec(
+                    "INSERT INTO members (id, organisation_id, user_id, role) VALUES ($1, $2, $1, 'member')",
+                    vec![member.into(), o.into()],
+                )
+                .await;
+                ("INSERT INTO chat_sessions (id, organisation_id, member_id, title, created_at, last_message_at) \
+                  VALUES ($1, $2, $3, 't', $4, $4)",
+                 vec![id.into(), o.into(), member.into(), at.into()])
+            }
+            TtlTable::AiUsage => (
+                "INSERT INTO ai_usage (id, organisation_id, purpose, provider, model, key_source, input_tokens, \
+                 output_tokens, cache_read_tokens, cache_write_tokens, credits, created_at) \
+                 VALUES ($1, $2, 'chat', 'anthropic', 'm', 'opsagent', 1, 1, 0, 0, 1, $3)",
+                vec![id.into(), o.into(), at.into()],
             ),
         };
         self.exec(sql, values).await;

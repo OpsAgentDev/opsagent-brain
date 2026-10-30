@@ -4487,19 +4487,20 @@
         "type": "object",
         "description": "`None` is unlimited.",
         "required": [
-          "investigations"
+          "ai_credits"
         ],
         "properties": {
+          "ai_credits": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Dashboard AI credits per account paid for, per period.",
+            "minimum": 0
+          },
           "integrations": {
             "type": [
               "integer",
               "null"
             ],
-            "format": "int32",
-            "minimum": 0
-          },
-          "investigations": {
-            "type": "integer",
             "format": "int32",
             "minimum": 0
           },

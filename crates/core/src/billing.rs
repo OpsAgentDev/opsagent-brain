@@ -98,12 +98,12 @@ impl BillingStatus {
     }
 }
 
-/// `None` is unlimited. Investigation caps are stored only; nothing enforces them yet.
+/// `None` is unlimited. `ai_credits`: Dashboard AI credits per account paid for, per period.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct PlanLimits {
     pub members: Option<u32>,
     pub integrations: Option<u32>,
-    pub investigations: u32,
+    pub ai_credits: u32,
 }
 
 /// The tier table (billing.md, Global Constraints).
@@ -112,17 +112,17 @@ pub const fn plan_limits(tier: Tier) -> PlanLimits {
         Tier::Starter => PlanLimits {
             members: Some(2),
             integrations: Some(1),
-            investigations: 60,
+            ai_credits: 1000,
         },
         Tier::Team => PlanLimits {
             members: Some(5),
             integrations: None,
-            investigations: 300,
+            ai_credits: 5000,
         },
         Tier::Scale => PlanLimits {
             members: None,
             integrations: None,
-            investigations: 1000,
+            ai_credits: 15000,
         },
     }
 }
@@ -314,11 +314,11 @@ mod tests {
     fn plan_limits_match_spec() {
         let row = |t| {
             let l = plan_limits(t);
-            (l.members, l.integrations, l.investigations)
+            (l.members, l.integrations, l.ai_credits)
         };
-        assert_eq!(row(Tier::Starter), (Some(2), Some(1), 60));
-        assert_eq!(row(Tier::Team), (Some(5), None, 300));
-        assert_eq!(row(Tier::Scale), (None, None, 1000));
+        assert_eq!(row(Tier::Starter), (Some(2), Some(1), 1000));
+        assert_eq!(row(Tier::Team), (Some(5), None, 5000));
+        assert_eq!(row(Tier::Scale), (None, None, 15000));
     }
 
     #[test]

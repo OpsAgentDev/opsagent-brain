@@ -23,7 +23,8 @@ use crate::{
 pub struct Limits {
     pub members: Option<u32>,
     pub integrations: Option<u32>,
-    pub investigations: u32,
+    /// Dashboard AI credits per account paid for, per period.
+    pub ai_credits: u32,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -48,7 +49,7 @@ fn view(v: BillingView) -> BillingOut {
     let limits = |l: PlanLimits| Limits {
         members: l.members,
         integrations: l.integrations,
-        investigations: l.investigations,
+        ai_credits: l.ai_credits,
     };
     BillingOut {
         status: v.status.as_str().into(),

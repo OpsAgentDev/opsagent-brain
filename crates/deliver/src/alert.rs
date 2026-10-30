@@ -122,6 +122,7 @@ mod tests {
             resolved_at: None,
             resolved_reason: None,
             alerted_at: None,
+            evidence_hash: None,
             created_at: now(),
             updated_at: now(),
         }

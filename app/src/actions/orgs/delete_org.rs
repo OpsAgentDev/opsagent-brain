@@ -240,6 +240,12 @@ mod tests {
                 fn billing(&self) -> &dyn opsagent_core::billing::BillingRepo {
                     self.0.billing()
                 }
+                fn ai(&self) -> &dyn opsagent_core::ai::AiRepo {
+                    self.0.ai()
+                }
+                fn chat(&self) -> &dyn opsagent_core::chat::ChatRepo {
+                    self.0.chat()
+                }
             }
         };
     }

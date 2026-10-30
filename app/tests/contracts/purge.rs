@@ -260,8 +260,21 @@ async fn seed_everything(seed: &super::PgSeed, o: Uuid, client: &str, email: &st
            VALUES (gen_random_uuid(), '{client}', 'r', 'c', 'r', 's', '{grant}', now());
          INSERT INTO invites (id, organisation_id, email, role, token_hash, expires_at) VALUES (gen_random_uuid(), '{o}', '{email}', 'member', 'i{o}', now());
          INSERT INTO email_suppressions (id, organisation_id, email_hash, reason, expires_at) VALUES (gen_random_uuid(), '{o}', 'h', 'ignored', now());
-         INSERT INTO audit_events (id, organisation_id, actor_type, action) VALUES (gen_random_uuid(), '{o}', 'system', 'x');",
+         INSERT INTO audit_events (id, organisation_id, actor_type, action) VALUES (gen_random_uuid(), '{o}', 'system', 'x');
+         INSERT INTO model_keys (id, organisation_id, provider, last4, ciphertext, nonce, kek_version, models)
+           VALUES (gen_random_uuid(), '{o}', 'openai', 'abcd', '\\x00', '\\x00', 1, '{{\"routine\":\"r\",\"chat\":\"c\"}}');
+         INSERT INTO explanations (id, organisation_id, check_id, evidence_hash, provider, model, text)
+           VALUES (gen_random_uuid(), '{o}', '01', 'h', 'anthropic', 'm', 't');
+         INSERT INTO ai_usage (id, organisation_id, member_id, purpose, provider, model, key_source, input_tokens,
+           output_tokens, cache_read_tokens, cache_write_tokens, credits)
+           VALUES (gen_random_uuid(), '{o}', '{mem}', 'chat', 'anthropic', 'm', 'opsagent', 1, 1, 0, 0, 0.5);
+         INSERT INTO ai_credit_grants (id, organisation_id, credits, stripe_event_id) VALUES (gen_random_uuid(), '{o}', 1000, 'evt_{o}');
+         INSERT INTO ai_notices (organisation_id, key) VALUES ('{o}', 'quota80:x');
+         INSERT INTO chat_sessions (id, organisation_id, member_id, title) VALUES ('{chat}', '{o}', '{mem}', 't');
+         INSERT INTO chat_messages (id, session_id, organisation_id, role, content)
+           VALUES (gen_random_uuid(), '{chat}', '{o}', 'user', '{{\"text\":\"hi\"}}');",
         cred = user.simple(),
+        chat = Uuid::now_v7(),
     );
     seed.raw().execute_unprepared(&sql).await.unwrap();
 }
@@ -315,7 +328,7 @@ async fn purge_removes_every_row_of_old_deleted_org() {
     let st = sea_orm::Statement::from_string(sea_orm::DbBackend::Postgres, cols);
     let tables = seed.raw().query_all_raw(st).await.unwrap();
     // A new tenant table fails here: add it to the purge (`PURGE`) and to `seed_everything`.
-    assert_eq!(tables.len(), 16);
+    assert_eq!(tables.len(), 23);
     for r in tables {
         let t: String = r.try_get("", "t").unwrap();
         let q = format!("SELECT count(*) AS n FROM {t} WHERE organisation_id = '{doomed}'");

@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
+    ai::evidence_hash,
     finding::{
         dedupe, Finding, FindingDraft, FindingEvent, FindingFilter, FindingsRepo, PostureRow,
         Severity, StatusChange, StoredEvidence,
@@ -217,6 +218,7 @@ impl FindingsRepo for MemStore {
                             resolved_at: None,
                             resolved_reason: None,
                             alerted_at: None,
+                            evidence_hash: None,
                             created_at: now,
                             updated_at: now,
                         },
@@ -229,7 +231,12 @@ impl FindingsRepo for MemStore {
                 }
             };
             row.evidence.retain(|e| e.run_id != run_id);
-            row.evidence.extend(stored(run_id, d, now));
+            let fresh = stored(run_id, d, now);
+            let excerpts: Vec<String> = fresh.iter().map(|e| e.excerpt.clone()).collect();
+            let k = &d.key;
+            let hash = evidence_hash(&k.check_id, &k.variant, &k.resource_identity, &excerpts);
+            row.finding.evidence_hash = Some(hash);
+            row.evidence.extend(fresh);
         }
         Ok(())
     }
@@ -304,6 +311,20 @@ impl FindingsRepo for MemStore {
             if f.organisation_id == organisation_id && ids.contains(&f.id) && f.status != "resolved"
             {
                 f.alerted_at = Some(at);
+            }
+        }
+        Ok(())
+    }
+
+    async fn set_evidence_hash(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        hash: &str,
+    ) -> RepoResult<()> {
+        for r in self.state().findings.iter_mut() {
+            if r.finding.organisation_id == organisation_id && r.finding.id == id {
+                r.finding.evidence_hash = Some(hash.into());
             }
         }
         Ok(())

@@ -13,7 +13,8 @@ pub(super) fn cutoff(t: TtlTable, now: DateTime<Utc>) -> DateTime<Utc> {
         TtlTable::Evidence | TtlTable::EmailSuppressions => 0,
         TtlTable::Sessions => 1,
         TtlTable::MagicLinks | TtlTable::OauthConsentRequests | TtlTable::OauthAccessTokens => 7,
-        TtlTable::OauthRefreshTokens | TtlTable::Invites => 30,
+        TtlTable::OauthRefreshTokens | TtlTable::Invites | TtlTable::ChatSessions => 30,
+        TtlTable::AiUsage => 395,
     };
     now - Duration::days(days)
 }
@@ -87,6 +88,8 @@ mod tests {
             (TtlTable::OauthRefreshTokens, 30),
             (TtlTable::Invites, 30),
             (TtlTable::EmailSuppressions, 0),
+            (TtlTable::ChatSessions, 30),
+            (TtlTable::AiUsage, 395),
         ];
         assert_eq!(want.map(|w| w.0), TtlTable::ALL);
         for (t, days) in want {

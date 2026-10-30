@@ -1,6 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use opsagent_brain::actions::uow::Repos;
 use opsagent_core::{
+    ai::evidence_hash,
     finding::{
         Evidence, FindingDraft, FindingEvent, FindingFilter, FindingKey, PostureRow, Severity,
         StatusChange,
@@ -331,6 +332,24 @@ contract_suite! {
         s.findings().resolve_unseen(org, conn, r2, &[], t(1)).await.unwrap();
         let f = s.findings().get(org, id).await.unwrap().unwrap();
         assert_eq!(f.resolved_reason.as_deref(), Some("check_passed"));
+    }
+
+    async fn upsert_seen_writes_evidence_hash(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let mut d = draft(conn, "s3_public", "arn:aws:s3:::alpha", Severity::High);
+        d.evidence[0].excerpt = "bucket alpha: Authorization: Bearer abc.def".into();
+        scan(s, seed, org, conn, std::slice::from_ref(&d)).await;
+        let id = s.findings().list(org, FindingFilter::default(), all()).await.unwrap().items[0].id;
+        let f = s.findings().get(org, id).await.unwrap().unwrap();
+        // Over the redacted excerpts, as stored.
+        let redacted = vec!["bucket alpha: Authorization: Bearer [redacted:token]".to_owned()];
+        let want = evidence_hash("s3_public", "", "arn:aws:s3:::alpha", &redacted);
+        assert_eq!(f.evidence_hash.as_deref(), Some(want.as_str()));
+        s.findings().set_evidence_hash(org, id, "h2").await.unwrap();
+        // Another organisation cannot write it.
+        s.findings().set_evidence_hash(Uuid::new_v4(), id, "h3").await.unwrap();
+        let f = s.findings().get(org, id).await.unwrap().unwrap();
+        assert_eq!(f.evidence_hash.as_deref(), Some("h2"));
     }
 
     async fn resolve_unseen_of_a_gone_resource_says_resource_gone(s, seed) {

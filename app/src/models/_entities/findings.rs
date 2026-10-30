@@ -50,6 +50,8 @@ pub struct Model {
     pub alerted_at: Option<DateTimeWithTimeZone>,
     pub flap_count: i32,
     pub stable_runs: i32,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub evidence_hash: Option<String>,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }

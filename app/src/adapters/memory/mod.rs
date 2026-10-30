@@ -1,7 +1,9 @@
 //! In-memory fakes of every repository, for tests. `begin` snapshots the whole state and
 //! `commit` writes the snapshot back, so a dropped transaction leaves nothing behind.
+mod ai;
 mod audit;
 mod billing;
+mod chat;
 mod connections;
 mod deliveries;
 mod findings;
@@ -28,8 +30,10 @@ use std::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
+    ai::AiRepo,
     audit::{AuditEntry, AuditLog},
     billing::BillingRepo,
+    chat::ChatRepo,
     connection::{Connection, ConnectionsRepo, SealedCreds, Verification},
     finding::FindingsRepo,
     oauth::{AccessToken, ConsentRequest, Grant, OAuthClient, OAuthRepo, RefreshToken},
@@ -155,6 +159,9 @@ pub struct MemState {
     billing: HashMap<Uuid, billing::BillingRow>,
     /// Recorded Stripe event ids.
     stripe_events: HashSet<String>,
+    ai: ai::AiState,
+    chat_sessions: Vec<opsagent_core::chat::ChatSession>,
+    chat_messages: Vec<opsagent_core::chat::ChatMessage>,
     /// Test hooks: `purge_org` of this organisation fails; `delete_expired` takes this long.
     fail_purge: Option<Uuid>,
     ttl_delay: Option<std::time::Duration>,
@@ -217,6 +224,12 @@ impl Repos for MemStore {
         self
     }
     fn billing(&self) -> &dyn BillingRepo {
+        self
+    }
+    fn ai(&self) -> &dyn AiRepo {
+        self
+    }
+    fn chat(&self) -> &dyn ChatRepo {
         self
     }
 }
@@ -286,6 +299,12 @@ impl Repos for MemTx {
         &self.work
     }
     fn billing(&self) -> &dyn BillingRepo {
+        &self.work
+    }
+    fn ai(&self) -> &dyn AiRepo {
+        &self.work
+    }
+    fn chat(&self) -> &dyn ChatRepo {
         &self.work
     }
 }
