@@ -17,6 +17,8 @@ use crate::config::{MODEL_CHAT, MODEL_ROUTINE};
 pub enum FakeStep {
     Text(String, Usage),
     Tools(Vec<ToolCall>, Usage),
+    /// Text, then tool calls, in one step.
+    TextTools(String, Vec<ToolCall>, Usage),
     Fail(ModelError),
 }
 
@@ -125,6 +127,7 @@ impl ModelProvider for FakeModels {
         let (text, tool_calls, usage, stop) = match self.next(req) {
             FakeStep::Text(t, u) => (t, vec![], u, StopReason::EndTurn),
             FakeStep::Tools(c, u) => (String::new(), c, u, StopReason::ToolUse),
+            FakeStep::TextTools(t, c, u) => (t, c, u, StopReason::ToolUse),
             FakeStep::Fail(e) => return Err(e),
         };
         if !text.is_empty() {

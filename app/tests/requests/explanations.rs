@@ -377,3 +377,66 @@ async fn finding_detail_carries_cached_explanation() {
     )
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn explain_sends_only_latest_run_evidence() {
+    serve_with(
+        |c| c.anthropic_api_key = KEY.into(),
+        |req, ctx| async move {
+            let w = World::new(req, ctx, vec![step("ok")]).await;
+            let ident = "arn:aws:s3:::alpha-bucket";
+            w.seen(ident, &["older run says public ACL"]).await;
+            let id = w.seen(ident, &["newer run says public policy"]).await;
+            assert_eq!(w.post(id).await.status_code(), 200);
+            let user = format!("{:?}", w.fake.requests()[0].messages);
+            assert!(user.contains("newer run says public policy"), "{user}");
+            assert!(!user.contains("older run"), "{user}");
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn explain_title_and_next_step_redacted() {
+    serve_with(
+        |c| c.anthropic_api_key = KEY.into(),
+        |req, ctx| async move {
+            let w = World::new(req, ctx, vec![step("ok")]).await;
+            let ident = "arn:aws:s3:::alpha-bucket";
+            let id = w.seen(ident, &["public ACL"]).await;
+            let mut f = w.finding(ident).await.into_active_model();
+            f.title = Set("Key AKIAIOSFODNN7EXAMPLE is exposed".into());
+            f.next_step = Set(Some("Rotate password=hunter2hunter2".into()));
+            f.update(&w.ctx.db).await.unwrap();
+            assert_eq!(w.post(id).await.status_code(), 200);
+            let user = format!("{:?}", w.fake.requests()[0].messages);
+            for gone in ["AKIA", "hunter2"] {
+                assert!(!user.contains(gone), "{gone} in {user}");
+            }
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn explain_json_evidence_redacted_per_leaf_and_by_key() {
+    serve_with(
+        |c| c.anthropic_api_key = KEY.into(),
+        |req, ctx| async move {
+            let w = World::new(req, ctx, vec![step("ok")]).await;
+            let ident = "arn:aws:s3:::alpha-bucket";
+            // Escaped quotes hide the first from text redaction; storage redacts as text.
+            let raw = r#"{"env":"aws_secret_access_key=\"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\"","password":"hunter2hunter2"}"#;
+            let id = w.seen(ident, &[raw]).await;
+            assert_eq!(w.post(id).await.status_code(), 200);
+            let user = format!("{:?}", w.fake.requests()[0].messages);
+            for gone in ["wJalrXUtnFEMI", "hunter2"] {
+                assert!(!user.contains(gone), "{gone} in {user}");
+            }
+        },
+    )
+    .await;
+}

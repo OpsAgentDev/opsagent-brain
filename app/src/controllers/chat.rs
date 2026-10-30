@@ -147,6 +147,7 @@ fn frame(e: ChatEvent) -> Event {
             description = "Events `delta` `{text}`, `tool` `{name}`, then `done` \
                 `{message_id, partial, partial_reason}` (`step_limit`, `token_limit`, \
                 `time_limit`, `rate_limited` or null) or `error` `{code}`"),
+        (status = 402, body = Problem, description = "`ai_quota_reached`"),
         (status = 404, body = Problem), (status = 409, body = Problem, description = "`ai_disabled`"),
         (status = 422, body = Problem),
         (status = 429, body = Problem, description = "`ai_busy`: three answers already running"),

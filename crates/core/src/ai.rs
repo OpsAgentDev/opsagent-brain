@@ -117,13 +117,16 @@ pub fn period_quota(b: &OrgBilling, enforced: bool) -> u32 {
     }
 }
 
-/// The subscription's current period, else the calendar month in UTC holding `now`.
+/// The subscription's current period while it holds `now`, else the calendar month in UTC
+/// holding `now` (a stale window, after a cancel or a late renewal webhook, never counts).
 pub fn quota_period(b: &OrgBilling, now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
     let sub = b.subscription.as_ref();
     if let Some((Some(start), Some(end))) =
         sub.map(|s| (s.current_period_start, s.current_period_end))
     {
-        return (start, end);
+        if start <= now && now < end {
+            return (start, end);
+        }
     }
     let month = |y: i32, m: u32| Utc.with_ymd_and_hms(y, m, 1, 0, 0, 0).single();
     let (y, m) = (now.year(), now.month());
@@ -301,9 +304,34 @@ mod tests {
         let s = b.subscription.as_mut().unwrap();
         s.current_period_start = Some(at("2026-10-12T08:00:00Z"));
         s.current_period_end = Some(at("2026-11-12T08:00:00Z"));
+        let mid = at("2026-10-20T00:00:00Z");
+        assert_eq!(
+            quota_period(&b, mid),
+            (at("2026-10-12T08:00:00Z"), at("2026-11-12T08:00:00Z"))
+        );
+        // At the end instant the window is over: the calendar month.
+        assert_eq!(
+            quota_period(&b, at("2026-11-12T08:00:00Z")),
+            (at("2026-11-01T00:00:00Z"), at("2026-12-01T00:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn quota_period_ignores_stale_subscription_window() {
+        let at = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
+        let mut b = billing(BillingStatus::Canceled, Some(Tier::Team), Some(1));
+        let s = b.subscription.as_mut().unwrap();
+        s.current_period_start = Some(at("2026-08-12T08:00:00Z"));
+        s.current_period_end = Some(at("2026-09-12T08:00:00Z"));
+        let now = at("2026-12-31T23:59:59Z");
         assert_eq!(
             quota_period(&b, now),
-            (at("2026-10-12T08:00:00Z"), at("2026-11-12T08:00:00Z"))
+            (at("2026-12-01T00:00:00Z"), at("2027-01-01T00:00:00Z"))
+        );
+        // A window that starts after `now` (clock skew) is not used either.
+        assert_eq!(
+            quota_period(&b, at("2026-08-01T00:00:00Z")),
+            (at("2026-08-01T00:00:00Z"), at("2026-09-01T00:00:00Z"))
         );
     }
 

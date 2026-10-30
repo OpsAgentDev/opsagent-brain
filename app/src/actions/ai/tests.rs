@@ -456,7 +456,9 @@ async fn period_resets_on_stripe_period() {
         .apply_subscription(e.org(), &renewed, now)
         .await
         .unwrap();
-    let s = e.access().status(&e.scope).await.unwrap();
+    // Read once the renewed period holds the clock (it starts 1s after `now`).
+    let after = now + Duration::seconds(2);
+    let s = e.access_at(after).status(&e.scope).await.unwrap();
     assert_eq!((s.used, s.quota, s.state), (dec(0), dec(1000), "ready"));
     assert_eq!(s.period.0, now + Duration::seconds(1));
 }

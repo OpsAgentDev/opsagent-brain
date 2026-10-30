@@ -11,6 +11,7 @@ use opsagent_core::{
     repo::{Clock, PageRequest},
     resource::ResourceFilter,
 };
+use serde_json::Value;
 use uuid::Uuid;
 
 use super::{access::AiAccess, refused, AI_DISABLED};
@@ -42,17 +43,34 @@ const MAX_TOKENS: u32 = 600;
 /// evidence expired. `evidence` is unexpired, newest first.
 pub fn current_hash(f: &Finding, evidence: &[StoredEvidence]) -> String {
     let k = &f.key;
-    let Some(latest) = evidence.first() else {
+    if evidence.is_empty() {
         return evidence_hash(&k.check_id, &k.variant, &k.resource_identity, &[]);
-    };
+    }
     f.evidence_hash.clone().unwrap_or_else(|| {
-        let run: Vec<String> = evidence
-            .iter()
-            .filter(|e| e.run_id == latest.run_id)
-            .map(|e| e.excerpt.clone())
-            .collect();
+        let run: Vec<String> = latest_run(evidence).map(|e| e.excerpt.clone()).collect();
         evidence_hash(&k.check_id, &k.variant, &k.resource_identity, &run)
     })
+}
+
+/// The excerpts of the newest run: what the hash covers and the only evidence sent.
+fn latest_run(evidence: &[StoredEvidence]) -> impl Iterator<Item = &StoredEvidence> {
+    let latest = evidence.first().map(|e| e.run_id);
+    evidence.iter().filter(move |e| Some(e.run_id) == latest)
+}
+
+/// `v` serialised and redacted twice: per string and key (JSON escaping cannot hide a secret),
+/// then as text (a key such as `"password":` marks its value secret).
+pub(super) fn redact_json(v: &Value) -> String {
+    fn leaves(v: &Value) -> Value {
+        let r = |s: &str| redact(s).0;
+        match v {
+            Value::String(s) => Value::String(r(s)),
+            Value::Array(a) => Value::Array(a.iter().map(leaves).collect()),
+            Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (r(k), leaves(v))).collect()),
+            other => other.clone(),
+        }
+    }
+    redact(&leaves(v).to_string()).0
 }
 
 /// `text` with its markup escaped, truncated to `max` bytes at a character boundary, wrapped
@@ -145,7 +163,12 @@ impl ExplainFinding {
     /// resource's identity, redacted, wrapped.
     async fn input(&self, f: &Finding, evidence: &[StoredEvidence]) -> AppResult<String> {
         let id = &f.key.resource_identity;
-        let strip = |t: &str| strip_identity(t, id);
+        let strip = |t: &str| redact(&strip_identity(t, id)).0;
+        // A JSON excerpt gets both passes; any other text the text pass.
+        let excerpt = |t: &str| {
+            let t = strip_identity(t, id);
+            serde_json::from_str::<Value>(&t).map_or_else(|_| redact(&t).0, |v| redact_json(&v))
+        };
         let filter = ResourceFilter {
             connection_id: Some(f.connection_id),
             identity: Some(id.clone()),
@@ -174,9 +197,8 @@ impl ExplainFinding {
             region,
             strip(f.next_step.as_deref().unwrap_or_default()),
         );
-        for e in evidence {
-            let (excerpt, _) = redact(&strip(&e.excerpt));
-            out.push_str(&untrusted("evidence", &excerpt, EXCERPT_MAX));
+        for e in latest_run(evidence) {
+            out.push_str(&untrusted("evidence", &excerpt(&e.excerpt), EXCERPT_MAX));
             out.push('\n');
         }
         Ok(out)

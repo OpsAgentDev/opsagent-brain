@@ -120,7 +120,10 @@ impl ModelProvider for OpenAiModels {
                 "response.output_item.done" if v["item"]["type"] == "function_call" => {
                     let it = &v["item"];
                     let s = |k: &str| it[k].as_str().unwrap_or_default().to_owned();
-                    let args = json(it["arguments"].as_str().unwrap_or("{}"))?;
+                    let args = match it["arguments"].as_str().map(str::trim) {
+                        None | Some("") => json!({}),
+                        Some(a) => json(a)?,
+                    };
                     tool_calls.push(ToolCall {
                         id: s("call_id"),
                         name: s("name"),

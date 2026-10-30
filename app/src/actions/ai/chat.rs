@@ -23,13 +23,12 @@ use uuid::Uuid;
 
 use super::{
     access::{AiAccess, CallPlan},
-    explain::{untrusted, EXCERPT_MAX},
+    explain::{redact_json, untrusted, EXCERPT_MAX},
     failures::AiCallError,
     refused,
 };
 use crate::{
     actions::{orgs::OrgScope, uow::UnitOfWork},
-    adapters::redact::redact,
     error::{AppError, AppResult},
     tools::{Caller, ToolRegistry, Via},
 };
@@ -86,29 +85,15 @@ pub enum ChatEvent {
     },
 }
 
-/// A tool result as the model sees it: redacted, cut to the budget, wrapped as untrusted.
+/// A tool result as the model sees it: redacted (`redact_json`), cut to the budget, wrapped as
+/// untrusted.
 pub fn wrap_tool_result(name: &str, v: &Value) -> String {
     // The name may be the model's own invention: keep it to tool-name characters.
     let name: String = name
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect();
-    untrusted(
-        &format!("tool:{name}"),
-        &redacted(v).to_string(),
-        EXCERPT_MAX,
-    )
-}
-
-/// `v` with every string and object key redacted, so JSON escaping cannot hide a secret.
-fn redacted(v: &Value) -> Value {
-    let r = |s: &str| redact(s).0;
-    match v {
-        Value::String(s) => Value::String(r(s)),
-        Value::Array(a) => Value::Array(a.iter().map(redacted).collect()),
-        Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (r(k), redacted(v))).collect()),
-        other => other.clone(),
-    }
+    untrusted(&format!("tool:{name}"), &redact_json(v), EXCERPT_MAX)
 }
 
 /// Stored messages as the providers accept them: empty (cut-off) answers dropped, starting
@@ -270,11 +255,26 @@ impl ChatTurn {
 }
 
 /// Text deltas out to the stream; a gone receiver is ignored (the turn still finishes).
-struct Deltas<'a>(&'a UnboundedSender<ChatEvent>);
+/// `gap`: a step's text follows earlier text, so its first delta is preceded by `STEP_GAP`.
+struct Deltas<'a> {
+    tx: &'a UnboundedSender<ChatEvent>,
+    gap: bool,
+}
+
+/// Between the texts of two steps of one answer.
+const STEP_GAP: &str = "\n\n";
 
 impl TextSink for Deltas<'_> {
     fn delta(&mut self, text: &str) {
-        let _ = self.0.send(ChatEvent::Delta { text: text.into() });
+        if text.is_empty() {
+            return;
+        }
+        if std::mem::take(&mut self.gap) {
+            let _ = self.tx.send(ChatEvent::Delta {
+                text: STEP_GAP.into(),
+            });
+        }
+        let _ = self.tx.send(ChatEvent::Delta { text: text.into() });
     }
 }
 
@@ -331,7 +331,10 @@ impl Turn {
         let mut req = self.request().await?;
         let access = &self.chat.access;
         for step in 1..=MAX_STEPS {
-            let mut sink = Deltas(events);
+            let mut sink = Deltas {
+                tx: events,
+                gap: !answer.is_empty(),
+            };
             let call = access.call(
                 &self.scope,
                 &self.plan,
@@ -343,7 +346,12 @@ impl Turn {
                 Err(AiCallError::RateLimited) => return Ok(Some("rate_limited")),
                 r => r?,
             };
-            answer.push_str(&turn.text);
+            if !turn.text.is_empty() {
+                if !answer.is_empty() {
+                    answer.push_str(STEP_GAP);
+                }
+                answer.push_str(&turn.text);
+            }
             if turn.stop == StopReason::MaxTokens {
                 return Ok(Some("token_limit"));
             }
@@ -476,6 +484,20 @@ mod tests {
             assert!(!got.contains(gone), "{gone} in {got}");
         }
         assert!(got.contains("[redacted:aws_key_id]") && got.contains("[redacted:userinfo]"));
+    }
+
+    #[test]
+    fn key_aware_secrets_in_json_are_redacted() {
+        // Each leaf alone looks harmless; the key beside it is what marks it secret.
+        let v = json!({
+            "password": "hunter2hunter2",
+            "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "nested": { "db": "postgres://u:p@h/db" },
+        });
+        let got = wrap_tool_result("get_finding", &v);
+        for gone in ["hunter2hunter2", "wJalrXUtnFEMI", "u:p@"] {
+            assert!(!got.contains(gone), "{gone} in {got}");
+        }
     }
 
     fn msg(role: MsgRole, text: &str) -> ChatMessage {

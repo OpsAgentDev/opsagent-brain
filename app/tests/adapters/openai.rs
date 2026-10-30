@@ -139,6 +139,26 @@ async fn openai_sends_store_false_and_parses_function_call() {
 }
 
 #[tokio::test]
+async fn openai_empty_arguments_are_an_empty_object() {
+    let server = MockServer::start().await;
+    let body = sse_body(&[
+        (
+            "response.output_item.done",
+            json!({"type": "response.output_item.done",
+            "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1",
+                     "name": "list_connections", "arguments": ""}}),
+        ),
+        completed(json!({"input_tokens": 5, "output_tokens": 2})),
+    ]);
+    responses_ok(body).mount(&server).await;
+    let turn = models(&server)
+        .stream(KEY, &request(), &mut Collect::default())
+        .await
+        .unwrap();
+    assert_eq!(turn.tool_calls[0].args, json!({}));
+}
+
+#[tokio::test]
 async fn openai_usage_maps_cached_tokens() {
     let server = MockServer::start().await;
     let body = sse_body(&[

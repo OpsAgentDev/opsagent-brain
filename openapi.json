@@ -2159,7 +2159,7 @@
             }
           },
           "402": {
-            "description": "Billing required, or a trial or plan limit reached",
+            "description": "`ai_quota_reached`. Billing required, or a trial or plan limit reached",
             "content": {
               "application/json": {
                 "schema": {
@@ -3246,7 +3246,7 @@
             }
           },
           "402": {
-            "description": "Billing required, or a trial or plan limit reached",
+            "description": "`ai_quota_reached`. Billing required, or a trial or plan limit reached",
             "content": {
               "application/json": {
                 "schema": {

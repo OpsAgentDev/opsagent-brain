@@ -309,6 +309,30 @@ async fn tool_loop_calls_registry_and_streams_answer() {
 
 #[tokio::test]
 #[serial]
+async fn step_texts_joined_by_blank_line() {
+    serve_with(opsagent_key, |req, ctx| async move {
+        let checking = vec![call("c1", "get_scan", json!({}))];
+        let steps = vec![
+            FakeStep::TextTools("Checking scans.".into(), checking, Usage::default()),
+            text("No scan ran yet."),
+        ];
+        let w = World::new(req, ctx, steps).await;
+        let id = w.session(None).await;
+        let f = w.turn(id, "Any scans?").await;
+        let streamed: String = f
+            .iter()
+            .filter(|(e, _)| e == "delta")
+            .map(|(_, d)| d["text"].as_str().unwrap())
+            .collect();
+        let want = "Checking scans.\n\nNo scan ran yet.";
+        assert_eq!(streamed, want);
+        assert_eq!(w.stored(id).await[1]["text"], want);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn ten_step_limit_ends_partial() {
     serve_with(opsagent_key, |req, ctx| async move {
         let steps = (0..11)
