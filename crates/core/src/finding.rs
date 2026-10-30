@@ -97,6 +97,8 @@ pub struct Finding {
     pub resolved_reason: Option<String>,
     /// When the customer was told about this critical right away; cleared on resolve.
     pub alerted_at: Option<DateTime<Utc>>,
+    /// `ai::evidence_hash` of the latest seen evidence (redacted); `None` until computed.
+    pub evidence_hash: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -223,5 +225,12 @@ pub trait FindingsRepo: Send + Sync {
         organisation_id: Uuid,
         ids: &[Uuid],
         at: DateTime<Utc>,
+    ) -> RepoResult<()>;
+    /// Stores the finding's evidence hash (computed on first explain when `upsert_seen` has not).
+    async fn set_evidence_hash(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        hash: &str,
     ) -> RepoResult<()>;
 }

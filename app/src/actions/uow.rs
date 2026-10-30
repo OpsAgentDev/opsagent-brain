@@ -2,9 +2,10 @@
 //! transaction.
 use async_trait::async_trait;
 use opsagent_core::{
-    audit::AuditLog, billing::BillingRepo, connection::ConnectionsRepo, finding::FindingsRepo,
-    oauth::OAuthRepo, org::OrganisationsRepo, passkey::PasskeysRepo, repo::RepoResult,
-    resource::ResourcesRepo, retention::RetentionRepo, run::RunsRepo, user::UsersRepo,
+    ai::AiRepo, audit::AuditLog, billing::BillingRepo, chat::ChatRepo, connection::ConnectionsRepo,
+    finding::FindingsRepo, oauth::OAuthRepo, org::OrganisationsRepo, passkey::PasskeysRepo,
+    repo::RepoResult, resource::ResourcesRepo, retention::RetentionRepo, run::RunsRepo,
+    user::UsersRepo,
 };
 use opsagent_deliver::repo::{DeliveriesRepo, IntegrationsRepo, RecipientsRepo, SchedulesRepo};
 use opsagent_ledger::{Queue, Storage};
@@ -30,6 +31,10 @@ pub trait Repos: Send + Sync {
     fn retention(&self) -> &dyn RetentionRepo;
     /// Organisation billing state and Stripe webhook idempotency.
     fn billing(&self) -> &dyn BillingRepo;
+    /// Dashboard AI: the switch, keys, metering, explanations and notices.
+    fn ai(&self) -> &dyn AiRepo;
+    /// Dashboard chat history.
+    fn chat(&self) -> &dyn ChatRepo;
 }
 
 /// Writes through a `Tx` are discarded unless it is committed.

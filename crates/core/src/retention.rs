@@ -21,10 +21,13 @@ pub enum TtlTable {
     OauthRefreshTokens,
     Invites,
     EmailSuppressions,
+    /// On `last_message_at`; messages go with their session.
+    ChatSessions,
+    AiUsage,
 }
 
 impl TtlTable {
-    pub const ALL: [TtlTable; 10] = [
+    pub const ALL: [TtlTable; 12] = [
         Self::ResourceHistory,
         Self::Evidence,
         Self::ApiCallsRaw,
@@ -35,6 +38,8 @@ impl TtlTable {
         Self::OauthRefreshTokens,
         Self::Invites,
         Self::EmailSuppressions,
+        Self::ChatSessions,
+        Self::AiUsage,
     ];
 
     /// The table's name in storage, also its key in the run's stats.
@@ -50,6 +55,8 @@ impl TtlTable {
             Self::OauthRefreshTokens => "oauth_refresh_tokens",
             Self::Invites => "invites",
             Self::EmailSuppressions => "email_suppressions",
+            Self::ChatSessions => "chat_sessions",
+            Self::AiUsage => "ai_usage",
         }
     }
 }

@@ -42,7 +42,7 @@ async fn cors_preflight_web_origin_only() {
         assert_eq!(res.header("access-control-allow-credentials"), "true");
         assert_eq!(
             res.header("access-control-allow-methods"),
-            "GET,POST,PATCH,DELETE"
+            "GET,POST,PUT,PATCH,DELETE"
         );
         assert_eq!(
             res.header("access-control-allow-headers"),

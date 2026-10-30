@@ -16,6 +16,8 @@ fn expiry_column(t: TtlTable) -> &'static str {
         TtlTable::ResourceHistory => "observed_at",
         TtlTable::ApiCallsRaw => "called_at",
         TtlTable::Sessions => "expiry_date",
+        TtlTable::ChatSessions => "last_message_at",
+        TtlTable::AiUsage => "created_at",
         _ => "expires_at",
     }
 }
@@ -75,7 +77,7 @@ macro_rules! orphans {
 /// Every tenant table, children before parents (the foreign keys), each delete scoped to
 /// organisation $1; `members` and `users` follow (`PURGE_MEMBERS`), then the organisation.
 /// The orphaned users' own rows go here, while their memberships still identify them.
-const PURGE: [(&str, &str); 27] = [
+const PURGE: [(&str, &str); 34] = [
     ("audit_events", "DELETE FROM audit_events WHERE organisation_id = $1"),
     ("side_effects", "DELETE FROM side_effects WHERE run_id IN (SELECT id FROM runs WHERE organisation_id = $1)"),
     ("api_call_stats", "DELETE FROM api_call_stats WHERE run_id IN (SELECT id FROM runs WHERE organisation_id = $1)"),
@@ -109,6 +111,13 @@ const PURGE: [(&str, &str); 27] = [
     ("integrations", "DELETE FROM integrations WHERE organisation_id = $1"),
     ("invites", "DELETE FROM invites WHERE organisation_id = $1"),
     ("email_suppressions", "DELETE FROM email_suppressions WHERE organisation_id = $1"),
+    ("chat_messages", "DELETE FROM chat_messages WHERE organisation_id = $1"),
+    ("chat_sessions", "DELETE FROM chat_sessions WHERE organisation_id = $1"),
+    ("ai_usage", "DELETE FROM ai_usage WHERE organisation_id = $1"),
+    ("explanations", "DELETE FROM explanations WHERE organisation_id = $1"),
+    ("ai_credit_grants", "DELETE FROM ai_credit_grants WHERE organisation_id = $1"),
+    ("ai_notices", "DELETE FROM ai_notices WHERE organisation_id = $1"),
+    ("model_keys", "DELETE FROM model_keys WHERE organisation_id = $1"),
     // tower-sessions rows hold the signed-in user as JSON `"user_id":"<id>"` in `data`.
     ("sessions", concat!("DELETE FROM sessions s USING (", orphans!(), ") u \
       WHERE position(convert_to('\"user_id\":\"' || u.user_id || '\"', 'UTF8') IN s.data) > 0")),

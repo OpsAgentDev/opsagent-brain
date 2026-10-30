@@ -94,3 +94,26 @@ fn diff_script_fails_on_drift() {
         "drift fails"
     );
 }
+
+#[test]
+fn ai_routes_list_every_refusal() {
+    let doc: Value = serde_json::from_str(&document_json()).unwrap();
+    let common = [
+        ("402", "ai_quota_reached"),
+        ("402", "Billing required"),
+        ("409", "ai_disabled"),
+        ("502", "ai_key_failing"),
+        ("503", "ai_unavailable"),
+    ];
+    let routes = [
+        ("/orgs/{org}/chat/sessions/{id}/messages", "ai_busy"),
+        ("/orgs/{org}/findings/{id}/explanation", "ai_rate_limited"),
+    ];
+    for (p, busy) in routes {
+        let r = &doc["paths"][p]["post"]["responses"];
+        for (status, code) in common.into_iter().chain([("429", busy)]) {
+            let d = r[status]["description"].as_str().unwrap_or_default();
+            assert!(d.contains(code), "{p} {status} misses {code}: {d:?}");
+        }
+    }
+}

@@ -5,6 +5,7 @@ pub mod client_metadata;
 pub mod db;
 #[cfg(feature = "test-support")]
 pub mod memory;
+pub mod model;
 pub mod pg_queue;
 pub mod rate_limiter;
 pub mod redact;

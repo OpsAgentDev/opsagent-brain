@@ -5,6 +5,7 @@ use migration::{Migrator, MigratorTrait};
 use opsagent_connectors::{aws::AwsOutbound, Registry};
 use opsagent_core::{
     billing::BillingProvider,
+    model::ModelProvider,
     repo::{Clock, SystemClock},
 };
 use opsagent_ledger::redis;
@@ -15,19 +16,22 @@ use axum::{middleware::from_fn_with_state, Router};
 
 use crate::{
     actions::{
-        auth, billing, connections, contact, deliveries, findings, integrations, members, oauth,
-        orgs, recipients, resources, retention, runs, uow::UnitOfWork, waitlist, Actions,
+        ai, auth, billing, connections, contact, deliveries, findings, integrations, members,
+        oauth, orgs, recipients, resources, retention, runs, uow::UnitOfWork, waitlist, Actions,
         ClientMetadataSource, ConnectorSource, RateLimiter,
     },
     adapters::{
         client_metadata::HttpClientMetadata,
         db::{Pg, PgContact, PgWaitlist},
+        model::{
+            anthropic::AnthropicModels, fake::FakeModels, openai::OpenAiModels, ModelProviders,
+        },
         pg_queue::PgQueue,
         rate_limiter::RedisRateLimiter,
         slack::{HttpSlack, SlackClient},
         stripe::StripeBilling,
     },
-    config::{Config, ConnectorMode},
+    config::{Config, ConnectorMode, ModelMode, ModelSettings},
     controllers,
     error::{AppError, AppResult},
     jobs::{
@@ -61,6 +65,8 @@ pub struct Deps {
     pub slack: Arc<dyn SlackClient>,
     /// Stripe; unusable (and unused) while `STRIPE_SECRET_KEY` is empty.
     pub billing: Arc<dyn BillingProvider>,
+    /// The chat-model adapters; both serve `FakeModels::demo` when `OPSAGENT_MODEL_PROVIDER=fake`.
+    pub models: ModelProviders,
     pub clock: Arc<dyn Clock>,
     /// Fetches Client ID Metadata Documents.
     pub client_metadata: Arc<dyn ClientMetadataSource>,
@@ -131,6 +137,7 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
         .map_err(|_| internal("stripe: HTTP client could not be built"))?;
     Ok(Deps {
         billing: Arc::new(billing),
+        models: models(&config.model_settings())?,
         webauthn: Arc::new(crate::webauthn::build(&config.web_base_url)?),
         mailer: mailers::from_config(&config).map_err(internal)?,
         config,
@@ -147,9 +154,26 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
     })
 }
 
+fn models(s: &ModelSettings) -> AppResult<ModelProviders> {
+    if s.mode == ModelMode::Fake {
+        let fake: Arc<dyn ModelProvider> = Arc::new(FakeModels::demo());
+        return Ok(ModelProviders {
+            anthropic: fake.clone(),
+            openai: fake,
+        });
+    }
+    let built = |_| internal("models: HTTP client could not be built");
+    Ok(ModelProviders {
+        anthropic: Arc::new(
+            AnthropicModels::new(&s.anthropic_api_base, &s.anthropic_version).map_err(built)?,
+        ),
+        openai: Arc::new(OpenAiModels::new(&s.openai_api_base).map_err(built)?),
+    })
+}
+
 /// The state over `deps`, with every action built from them, once. Under `test-support` the
-/// mailer, Slack client and billing provider sit in cells `AppState::set_mailer`/`set_slack`/
-/// `set_billing` swap.
+/// mailer, Slack client, billing provider and model providers sit in cells
+/// `AppState::set_mailer`/`set_slack`/`set_billing`/`set_models` swap.
 pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
     #[cfg(feature = "test-support")]
     let swaps = {
@@ -158,16 +182,30 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
             mailer: Swappable::new(deps.mailer.clone()),
             slack: Swappable::new(deps.slack.clone()),
             billing: Swappable::new(deps.billing.clone()),
+            models: Swappable::new(deps.models.anthropic.clone()),
         };
         deps.mailer = swaps.mailer.clone();
         deps.slack = swaps.slack.clone();
         deps.billing = swaps.billing.clone();
+        // One cell for both providers: a test swaps in one double for whichever is called.
+        deps.models = ModelProviders {
+            anthropic: swaps.models.clone(),
+            openai: swaps.models.clone(),
+        };
         swaps
     };
     let urls = OAuthUrls::new(&deps.config.api_base_url);
     let actions = Arc::new(build_actions(&deps, &urls));
+    let tools = Arc::new(build_tools(&deps, &actions));
+    let chat = Arc::new(ai::ChatTurn::new(
+        deps.uow.clone(),
+        actions.ai.access.clone(),
+        tools.clone(),
+        deps.clock.clone(),
+    ));
     AppState(Arc::new(Inner {
-        tools: Arc::new(build_tools(&deps, &actions)),
+        tools,
+        chat,
         resources: Arc::new(build_resources(&deps, &actions)),
         prompts: Arc::new(build_prompts(&deps, &actions)),
         oauth_urls: urls,
@@ -210,6 +248,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.config.contact_to.clone(),
             ),
         },
+        ai: build_ai(d, guard.clone()),
         retention: retention::Retention::new(d.uow.clone(), d.redis.clone(), d.clock.clone()),
         billing: {
             let s = billing::BillingSettings::new(&d.config);
@@ -430,6 +469,28 @@ pub fn build_prompts(d: &Deps, a: &Actions) -> PromptRegistry {
         )),
     ];
     PromptRegistry::new(prompts, d.uow.clone())
+}
+
+fn build_ai(d: &Deps, guard: Arc<recipients::MailGuard>) -> ai::Ai {
+    let access = Arc::new(ai::AiAccess::new(
+        d.uow.clone(),
+        d.kek.clone(),
+        d.models.clone(),
+        ai::Notices::new(d.uow.clone(), d.mailer.clone(), guard),
+        d.clock.clone(),
+        ai::AiSettings::new(&d.config),
+    ));
+    ai::Ai {
+        set_enabled: ai::SetEnabled::new(access.clone()),
+        put_key: ai::PutKey::new(access.clone()),
+        list_key_models: ai::ListKeyModels::new(access.clone()),
+        patch_key: ai::PatchKey::new(access.clone()),
+        delete_key: ai::DeleteKey::new(access.clone()),
+        topup: ai::StartTopup::new(access.clone(), d.billing.clone()),
+        explain: ai::ExplainFinding::new(d.uow.clone(), access.clone(), d.clock.clone()),
+        chat_sessions: ai::ChatSessions::new(d.uow.clone(), d.clock.clone()),
+        access,
+    }
 }
 
 fn recipients(d: &Deps, guard: Arc<recipients::MailGuard>) -> recipients::Recipients {

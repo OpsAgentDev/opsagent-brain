@@ -13,7 +13,7 @@ use uuid::Uuid;
 use super::{provider_failed, unavailable, BillingSettings};
 use crate::{
     actions::uow::{Tx, UnitOfWork},
-    adapters::stripe::verify_stripe_signature,
+    adapters::stripe::{verify_stripe_signature, TOPUP_PURPOSE},
     error::{AppError, AppResult},
 };
 
@@ -50,6 +50,35 @@ fn bad_request(code: &'static str, detail: &str) -> AppError {
 
 fn warn_skip(ev: &Event, msg: &str) {
     tracing::warn!(event_id = %ev.id, "{msg}");
+}
+
+/// Credits one top-up buys (dashboard-ai.md, Top-ups).
+const TOPUP_CREDITS: i64 = 1000;
+
+/// A paid top-up session adds its credits to the organisation named by
+/// `client_reference_id`, once per event (`grant_topup` is keyed on it, like `record_event`).
+async fn topup_completed(tx: &dyn Tx, ev: &Event) -> AppResult<()> {
+    let o = &ev.data.object;
+    let org: Option<Uuid> = o["client_reference_id"]
+        .as_str()
+        .and_then(|r| r.parse().ok());
+    let Some(org) = org else {
+        warn_skip(ev, "top-up session without organisation");
+        return Ok(());
+    };
+    // The top-up session allows cards only, so a completed session is paid; this guards it.
+    if o["payment_status"] != "paid" {
+        warn_skip(ev, "top-up session not paid");
+        return Ok(());
+    }
+    let credits = sea_orm::prelude::Decimal::from(TOPUP_CREDITS);
+    match tx.ai().grant_topup(org, credits, &ev.id).await {
+        Err(RepoError::NotFound) => warn_skip(ev, "top-up session for an unknown organisation"),
+        r => {
+            r?;
+        }
+    }
+    Ok(())
 }
 
 fn ts(v: &Value) -> Option<DateTime<Utc>> {
@@ -120,7 +149,11 @@ impl HandleWebhook {
         if !tx.billing().record_event(&ev.id, &ev.kind).await? {
             return Ok(());
         }
-        if ev.kind == "checkout.session.completed" {
+        let o = &ev.data.object;
+        let topup = o["mode"] == "payment" && o["metadata"]["purpose"] == TOPUP_PURPOSE;
+        if ev.kind == "checkout.session.completed" && topup {
+            topup_completed(tx.as_ref(), &ev).await?;
+        } else if ev.kind == "checkout.session.completed" {
             self.checkout_completed(tx.as_ref(), &ev).await?;
         } else {
             let customer = ev.data.object["customer"].as_str();

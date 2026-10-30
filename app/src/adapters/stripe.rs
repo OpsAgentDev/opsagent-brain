@@ -16,6 +16,10 @@ pub const API_BASE: &str = "https://api.stripe.com";
 /// Webhook timestamps older or newer than this are refused (Stripe's default tolerance).
 const TOLERANCE_SECS: u64 = 300;
 const TRIAL_DAYS: &str = "14";
+/// One AI top-up, US$15 (plan ruling 10: inline `price_data`, no price id).
+const TOPUP_CENTS: &str = "1500";
+/// `metadata[purpose]` of a top-up Checkout session; the webhook grants on it.
+pub const TOPUP_PURPOSE: &str = "ai_topup";
 
 /// No `Debug`: it holds the secret key.
 #[derive(Clone)]
@@ -142,6 +146,39 @@ impl BillingProvider for StripeBilling {
         if self.s.automatic_tax {
             form.push(("automatic_tax[enabled]", "true".into()));
             // Stripe Tax needs the existing customer's address, saved from what Checkout collects.
+            form.push(("customer_update[address]", "auto".into()));
+        }
+        field(&self.post("checkout/sessions", form, idem).await?, "url")
+    }
+
+    async fn topup_session(
+        &self,
+        customer_id: &str,
+        organisation_id: Uuid,
+        success_url: &str,
+        cancel_url: &str,
+        idem: &str,
+    ) -> BillingResult<String> {
+        let mut form: Form = vec![
+            ("mode", "payment".into()),
+            ("customer", customer_id.to_owned()),
+            ("client_reference_id", organisation_id.to_string()),
+            ("line_items[0][price_data][currency]", "usd".into()),
+            ("line_items[0][price_data][unit_amount]", TOPUP_CENTS.into()),
+            (
+                "line_items[0][price_data][product_data][name]",
+                "OpsAgent AI credits (1,000)".into(),
+            ),
+            ("line_items[0][quantity]", "1".into()),
+            // Cards only: the webhook grants on a paid `checkout.session.completed`, and a
+            // delayed method would complete unpaid.
+            ("payment_method_types[0]", "card".into()),
+            ("metadata[purpose]", TOPUP_PURPOSE.into()),
+            ("success_url", success_url.to_owned()),
+            ("cancel_url", cancel_url.to_owned()),
+        ];
+        if self.s.automatic_tax {
+            form.push(("automatic_tax[enabled]", "true".into()));
             form.push(("customer_update[address]", "auto".into()));
         }
         field(&self.post("checkout/sessions", form, idem).await?, "url")

@@ -164,6 +164,7 @@ impl OrganisationsRepo for MemStore {
         };
         let gone = s.member(&s.members[at])?.email;
         s.members.remove(at);
+        s.drop_sessions(|c| c.member_id == member_id);
         for i in &mut s.invites {
             if i.invite.organisation_id == organisation_id && i.invite.email == gone {
                 i.pending = false;

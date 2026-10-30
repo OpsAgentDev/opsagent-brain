@@ -67,6 +67,7 @@ fn finding(m: findings::Model) -> RepoResult<Finding> {
         resolved_at: m.resolved_at.map(utc),
         resolved_reason: m.resolved_reason,
         alerted_at: m.alerted_at.map(utc),
+        evidence_hash: m.evidence_hash,
         created_at: utc(m.created_at),
         updated_at: utc(m.updated_at),
     })
@@ -310,6 +311,20 @@ impl<C: Conn> FindingsRepo for Pg<C> {
             .await
             .map(|_| ())
             .map_err(db_err)
+    }
+
+    async fn set_evidence_hash(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        hash: &str,
+    ) -> RepoResult<()> {
+        exec(
+            self.db(),
+            "UPDATE findings SET evidence_hash = $3 WHERE id = $1 AND organisation_id = $2",
+            vec![id.into(), organisation_id.into(), hash.into()],
+        )
+        .await
     }
 
     async fn posture_rows(

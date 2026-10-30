@@ -7,8 +7,8 @@ use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 
 use super::{
-    agents, auth, billing, connections, contact, deliveries, findings, integrations, members,
-    oauth_consent, orgs, passkeys, recipients, resources, runs, waitlist,
+    agents, ai, auth, billing, chat, connections, contact, deliveries, findings, integrations,
+    members, oauth_consent, orgs, passkeys, recipients, resources, runs, waitlist,
 };
 use crate::{
     api_error::ApiError,
@@ -46,6 +46,8 @@ fn api() -> OpenApiRouter<AppState> {
         .merge(waitlist::api())
         .merge(contact::api())
         .merge(billing::api())
+        .merge(ai::api())
+        .merge(chat::api())
 }
 
 /// utoipa names operations after handler fns (`list`, `show`), which repeat across controllers;
@@ -69,14 +71,15 @@ fn prefix_operation_ids(doc: &mut utoipa::openapi::OpenApi) {
 }
 
 /// Every organisation-scoped write the read-only gate covers (`middleware::billing_gate`) can
-/// answer 402 (`billing_required`, `trial_limit`, `plan_limit`).
+/// answer 402 (`billing_required`, `trial_limit`, `plan_limit`), beside a route's own 402.
 fn add_payment_required(doc: &mut utoipa::openapi::OpenApi) {
-    use utoipa::openapi::{schema::Ref, ContentBuilder, ResponseBuilder};
+    use utoipa::openapi::{schema::Ref, ContentBuilder, RefOr, ResponseBuilder};
+    const GATE: &str = "Billing required, or a trial or plan limit reached";
     let problem = ContentBuilder::new()
         .schema(Some(Ref::from_schema_name("Problem")))
         .build();
     let res = ResponseBuilder::new()
-        .description("Billing required, or a trial or plan limit reached")
+        .description(GATE)
         .content("application/json", problem)
         .build();
     for (path, item) in doc.paths.paths.iter_mut() {
@@ -91,10 +94,15 @@ fn add_payment_required(doc: &mut utoipa::openapi::OpenApi) {
         ];
         for (method, op) in ops {
             let Some(op) = op else { continue };
-            if !billing_gate::exempt(method, &format!("/v1{path}")) {
-                op.responses
-                    .responses
-                    .insert("402".into(), res.clone().into());
+            if billing_gate::exempt(method, &format!("/v1{path}")) {
+                continue;
+            }
+            match op.responses.responses.get_mut("402") {
+                Some(RefOr::T(own)) => own.description = format!("{}. {GATE}", own.description),
+                _ => {
+                    let r = res.clone().into();
+                    op.responses.responses.insert("402".into(), r);
+                }
             }
         }
     }

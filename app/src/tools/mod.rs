@@ -55,6 +55,8 @@ pub enum Via {
         client_id: String,
         token_id: Uuid,
     },
+    /// The dashboard chat, for the member who owns the session.
+    Chat { session_id: Uuid, member_id: Uuid },
 }
 
 impl Via {
@@ -62,13 +64,7 @@ impl Via {
     pub fn channel(&self) -> &'static str {
         match self {
             Via::Mcp { .. } => "mcp",
-        }
-    }
-
-    /// The grant acting through this door; the audit actor.
-    pub fn grant_id(&self) -> Uuid {
-        match self {
-            Via::Mcp { grant_id, .. } => *grant_id,
+            Via::Chat { .. } => "chat",
         }
     }
 }
@@ -242,9 +238,10 @@ impl ToolRegistry {
     }
 }
 
-/// Logs outcome and latency of one MCP request and writes its `audit_events` row (the
-/// subject and outcome, never arguments or content). A failed audit write fails the request
-/// (no unaudited access). Shared by tools, resources and prompts.
+/// Logs outcome and latency of one tool, resource or prompt request and writes its
+/// `audit_events` row (the subject and outcome, never arguments or content), with the door's
+/// actor: the MCP grant, or the chatting member. A failed audit write fails the request (no
+/// unaudited access).
 pub(crate) async fn audited<T>(
     uow: &dyn UnitOfWork,
     caller: &Caller,
@@ -255,16 +252,34 @@ pub(crate) async fn audited<T>(
 ) -> Result<T, ToolError> {
     let outcome = result.as_ref().map_or_else(ToolError::code, |_| "success");
     let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    tracing::info!(action, subject, outcome, latency_ms, "mcp request");
+    let channel = caller.via.channel();
+    tracing::info!(
+        channel,
+        action,
+        subject,
+        outcome,
+        latency_ms,
+        "tool request"
+    );
     let org = caller.scope.organisation.id;
     let entry = match &caller.via {
-        Via::Mcp { client_id, .. } => {
-            AuditEntry::mcp_client(org, caller.via.grant_id(), action, outcome)
-                .with_meta(json!({ "client_id": client_id, key: subject, "outcome": outcome }))
+        Via::Mcp {
+            grant_id,
+            client_id,
+            ..
+        } => AuditEntry::mcp_client(org, *grant_id, action, outcome)
+            .with_meta(json!({ "client_id": client_id, key: subject, "outcome": outcome })),
+        Via::Chat { session_id, .. } => {
+            let user = caller.scope.member.user_id;
+            AuditEntry {
+                outcome: outcome.into(),
+                ..AuditEntry::member(Some(org), user, action, None)
+            }
+            .with_meta(json!({ "session_id": session_id, key: subject, "outcome": outcome }))
         }
     };
     if let Err(e) = uow.audit().record(entry).await {
-        tracing::error!(error = %e, action, "mcp audit write failed");
+        tracing::error!(error = %e, action, "tool audit write failed");
         return Err(ToolError::Internal("audit failed".into()));
     }
     result
@@ -305,6 +320,33 @@ mod tests {
             ],
             Arc::new(MemStore::default()),
         );
+    }
+
+    #[tokio::test]
+    async fn audit_actor_follows_the_door() {
+        use opsagent_core::audit::Actor;
+        let store = MemStore::default();
+        let r = ToolRegistry::new(vec![Arc::new(Named("a"))], Arc::new(store.clone()));
+        let mcp = test_support::caller(Uuid::new_v4());
+        let Via::Mcp { grant_id, .. } = mcp.via else {
+            unreachable!()
+        };
+        let session_id = Uuid::new_v4();
+        let chat = Caller {
+            via: Via::Chat {
+                session_id,
+                member_id: mcp.scope.member.id,
+            },
+            ..mcp.clone()
+        };
+        r.invoke(&mcp, "a", Value::Null).await.unwrap();
+        r.invoke(&chat, "a", Value::Null).await.unwrap();
+        let audit = store.audit_entries();
+        assert_eq!(audit[0].actor, Actor::McpClient(grant_id));
+        assert_eq!(audit[0].action, "mcp.tool.call");
+        assert_eq!(audit[1].actor, Actor::Member(mcp.scope.member.user_id));
+        assert_eq!(audit[1].action, "chat.tool.call");
+        assert_eq!(audit[1].meta["session_id"], session_id.to_string());
     }
 
     #[test]

@@ -1,0 +1,209 @@
+use chrono::{DateTime, Duration, Utc};
+use opsagent_core::{
+    ai::{Explanation, KeySource, KeyStatus, NewModelKey, Purpose, RoleModels, UsageRow},
+    model::{AiProvider, Usage},
+    repo::RepoError,
+};
+use sea_orm::prelude::Decimal;
+use uuid::Uuid;
+
+use super::connections::org;
+use super::contract_suite;
+
+/// Whole seconds, so instants survive Postgres' microsecond timestamps unchanged.
+fn now() -> DateTime<Utc> {
+    DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap()
+}
+
+fn dec(s: &str) -> Decimal {
+    s.parse().unwrap()
+}
+
+fn models(routine: &str, chat: &str) -> RoleModels {
+    RoleModels {
+        routine: routine.into(),
+        chat: chat.into(),
+    }
+}
+
+fn new_key(provider: AiProvider, last4: &str) -> NewModelKey {
+    NewModelKey {
+        provider,
+        last4: last4.into(),
+        models: models("small", "big"),
+        monthly_credit_ceiling: None,
+        ciphertext: vec![1, 2, 3],
+        nonce: vec![4, 5],
+        kek_version: 1,
+    }
+}
+
+fn usage(o: Uuid, source: KeySource, credits: &str) -> UsageRow {
+    UsageRow {
+        organisation_id: o,
+        member_id: None,
+        purpose: Purpose::Chat,
+        provider: AiProvider::Anthropic,
+        model: "claude-sonnet-5-5".into(),
+        key_source: source,
+        usage: Usage {
+            input_tokens: 1200,
+            output_tokens: 300,
+            cache_read_tokens: 10,
+            cache_write_tokens: 5,
+        },
+        credits: dec(credits),
+        estimated: false,
+    }
+}
+
+fn explanation(hash: &str, text: &str) -> Explanation {
+    Explanation {
+        check_id: "s3_public".into(),
+        evidence_hash: hash.into(),
+        provider: AiProvider::Anthropic,
+        model: "claude-haiku-5-5".into(),
+        text: text.into(),
+        created_at: now(),
+    }
+}
+
+contract_suite! {
+    async fn ai_enabled_defaults_false_and_toggles(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        assert!(!s.ai().enabled(o).await.unwrap());
+        s.ai().set_enabled(o, true).await.unwrap();
+        assert!(s.ai().enabled(o).await.unwrap());
+        assert!(!s.ai().enabled(other).await.unwrap());
+        s.ai().set_enabled(o, false).await.unwrap();
+        assert!(!s.ai().enabled(o).await.unwrap());
+        let missing = Uuid::new_v4();
+        assert!(matches!(s.ai().enabled(missing).await, Err(RepoError::NotFound)));
+        assert!(matches!(s.ai().set_enabled(missing, true).await, Err(RepoError::NotFound)));
+    }
+
+    async fn put_key_replaces_and_is_unique_per_org(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        assert_eq!(s.ai().key(o).await.unwrap(), None);
+        let first = s.ai().put_key(o, &new_key(AiProvider::OpenAi, "1111")).await.unwrap();
+        assert_eq!((first.organisation_id, first.status), (o, KeyStatus::Ok));
+        assert_eq!(s.ai().key(o).await.unwrap().as_ref(), Some(&first));
+        let at = now();
+        assert!(s.ai().set_key_status(o, first.id, KeyStatus::Failing, at).await.unwrap());
+        let mut k = new_key(AiProvider::Anthropic, "2222");
+        k.monthly_credit_ceiling = Some(dec("250.5"));
+        let second = s.ai().put_key(o, &k).await.unwrap();
+        assert_ne!(second.id, first.id);
+        assert_eq!(s.ai().key(o).await.unwrap().as_ref(), Some(&second));
+        assert_eq!((second.provider, second.last4.as_str()), (AiProvider::Anthropic, "2222"));
+        assert_eq!(second.status, KeyStatus::Ok);
+        assert_eq!(second.monthly_credit_ceiling, Some(dec("250.5")));
+        assert_eq!((second.ciphertext.as_slice(), second.nonce.as_slice()), (&[1u8, 2, 3][..], &[4u8, 5][..]));
+        assert_eq!(s.ai().key(other).await.unwrap(), None);
+
+        assert!(s.ai().update_key(o, &models("a", "b"), Some(dec("10"))).await.unwrap());
+        let k = s.ai().key(o).await.unwrap().unwrap();
+        assert_eq!((k.models, k.monthly_credit_ceiling), (models("a", "b"), Some(dec("10"))));
+        assert!(!s.ai().update_key(other, &models("a", "b"), None).await.unwrap());
+        assert!(!s.ai().delete_key(other).await.unwrap());
+        assert!(s.ai().delete_key(o).await.unwrap());
+        assert_eq!(s.ai().key(o).await.unwrap(), None);
+        assert!(!s.ai().delete_key(o).await.unwrap());
+    }
+
+    async fn set_key_status_reports_transition_once(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        let k = s.ai().put_key(o, &new_key(AiProvider::OpenAi, "1111")).await.unwrap();
+        let (t1, t2) = (now() + Duration::minutes(1), now() + Duration::minutes(2));
+        let ai = s.ai();
+        assert!(!ai.set_key_status(o, k.id, KeyStatus::Ok, t1).await.unwrap());
+        assert!(ai.set_key_status(o, k.id, KeyStatus::ProviderOutage, t1).await.unwrap());
+        assert!(!ai.set_key_status(o, k.id, KeyStatus::ProviderOutage, t2).await.unwrap());
+        let got = ai.key(o).await.unwrap().unwrap();
+        assert_eq!((got.status, got.status_since), (KeyStatus::ProviderOutage, t1));
+        // Another organisation or an unknown key id changes nothing.
+        assert!(!ai.set_key_status(other, k.id, KeyStatus::Ok, t2).await.unwrap());
+        assert!(!ai.set_key_status(o, Uuid::new_v4(), KeyStatus::Ok, t2).await.unwrap());
+        assert!(ai.set_key_status(o, k.id, KeyStatus::Ok, t2).await.unwrap());
+        let got = ai.key(o).await.unwrap().unwrap();
+        assert_eq!((got.status, got.status_since), (KeyStatus::Ok, t2));
+    }
+
+    async fn record_usage_debits_topup_balance(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        assert_eq!(s.ai().topup_balance(o).await.unwrap(), Decimal::ZERO);
+        assert!(s.ai().grant_topup(o, dec("1000"), "evt_1").await.unwrap());
+        assert!(s.ai().grant_topup(other, dec("1000"), "evt_2").await.unwrap());
+        s.ai().record_usage(&usage(o, KeySource::OpsAgent, "12.5"), dec("2.25")).await.unwrap();
+        assert_eq!(s.ai().topup_balance(o).await.unwrap(), dec("997.75"));
+        s.ai().record_usage(&usage(o, KeySource::OpsAgent, "1"), Decimal::ZERO).await.unwrap();
+        assert_eq!(s.ai().topup_balance(o).await.unwrap(), dec("997.75"));
+        // An overshoot empties the balance; it never goes below zero.
+        s.ai().record_usage(&usage(o, KeySource::OpsAgent, "2000"), dec("1500")).await.unwrap();
+        assert_eq!(s.ai().topup_balance(o).await.unwrap(), Decimal::ZERO);
+        assert_eq!(s.ai().topup_balance(other).await.unwrap(), dec("1000"));
+        let day = (now() - Duration::days(1), now() + Duration::days(1));
+        let used = s.ai().credits_used(o, KeySource::OpsAgent, day.0, day.1).await.unwrap();
+        assert_eq!(used, dec("2013.5"));
+    }
+
+    async fn credits_used_filters_source_and_period(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        let ai = s.ai();
+        ai.record_usage(&usage(o, KeySource::OpsAgent, "1.25"), Decimal::ZERO).await.unwrap();
+        ai.record_usage(&usage(o, KeySource::OpsAgent, "2"), Decimal::ZERO).await.unwrap();
+        let mut byok = usage(o, KeySource::Byok, "7");
+        (byok.member_id, byok.purpose, byok.estimated) = (Some(Uuid::new_v4()), Purpose::Explain, true);
+        ai.record_usage(&byok, Decimal::ZERO).await.unwrap();
+        ai.record_usage(&usage(other, KeySource::OpsAgent, "100"), Decimal::ZERO).await.unwrap();
+        let (from, to) = (now() - Duration::hours(1), now() + Duration::hours(1));
+        assert_eq!(ai.credits_used(o, KeySource::OpsAgent, from, to).await.unwrap(), dec("3.25"));
+        assert_eq!(ai.credits_used(o, KeySource::Byok, from, to).await.unwrap(), dec("7"));
+        let later = (to, to + Duration::hours(1));
+        assert_eq!(ai.credits_used(o, KeySource::OpsAgent, later.0, later.1).await.unwrap(), Decimal::ZERO);
+        let earlier = (from - Duration::hours(1), from);
+        assert_eq!(ai.credits_used(o, KeySource::OpsAgent, earlier.0, earlier.1).await.unwrap(), Decimal::ZERO);
+    }
+
+    async fn grant_topup_idempotent_on_event(s) {
+        let o = org(s).await;
+        assert!(s.ai().grant_topup(o, dec("1000"), "evt_a").await.unwrap());
+        assert!(!s.ai().grant_topup(o, dec("1000"), "evt_a").await.unwrap());
+        assert_eq!(s.ai().topup_balance(o).await.unwrap(), dec("1000"));
+        assert!(s.ai().grant_topup(o, dec("1000"), "evt_b").await.unwrap());
+        assert_eq!(s.ai().topup_balance(o).await.unwrap(), dec("2000"));
+    }
+
+    async fn put_explanation_keeps_first(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        assert_eq!(s.ai().explanation(o, "s3_public", "h1").await.unwrap(), None);
+        let first = explanation("h1", "first");
+        assert_eq!(s.ai().put_explanation(o, &first).await.unwrap(), first);
+        let again = s.ai().put_explanation(o, &explanation("h1", "second")).await.unwrap();
+        assert_eq!(again, first);
+        assert_eq!(s.ai().explanation(o, "s3_public", "h1").await.unwrap(), Some(first));
+        assert_eq!(s.ai().explanation(o, "s3_public", "h2").await.unwrap(), None);
+        assert_eq!(s.ai().explanation(o, "s3_acl", "h1").await.unwrap(), None);
+        assert_eq!(s.ai().explanation(other, "s3_public", "h1").await.unwrap(), None);
+        let theirs = explanation("h1", "theirs");
+        assert_eq!(s.ai().put_explanation(other, &theirs).await.unwrap(), theirs);
+    }
+
+    async fn concurrent_put_explanation_keeps_one(s) {
+        let o = org(s).await;
+        let (a, b) = (explanation("h", "a"), explanation("h", "b"));
+        let (x, y) = tokio::join!(s.ai().put_explanation(o, &a), s.ai().put_explanation(o, &b));
+        let (x, y) = (x.unwrap(), y.unwrap());
+        assert_eq!(x, y);
+        assert!(x == a || x == b);
+        assert_eq!(s.ai().explanation(o, "s3_public", "h").await.unwrap(), Some(x));
+    }
+
+    async fn notice_once_true_once(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        assert!(s.ai().notice_once(o, "quota80:2026-10-01").await.unwrap());
+        assert!(!s.ai().notice_once(o, "quota80:2026-10-01").await.unwrap());
+        assert!(s.ai().notice_once(o, "quota100:2026-10-01").await.unwrap());
+        assert!(s.ai().notice_once(other, "quota80:2026-10-01").await.unwrap());
+    }
+}

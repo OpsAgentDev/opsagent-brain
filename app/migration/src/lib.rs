@@ -23,6 +23,7 @@ mod m20261028_000018_resource_history_run_idx;
 mod m20261028_000019_retention;
 mod m20261028_000020_audit_purge;
 mod m20261029_000021_billing;
+mod m20261030_000022_dashboard_ai;
 
 pub struct Migrator;
 
@@ -51,6 +52,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261028_000019_retention::Migration),
             Box::new(m20261028_000020_audit_purge::Migration),
             Box::new(m20261029_000021_billing::Migration),
+            Box::new(m20261030_000022_dashboard_ai::Migration),
             // inject-above (do not remove this comment)
         ]
     }

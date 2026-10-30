@@ -16,6 +16,7 @@ use chrono::{DateTime, Utc};
 use opsagent_core::billing::{plan_limits, BillingError, BillingStatus, PlanLimits, Tier};
 use uuid::Uuid;
 
+pub(crate) use checkout::create_customer;
 pub use checkout::StartCheckout;
 pub use gate::{trial_limit, BillingGate, Seat, BILLING_REQUIRED, PLAN_LIMIT, TRIAL_LIMIT};
 pub use portal::OpenPortal;

@@ -1,13 +1,17 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
+    ai::{KeySource, Purpose, UsageRow},
     audit::{Actor, AuditEntry},
+    chat::ChatSession,
     finding::{Finding, FindingEvent, FindingKey, Severity, StoredEvidence},
+    model::{AiProvider, Usage},
     repo::{RepoError, RepoResult},
     retention::{DueOrg, PurgeCounts, RetentionRepo, TtlTable, ORG_PURGED},
     run::{RunKey, RunStatus},
 };
 use opsagent_ledger::Storage;
+use sea_orm::prelude::Decimal;
 use uuid::Uuid;
 
 use super::{findings::FindingRow, MemStore};
@@ -54,17 +58,46 @@ fn finding(organisation_id: Uuid, connection_id: Uuid) -> Finding {
         resolved_at: None,
         resolved_reason: None,
         alerted_at: None,
+        evidence_hash: None,
         created_at: now,
         updated_at: now,
+    }
+}
+
+/// An AI usage row of a made-up organisation, for TTL seeding.
+fn usage_row() -> UsageRow {
+    UsageRow {
+        organisation_id: Uuid::now_v7(),
+        member_id: None,
+        purpose: Purpose::Chat,
+        provider: AiProvider::Anthropic,
+        model: "m".into(),
+        key_source: KeySource::OpsAgent,
+        usage: Usage::default(),
+        credits: Decimal::ONE,
+        estimated: false,
     }
 }
 
 // shortcut: expiring rows are modelled apart from the typed rows (magic links, invites, ...),
 // as one expiry instant per row; model them on the typed rows if a test needs both.
 impl MemStore {
-    /// Adds one `table` row expiring (or observed) at `at`.
+    /// Adds one `table` row expiring (or observed) at `at`; chat sessions and AI usage are
+    /// typed rows of a made-up organisation.
     pub fn seed_expiring(&self, table: TtlTable, at: DateTime<Utc>) {
-        self.state().expiring.push((table, at));
+        let mut s = self.state();
+        match table {
+            TtlTable::ChatSessions => s.chat_sessions.push(ChatSession {
+                id: Uuid::now_v7(),
+                organisation_id: Uuid::now_v7(),
+                member_id: Uuid::now_v7(),
+                title: "t".into(),
+                created_at: at,
+                last_message_at: at,
+            }),
+            TtlTable::AiUsage => s.ai.usage.push((usage_row(), at)),
+            _ => s.expiring.push((table, at)),
+        }
     }
 
     /// Makes every later `purge_org` of `org` fail.
@@ -79,11 +112,12 @@ impl MemStore {
 
     /// How many `table` rows are left.
     pub fn expiring_left(&self, table: TtlTable) -> u64 {
-        self.state()
-            .expiring
-            .iter()
-            .filter(|r| r.0 == table)
-            .count() as u64
+        let s = self.state();
+        match table {
+            TtlTable::ChatSessions => s.chat_sessions.len() as u64,
+            TtlTable::AiUsage => s.ai.usage.len() as u64,
+            _ => s.expiring.iter().filter(|r| r.0 == table).count() as u64,
+        }
     }
 }
 
@@ -178,6 +212,26 @@ impl RetentionRepo for MemStore {
         }
         let mut s = self.state();
         let mut left = batch;
+        match table {
+            TtlTable::ChatSessions => {
+                let mut picked = 0;
+                let (n, _) = s.drop_sessions(|c| {
+                    let drop = picked < batch && c.last_message_at < cutoff;
+                    picked += u64::from(drop);
+                    drop
+                });
+                return Ok(n);
+            }
+            TtlTable::AiUsage => {
+                s.ai.usage.retain(|&(_, at)| {
+                    let drop = left > 0 && at < cutoff;
+                    left -= u64::from(drop);
+                    !drop
+                });
+                return Ok(batch - left);
+            }
+            _ => {}
+        }
         s.expiring.retain(|&(t, at)| {
             let drop = left > 0 && t == table && at < cutoff;
             left -= u64::from(drop);
