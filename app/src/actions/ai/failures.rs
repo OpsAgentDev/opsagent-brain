@@ -12,7 +12,8 @@ use uuid::Uuid;
 use super::{
     access::{AiAccess, CallPlan},
     notices::Notice,
-    pick_default, refused, AI_KEY_FAILING, AI_PROVIDER_OUTAGE, AI_RATE_LIMITED, AI_UNAVAILABLE,
+    pick_default, refused, AI_KEY_FAILING, AI_PROVIDER_OUTAGE, AI_QUOTA_REACHED, AI_RATE_LIMITED,
+    AI_UNAVAILABLE,
 };
 use crate::{actions::orgs::OrgScope, error::AppError};
 
@@ -29,6 +30,9 @@ pub enum AiCallError {
     Outage,
     #[error("ai_unavailable")]
     Unavailable,
+    /// The credits ran out between `plan` and this call.
+    #[error("ai_quota_reached")]
+    QuotaReached,
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -40,6 +44,7 @@ impl AiCallError {
             Self::KeyFailing => AI_KEY_FAILING,
             Self::Outage => AI_PROVIDER_OUTAGE,
             Self::Unavailable => AI_UNAVAILABLE,
+            Self::QuotaReached => AI_QUOTA_REACHED,
             Self::Internal(_) => "internal",
         }
     }
@@ -63,6 +68,10 @@ impl From<AiCallError> for AppError {
             AiCallError::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Dashboard AI is not available right now.",
+            ),
+            AiCallError::QuotaReached => (
+                StatusCode::PAYMENT_REQUIRED,
+                "This organisation's AI credits are used up.",
             ),
             AiCallError::Internal(s) => return AppError::Internal(s),
         };
@@ -146,6 +155,11 @@ impl AiAccess {
     async fn outage(&self, org: Uuid, key_id: Uuid) -> Result<(), AiCallError> {
         let now = self.clock.now();
         let ai = self.uow.ai();
+        // A refused key stays refused: an outage arriving late never re-enables it.
+        let current = ai.key(org).await?.filter(|k| k.id == key_id);
+        if current.is_none_or(|k| k.status == KeyStatus::Failing) {
+            return Ok(());
+        }
         if ai
             .set_key_status(org, key_id, KeyStatus::ProviderOutage, now)
             .await?

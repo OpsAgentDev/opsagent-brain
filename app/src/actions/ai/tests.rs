@@ -250,7 +250,104 @@ async fn who_pays_outage_byok_never_falls_back() {
     e.enable().await;
     e.put_key().await;
     e.key_status(KeyStatus::ProviderOutage).await;
+    // Still tried, and only on the organisation's own key.
+    let a = e.access();
+    let plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    assert_eq!(plan.source, KeySource::Byok);
+    assert_eq!(a.status(&e.scope).await.unwrap().state, "ready");
+    e.call(&a, &plan).await.unwrap();
+    assert_eq!(*e.spy.keys.lock().unwrap(), vec![BYOK_KEY.to_owned()]);
+}
+
+#[tokio::test]
+async fn outage_key_next_success_clears_it() {
+    let e = env(vec![FakeStep::Fail(ModelError::Outage), text()], true).await;
+    e.enable().await;
+    e.put_key().await;
+    let a = e.access();
+    let plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    assert_eq!(e.call(&a, &plan).await.unwrap_err(), AiCallError::Outage);
+    let k = e.store.key(e.org()).await.unwrap().unwrap();
+    assert_eq!(k.status, KeyStatus::ProviderOutage);
+    let plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    e.call(&a, &plan).await.unwrap();
+    let k = e.store.key(e.org()).await.unwrap().unwrap();
+    assert_eq!(k.status, KeyStatus::Ok);
+}
+
+#[tokio::test]
+async fn put_key_resets_status_to_ok() {
+    let e = env(vec![], true).await;
+    e.enable().await;
+    e.put_key().await;
+    e.key_status(KeyStatus::Failing).await;
     assert_eq!(refused_with(&e.access(), e.org()).await, AI_KEY_FAILING);
+    e.put_key().await;
+    let k = e.store.key(e.org()).await.unwrap().unwrap();
+    assert_eq!(k.status, KeyStatus::Ok);
+    assert!(e.access().plan(e.org(), ModelRole::Chat).await.is_ok());
+}
+
+#[tokio::test]
+async fn late_outage_never_downgrades_failing() {
+    let steps = vec![
+        FakeStep::Fail(ModelError::Auth),
+        FakeStep::Fail(ModelError::Outage),
+    ];
+    let e = env(steps, true).await;
+    e.enable().await;
+    e.put_key().await;
+    let a = e.access();
+    let plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    assert_eq!(
+        e.call(&a, &plan).await.unwrap_err(),
+        AiCallError::KeyFailing
+    );
+    // A call planned before the refusal ends in an outage.
+    assert_eq!(e.call(&a, &plan).await.unwrap_err(), AiCallError::Outage);
+    let k = e.store.key(e.org()).await.unwrap().unwrap();
+    assert_eq!(k.status, KeyStatus::Failing);
+    assert_eq!(refused_with(&a, e.org()).await, AI_KEY_FAILING);
+}
+
+#[tokio::test]
+async fn call_rechecks_credits_before_the_provider() {
+    let e = env(vec![text()], true).await;
+    e.enable().await;
+    e.used(KeySource::OpsAgent, 990).await;
+    let a = e.access();
+    let plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    // A concurrent turn spends the rest after this one was planned.
+    e.used(KeySource::OpsAgent, 10).await;
+    assert_eq!(
+        e.call(&a, &plan).await.unwrap_err(),
+        AiCallError::QuotaReached
+    );
+    assert_eq!(e.calls(), 0);
+    assert_eq!(AiCallError::QuotaReached.code(), AI_QUOTA_REACHED);
+    assert_eq!(code(AiCallError::QuotaReached.into()), AI_QUOTA_REACHED);
+}
+
+#[tokio::test]
+async fn call_rechecks_byok_ceiling_before_the_provider() {
+    let e = env(vec![text()], true).await;
+    e.enable().await;
+    e.put_key().await;
+    let patch = KeyPatch {
+        ceiling: Some(Some(dec(10))),
+        ..Default::default()
+    };
+    PatchKey::new(e.access())
+        .run(&e.scope, patch)
+        .await
+        .unwrap();
+    let a = e.access();
+    let plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    e.used(KeySource::Byok, 10).await;
+    assert_eq!(
+        e.call(&a, &plan).await.unwrap_err(),
+        AiCallError::QuotaReached
+    );
     assert_eq!(e.calls(), 0);
 }
 

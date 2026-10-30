@@ -199,7 +199,8 @@ impl AiAccess {
             return Err(refused(StatusCode::CONFLICT, AI_DISABLED, detail));
         }
         if let Some(k) = &snap.key {
-            if k.status != KeyStatus::Ok {
+            // An outage key is still tried: its next success clears it.
+            if k.status == KeyStatus::Failing {
                 return Err(AiCallError::KeyFailing.into());
             }
             if k.monthly_credit_ceiling
@@ -229,10 +230,13 @@ impl AiAccess {
         sink: &mut dyn TextSink,
     ) -> Result<ModelTurn, AiCallError> {
         let provider = self.models.get(plan.provider);
+        let org = scope.organisation.id;
         req.model = plan.model.clone();
+        self.recheck(org, plan).await?;
         let turn = match self.attempt(&*provider, plan, &req, sink).await {
             Err(ModelError::ModelGone) if plan.source == KeySource::Byok => {
                 req.model = self.replace_model(scope, plan, &*provider).await?;
+                self.recheck(org, plan).await?;
                 self.attempt(&*provider, plan, &req, sink).await
             }
             r => r,
@@ -244,6 +248,31 @@ impl AiAccess {
         self.meter(scope, plan, purpose, &req.model, &turn.usage)
             .await?;
         Ok(turn)
+    }
+
+    /// Credits still left right before a provider call (plan() checked once per turn, and
+    /// concurrent turns spend the same credits): the period quota plus top-ups on OpsAgent's
+    /// key, the monthly ceiling on BYOK. Overshoot is then one call per concurrent request.
+    async fn recheck(&self, org: Uuid, plan: &CallPlan) -> Result<(), AiCallError> {
+        let ai = self.uow.ai();
+        let left = match plan.key_id {
+            Some(_) => {
+                let ceiling = ai.key(org).await?.and_then(|k| k.monthly_credit_ceiling);
+                let Some(c) = ceiling else {
+                    return Ok(());
+                };
+                let (since, until) = quota_period(&OrgBilling::default(), self.clock.now());
+                c - ai.credits_used(org, KeySource::Byok, since, until).await?
+            }
+            None => {
+                let q = self.quota(&*self.uow, org).await?;
+                (q.quota - q.used).max(Decimal::ZERO) + ai.topup_balance(org).await?
+            }
+        };
+        match left > Decimal::ZERO {
+            true => Ok(()),
+            false => Err(AiCallError::QuotaReached),
+        }
     }
 
     /// The call, retried after each `backoff` wait while rate limited.

@@ -66,8 +66,7 @@ async fn topup_completed(tx: &dyn Tx, ev: &Event) -> AppResult<()> {
         warn_skip(ev, "top-up session without organisation");
         return Ok(());
     };
-    // shortcut: delayed payment methods (`checkout.session.async_payment_succeeded`) are not
-    // granted; Checkout offers cards only today.
+    // The top-up session allows cards only, so a completed session is paid; this guards it.
     if o["payment_status"] != "paid" {
         warn_skip(ev, "top-up session not paid");
         return Ok(());

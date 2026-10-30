@@ -343,6 +343,7 @@ async fn topup_checkout_sends_payment_mode() {
             .and(body_string_contains("price_data%5D%5Bunit_amount%5D=1500"))
             .and(body_string_contains("price_data%5D%5Bcurrency%5D=usd"))
             .and(body_string_contains("metadata%5Bpurpose%5D=ai_topup"))
+            .and(body_string_contains("payment_method_types%5B0%5D=card"))
             .and(body_string_contains("settings%2Fai%3Ftopup%3Dsuccess"))
             .and(body_string_contains("settings%2Fai%3Ftopup%3Dcanceled"))
             .respond_with(

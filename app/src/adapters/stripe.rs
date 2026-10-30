@@ -170,6 +170,9 @@ impl BillingProvider for StripeBilling {
                 "OpsAgent AI credits (1,000)".into(),
             ),
             ("line_items[0][quantity]", "1".into()),
+            // Cards only: the webhook grants on a paid `checkout.session.completed`, and a
+            // delayed method would complete unpaid.
+            ("payment_method_types[0]", "card".into()),
             ("metadata[purpose]", TOPUP_PURPOSE.into()),
             ("success_url", success_url.to_owned()),
             ("cancel_url", cancel_url.to_owned()),
