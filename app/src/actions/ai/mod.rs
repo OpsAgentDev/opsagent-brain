@@ -3,6 +3,7 @@
 //! top-ups. Prompts, completions and keys are never logged or audited.
 mod access;
 mod byok;
+mod explain;
 mod failures;
 mod meter;
 mod notices;
@@ -25,6 +26,7 @@ use zeroize::Zeroizing;
 
 pub use access::{AiAccess, AiStatus, CallPlan};
 pub use byok::{DeleteKey, KeyModel, KeyPatch, ListKeyModels, PatchKey, PutKey};
+pub use explain::{current_hash, ExplainFinding, EXPLAIN_PROMPT_VERSION};
 pub use failures::AiCallError;
 pub use notices::Notices;
 pub use settings::SetEnabled;
@@ -53,6 +55,7 @@ pub struct Ai {
     pub patch_key: PatchKey,
     pub delete_key: DeleteKey,
     pub topup: StartTopup,
+    pub explain: ExplainFinding,
 }
 
 /// What the AI actions read from `Config`. No `Debug`: it holds OpsAgent's key.

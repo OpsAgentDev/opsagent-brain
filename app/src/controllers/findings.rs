@@ -14,11 +14,15 @@ use super::OrgIdPath;
 use crate::{
     actions::findings::FindingAction,
     api_error::{ApiError, ApiJson, ApiQuery, Problem},
+    error::AppError,
     middleware::org_scope::OrgScope,
     models::enum_of,
     state::AppState,
     views::{
-        findings::{detail, full, summary, Finding, FindingDetail, FindingSummary},
+        findings::{
+            detail, explanation, full, summary, ExplanationOut, Finding, FindingDetail,
+            FindingSummary,
+        },
         page::{page_request, Page, PageParams},
     },
 };
@@ -181,6 +185,43 @@ async fn report_explanation(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(get, path = "/orgs/{org}/findings/{id}/explanation", tag = "findings", params(OrgIdPath),
+    responses((status = 200, body = ExplanationOut), (status = 404, body = Problem)))]
+async fn show_explanation(
+    State(app): State<AppState>,
+    scope: OrgScope,
+    Path((_, id)): Path<(String, String)>,
+) -> Result<Json<ExplanationOut>, ApiError> {
+    let d = app
+        .actions
+        .findings
+        .get_finding
+        .run(scope.organisation.id, super::parse_id(&id)?)
+        .await?;
+    Ok(Json(explanation(d.explanation.ok_or(AppError::NotFound)?)))
+}
+
+#[utoipa::path(post, path = "/orgs/{org}/findings/{id}/explanation", tag = "findings", params(OrgIdPath),
+    responses((status = 200, body = ExplanationOut), (status = 404, body = Problem),
+        (status = 402, body = Problem, description = "`ai_quota_reached`"),
+        (status = 409, body = Problem, description = "`ai_disabled`"),
+        (status = 429, body = Problem, description = "`ai_rate_limited`"),
+        (status = 502, body = Problem, description = "`ai_key_failing` or `ai_provider_outage`"),
+        (status = 503, body = Problem, description = "`ai_unavailable`")))]
+async fn explain(
+    State(app): State<AppState>,
+    scope: OrgScope,
+    Path((_, id)): Path<(String, String)>,
+) -> Result<Json<ExplanationOut>, ApiError> {
+    let e = app
+        .actions
+        .ai
+        .explain
+        .run(&scope, super::parse_id(&id)?)
+        .await?;
+    Ok(Json(explanation(e)))
+}
+
 pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list))
@@ -189,4 +230,5 @@ pub fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(snooze))
         .routes(routes!(reopen))
         .routes(routes!(report_explanation))
+        .routes(routes!(show_explanation, explain))
 }

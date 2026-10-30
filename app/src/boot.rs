@@ -479,6 +479,7 @@ fn build_ai(d: &Deps, guard: Arc<recipients::MailGuard>) -> ai::Ai {
         patch_key: ai::PatchKey::new(access.clone()),
         delete_key: ai::DeleteKey::new(access.clone()),
         topup: ai::StartTopup::new(access.clone(), d.billing.clone()),
+        explain: ai::ExplainFinding::new(d.uow.clone(), access.clone(), d.clock.clone()),
         access,
     }
 }
