@@ -2,7 +2,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    chat::{ChatMessage, ChatRepo, ChatSession},
+    chat::{ChatMessage, ChatRepo, ChatSession, TITLE_CHARS},
     model::MsgRole,
     repo::{PageOf, PageRequest, RepoError, RepoResult},
 };
@@ -24,8 +24,10 @@ const SESSIONS: &str = "FROM chat_sessions WHERE organisation_id = $1 AND member
   AND ($3::timestamptz IS NULL OR (last_message_at, id) < ($3, $4)) \
   ORDER BY last_message_at DESC, id DESC LIMIT $5";
 
-const APPEND: &str = "WITH s AS (UPDATE chat_sessions SET last_message_at = $7 \
-  WHERE organisation_id = $1 AND id = $2 RETURNING id) \
+/// `$8`: `TITLE_CHARS`, for an untitled session's first user message.
+const APPEND: &str = "WITH s AS (UPDATE chat_sessions SET last_message_at = $7, \
+  title = CASE WHEN title = '' AND $4::text = 'user' THEN left($5::jsonb->>'text', $8) \
+  ELSE title END WHERE organisation_id = $1 AND id = $2 RETURNING id) \
   INSERT INTO chat_messages (id, session_id, organisation_id, role, content, partial, created_at) \
   SELECT $3, s.id, $1, $4, $5, $6, $7 FROM s RETURNING ";
 
@@ -166,6 +168,7 @@ impl<C: Conn> ChatRepo for Pg<C> {
             serde_json::json!({ "text": text }).into(),
             partial.into(),
             at.into(),
+            (TITLE_CHARS as i32).into(),
         ];
         let r = self
             .query_row(&format!("{APPEND}{MESSAGE_COLS}"), values)

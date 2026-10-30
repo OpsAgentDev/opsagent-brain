@@ -3,6 +3,7 @@ mod ai;
 mod auth;
 pub mod billing;
 pub mod billing_gate;
+mod chat;
 mod connections;
 mod contact;
 mod deliveries;

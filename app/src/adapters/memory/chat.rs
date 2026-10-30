@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    chat::{ChatMessage, ChatRepo, ChatSession},
+    chat::{ChatMessage, ChatRepo, ChatSession, TITLE_CHARS},
     model::MsgRole,
     repo::{Cursor, PageOf, PageRequest, RepoError, RepoResult},
 };
@@ -128,6 +128,9 @@ impl ChatRepo for MemStore {
             .find(|c| c.organisation_id == organisation_id && c.id == session_id)
             .ok_or(RepoError::NotFound)?;
         c.last_message_at = at;
+        if c.title.is_empty() && role == MsgRole::User {
+            c.title = text.chars().take(TITLE_CHARS).collect();
+        }
         let m = ChatMessage {
             id: Uuid::now_v7(),
             session_id,

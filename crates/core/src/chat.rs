@@ -8,6 +8,9 @@ use crate::{
     repo::{PageOf, PageRequest, RepoResult},
 };
 
+/// An untitled session takes this many characters of its first message.
+pub const TITLE_CHARS: usize = 60;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatSession {
     pub id: Uuid,
@@ -60,8 +63,9 @@ pub trait ChatRepo: Send + Sync {
         session_id: Uuid,
         n: u64,
     ) -> RepoResult<Vec<ChatMessage>>;
-    /// Adds a message and moves the session's `last_message_at` to `at`; `NotFound` for a
-    /// session not in the organisation.
+    /// Adds a message and moves the session's `last_message_at` to `at`; a user message gives
+    /// an untitled session (title `""`) its first `TITLE_CHARS` characters as the title.
+    /// `NotFound` for a session not in the organisation.
     async fn append(
         &self,
         organisation_id: Uuid,

@@ -2,7 +2,7 @@
 use std::{ops::Deref, sync::Arc};
 
 use crate::{
-    actions::Actions,
+    actions::{ai::ChatTurn, Actions},
     boot::Deps,
     tools::{PromptRegistry, ResourceRegistry, ToolRegistry},
 };
@@ -33,6 +33,8 @@ pub struct Inner {
     pub oauth_urls: OAuthUrls,
     pub actions: Arc<Actions>,
     pub tools: Arc<ToolRegistry>,
+    /// Chat turns run tools, so they are built after the registry.
+    pub chat: Arc<ChatTurn>,
     pub resources: Arc<ResourceRegistry>,
     pub prompts: Arc<PromptRegistry>,
     #[cfg(feature = "test-support")]

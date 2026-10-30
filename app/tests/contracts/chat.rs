@@ -12,9 +12,11 @@ use uuid::Uuid;
 use super::connections::org;
 use super::contract_suite;
 
-/// Whole seconds, so instants survive Postgres' microsecond timestamps unchanged.
+/// Whole seconds from one base instant, so instants survive Postgres' microsecond timestamps
+/// unchanged and two calls of `t(n)` agree even when a second boundary passes between them.
 fn t(secs: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp(Utc::now().timestamp() + secs, 0).unwrap()
+    static BASE: std::sync::LazyLock<i64> = std::sync::LazyLock::new(|| Utc::now().timestamp());
+    DateTime::from_timestamp(*BASE + secs, 0).unwrap()
 }
 
 /// A new user's membership of `o`.
@@ -78,6 +80,22 @@ contract_suite! {
         assert_eq!((got[2].partial, got[2].created_at, got[2].session_id), (true, t(-46), id));
         assert!(!got[0].partial);
         assert_eq!(chat.recent_messages(o, id, 20).await.unwrap().len(), 5);
+    }
+
+    async fn first_user_message_titles_an_untitled_session(s) {
+        let o = org(s).await;
+        let m = member(s, o).await;
+        let chat = s.chat();
+        let untitled = chat.create_session(o, m, "", t(-10)).await.unwrap().id;
+        let titled = chat.create_session(o, m, "kept", t(-10)).await.unwrap().id;
+        let long = "é".repeat(70);
+        chat.append(o, untitled, MsgRole::Assistant, "not me", false, t(-9)).await.unwrap();
+        chat.append(o, untitled, MsgRole::User, &long, false, t(-8)).await.unwrap();
+        chat.append(o, untitled, MsgRole::User, "later", false, t(-7)).await.unwrap();
+        chat.append(o, titled, MsgRole::User, "hi", false, t(-7)).await.unwrap();
+        let title = |id| async move { chat.session(o, m, id).await.unwrap().unwrap().title };
+        assert_eq!(title(untitled).await, "é".repeat(60));
+        assert_eq!(title(titled).await, "kept");
     }
 
     async fn removing_member_deletes_their_sessions(s) {

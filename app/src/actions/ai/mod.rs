@@ -1,8 +1,9 @@
 //! Dashboard AI use cases (dashboard-ai.md): who pays and metering (`AiAccess`, the only
 //! caller of a `ModelProvider`), the on/off switch, the organisation's own key (BYOK) and
-//! top-ups. Prompts, completions and keys are never logged or audited.
+//! top-ups, explanations and chat. Prompts, completions and keys are never logged or audited.
 mod access;
 mod byok;
+mod chat;
 mod explain;
 mod failures;
 mod meter;
@@ -26,6 +27,10 @@ use zeroize::Zeroizing;
 
 pub use access::{AiAccess, AiStatus, CallPlan};
 pub use byok::{DeleteKey, KeyModel, KeyPatch, ListKeyModels, PatchKey, PutKey};
+pub use chat::{
+    wrap_tool_result, ChatEvent, ChatSessions, ChatTurn, Turn, AI_BUSY, CHAT_PROMPT_VERSION,
+    CHAT_SYSTEM_PROMPT, CHAT_TOOLS,
+};
 pub use explain::{current_hash, ExplainFinding, EXPLAIN_PROMPT_VERSION};
 pub use failures::AiCallError;
 pub use notices::Notices;
@@ -56,6 +61,7 @@ pub struct Ai {
     pub delete_key: DeleteKey,
     pub topup: StartTopup,
     pub explain: ExplainFinding,
+    pub chat_sessions: ChatSessions,
 }
 
 /// What the AI actions read from `Config`. No `Debug`: it holds OpsAgent's key.

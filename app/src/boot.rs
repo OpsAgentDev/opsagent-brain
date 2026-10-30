@@ -196,8 +196,16 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
     };
     let urls = OAuthUrls::new(&deps.config.api_base_url);
     let actions = Arc::new(build_actions(&deps, &urls));
+    let tools = Arc::new(build_tools(&deps, &actions));
+    let chat = Arc::new(ai::ChatTurn::new(
+        deps.uow.clone(),
+        actions.ai.access.clone(),
+        tools.clone(),
+        deps.clock.clone(),
+    ));
     AppState(Arc::new(Inner {
-        tools: Arc::new(build_tools(&deps, &actions)),
+        tools,
+        chat,
         resources: Arc::new(build_resources(&deps, &actions)),
         prompts: Arc::new(build_prompts(&deps, &actions)),
         oauth_urls: urls,
@@ -480,6 +488,7 @@ fn build_ai(d: &Deps, guard: Arc<recipients::MailGuard>) -> ai::Ai {
         delete_key: ai::DeleteKey::new(access.clone()),
         topup: ai::StartTopup::new(access.clone(), d.billing.clone()),
         explain: ai::ExplainFinding::new(d.uow.clone(), access.clone(), d.clock.clone()),
+        chat_sessions: ai::ChatSessions::new(d.uow.clone(), d.clock.clone()),
         access,
     }
 }
