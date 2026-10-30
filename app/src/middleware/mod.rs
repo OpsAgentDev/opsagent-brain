@@ -106,7 +106,13 @@ fn cors_layer(web_base_url: &str) -> AppResult<CorsLayer> {
     Ok(CorsLayer::new()
         .allow_origin(origin)
         .allow_credentials(true)
-        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
         .allow_headers([
             header::CONTENT_TYPE,
             HeaderName::from_static("x-csrf-token"),
