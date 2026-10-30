@@ -55,6 +55,11 @@ impl AppState {
     pub fn set_billing(&self, b: Arc<dyn opsagent_core::billing::BillingProvider>) {
         self.swaps.billing.set(b);
     }
+
+    /// Swaps the model provider every AI call goes through (both providers).
+    pub fn set_models(&self, m: Arc<dyn opsagent_core::model::ModelProvider>) {
+        self.swaps.models.set(m);
+    }
 }
 
 impl Deref for AppState {

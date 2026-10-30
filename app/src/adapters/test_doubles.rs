@@ -1,8 +1,11 @@
-//! Test-support adapters: swappable mailer, Slack and billing-provider cells.
+//! Test-support adapters: swappable mailer, Slack, billing-provider and model-provider cells.
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use opsagent_core::billing::{BillingProvider, BillingResult, CheckoutRequest};
+use opsagent_core::{
+    billing::{BillingProvider, BillingResult, CheckoutRequest},
+    model::{ModelError, ModelInfo, ModelProvider, ModelRequest, ModelTurn, TextSink},
+};
 use uuid::Uuid;
 
 use crate::{
@@ -106,10 +109,28 @@ impl BillingProvider for Swappable<dyn BillingProvider> {
     }
 }
 
-/// The cells `assemble` wraps the mailer, Slack client and billing provider in under
-/// `test-support`.
+#[async_trait]
+impl ModelProvider for Swappable<dyn ModelProvider> {
+    async fn stream(
+        &self,
+        api_key: &str,
+        req: &ModelRequest,
+        sink: &mut dyn TextSink,
+    ) -> Result<ModelTurn, ModelError> {
+        self.get().stream(api_key, req, sink).await
+    }
+
+    async fn list_models(&self, api_key: &str) -> Result<Vec<ModelInfo>, ModelError> {
+        self.get().list_models(api_key).await
+    }
+}
+
+/// The cells `assemble` wraps the mailer, Slack client, billing provider and model providers
+/// in under `test-support`.
 pub struct Swaps {
     pub mailer: Arc<Swappable<dyn Mailer>>,
     pub slack: Arc<Swappable<dyn SlackClient>>,
     pub billing: Arc<Swappable<dyn BillingProvider>>,
+    /// Serves both `Deps.models` providers.
+    pub models: Arc<Swappable<dyn ModelProvider>>,
 }

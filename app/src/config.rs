@@ -1,6 +1,12 @@
 //! `Config`: every setting is an environment variable, and its default lives here and only here.
 use std::str::FromStr;
 
+mod ai;
+pub use ai::{
+    model_price, preferred_models, ModelMode, ModelSettings, MODEL_CHAT, MODEL_ROUTINE,
+    OPENAI_TOOL_PREFIXES,
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppEnv {
     Development,
@@ -87,6 +93,12 @@ pub struct Config {
     pub stripe_automatic_tax: bool,
     /// Off: nothing is gated on billing state (the alpha organisations keep working).
     pub billing_enforced: bool,
+    /// Empty: no OpsAgent model key (`ai_unavailable`).
+    pub anthropic_api_key: String,
+    pub model_provider: ModelMode,
+    pub anthropic_api_base: String,
+    pub anthropic_version: String,
+    pub openai_api_base: String,
 }
 
 /// Required in production (no default there); the same list as deployment.md and deploy/README.md.
@@ -182,6 +194,14 @@ impl Config {
             stripe_api_version: s("STRIPE_API_VERSION", "2025-09-30.clover"),
             stripe_automatic_tax: p(&get, "STRIPE_AUTOMATIC_TAX", "false")?,
             billing_enforced: p(&get, "BILLING_ENFORCED", "false")?,
+            anthropic_api_key: s("OPSAGENT_ANTHROPIC_API_KEY", ""),
+            model_provider: ai::model_mode(&s("OPSAGENT_MODEL_PROVIDER", "live"), prod)?,
+            anthropic_api_base: s(
+                "ANTHROPIC_API_BASE",
+                crate::adapters::model::anthropic::API_BASE,
+            ),
+            anthropic_version: s("ANTHROPIC_VERSION", "2023-06-01"),
+            openai_api_base: s("OPENAI_API_BASE", crate::adapters::model::openai::API_BASE),
         };
         if c.session_secret.len() < 16 {
             return Err(invalid("SESSION_SECRET", "must be at least 16 bytes"));
@@ -217,6 +237,17 @@ impl Config {
             secret_key: self.stripe_secret_key.clone(),
             api_version: self.stripe_api_version.clone(),
             automatic_tax: self.stripe_automatic_tax,
+        }
+    }
+
+    /// The model adapters' and `AiAccess`'s settings.
+    pub fn model_settings(&self) -> ModelSettings {
+        ModelSettings {
+            mode: self.model_provider,
+            anthropic_api_key: self.anthropic_api_key.clone(),
+            anthropic_api_base: self.anthropic_api_base.clone(),
+            anthropic_version: self.anthropic_version.clone(),
+            openai_api_base: self.openai_api_base.clone(),
         }
     }
 
@@ -426,6 +457,46 @@ mod tests {
             ("STRIPE_WEBHOOK_SECRET", "whsec_x"),
         ]);
         assert!(both.webhook_configured());
+    }
+
+    #[test]
+    fn config_refuses_fake_models_in_production() {
+        let fake = production(&[("OPSAGENT_MODEL_PROVIDER", "fake")]);
+        assert!(matches!(
+            vars(&fake),
+            Err(ConfigError::Invalid {
+                name: "OPSAGENT_MODEL_PROVIDER",
+                ..
+            })
+        ));
+        let dev = cfg(&[("OPSAGENT_MODEL_PROVIDER", "fake")]);
+        assert_eq!(dev.model_settings().mode, ModelMode::Fake);
+        assert!(vars(&[("OPSAGENT_MODEL_PROVIDER", "bogus")]).is_err());
+    }
+
+    #[test]
+    fn config_ai_defaults_dark() {
+        for c in [cfg(&[]), cfg(&production(&[]))] {
+            let m = c.model_settings();
+            assert!(m.anthropic_api_key.is_empty());
+            assert_eq!(m.mode, ModelMode::Live);
+            assert_eq!(m.anthropic_version, "2023-06-01");
+            assert_eq!(m.anthropic_api_base, "https://api.anthropic.com");
+            assert_eq!(m.openai_api_base, "https://api.openai.com");
+        }
+        assert_eq!(
+            (MODEL_ROUTINE, MODEL_CHAT),
+            ("claude-haiku-5-5", "claude-sonnet-5-5")
+        );
+        let set = cfg(&[
+            ("OPSAGENT_ANTHROPIC_API_KEY", "sk-ant-x"),
+            ("ANTHROPIC_API_BASE", "http://127.0.0.1:1"),
+        ]);
+        let m = set.model_settings();
+        assert_eq!(
+            (m.anthropic_api_key.as_str(), m.anthropic_api_base.as_str()),
+            ("sk-ant-x", "http://127.0.0.1:1")
+        );
     }
 
     #[test]

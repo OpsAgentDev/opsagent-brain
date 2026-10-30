@@ -5,6 +5,7 @@ use migration::{Migrator, MigratorTrait};
 use opsagent_connectors::{aws::AwsOutbound, Registry};
 use opsagent_core::{
     billing::BillingProvider,
+    model::ModelProvider,
     repo::{Clock, SystemClock},
 };
 use opsagent_ledger::redis;
@@ -22,12 +23,15 @@ use crate::{
     adapters::{
         client_metadata::HttpClientMetadata,
         db::{Pg, PgContact, PgWaitlist},
+        model::{
+            anthropic::AnthropicModels, fake::FakeModels, openai::OpenAiModels, ModelProviders,
+        },
         pg_queue::PgQueue,
         rate_limiter::RedisRateLimiter,
         slack::{HttpSlack, SlackClient},
         stripe::StripeBilling,
     },
-    config::{Config, ConnectorMode},
+    config::{Config, ConnectorMode, ModelMode, ModelSettings},
     controllers,
     error::{AppError, AppResult},
     jobs::{
@@ -61,6 +65,8 @@ pub struct Deps {
     pub slack: Arc<dyn SlackClient>,
     /// Stripe; unusable (and unused) while `STRIPE_SECRET_KEY` is empty.
     pub billing: Arc<dyn BillingProvider>,
+    /// The chat-model adapters; both serve `FakeModels::demo` when `OPSAGENT_MODEL_PROVIDER=fake`.
+    pub models: ModelProviders,
     pub clock: Arc<dyn Clock>,
     /// Fetches Client ID Metadata Documents.
     pub client_metadata: Arc<dyn ClientMetadataSource>,
@@ -131,6 +137,7 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
         .map_err(|_| internal("stripe: HTTP client could not be built"))?;
     Ok(Deps {
         billing: Arc::new(billing),
+        models: models(&config.model_settings())?,
         webauthn: Arc::new(crate::webauthn::build(&config.web_base_url)?),
         mailer: mailers::from_config(&config).map_err(internal)?,
         config,
@@ -147,9 +154,26 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
     })
 }
 
+fn models(s: &ModelSettings) -> AppResult<ModelProviders> {
+    if s.mode == ModelMode::Fake {
+        let fake: Arc<dyn ModelProvider> = Arc::new(FakeModels::demo());
+        return Ok(ModelProviders {
+            anthropic: fake.clone(),
+            openai: fake,
+        });
+    }
+    let built = |_| internal("models: HTTP client could not be built");
+    Ok(ModelProviders {
+        anthropic: Arc::new(
+            AnthropicModels::new(&s.anthropic_api_base, &s.anthropic_version).map_err(built)?,
+        ),
+        openai: Arc::new(OpenAiModels::new(&s.openai_api_base).map_err(built)?),
+    })
+}
+
 /// The state over `deps`, with every action built from them, once. Under `test-support` the
-/// mailer, Slack client and billing provider sit in cells `AppState::set_mailer`/`set_slack`/
-/// `set_billing` swap.
+/// mailer, Slack client, billing provider and model providers sit in cells
+/// `AppState::set_mailer`/`set_slack`/`set_billing`/`set_models` swap.
 pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
     #[cfg(feature = "test-support")]
     let swaps = {
@@ -158,10 +182,16 @@ pub fn assemble(#[allow(unused_mut)] mut deps: Deps) -> AppState {
             mailer: Swappable::new(deps.mailer.clone()),
             slack: Swappable::new(deps.slack.clone()),
             billing: Swappable::new(deps.billing.clone()),
+            models: Swappable::new(deps.models.anthropic.clone()),
         };
         deps.mailer = swaps.mailer.clone();
         deps.slack = swaps.slack.clone();
         deps.billing = swaps.billing.clone();
+        // One cell for both providers: a test swaps in one double for whichever is called.
+        deps.models = ModelProviders {
+            anthropic: swaps.models.clone(),
+            openai: swaps.models.clone(),
+        };
         swaps
     };
     let urls = OAuthUrls::new(&deps.config.api_base_url);
