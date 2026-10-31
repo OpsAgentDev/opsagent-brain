@@ -4,8 +4,8 @@ use std::{collections::VecDeque, sync::Mutex};
 
 use async_trait::async_trait;
 use opsagent_core::model::{
-    ModelError, ModelInfo, ModelProvider, ModelRequest, ModelTurn, Part, StopReason, TextSink,
-    ToolCall, Usage,
+    Endpoint, ModelError, ModelInfo, ModelProvider, ModelRequest, ModelTurn, Part, StopReason,
+    TextSink, ToolCall, Usage,
 };
 use regex::Regex;
 use serde_json::json;
@@ -20,6 +20,8 @@ pub enum FakeStep {
     /// Text, then tool calls, in one step.
     TextTools(String, Vec<ToolCall>, Usage),
     Fail(ModelError),
+    /// Streams the text, then fails.
+    TextThenFail(String, ModelError),
 }
 
 enum Script {
@@ -119,7 +121,7 @@ fn demo_step(req: &ModelRequest) -> FakeStep {
 impl ModelProvider for FakeModels {
     async fn stream(
         &self,
-        _api_key: &str,
+        _ep: &Endpoint<'_>,
         req: &ModelRequest,
         sink: &mut dyn TextSink,
     ) -> Result<ModelTurn, ModelError> {
@@ -129,6 +131,10 @@ impl ModelProvider for FakeModels {
             FakeStep::Tools(c, u) => (String::new(), c, u, StopReason::ToolUse),
             FakeStep::TextTools(t, c, u) => (t, c, u, StopReason::ToolUse),
             FakeStep::Fail(e) => return Err(e),
+            FakeStep::TextThenFail(t, e) => {
+                sink.delta(&t);
+                return Err(e);
+            }
         };
         if !text.is_empty() {
             sink.delta(&text);
@@ -141,7 +147,7 @@ impl ModelProvider for FakeModels {
         })
     }
 
-    async fn list_models(&self, _api_key: &str) -> Result<Vec<ModelInfo>, ModelError> {
+    async fn list_models(&self, _ep: &Endpoint<'_>) -> Result<Vec<ModelInfo>, ModelError> {
         let info = |id: &str| ModelInfo {
             id: id.into(),
             tools: true,
@@ -155,6 +161,13 @@ mod tests {
     use opsagent_core::model::{ModelMessage, MsgRole, ToolDef};
 
     use super::*;
+
+    const EP: Endpoint<'static> = Endpoint {
+        base_url: "https://api.anthropic.com",
+        api_key: "k",
+        custom: false,
+        pin: &[],
+    };
 
     #[derive(Default)]
     struct Sink(String);
@@ -200,16 +213,16 @@ mod tests {
         ]);
         let r = req(true, vec![Part::Text("q".into())]);
         let mut sink = Sink::default();
-        let t1 = f.stream("k", &r, &mut sink).await.unwrap();
+        let t1 = f.stream(&EP, &r, &mut sink).await.unwrap();
         assert_eq!(
             (t1.tool_calls, t1.stop, t1.usage),
             (vec![call], StopReason::ToolUse, u)
         );
-        let t2 = f.stream("k", &r, &mut sink).await.unwrap();
+        let t2 = f.stream(&EP, &r, &mut sink).await.unwrap();
         assert_eq!((t2.text.as_str(), t2.stop), ("done", StopReason::EndTurn));
         assert_eq!(sink.0, "done");
-        assert_eq!(f.stream("k", &r, &mut sink).await, Err(ModelError::Auth));
-        let gone = f.stream("k", &r, &mut sink).await;
+        assert_eq!(f.stream(&EP, &r, &mut sink).await, Err(ModelError::Auth));
+        let gone = f.stream(&EP, &r, &mut sink).await;
         assert_eq!(gone, Err(ModelError::Other("fake_exhausted".into())));
         assert_eq!(f.requests(), vec![r.clone(), r.clone(), r.clone(), r]);
     }
@@ -220,7 +233,7 @@ mod tests {
         let mut sink = Sink::default();
         let first = f
             .stream(
-                "k",
+                &EP,
                 &req(true, vec![Part::Text("newest?".into())]),
                 &mut sink,
             )
@@ -234,25 +247,38 @@ mod tests {
             content: content.into(),
         };
         let second = f
-            .stream("k", &req(true, vec![result]), &mut sink)
+            .stream(&EP, &req(true, vec![result]), &mut sink)
             .await
             .unwrap();
         assert_eq!(
             second.text,
             "Your newest finding is finding:f1 (check no_mfa)."
         );
-        let explain = f.stream("k", &req(false, vec![]), &mut sink).await.unwrap();
+        let explain = f.stream(&EP, &req(false, vec![]), &mut sink).await.unwrap();
         assert!(explain.text.starts_with("What it means"));
         assert!(
             explain.text.contains("Why it matters here") && explain.text.contains("What to do")
         );
         let ids: Vec<_> = f
-            .list_models("k")
+            .list_models(&EP)
             .await
             .unwrap()
             .into_iter()
             .map(|m| m.id)
             .collect();
         assert_eq!(ids, vec!["claude-haiku-5-5", "claude-sonnet-5-5"]);
+    }
+
+    #[tokio::test]
+    async fn fake_text_then_fail_streams_then_errors() {
+        let f = FakeModels::scripted(vec![FakeStep::TextThenFail(
+            "half an ".into(),
+            ModelError::Outage,
+        )]);
+        let mut sink = Sink::default();
+        let got = f.stream(&EP, &req(false, vec![]), &mut sink).await;
+        assert_eq!(got, Err(ModelError::Outage));
+        assert_eq!(sink.0, "half an ");
+        assert_eq!(f.requests().len(), 1);
     }
 }

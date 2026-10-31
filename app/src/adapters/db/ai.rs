@@ -3,7 +3,10 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    ai::{AiRepo, Explanation, KeySource, KeyStatus, ModelKey, NewModelKey, RoleModels, UsageRow},
+    ai::{
+        AiRepo, Explanation, KeySource, KeyStatus, ModelKey, NewModelKey, OrgKeys, RoleModels,
+        Slot, UsageRow,
+    },
     model::AiProvider,
     repo::{RepoError, RepoResult},
 };
@@ -14,22 +17,22 @@ use super::ledger_storage::stmt;
 use super::{db_err, Conn, Pg};
 
 const KEY_COLS: &str = "id, organisation_id, provider, last4, status, status_since, models, \
-  monthly_credit_ceiling, ciphertext, nonce, kek_version";
+  slot, base_url, ciphertext, nonce, kek_version";
 
 /// A new id each time: notices keyed on the old key's id do not carry over.
 const PUT_KEY: &str = "INSERT INTO model_keys (id, organisation_id, provider, last4, ciphertext, \
-  nonce, kek_version, models, monthly_credit_ceiling) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-  ON CONFLICT (organisation_id) DO UPDATE SET id = EXCLUDED.id, provider = EXCLUDED.provider, \
+  nonce, kek_version, models, slot, base_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+  ON CONFLICT (organisation_id, slot) DO UPDATE SET id = EXCLUDED.id, provider = EXCLUDED.provider, \
   last4 = EXCLUDED.last4, ciphertext = EXCLUDED.ciphertext, nonce = EXCLUDED.nonce, \
   kek_version = EXCLUDED.kek_version, models = EXCLUDED.models, \
-  monthly_credit_ceiling = EXCLUDED.monthly_credit_ceiling, status = 'ok', status_since = now(), \
+  base_url = EXCLUDED.base_url, status = 'ok', status_since = now(), \
   created_at = now(), updated_at = now() RETURNING ";
 
 /// One statement, so the row and the debit commit together.
 const USAGE: &str = "WITH u AS (INSERT INTO ai_usage (id, organisation_id, member_id, purpose, \
   provider, model, key_source, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, \
-  credits, estimated) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)) \
-  UPDATE organisations SET ai_topup_balance = GREATEST(ai_topup_balance - $14, 0) WHERE id = $2";
+  credits, estimated, slot, base_host) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, \
+  $13, $15, $16)) UPDATE organisations SET ai_topup_balance = GREATEST(ai_topup_balance - $14, 0) WHERE id = $2";
 
 const GRANT: &str = "WITH g AS (INSERT INTO ai_credit_grants (id, organisation_id, credits, \
   stripe_event_id) VALUES ($1, $2, $3, $4) ON CONFLICT (stripe_event_id) DO NOTHING \
@@ -48,6 +51,10 @@ fn provider(r: &QueryResult) -> RepoResult<AiProvider> {
     AiProvider::parse(&s).ok_or_else(|| RepoError::Storage(format!("unknown provider {s:?}")))
 }
 
+fn slot_of(s: &str) -> RepoResult<Slot> {
+    Slot::parse(s).ok_or_else(|| RepoError::Storage(format!("unknown key slot {s:?}")))
+}
+
 fn key_of(r: &QueryResult) -> RepoResult<ModelKey> {
     let status: String = get(r, "status")?;
     let models: serde_json::Value = get(r, "models")?;
@@ -60,7 +67,8 @@ fn key_of(r: &QueryResult) -> RepoResult<ModelKey> {
             .ok_or_else(|| RepoError::Storage(format!("unknown key status {status:?}")))?,
         status_since: get(r, "status_since")?,
         models: serde_json::from_value(models).map_err(db_err)?,
-        monthly_credit_ceiling: get(r, "monthly_credit_ceiling")?,
+        slot: slot_of(&get::<String>(r, "slot")?)?,
+        base_url: get(r, "base_url")?,
         ciphertext: get(r, "ciphertext")?,
         nonce: get(r, "nonce")?,
         kek_version: get(r, "kek_version")?,
@@ -124,10 +132,20 @@ impl<C: Conn> AiRepo for Pg<C> {
         }
     }
 
-    async fn key(&self, organisation_id: Uuid) -> RepoResult<Option<ModelKey>> {
+    async fn keys(&self, organisation_id: Uuid) -> RepoResult<OrgKeys> {
         let sql = format!("SELECT {KEY_COLS} FROM model_keys WHERE organisation_id = $1");
-        let r = self.query_row(&sql, vec![organisation_id.into()]).await?;
-        r.as_ref().map(key_of).transpose()
+        let rows = self
+            .db()
+            .query_all_raw(stmt(&sql, vec![organisation_id.into()]));
+        let mut keys = OrgKeys::default();
+        for r in rows.await.map_err(db_err)? {
+            let k = key_of(&r)?;
+            match k.slot {
+                Slot::Primary => keys.primary = Some(k),
+                Slot::Backup => keys.backup = Some(k),
+            }
+        }
+        Ok(keys)
     }
 
     async fn put_key(&self, organisation_id: Uuid, k: &NewModelKey) -> RepoResult<ModelKey> {
@@ -140,7 +158,8 @@ impl<C: Conn> AiRepo for Pg<C> {
             k.nonce.clone().into(),
             k.kek_version.into(),
             models_json(&k.models)?,
-            k.monthly_credit_ceiling.into(),
+            k.slot.as_str().into(),
+            k.base_url.clone().into(),
         ];
         let r = self
             .query_row(&format!("{PUT_KEY}{KEY_COLS}"), values)
@@ -148,21 +167,58 @@ impl<C: Conn> AiRepo for Pg<C> {
         key_of(&r.ok_or_else(|| db_err("upsert returned no row"))?)
     }
 
-    async fn update_key(
+    async fn update_key_models(
         &self,
         organisation_id: Uuid,
+        slot: Slot,
         models: &RoleModels,
-        ceiling: Option<Decimal>,
     ) -> RepoResult<bool> {
-        let sql = "UPDATE model_keys SET models = $2, monthly_credit_ceiling = $3, \
-                   updated_at = now() WHERE organisation_id = $1";
-        let values = vec![organisation_id.into(), models_json(models)?, ceiling.into()];
+        let sql = "UPDATE model_keys SET models = $3, updated_at = now() \
+                   WHERE organisation_id = $1 AND slot = $2";
+        let values = vec![
+            organisation_id.into(),
+            slot.as_str().into(),
+            models_json(models)?,
+        ];
         Ok(self.rows_changed(sql, values).await? == 1)
     }
 
-    async fn delete_key(&self, organisation_id: Uuid) -> RepoResult<bool> {
-        let sql = "DELETE FROM model_keys WHERE organisation_id = $1";
-        Ok(self.rows_changed(sql, vec![organisation_id.into()]).await? == 1)
+    /// One statement, so deleting `primary` and promoting `backup` commit together. The backup
+    /// is deleted only after the primary is (it reads `d`) and re-inserted as `primary`, which
+    /// keeps `UNIQUE (organisation_id, slot)` satisfied whatever order Postgres plans.
+    async fn delete_key(&self, organisation_id: Uuid, slot: Slot) -> RepoResult<bool> {
+        let sql = "WITH d AS (DELETE FROM model_keys WHERE organisation_id = $1 AND slot = $2 \
+                   RETURNING 1), b AS (DELETE FROM model_keys WHERE organisation_id = $1 \
+                   AND slot = 'backup' AND $2 = 'primary' AND EXISTS (SELECT 1 FROM d) \
+                   RETURNING *), i AS (INSERT INTO model_keys (id, organisation_id, provider, \
+                   last4, ciphertext, nonce, kek_version, status, status_since, models, slot, \
+                   base_url, created_at) SELECT id, organisation_id, provider, last4, ciphertext, \
+                   nonce, kek_version, status, status_since, models, 'primary', base_url, \
+                   created_at FROM b) SELECT count(*) AS n FROM d";
+        let values = vec![organisation_id.into(), slot.as_str().into()];
+        let r = self.query_row(sql, values).await?;
+        Ok(get::<i64>(&r.ok_or_else(|| db_err("delete returned no row"))?, "n")? == 1)
+    }
+
+    async fn credit_ceiling(&self, organisation_id: Uuid) -> RepoResult<Option<Decimal>> {
+        self.org_column(organisation_id, "ai_monthly_credit_ceiling")
+            .await
+    }
+
+    async fn set_credit_ceiling(
+        &self,
+        organisation_id: Uuid,
+        ceiling: Option<Decimal>,
+    ) -> RepoResult<()> {
+        let sql = "UPDATE organisations SET ai_monthly_credit_ceiling = $2, updated_at = now() \
+                   WHERE id = $1";
+        match self
+            .rows_changed(sql, vec![organisation_id.into(), ceiling.into()])
+            .await?
+        {
+            0 => Err(RepoError::NotFound),
+            _ => Ok(()),
+        }
     }
 
     async fn set_key_status(
@@ -200,6 +256,8 @@ impl<C: Conn> AiRepo for Pg<C> {
             row.credits.into(),
             row.estimated.into(),
             topup_debit.into(),
+            row.slot.map(Slot::as_str).into(),
+            row.base_host.clone().into(),
         ];
         self.rows_changed(USAGE, values).await.map(|_| ())
     }

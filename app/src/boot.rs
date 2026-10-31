@@ -162,12 +162,9 @@ fn models(s: &ModelSettings) -> AppResult<ModelProviders> {
             openai: fake,
         });
     }
-    let built = |_| internal("models: HTTP client could not be built");
     Ok(ModelProviders {
-        anthropic: Arc::new(
-            AnthropicModels::new(&s.anthropic_api_base, &s.anthropic_version).map_err(built)?,
-        ),
-        openai: Arc::new(OpenAiModels::new(&s.openai_api_base).map_err(built)?),
+        anthropic: Arc::new(AnthropicModels::new(&s.anthropic_version)),
+        openai: Arc::new(OpenAiModels::new()),
     })
 }
 
@@ -476,12 +473,13 @@ fn build_ai(d: &Deps, guard: Arc<recipients::MailGuard>) -> ai::Ai {
         d.uow.clone(),
         d.kek.clone(),
         d.models.clone(),
+        Arc::new(crate::adapters::dns::SystemResolver),
         ai::Notices::new(d.uow.clone(), d.mailer.clone(), guard),
         d.clock.clone(),
         ai::AiSettings::new(&d.config),
     ));
     ai::Ai {
-        set_enabled: ai::SetEnabled::new(access.clone()),
+        set_ceiling: ai::SetCeiling::new(access.clone()),
         put_key: ai::PutKey::new(access.clone()),
         list_key_models: ai::ListKeyModels::new(access.clone()),
         patch_key: ai::PatchKey::new(access.clone()),

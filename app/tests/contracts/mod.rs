@@ -10,6 +10,7 @@ use opsagent_brain::{
     },
 };
 use opsagent_core::{
+    ai::Slot,
     org::NewOrganisation,
     retention::TtlTable,
     run::{RunKey, RunStatus},
@@ -29,6 +30,7 @@ mod orgs;
 mod passkeys;
 mod purge;
 mod recipients;
+mod resolver;
 mod resources;
 mod retention;
 mod runs;
@@ -80,6 +82,8 @@ pub trait Seed: Sync {
     async fn audit_count(&self, o: Option<Uuid>) -> u64;
     /// The metadata of every `org.purged` entry, oldest first.
     async fn purge_records(&self) -> Vec<serde_json::Value>;
+    /// `(slot, base_host)` of every AI usage row of `o`, oldest first.
+    async fn usage_slots(&self, o: Uuid) -> Vec<(Option<Slot>, Option<String>)>;
 }
 
 /// Seeds the lane database over its own connection (the app pool has one connection).
@@ -335,6 +339,22 @@ impl Seed for PgSeed {
         row.try_get::<i64>("", "n").unwrap() as u64
     }
 
+    async fn usage_slots(&self, o: Uuid) -> Vec<(Option<Slot>, Option<String>)> {
+        let st = sea_orm::Statement::from_sql_and_values(
+            sea_orm::DbBackend::Postgres,
+            "SELECT slot, base_host FROM ai_usage WHERE organisation_id = $1 ORDER BY id",
+            vec![o.into()],
+        );
+        let rows = self.raw().query_all_raw(st).await.unwrap();
+        let slot = |r: &sea_orm::QueryResult| {
+            let s: Option<String> = r.try_get("", "slot").unwrap();
+            s.map(|s| Slot::parse(&s).unwrap())
+        };
+        rows.iter()
+            .map(|r| (slot(r), r.try_get("", "base_host").unwrap()))
+            .collect()
+    }
+
     async fn purge_records(&self) -> Vec<serde_json::Value> {
         let st = sea_orm::Statement::from_string(
             sea_orm::DbBackend::Postgres,
@@ -403,6 +423,12 @@ impl Seed for MemStore {
     async fn audit_count(&self, o: Option<Uuid>) -> u64 {
         let all = self.audit_entries();
         all.iter().filter(|e| e.organisation_id == o).count() as u64
+    }
+
+    async fn usage_slots(&self, o: Uuid) -> Vec<(Option<Slot>, Option<String>)> {
+        let rows = self.ai_usage_rows();
+        let ours = rows.into_iter().filter(|u| u.organisation_id == o);
+        ours.map(|u| (u.slot, u.base_host)).collect()
     }
 
     async fn purge_records(&self) -> Vec<serde_json::Value> {

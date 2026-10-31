@@ -4,6 +4,7 @@ pub mod audit;
 pub mod billing;
 pub mod chat;
 pub mod connection;
+pub mod endpoint;
 pub mod finding;
 pub mod lifecycle;
 pub mod model;

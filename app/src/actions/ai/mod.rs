@@ -6,6 +6,7 @@ mod byok;
 mod chat;
 mod explain;
 mod failures;
+mod fallback;
 mod meter;
 mod notices;
 mod settings;
@@ -18,15 +19,16 @@ use std::{sync::Arc, time::Duration};
 
 use axum::http::StatusCode;
 use opsagent_core::{
-    ai::{ModelKey, ModelRole},
-    model::{AiProvider, ModelInfo},
+    ai::{KeySource, ModelKey, ModelRole, Slot},
+    endpoint::UrlPolicy,
+    model::{AiProvider, Endpoint, ModelInfo},
 };
 use opsagent_secrets::{Aad, Kek};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-pub use access::{AiAccess, AiStatus, CallPlan};
-pub use byok::{DeleteKey, KeyModel, KeyPatch, ListKeyModels, PatchKey, PutKey};
+pub use access::{AiAccess, AiStatus, CallPlan, Conn};
+pub use byok::{DeleteKey, KeyInput, KeyModel, ListKeyModels, PatchKey, PutKey, PutKeyOutcome};
 pub use chat::{
     wrap_tool_result, ChatEvent, ChatSessions, ChatTurn, Turn, AI_BUSY, CHAT_PROMPT_VERSION,
     CHAT_SYSTEM_PROMPT, CHAT_TOOLS,
@@ -34,12 +36,12 @@ pub use chat::{
 pub use explain::{current_hash, ExplainFinding, EXPLAIN_PROMPT_VERSION};
 pub use failures::AiCallError;
 pub use notices::Notices;
-pub use settings::SetEnabled;
+pub use settings::SetCeiling;
 pub use topup::StartTopup;
 
 use crate::{
     actions::uow::Repos,
-    config::{preferred_models, Config, ModelMode},
+    config::{preferred_models, Config, ModelMode, OpsAgentConnection},
     creds::Dek,
     error::{AppError, AppResult},
 };
@@ -51,10 +53,14 @@ pub const AI_QUOTA_REACHED: &str = "ai_quota_reached";
 pub const AI_KEY_INVALID: &str = "ai_key_invalid";
 pub const AI_PROVIDER_OUTAGE: &str = "ai_provider_outage";
 pub const AI_RATE_LIMITED: &str = "ai_rate_limited";
+pub const AI_MODEL_INVALID: &str = "ai_model_invalid";
+pub const AI_ENDPOINT_INVALID: &str = "ai_endpoint_invalid";
+pub const AI_PRIMARY_REQUIRED: &str = "ai_primary_required";
+pub const MODELS_REQUIRED: &str = "models_required";
 
 pub struct Ai {
     pub access: Arc<AiAccess>,
-    pub set_enabled: SetEnabled,
+    pub set_ceiling: SetCeiling,
     pub put_key: PutKey,
     pub list_key_models: ListKeyModels,
     pub patch_key: PatchKey,
@@ -64,15 +70,21 @@ pub struct Ai {
     pub chat_sessions: ChatSessions,
 }
 
-/// What the AI actions read from `Config`. No `Debug`: it holds OpsAgent's key.
+/// What the AI actions read from `Config`. No `Debug`: it holds OpsAgent's keys.
 #[derive(Clone)]
 pub struct AiSettings {
-    /// OpsAgent's Anthropic key; `None` when unset. `OPSAGENT_MODEL_PROVIDER=fake` counts as
-    /// set (the fake serves as OpsAgent's key, so its empty key is fine).
-    pub opsagent_key: Option<Zeroizing<String>>,
+    /// OpsAgent's connections; `None` when unset. `OPSAGENT_MODEL_PROVIDER=fake` gives an
+    /// anthropic primary with an empty key (the fake serves it).
+    pub opsagent: Option<Conn>,
+    pub opsagent_backup: Option<Conn>,
+    /// The styles' official URLs (`ANTHROPIC_API_BASE`/`OPENAI_API_BASE` override them).
+    pub anthropic_base: String,
+    pub openai_base: String,
+    /// `Public` for customers' URLs, `Local` when `AI_ENDPOINT_ALLOW_PRIVATE`.
+    pub policy: UrlPolicy,
     pub billing_enforced: bool,
     /// Top-ups need Stripe and OpsAgent's key: credits pay only for OpsAgent's key, so
-    /// with customers' own keys only (no `OPSAGENT_ANTHROPIC_API_KEY`) there is nothing to buy.
+    /// with customers' own keys only there is nothing to buy.
     pub topups: bool,
     pub web_base_url: String,
     /// The waits between retries of a rate-limited call (plan ruling 15).
@@ -82,13 +94,65 @@ pub struct AiSettings {
 impl AiSettings {
     pub fn new(c: &Config) -> Self {
         let m = c.model_settings();
-        let set = m.mode == ModelMode::Fake || !m.anthropic_api_key.is_empty();
-        Self {
-            opsagent_key: set.then(|| Zeroizing::new(m.anthropic_api_key.clone())),
+        let fake = (m.mode == ModelMode::Fake).then(|| OpsAgentConnection::anthropic(""));
+        let mut s = Self {
+            opsagent: None,
+            opsagent_backup: None,
+            anthropic_base: m.anthropic_api_base.clone(),
+            openai_base: m.openai_api_base.clone(),
+            policy: if m.allow_private {
+                UrlPolicy::Local
+            } else {
+                UrlPolicy::Public
+            },
             billing_enforced: c.billing_enforced,
-            topups: set && c.stripe_configured(),
+            topups: false,
             web_base_url: c.web_base_url.clone(),
             backoff: [1, 2, 4].map(Duration::from_secs).to_vec(),
+        };
+        s.opsagent = fake.or(m.opsagent).map(|o| s.conn(o, Slot::Primary));
+        s.opsagent_backup = m.opsagent_backup.map(|o| s.conn(o, Slot::Backup));
+        s.topups = s.opsagent.is_some() && c.stripe_configured();
+        s
+    }
+
+    fn conn(&self, o: OpsAgentConnection, slot: Slot) -> Conn {
+        let base_host = o.base_url.as_deref().and_then(host_of);
+        Conn {
+            style: o.style,
+            source: KeySource::OpsAgent,
+            slot,
+            key_id: None,
+            base_url: self.base_for(o.style, o.base_url.as_deref()),
+            base_host,
+            custom: false,
+            models: o.models,
+            api_key: Zeroizing::new(o.api_key),
+        }
+    }
+
+    /// `custom` when given, else `style`'s official URL.
+    pub fn base_for(&self, style: AiProvider, custom: Option<&str>) -> String {
+        custom.map_or_else(
+            || match style {
+                AiProvider::Anthropic => self.anthropic_base.clone(),
+                AiProvider::OpenAi => self.openai_base.clone(),
+            },
+            str::to_owned,
+        )
+    }
+
+    /// `style`'s official endpoint with `api_key`, on system DNS.
+    fn official<'a>(&'a self, style: AiProvider, api_key: &'a str) -> Endpoint<'a> {
+        let base_url = match style {
+            AiProvider::Anthropic => &self.anthropic_base,
+            AiProvider::OpenAi => &self.openai_base,
+        };
+        Endpoint {
+            base_url,
+            api_key,
+            custom: false,
+            pin: &[],
         }
     }
 
@@ -97,6 +161,13 @@ impl AiSettings {
         let base = self.web_base_url.trim_end_matches('/');
         format!("{base}/settings/ai{query}")
     }
+}
+
+/// The host of `url`, the only part of a base URL that is stored, shown or audited.
+pub fn host_of(url: &str) -> Option<String> {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
 }
 
 pub(crate) fn refused(status: StatusCode, code: &'static str, detail: &str) -> AppError {
@@ -136,14 +207,6 @@ async fn open_key(repos: &dyn Repos, kek: &dyn Kek, k: &ModelKey) -> AppResult<Z
     String::from_utf8(plain.to_vec())
         .map(Zeroizing::new)
         .map_err(|_| AppError::Internal("model key is not UTF-8".into()))
-}
-
-/// The role's model on `role`'s BYOK key.
-fn role_model(k: &ModelKey, role: ModelRole) -> &str {
-    match role {
-        ModelRole::Routine => &k.models.routine,
-        ModelRole::Chat => &k.models.chat,
-    }
 }
 
 /// The BYOK default for `role` from the key's live list: the first preferred id present,

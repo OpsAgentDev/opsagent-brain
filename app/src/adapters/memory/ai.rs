@@ -3,7 +3,10 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    ai::{AiRepo, Explanation, KeySource, KeyStatus, ModelKey, NewModelKey, RoleModels, UsageRow},
+    ai::{
+        AiRepo, Explanation, KeySource, KeyStatus, ModelKey, NewModelKey, OrgKeys, RoleModels,
+        Slot, UsageRow,
+    },
     repo::RepoResult,
     retention::PurgeCounts,
 };
@@ -16,6 +19,7 @@ use super::{purge::drain, MemStore};
 pub(super) struct AiState {
     enabled: HashSet<Uuid>,
     topup: HashMap<Uuid, Decimal>,
+    ceilings: HashMap<Uuid, Decimal>,
     keys: Vec<ModelKey>,
     /// With when each was recorded.
     pub(super) usage: Vec<(UsageRow, DateTime<Utc>)>,
@@ -30,6 +34,7 @@ impl AiState {
     pub(super) fn purge(&mut self, org: Uuid, c: &mut PurgeCounts) {
         self.enabled.remove(&org);
         self.topup.remove(&org);
+        self.ceilings.remove(&org);
         c.insert(
             "ai_usage",
             drain(&mut self.usage, |u| u.0.organisation_id == org),
@@ -55,11 +60,11 @@ impl MemStore {
         self.state().ai.usage.iter().map(|u| u.0.clone()).collect()
     }
 
-    fn key_mut<T>(&self, org: Uuid, f: impl FnOnce(&mut ModelKey) -> T) -> Option<T> {
+    fn key_mut<T>(&self, org: Uuid, slot: Slot, f: impl FnOnce(&mut ModelKey) -> T) -> Option<T> {
         let mut s = self.state();
-        s.ai.keys
-            .iter_mut()
-            .find(|k| k.organisation_id == org)
+        let mut found = s.ai.keys.iter_mut();
+        found
+            .find(|k| k.organisation_id == org && k.slot == slot)
             .map(f)
     }
 }
@@ -82,8 +87,17 @@ impl AiRepo for MemStore {
         Ok(())
     }
 
-    async fn key(&self, organisation_id: Uuid) -> RepoResult<Option<ModelKey>> {
-        Ok(self.key_mut(organisation_id, |k| k.clone()))
+    async fn keys(&self, organisation_id: Uuid) -> RepoResult<OrgKeys> {
+        let s = self.state();
+        let ours =
+            s.ai.keys
+                .iter()
+                .filter(|k| k.organisation_id == organisation_id);
+        let of = |slot| ours.clone().find(|k| k.slot == slot).cloned();
+        Ok(OrgKeys {
+            primary: of(Slot::Primary),
+            backup: of(Slot::Backup),
+        })
     }
 
     async fn put_key(&self, organisation_id: Uuid, k: &NewModelKey) -> RepoResult<ModelKey> {
@@ -95,33 +109,63 @@ impl AiRepo for MemStore {
             status: KeyStatus::Ok,
             status_since: Utc::now(),
             models: k.models.clone(),
-            monthly_credit_ceiling: k.monthly_credit_ceiling,
+            slot: k.slot,
+            base_url: k.base_url.clone(),
             ciphertext: k.ciphertext.clone(),
             nonce: k.nonce.clone(),
             kek_version: k.kek_version,
         };
         let mut s = self.state();
         s.org_mut(organisation_id)?;
-        s.ai.keys.retain(|k| k.organisation_id != organisation_id);
+        s.ai.keys
+            .retain(|o| !(o.organisation_id == organisation_id && o.slot == k.slot));
         s.ai.keys.push(key.clone());
         Ok(key)
     }
 
-    async fn update_key(
+    async fn update_key_models(
         &self,
         organisation_id: Uuid,
+        slot: Slot,
         models: &RoleModels,
-        ceiling: Option<Decimal>,
     ) -> RepoResult<bool> {
-        let done = self.key_mut(organisation_id, |k| {
-            (k.models, k.monthly_credit_ceiling) = (models.clone(), ceiling);
-        });
+        let done = self.key_mut(organisation_id, slot, |k| k.models = models.clone());
         Ok(done.is_some())
     }
 
-    async fn delete_key(&self, organisation_id: Uuid) -> RepoResult<bool> {
+    async fn delete_key(&self, organisation_id: Uuid, slot: Slot) -> RepoResult<bool> {
         let mut s = self.state();
-        Ok(drain(&mut s.ai.keys, |k| k.organisation_id == organisation_id) > 0)
+        let gone = drain(&mut s.ai.keys, |k| {
+            k.organisation_id == organisation_id && k.slot == slot
+        });
+        if gone > 0 && slot == Slot::Primary {
+            let backup = s.ai.keys.iter_mut();
+            let mut backup = backup.filter(|k| k.organisation_id == organisation_id);
+            if let Some(k) = backup.find(|k| k.slot == Slot::Backup) {
+                k.slot = Slot::Primary;
+            }
+        }
+        Ok(gone > 0)
+    }
+
+    async fn credit_ceiling(&self, organisation_id: Uuid) -> RepoResult<Option<Decimal>> {
+        let mut s = self.state();
+        s.org_mut(organisation_id)?;
+        Ok(s.ai.ceilings.get(&organisation_id).copied())
+    }
+
+    async fn set_credit_ceiling(
+        &self,
+        organisation_id: Uuid,
+        ceiling: Option<Decimal>,
+    ) -> RepoResult<()> {
+        let mut s = self.state();
+        s.org_mut(organisation_id)?;
+        match ceiling {
+            Some(c) => s.ai.ceilings.insert(organisation_id, c),
+            None => s.ai.ceilings.remove(&organisation_id),
+        };
+        Ok(())
     }
 
     async fn set_key_status(
@@ -131,14 +175,16 @@ impl AiRepo for MemStore {
         status: KeyStatus,
         at: DateTime<Utc>,
     ) -> RepoResult<bool> {
-        let changed = self.key_mut(organisation_id, |k| {
-            let change = k.id == key_id && k.status != status;
+        let mut s = self.state();
+        let mut ours = s.ai.keys.iter_mut();
+        let found = ours.find(|k| k.organisation_id == organisation_id && k.id == key_id);
+        Ok(found.is_some_and(|k| {
+            let change = k.status != status;
             if change {
                 (k.status, k.status_since) = (status, at);
             }
             change
-        });
-        Ok(changed == Some(true))
+        }))
     }
 
     async fn record_usage(&self, row: &UsageRow, topup_debit: Decimal) -> RepoResult<()> {

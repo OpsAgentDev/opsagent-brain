@@ -1297,7 +1297,7 @@
         "tags": [
           "ai"
         ],
-        "operationId": "ai_set_enabled",
+        "operationId": "ai_patch_ai",
         "parameters": [
           {
             "name": "org",
@@ -1313,75 +1313,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/EnableIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AiStatusOut"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "Billing required, or a trial or plan limit reached",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/orgs/{org}/ai/key": {
-      "put": {
-        "tags": [
-          "ai"
-        ],
-        "operationId": "ai_put_key",
-        "parameters": [
-          {
-            "name": "org",
-            "in": "path",
-            "description": "Organisation slug.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/KeyIn"
+                "$ref": "#/components/schemas/AiPatchIn"
               }
             }
           },
@@ -1426,7 +1358,104 @@
             }
           },
           "422": {
-            "description": "`ai_key_invalid` or `invalid`",
+            "description": "`invalid`: no field, or a negative ceiling",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/ai/keys/{slot}": {
+      "put": {
+        "tags": [
+          "ai"
+        ],
+        "operationId": "ai_put_key",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slot",
+            "in": "path",
+            "description": "`primary` or `backup`; anything else is 404.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyPutOut"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`ai_primary_required`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid`, `ai_endpoint_invalid`, `ai_key_invalid`, `models_required` or `ai_model_invalid`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1461,10 +1490,21 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "slot",
+            "in": "path",
+            "description": "`primary` or `backup`; anything else is 404.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
-          "204": {},
+          "204": {
+            "description": "Removing the primary promotes the backup"
+          },
           "402": {
             "description": "Billing required, or a trial or plan limit reached",
             "content": {
@@ -1505,6 +1545,15 @@
             "name": "org",
             "in": "path",
             "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slot",
+            "in": "path",
+            "description": "`primary` or `backup`; anything else is 404.",
             "required": true,
             "schema": {
               "type": "string"
@@ -1560,7 +1609,7 @@
             }
           },
           "422": {
-            "description": "`invalid`: unknown model, a chat model without tools, or a negative ceiling",
+            "description": "`invalid` (unknown model, a chat model without tools, a bad typed id), `ai_key_invalid` or `ai_model_invalid`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1570,6 +1619,7 @@
             }
           },
           "502": {
+            "description": "`ai_key_failing` or `ai_provider_outage`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1581,7 +1631,7 @@
         }
       }
     },
-    "/orgs/{org}/ai/key/models": {
+    "/orgs/{org}/ai/keys/{slot}/models": {
       "get": {
         "tags": [
           "ai"
@@ -1596,10 +1646,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "slot",
+            "in": "path",
+            "description": "`primary` or `backup`; anything else is 404.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
+            "description": "Empty on an endpoint with no models list",
             "content": {
               "application/json": {
                 "schema": {
@@ -4582,31 +4642,78 @@
       "AiKeyOut": {
         "type": "object",
         "required": [
-          "provider",
+          "style",
           "last4",
           "status",
           "models"
         ],
         "properties": {
+          "base_host": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The custom endpoint's host; null on the style's official URL."
+          },
           "last4": {
             "type": "string"
           },
           "models": {
             "$ref": "#/components/schemas/RoleModelsOut"
           },
-          "monthly_credit_ceiling": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "provider": {
-            "type": "string",
-            "description": "`anthropic` or `openai`."
-          },
           "status": {
             "type": "string",
             "description": "`ok`, `failing` or `provider_outage`."
+          },
+          "style": {
+            "type": "string",
+            "description": "The API style: `anthropic` or `openai`."
+          }
+        }
+      },
+      "AiKeysOut": {
+        "type": "object",
+        "properties": {
+          "backup": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AiKeyOut",
+                "description": "Tried when the primary fails in a way another endpoint could fix."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "primary": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AiKeyOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "AiPatchIn": {
+        "type": "object",
+        "description": "At least one field.",
+        "properties": {
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "monthly_credit_ceiling": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Credits per calendar month (UTC) across both own keys; null removes it."
           }
         }
       },
@@ -4616,21 +4723,22 @@
           "enabled",
           "state",
           "usage",
+          "keys",
           "topup_available"
         ],
         "properties": {
           "enabled": {
             "type": "boolean"
           },
-          "key": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/AiKeyOut"
-              },
-              {
-                "type": "null"
-              }
-            ]
+          "keys": {
+            "$ref": "#/components/schemas/AiKeysOut"
+          },
+          "monthly_credit_ceiling": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Credits per calendar month (UTC) across both own keys; null is no ceiling."
           },
           "source": {
             "type": [
@@ -5268,17 +5376,6 @@
           }
         }
       },
-      "EnableIn": {
-        "type": "object",
-        "required": [
-          "enabled"
-        ],
-        "properties": {
-          "enabled": {
-            "type": "boolean"
-          }
-        }
-      },
       "EvidenceItem": {
         "type": "object",
         "required": [
@@ -5619,7 +5716,7 @@
       "KeyIn": {
         "type": "object",
         "required": [
-          "provider",
+          "style",
           "api_key"
         ],
         "properties": {
@@ -5627,9 +5724,27 @@
             "type": "string",
             "description": "Sent once; only its last 4 characters are ever shown again."
           },
-          "provider": {
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A compatible endpoint's base URL; empty or absent is the style's official URL."
+          },
+          "models": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleModelsOut",
+                "description": "Required (`models_required`) when the endpoint has no models list; else the\ndefaults from the list."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "style": {
             "type": "string",
-            "description": "`anthropic` or `openai`."
+            "description": "The API style: `anthropic` or `openai`."
           }
         }
       },
@@ -5658,24 +5773,31 @@
       },
       "KeyPatchIn": {
         "type": "object",
+        "required": [
+          "models"
+        ],
         "properties": {
           "models": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/RoleModelsOut"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "$ref": "#/components/schemas/RoleModelsOut"
+          }
+        }
+      },
+      "KeyPutOut": {
+        "type": "object",
+        "required": [
+          "status",
+          "models"
+        ],
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeyModelOut"
+            },
+            "description": "The endpoint's live models list; empty when the model ids were typed."
           },
-          "monthly_credit_ceiling": {
-            "type": [
-              "number",
-              "null"
-            ],
-            "format": "double",
-            "description": "Credits per calendar month (UTC); null removes it."
+          "status": {
+            "$ref": "#/components/schemas/AiStatusOut"
           }
         }
       },

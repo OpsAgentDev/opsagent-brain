@@ -155,7 +155,7 @@ impl World {
 #[serial]
 async fn explain_cache_hit_across_two_resources() {
     serve_with(
-        |c| c.anthropic_api_key = KEY.into(),
+        |c| c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(KEY)),
         |req, ctx| async move {
             let w = World::new(req, ctx, vec![step("What it means\nOne.")]).await;
             let a = w.seen(
@@ -183,7 +183,7 @@ async fn explain_cache_hit_across_two_resources() {
 #[serial]
 async fn explain_misses_after_evidence_changes() {
     serve_with(
-        |c| c.anthropic_api_key = KEY.into(),
+        |c| c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(KEY)),
         |req, ctx| async move {
             let w = World::new(req, ctx, vec![step("first"), step("second")]).await;
             let id = w.seen("arn:aws:s3:::alpha-bucket", &["public ACL"]).await;
@@ -201,7 +201,7 @@ async fn explain_misses_after_evidence_changes() {
 #[serial]
 async fn explain_prompt_redacted_and_never_names_resource() {
     serve_with(
-        |c| c.anthropic_api_key = KEY.into(),
+        |c| c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(KEY)),
         |req, ctx| async move {
             let w = World::new(req, ctx, vec![step("ok")]).await;
             let ident = "arn:aws:s3:::alpha-bucket";
@@ -232,7 +232,7 @@ async fn explain_prompt_redacted_and_never_names_resource() {
 #[serial]
 async fn explain_expired_evidence_uses_empty_hash() {
     serve_with(
-        |c| c.anthropic_api_key = KEY.into(),
+        |c| c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(KEY)),
         |req, ctx| async move {
             let w = World::new(req, ctx, vec![step("empty")]).await;
             let ident = "arn:aws:s3:::alpha-bucket";
@@ -255,7 +255,7 @@ async fn explain_expired_evidence_uses_empty_hash() {
 #[serial]
 async fn explain_null_hash_computed_on_first_explain() {
     serve_with(
-        |c| c.anthropic_api_key = KEY.into(),
+        |c| c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(KEY)),
         |req, ctx| async move {
             let w = World::new(req, ctx, vec![step("hashed")]).await;
             let ident = "arn:aws:s3:::alpha-bucket";
@@ -280,7 +280,7 @@ async fn explain_null_hash_computed_on_first_explain() {
 #[serial]
 async fn explain_ai_disabled_no_provider_call() {
     serve_with(
-        |c| c.anthropic_api_key = KEY.into(),
+        |c| c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(KEY)),
         |req, ctx| async move {
             let w = World::new(req, ctx, vec![step("cached")]).await;
             let id = w.seen("arn:aws:s3:::alpha-bucket", &["public ACL"]).await;
@@ -318,7 +318,7 @@ async fn explain_dark_is_ai_unavailable() {
 #[serial]
 async fn explain_other_org_404() {
     serve_with(
-        |c| c.anthropic_api_key = KEY.into(),
+        |c| c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(KEY)),
         |req, ctx| async move {
             let w = World::new(req, ctx, vec![step("x")]).await;
             let id = w.seen("arn:aws:s3:::alpha-bucket", &["public ACL"]).await;
@@ -341,7 +341,7 @@ async fn explain_other_org_404() {
 #[serial]
 async fn get_explanation_404_until_generated() {
     serve_with(
-        |c| c.anthropic_api_key = KEY.into(),
+        |c| c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(KEY)),
         |req, ctx| async move {
             let w = World::new(req, ctx, vec![step("text")]).await;
             let id = w.seen("arn:aws:s3:::alpha-bucket", &["public ACL"]).await;
@@ -360,7 +360,7 @@ async fn get_explanation_404_until_generated() {
 #[serial]
 async fn finding_detail_carries_cached_explanation() {
     serve_with(
-        |c| c.anthropic_api_key = KEY.into(),
+        |c| c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(KEY)),
         |req, ctx| async move {
             let w = World::new(req, ctx, vec![step("text")]).await;
             let id = w.seen("arn:aws:s3:::alpha-bucket", &["public ACL"]).await;
@@ -382,7 +382,7 @@ async fn finding_detail_carries_cached_explanation() {
 #[serial]
 async fn explain_sends_only_latest_run_evidence() {
     serve_with(
-        |c| c.anthropic_api_key = KEY.into(),
+        |c| c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(KEY)),
         |req, ctx| async move {
             let w = World::new(req, ctx, vec![step("ok")]).await;
             let ident = "arn:aws:s3:::alpha-bucket";
@@ -401,7 +401,7 @@ async fn explain_sends_only_latest_run_evidence() {
 #[serial]
 async fn explain_title_and_next_step_redacted() {
     serve_with(
-        |c| c.anthropic_api_key = KEY.into(),
+        |c| c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(KEY)),
         |req, ctx| async move {
             let w = World::new(req, ctx, vec![step("ok")]).await;
             let ident = "arn:aws:s3:::alpha-bucket";
@@ -424,7 +424,7 @@ async fn explain_title_and_next_step_redacted() {
 #[serial]
 async fn explain_json_evidence_redacted_per_leaf_and_by_key() {
     serve_with(
-        |c| c.anthropic_api_key = KEY.into(),
+        |c| c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(KEY)),
         |req, ctx| async move {
             let w = World::new(req, ctx, vec![step("ok")]).await;
             let ident = "arn:aws:s3:::alpha-bucket";

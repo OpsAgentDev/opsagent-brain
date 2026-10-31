@@ -3,6 +3,7 @@
 pub mod client_ip;
 pub mod client_metadata;
 pub mod db;
+pub mod dns;
 #[cfg(feature = "test-support")]
 pub mod memory;
 pub mod model;

@@ -14,10 +14,10 @@ use opsagent_core::{
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::{access::AiAccess, refused, AI_DISABLED};
+use super::{access::AiAccess, failures::AiCallError, refused, AI_DISABLED};
 use crate::{
     actions::{orgs::OrgScope, uow::UnitOfWork},
-    adapters::redact::redact,
+    adapters::{model::CALL_LIMIT, redact::redact},
     error::{AppError, AppResult},
     models::enum_str,
 };
@@ -91,7 +91,7 @@ pub(super) fn untrusted(source: &str, text: &str, max: usize) -> String {
     format!("<untrusted source=\"{source}\">{text}</untrusted>")
 }
 
-struct NoSink;
+pub(super) struct NoSink;
 impl TextSink for NoSink {
     fn delta(&mut self, _: &str) {}
 }
@@ -129,7 +129,7 @@ impl ExplainFinding {
         if let Some(hit) = ai.explanation(org, &f.key.check_id, &hash).await? {
             return Ok(hit);
         }
-        let plan = self.access.plan(org, ModelRole::Routine).await?;
+        let mut plan = self.access.plan(org, ModelRole::Routine).await?;
         let req = ModelRequest {
             model: String::new(),
             system: EXPLAIN_PROMPT.into(),
@@ -140,10 +140,13 @@ impl ExplainFinding {
             tools: vec![],
             max_tokens: MAX_TOKENS,
         };
-        let turn = self
+        let mut sink = NoSink;
+        let call = self
             .access
-            .call(scope, &plan, Purpose::Explain, req, &mut NoSink)
-            .await?;
+            .call(scope, &mut plan, Purpose::Explain, req, &mut sink);
+        let turn = tokio::time::timeout(CALL_LIMIT, call)
+            .await
+            .unwrap_or(Err(AiCallError::Outage))?;
         let text = turn.text.trim();
         if text.is_empty() {
             return Err(AppError::Internal("model returned no text".into()));
@@ -151,8 +154,8 @@ impl ExplainFinding {
         let e = Explanation {
             check_id: f.key.check_id.clone(),
             evidence_hash: hash,
-            provider: plan.provider,
-            model: plan.model.clone(),
+            provider: plan.provider(),
+            model: plan.model().to_owned(),
             text: text.into(),
             created_at: self.clock.now(),
         };

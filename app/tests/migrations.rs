@@ -197,10 +197,72 @@ async fn jobs_table_has_spec_columns_and_both_partial_indexes() {
     exec(&db, free).await.unwrap();
     exec(&db, free).await.unwrap();
 
-    // Twelve steps: jobs is followed by the oauth, magic-link return_to, waitlist, contact,
-    // sign-in, urgent-alerts, resource-history index, retention, audit-purge, billing and
-    // dashboard-ai migrations.
-    Migrator::down(&db, Some(12)).await.unwrap();
+    // Thirteen steps: jobs is followed by the oauth, magic-link return_to, waitlist, contact,
+    // sign-in, urgent-alerts, resource-history index, retention, audit-purge, billing,
+    // dashboard-ai and ai-connections migrations.
+    Migrator::down(&db, Some(13)).await.unwrap();
     assert!(exec(&db, "SELECT 1 FROM jobs").await.is_err());
     Migrator::up(&db, None).await.unwrap();
+}
+
+#[tokio::test]
+#[serial]
+async fn ai_connections_migration_keeps_key_as_primary_and_moves_ceiling() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://loco:loco@localhost:5432/opsagent_brain_test".into());
+    let db = migration::sea_orm::Database::connect(&url).await.unwrap();
+    Migrator::fresh(&db).await.unwrap();
+    // Back to before 000023, with a key that carries a ceiling.
+    Migrator::down(&db, Some(1)).await.unwrap();
+    let org = "'00000000-0000-0000-0000-0000000000c1'";
+    exec(
+        &db,
+        &format!("INSERT INTO organisations (id, name, slug) VALUES ({org}, 'o', 'o')"),
+    )
+    .await
+    .unwrap();
+    exec(
+        &db,
+        &format!(
+            "INSERT INTO model_keys (id, organisation_id, provider, last4, ciphertext, nonce, \
+             kek_version, models, monthly_credit_ceiling) VALUES (gen_random_uuid(), {org}, \
+             'openai', 'abcd', '\\x00', '\\x00', 1, '{{\"routine\":\"r\",\"chat\":\"c\"}}', 25)"
+        ),
+    )
+    .await
+    .unwrap();
+    Migrator::up(&db, None).await.unwrap();
+
+    let row = |sql: String| {
+        let db = db.clone();
+        async move {
+            let st = migration::sea_orm::Statement::from_string(
+                migration::sea_orm::DbBackend::Postgres,
+                sql,
+            );
+            db.query_one_raw(st).await.unwrap().unwrap()
+        }
+    };
+    let k = row(format!(
+        "SELECT slot, base_url IS NULL AS no_url FROM model_keys WHERE organisation_id = {org}"
+    ))
+    .await;
+    assert_eq!(k.try_get::<String>("", "slot").unwrap(), "primary");
+    assert!(k.try_get::<bool>("", "no_url").unwrap());
+    let o = row(format!(
+        "SELECT ai_monthly_credit_ceiling = 25 AS ok FROM organisations WHERE id = {org}"
+    ))
+    .await;
+    assert!(o.try_get::<bool>("", "ok").unwrap());
+    // One key per slot, two slots.
+    let dup = format!(
+        "INSERT INTO model_keys (id, organisation_id, provider, last4, ciphertext, nonce, \
+         kek_version, models, slot) SELECT gen_random_uuid(), organisation_id, provider, last4, \
+         ciphertext, nonce, kek_version, models, '{{}}' FROM model_keys WHERE organisation_id = {org}"
+    );
+    exec(&db, &dup.replace("'{}'", "'backup'")).await.unwrap();
+    let err = exec(&db, &dup.replace("'{}'", "'backup'"))
+        .await
+        .unwrap_err();
+    assert!(is_unique_violation(&err), "{err}");
 }

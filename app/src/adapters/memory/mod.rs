@@ -14,6 +14,7 @@ mod passkeys;
 mod purge;
 mod rate_limiter;
 mod recipients;
+mod resolver;
 mod resources;
 mod retention;
 mod runs;
@@ -53,6 +54,7 @@ use opsagent_ledger::{NewJob, Queue, Storage};
 use uuid::Uuid;
 
 pub use rate_limiter::MemRateLimiter;
+pub use resolver::FixedResolver;
 
 /// A clock stopped at its time.
 pub struct FixedClock(pub DateTime<Utc>);

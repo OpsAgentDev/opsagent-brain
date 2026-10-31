@@ -1,13 +1,18 @@
-//! `AiAccess`: who pays for a call (dashboard-ai.md, Who pays), the quota and ceiling checks,
-//! and the call itself (its failures: `failures.rs`; metering: `meter.rs`).
+//! `AiAccess`: who pays for a call (dashboard-ai.md, Who pays; ai-connections.md, Primary
+//! and backup) and the quota and ceiling checks (the call: `fallback.rs`; its failures:
+//! `failures.rs`; metering: `meter.rs`).
 use std::sync::Arc;
 
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    ai::{period_quota, quota_period, KeySource, KeyStatus, ModelKey, ModelRole, Purpose},
+    ai::{
+        period_quota, quota_period, KeySource, KeyStatus, ModelKey, ModelRole, OrgKeys, RoleModels,
+        Slot,
+    },
     billing::OrgBilling,
-    model::{AiProvider, ModelError, ModelProvider, ModelRequest, ModelTurn, TextSink},
+    endpoint::HostResolver,
+    model::AiProvider,
     repo::Clock,
 };
 use opsagent_secrets::Kek;
@@ -16,8 +21,8 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::{
-    failures::AiCallError, notices::Notices, open_key, refused, role_model, AiSettings,
-    AI_DISABLED, AI_QUOTA_REACHED,
+    failures::AiCallError, host_of, notices::Notices, open_key, refused, AiSettings, AI_DISABLED,
+    AI_QUOTA_REACHED,
 };
 use crate::{
     actions::{
@@ -25,19 +30,56 @@ use crate::{
         uow::{Repos, UnitOfWork},
     },
     adapters::model::ModelProviders,
-    config::{model_price, MODEL_CHAT, MODEL_ROUTINE},
+    config::model_price,
     error::{AppError, AppResult},
 };
 
-/// Who pays for one call and with which model. No `Debug`: it holds the key.
+/// Who pays for one call: the connection serving it and, before its first call only, the
+/// same payer's backup (spec, Settled 3). No `Debug`: it holds keys.
 pub struct CallPlan {
-    pub provider: AiProvider,
-    pub source: KeySource,
-    pub model: String,
-    /// The BYOK key's id; `None` on OpsAgent's key.
-    pub key_id: Option<Uuid>,
+    pub conn: Conn,
+    pub(super) backup: Option<Conn>,
     pub(super) role: ModelRole,
+}
+
+impl CallPlan {
+    pub fn provider(&self) -> AiProvider {
+        self.conn.style
+    }
+
+    /// The serving connection's model for the plan's role.
+    pub fn model(&self) -> &str {
+        self.conn.model(self.role)
+    }
+
+    pub fn source(&self) -> KeySource {
+        self.conn.source
+    }
+}
+
+/// One model connection, OpsAgent's or an organisation's. No `Debug`: it holds the key.
+#[derive(Clone)]
+pub struct Conn {
+    pub style: AiProvider,
+    pub source: KeySource,
+    pub slot: Slot,
+    /// The BYOK key's id; `None` on OpsAgent's connections.
+    pub key_id: Option<Uuid>,
+    pub base_url: String,
+    pub base_host: Option<String>,
+    /// A customer-supplied URL, checked on every call. OpsAgent's own are trusted.
+    pub custom: bool,
+    pub models: RoleModels,
     pub(super) api_key: Zeroizing<String>,
+}
+
+impl Conn {
+    pub(super) fn model(&self, role: ModelRole) -> &str {
+        match role {
+            ModelRole::Routine => &self.models.routine,
+            ModelRole::Chat => &self.models.chat,
+        }
+    }
 }
 
 /// The organisation's AI state as `GET /orgs/{org}/ai` reports it.
@@ -46,7 +88,7 @@ pub struct AiStatus {
     pub enabled: bool,
     /// `ready`, or the code a call would end with now.
     pub state: &'static str,
-    /// Who would pay: the BYOK key when set, else OpsAgent's key when configured.
+    /// Who would pay: BYOK when a primary is set, else OpsAgent's key when configured.
     pub source: Option<KeySource>,
     /// OpsAgent-key credits used this period.
     pub used: Decimal,
@@ -55,16 +97,19 @@ pub struct AiStatus {
     pub period: (DateTime<Utc>, DateTime<Utc>),
     /// BYOK credits this calendar month (UTC).
     pub byok_used_this_month: Decimal,
-    /// The BYOK key's models are unpriced, so its credits are estimates.
+    /// A BYOK key's model is unpriced, so its credits are estimates.
     pub estimated: bool,
-    pub key: Option<ModelKey>,
+    pub keys: OrgKeys,
+    /// Credits per calendar month (UTC) across both BYOK connections; `None` is no ceiling.
+    pub ceiling: Option<Decimal>,
     pub topup_available: bool,
 }
 
 /// Everything the who-pays table and the status read, at one moment.
 struct Snapshot {
     enabled: bool,
-    key: Option<ModelKey>,
+    keys: OrgKeys,
+    ceiling: Option<Decimal>,
     quota: Quota,
     topup: Decimal,
     byok_month: Decimal,
@@ -76,8 +121,12 @@ pub(super) struct Quota {
     pub used: Decimal,
 }
 
-enum Payer {
-    Byok(ModelKey),
+enum Payer<'a> {
+    /// `serving` is the backup when the primary is `failing`, which `plan` tells the owners.
+    Byok {
+        serving: &'a ModelKey,
+        backup: Option<&'a ModelKey>,
+    },
     OpsAgent,
 }
 
@@ -85,6 +134,7 @@ pub struct AiAccess {
     pub(super) uow: Arc<dyn UnitOfWork>,
     pub(super) kek: Arc<dyn Kek>,
     pub(super) models: ModelProviders,
+    pub(super) resolver: Arc<dyn HostResolver>,
     pub(super) notices: Notices,
     pub(super) clock: Arc<dyn Clock>,
     pub(super) s: AiSettings,
@@ -95,6 +145,7 @@ impl AiAccess {
         uow: Arc<dyn UnitOfWork>,
         kek: Arc<dyn Kek>,
         models: ModelProviders,
+        resolver: Arc<dyn HostResolver>,
         notices: Notices,
         clock: Arc<dyn Clock>,
         s: AiSettings,
@@ -103,6 +154,7 @@ impl AiAccess {
             uow,
             kek,
             models,
+            resolver,
             notices,
             clock,
             s,
@@ -115,22 +167,48 @@ impl AiAccess {
     pub async fn plan(&self, org: Uuid, role: ModelRole) -> AppResult<CallPlan> {
         let snap = self.snapshot(org).await?;
         Ok(match self.payer(&snap)? {
-            Payer::Byok(k) => CallPlan {
-                provider: k.provider,
-                source: KeySource::Byok,
-                model: role_model(&k, role).to_owned(),
-                key_id: Some(k.id),
-                role,
-                api_key: open_key(&*self.uow, &*self.kek, &k).await?,
-            },
+            Payer::Byok { serving, backup } => {
+                // A backup that cannot be opened must not fail a call the primary can serve.
+                let backup = match backup {
+                    Some(b) => match self.byok_conn(b).await {
+                        Ok(c) => Some(c),
+                        Err(_) => {
+                            tracing::warn!(
+                                error_code = "ai_backup_key_unreadable",
+                                "ai backup key not opened"
+                            );
+                            None
+                        }
+                    },
+                    None => None,
+                };
+                CallPlan {
+                    conn: self.byok_conn(serving).await?,
+                    backup,
+                    role,
+                }
+            }
             Payer::OpsAgent => CallPlan {
-                provider: AiProvider::Anthropic,
-                source: KeySource::OpsAgent,
-                model: opsagent_model(role).to_owned(),
-                key_id: None,
+                conn: self.s.opsagent.clone().ok_or(AiCallError::Unavailable)?,
+                backup: self.s.opsagent_backup.clone(),
                 role,
-                api_key: self.s.opsagent_key.clone().unwrap_or_default(),
             },
+        })
+    }
+
+    /// `k` as a connection, its key opened.
+    pub(super) async fn byok_conn(&self, k: &ModelKey) -> AppResult<Conn> {
+        let base_host = k.base_url.as_deref().and_then(host_of);
+        Ok(Conn {
+            style: k.provider,
+            source: KeySource::Byok,
+            slot: k.slot,
+            key_id: Some(k.id),
+            base_url: self.s.base_for(k.provider, k.base_url.as_deref()),
+            base_host,
+            custom: k.base_url.is_some(),
+            models: k.models.clone(),
+            api_key: open_key(&*self.uow, &*self.kek, k).await?,
         })
     }
 
@@ -141,12 +219,13 @@ impl AiAccess {
             Err(AppError::Refused { code, .. }) => code,
             Err(e) => return Err(e),
         };
-        let source = match (&snap.key, &self.s.opsagent_key) {
+        let source = match (&snap.keys.primary, &self.s.opsagent) {
             (Some(_), _) => Some(KeySource::Byok),
             (None, Some(_)) => Some(KeySource::OpsAgent),
             (None, None) => None,
         };
-        let estimated = snap.key.as_ref().is_some_and(|k| {
+        let keys = [&snap.keys.primary, &snap.keys.backup];
+        let estimated = keys.iter().filter_map(|k| k.as_ref()).any(|k| {
             [&k.models.routine, &k.models.chat]
                 .iter()
                 .any(|m| model_price(m).is_none())
@@ -161,7 +240,8 @@ impl AiAccess {
             period: snap.quota.period,
             byok_used_this_month: snap.byok_month,
             estimated,
-            key: snap.key,
+            keys: snap.keys,
+            ceiling: snap.ceiling,
             topup_available: self.s.topups,
         })
     }
@@ -171,7 +251,8 @@ impl AiAccess {
         let (since, until) = quota_period(&OrgBilling::default(), self.clock.now());
         Ok(Snapshot {
             enabled: ai.enabled(org).await?,
-            key: ai.key(org).await?,
+            keys: ai.keys(org).await?,
+            ceiling: ai.credit_ceiling(org).await?,
             quota: self.quota(&*self.uow, org).await?,
             topup: ai.topup_balance(org).await?,
             byok_month: ai.credits_used(org, KeySource::Byok, since, until).await?,
@@ -193,24 +274,28 @@ impl AiAccess {
     }
 
     /// The who-pays table, first match wins.
-    fn payer(&self, snap: &Snapshot) -> AppResult<Payer> {
+    fn payer<'a>(&self, snap: &'a Snapshot) -> AppResult<Payer<'a>> {
         if !snap.enabled {
             let detail = "Dashboard AI is off for this organisation.";
             return Err(refused(StatusCode::CONFLICT, AI_DISABLED, detail));
         }
-        if let Some(k) = &snap.key {
-            // An outage key is still tried: its next success clears it.
-            if k.status == KeyStatus::Failing {
-                return Err(AiCallError::KeyFailing.into());
-            }
-            if k.monthly_credit_ceiling
-                .is_some_and(|c| snap.byok_month >= c)
-            {
+        if let Some(p) = &snap.keys.primary {
+            if snap.ceiling.is_some_and(|c| snap.byok_month >= c) {
                 return Err(quota_reached("Your monthly credit ceiling is reached."));
             }
-            return Ok(Payer::Byok(k.clone()));
+            // An outage key is still tried: its next success clears it.
+            let usable = |k: &&ModelKey| k.status != KeyStatus::Failing;
+            let backup = snap.keys.backup.as_ref().filter(usable);
+            return match (p.status == KeyStatus::Failing, backup) {
+                (false, backup) => Ok(Payer::Byok { serving: p, backup }),
+                (true, Some(b)) => Ok(Payer::Byok {
+                    serving: b,
+                    backup: None,
+                }),
+                (true, None) => Err(AiCallError::KeyFailing.into()),
+            };
         }
-        if self.s.opsagent_key.is_none() {
+        if self.s.opsagent.is_none() {
             return Err(AiCallError::Unavailable.into());
         }
         let q = &snap.quota;
@@ -219,90 +304,8 @@ impl AiAccess {
         }
         Ok(Payer::OpsAgent)
     }
-
-    /// One model call on `plan`, metered. Text deltas go to `sink` as they arrive.
-    pub async fn call(
-        &self,
-        scope: &OrgScope,
-        plan: &CallPlan,
-        purpose: Purpose,
-        mut req: ModelRequest,
-        sink: &mut dyn TextSink,
-    ) -> Result<ModelTurn, AiCallError> {
-        let provider = self.models.get(plan.provider);
-        let org = scope.organisation.id;
-        req.model = plan.model.clone();
-        self.recheck(org, plan).await?;
-        let turn = match self.attempt(&*provider, plan, &req, sink).await {
-            Err(ModelError::ModelGone) if plan.source == KeySource::Byok => {
-                req.model = self.replace_model(scope, plan, &*provider).await?;
-                self.recheck(org, plan).await?;
-                self.attempt(&*provider, plan, &req, sink).await
-            }
-            r => r,
-        };
-        let turn = match turn {
-            Ok(t) => t,
-            Err(e) => return Err(self.failed(scope, plan, e).await),
-        };
-        self.meter(scope, plan, purpose, &req.model, &turn.usage)
-            .await?;
-        Ok(turn)
-    }
-
-    /// Credits still left right before a provider call (plan() checked once per turn, and
-    /// concurrent turns spend the same credits): the period quota plus top-ups on OpsAgent's
-    /// key, the monthly ceiling on BYOK. Overshoot is then one call per concurrent request.
-    async fn recheck(&self, org: Uuid, plan: &CallPlan) -> Result<(), AiCallError> {
-        let ai = self.uow.ai();
-        let left = match plan.key_id {
-            Some(_) => {
-                let ceiling = ai.key(org).await?.and_then(|k| k.monthly_credit_ceiling);
-                let Some(c) = ceiling else {
-                    return Ok(());
-                };
-                let (since, until) = quota_period(&OrgBilling::default(), self.clock.now());
-                c - ai.credits_used(org, KeySource::Byok, since, until).await?
-            }
-            None => {
-                let q = self.quota(&*self.uow, org).await?;
-                (q.quota - q.used).max(Decimal::ZERO) + ai.topup_balance(org).await?
-            }
-        };
-        match left > Decimal::ZERO {
-            true => Ok(()),
-            false => Err(AiCallError::QuotaReached),
-        }
-    }
-
-    /// The call, retried after each `backoff` wait while rate limited.
-    async fn attempt(
-        &self,
-        p: &dyn ModelProvider,
-        plan: &CallPlan,
-        req: &ModelRequest,
-        sink: &mut dyn TextSink,
-    ) -> Result<ModelTurn, ModelError> {
-        let mut waits = self.s.backoff.iter();
-        loop {
-            match p.stream(&plan.api_key, req, &mut *sink).await {
-                Err(ModelError::RateLimited) => match waits.next() {
-                    Some(d) => tokio::time::sleep(*d).await,
-                    None => return Err(ModelError::RateLimited),
-                },
-                r => return r,
-            }
-        }
-    }
 }
 
 pub(super) fn quota_reached(detail: &str) -> AppError {
     refused(StatusCode::PAYMENT_REQUIRED, AI_QUOTA_REACHED, detail)
-}
-
-fn opsagent_model(role: ModelRole) -> &'static str {
-    match role {
-        ModelRole::Routine => MODEL_ROUTINE,
-        ModelRole::Chat => MODEL_CHAT,
-    }
 }
