@@ -101,18 +101,23 @@ impl From<RepoError> for AiCallError {
 
 impl AiAccess {
     /// The error a failed call on `plan.conn` ends with; a BYOK key's status follows the
-    /// failure.
+    /// failure. `backup_next`: the payer's backup is tried next, so OpsAgent's key logs a warning.
     pub(super) async fn failed(
         &self,
         scope: &OrgScope,
         plan: &CallPlan,
         e: ModelError,
+        backup_next: bool,
     ) -> AiCallError {
         let c = &plan.conn;
         let (Some(key_id), KeySource::Byok) = (c.key_id, c.source) else {
             let code = model_code(&e);
-            let slot = c.slot.as_str();
-            tracing::error!(error_code = %code, slot, model = %plan.model(), "opsagent model key call failed");
+            let (slot, model) = (c.slot.as_str(), plan.model());
+            if backup_next {
+                tracing::warn!(error_code = %code, slot, model, "opsagent model key call failed");
+            } else {
+                tracing::error!(error_code = %code, slot, model, "opsagent model key call failed");
+            }
             return match e {
                 ModelError::RateLimited => AiCallError::RateLimited,
                 _ => AiCallError::Unavailable,
@@ -133,8 +138,9 @@ impl AiAccess {
         err
     }
 
-    /// Marks the key `failing`; the owners hear of it on the transition only. A failing
-    /// primary with a usable backup tells them the backup is in use instead (ruling 10).
+    /// Marks the key `failing`; the owners hear of it on the transition only. A primary with
+    /// a usable backup is told when the backup serves (`backup_notice`, ruling 10); a backup
+    /// failing beside a working primary gets its own email; else Dashboard AI has stopped.
     async fn key_failing(&self, org: Uuid, key_id: Uuid) -> Result<(), AiCallError> {
         let now = self.clock.now();
         let ai = self.uow.ai();
@@ -152,8 +158,27 @@ impl AiAccess {
             .backup
             .as_ref()
             .is_some_and(|b| b.status != KeyStatus::Failing);
-        if k.slot == Slot::Primary && backup_ok {
-            return Ok(self.backup_notice(org).await?);
+        let primary_ok = keys
+            .primary
+            .as_ref()
+            .is_some_and(|p| p.status != KeyStatus::Failing);
+        match k.slot {
+            Slot::Primary if backup_ok => return Ok(()),
+            Slot::Backup if primary_ok => {
+                let n = Notice {
+                    subject: "Your OpsAgent AI backup key isn't working".into(),
+                    text: format!(
+                        "Your backup {} key ending {} was refused. Dashboard AI still runs on \
+                         your primary key; replace the backup key: {}",
+                        provider_name(k.provider),
+                        k.last4,
+                        self.s.settings_url("")
+                    ),
+                };
+                let once = format!("backup_failing:{key_id}:{}", k.status_since.timestamp());
+                return Ok(self.notices.once(org, &once, n).await?);
+            }
+            _ => {}
         }
         let n = Notice {
             subject: "Your OpsAgent AI key is failing".into(),

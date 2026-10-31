@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 
 use opsagent_core::{
-    ai::{quota_period, KeySource, Purpose},
+    ai::{quota_period, KeySource, Purpose, Slot},
     billing::OrgBilling,
     endpoint::{check_url, pin},
     model::{Endpoint, ModelError, ModelRequest, ModelTurn, TextSink},
@@ -56,15 +56,15 @@ impl AiAccess {
             Err(e) => e,
         };
         let Some(b) = backup.filter(|_| !sink.sent && !matches!(e, ModelError::Other(_))) else {
-            return Err(self.failed(scope, plan, e).await);
+            return Err(self.failed(scope, plan, e, false).await);
         };
         // The primary's own status follows its failure; the backup's error is the caller's.
-        let _ = self.failed(scope, plan, e).await;
+        let _ = self.failed(scope, plan, e, true).await;
         plan.conn = b;
         let waits = &self.s.backoff[..];
         match self.on_conn(scope, plan, &req, waits, &mut sink).await? {
             Ok(turn) => self.served(scope, plan, purpose, turn).await,
-            Err(e) => Err(self.failed(scope, plan, e).await),
+            Err(e) => Err(self.failed(scope, plan, e, false).await),
         }
     }
 
@@ -76,6 +76,13 @@ impl AiAccess {
         turn: ModelTurn,
     ) -> Result<ModelTurn, AiCallError> {
         self.meter(scope, plan, purpose, &turn.usage).await?;
+        let c = &plan.conn;
+        // Ruling 10: told when the backup serves, so a backup that also fails sends only
+        // "has stopped". A failed notice must not fail the answered call.
+        let byok_backup = c.source == KeySource::Byok && c.slot == Slot::Backup;
+        if byok_backup && self.backup_notice(scope.organisation.id).await.is_err() {
+            tracing::warn!(error_code = "ai_notice_failed", "ai backup notice failed");
+        }
         Ok(turn)
     }
 

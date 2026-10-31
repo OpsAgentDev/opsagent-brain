@@ -1178,3 +1178,111 @@ async fn ceiling_counts_both_connections() {
     assert_eq!(refused_with(&e.access(), e.org()).await, AI_QUOTA_REACHED);
     assert_eq!(e.calls(), 0);
 }
+
+#[tokio::test]
+async fn backup_failing_beside_working_primary_mails_once() {
+    let steps = vec![fail(ModelError::Outage), fail(ModelError::Auth)];
+    let e = env(steps, true).await;
+    e.enable().await;
+    e.put_key().await;
+    e.put_backup().await;
+    let a = e.access();
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    let r = e.call(&a, &mut plan).await;
+    assert_eq!(r.unwrap_err(), AiCallError::KeyFailing);
+    assert_eq!(e.status_of(Slot::Primary).await, KeyStatus::ProviderOutage);
+    assert_eq!(e.status_of(Slot::Backup).await, KeyStatus::Failing);
+    let sent = e.mail.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].subject, "Your OpsAgent AI backup key isn't working");
+    assert_eq!(
+        sent[0].text,
+        "Your backup Anthropic key ending wxyz was refused. Dashboard AI still runs on your \
+         primary key; replace the backup key: https://web.test/settings/ai"
+    );
+}
+
+#[tokio::test]
+async fn both_failing_in_one_call_mails_has_stopped_only() {
+    let steps = vec![fail(ModelError::Auth), fail(ModelError::Auth)];
+    let e = env(steps, true).await;
+    e.enable().await;
+    e.put_key().await;
+    e.put_backup().await;
+    let a = e.access();
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    let r = e.call(&a, &mut plan).await;
+    assert_eq!(r.unwrap_err(), AiCallError::KeyFailing);
+    assert_eq!(e.status_of(Slot::Primary).await, KeyStatus::Failing);
+    assert_eq!(e.status_of(Slot::Backup).await, KeyStatus::Failing);
+    let sent = e.mail.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].subject, "Your OpsAgent AI key is failing");
+    assert!(sent[0].text.contains("has stopped"), "{}", sent[0].text);
+}
+
+#[tokio::test]
+async fn model_gone_with_usable_list_replaces_on_primary_not_backup() {
+    let e = env(vec![fail(ModelError::ModelGone), text()], true).await;
+    e.enable().await;
+    e.put_key().await;
+    e.put_backup().await;
+    set_models(&e, MODEL_ROUTINE, "claude-retired-1").await;
+    let a = e.access();
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    e.call(&a, &mut plan).await.unwrap();
+    assert_eq!(e.spy.keys(), [BYOK_KEY, BYOK_KEY]);
+    let rows = e.store.ai_usage_rows();
+    assert_eq!(
+        (rows[0].slot, rows[0].model.as_str()),
+        (Some(Slot::Primary), MODEL_CHAT)
+    );
+    assert_eq!(e.fell_back(), [false]);
+}
+
+/// The log lines written while `f` runs.
+async fn logs<F: std::future::Future>(f: F) -> (F::Output, String) {
+    let buf = Buf::default();
+    let sub = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer({
+            let b = buf.clone();
+            move || b.clone()
+        })
+        .finish();
+    let out = {
+        let _g = tracing::subscriber::set_default(sub);
+        f.await
+    };
+    let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    (out, text)
+}
+
+#[tokio::test]
+async fn opsagent_failure_before_backup_logs_warn() {
+    // The backup answers: the primary's failure is a warning.
+    let mut e = env(vec![fail(ModelError::Auth), text()], true).await;
+    e.opsagent_backup = true;
+    e.enable().await;
+    let a = e.access();
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    let (r, out) = logs(e.call(&a, &mut plan)).await;
+    r.unwrap();
+    assert!(
+        out.contains("WARN") && out.contains("error_code=auth"),
+        "{out}"
+    );
+    assert!(!out.contains("ERROR"), "{out}");
+    // The backup fails too: that one is an error.
+    let mut e = env(vec![fail(ModelError::Auth), fail(ModelError::Outage)], true).await;
+    e.opsagent_backup = true;
+    e.enable().await;
+    let a = e.access();
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    let (r, out) = logs(e.call(&a, &mut plan)).await;
+    assert_eq!(r.unwrap_err(), AiCallError::Unavailable);
+    assert!(
+        out.contains("ERROR") && out.contains("error_code=outage"),
+        "{out}"
+    );
+}

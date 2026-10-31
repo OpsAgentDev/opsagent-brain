@@ -168,10 +168,6 @@ impl AiAccess {
         let snap = self.snapshot(org).await?;
         Ok(match self.payer(&snap)? {
             Payer::Byok { serving, backup } => {
-                // A failed notice must not refuse the call.
-                if serving.slot == Slot::Backup && self.backup_notice(org).await.is_err() {
-                    tracing::warn!(error_code = "ai_notice_failed", "ai backup notice failed");
-                }
                 let backup = match backup {
                     Some(b) => Some(self.byok_conn(b).await?),
                     None => None,
