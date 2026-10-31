@@ -22,17 +22,18 @@ use crate::{
 
 impl AiAccess {
     /// Records the call's credits (the part beyond the period quota comes off the top-up
-    /// balance), clears a BYOK key's failure, audits `ai.call`, then sends the quota notices.
+    /// balance), clears the serving BYOK key's failure, audits `ai.call`, then sends the quota notices.
     pub(super) async fn meter(
         &self,
         scope: &OrgScope,
         plan: &CallPlan,
         purpose: Purpose,
-        model: &str,
         usage: &Usage,
     ) -> Result<(), AiCallError> {
         let org = scope.organisation.id;
-        let default = preferred_models(plan.provider, plan.role)[0];
+        let c = &plan.conn;
+        let model = plan.model();
+        let default = preferred_models(c.style, plan.role)[0];
         let (price, estimated) = match model_price(model) {
             Some(p) => (p, false),
             None => (model_price(default).expect("every default is priced"), true),
@@ -42,17 +43,17 @@ impl AiAccess {
             organisation_id: org,
             member_id: Some(scope.member.id),
             purpose,
-            provider: plan.provider,
+            provider: c.style,
             model: model.to_owned(),
-            key_source: plan.source,
+            key_source: c.source,
             usage: *usage,
             credits,
             estimated,
-            slot: Slot::Primary.into(),
-            base_host: None,
+            slot: Some(c.slot),
+            base_host: c.base_host.clone(),
         };
         let tx = self.uow.begin().await?;
-        let quota = match plan.key_id {
+        let quota = match c.key_id {
             Some(key_id) => {
                 tx.ai().record_usage(&row, Decimal::ZERO).await?;
                 let now = self.clock.now();
@@ -71,7 +72,8 @@ impl AiAccess {
         };
         let meta = json!({
             "purpose": purpose.as_str(), "model": model,
-            "credits": format!("{:.2}", credits), "key_source": plan.source.as_str(),
+            "credits": format!("{:.2}", credits), "key_source": c.source.as_str(),
+            "slot": c.slot.as_str(), "fell_back": c.slot == Slot::Backup,
         });
         let entry = AuditEntry::member(Some(org), scope.member.user_id, "ai.call", None);
         tx.audit().record(entry.with_meta(meta)).await?;

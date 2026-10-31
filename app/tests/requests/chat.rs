@@ -768,3 +768,70 @@ async fn post_message_without_csrf_is_403() {
     })
     .await;
 }
+
+fn opsagent_with_backup(c: &mut opsagent_brain::config::Config) {
+    opsagent_key(c);
+    let b = opsagent_brain::config::OpsAgentConnection::anthropic("sk-ant-opsagent-backup");
+    c.opsagent_backup = Some(b);
+}
+
+impl World {
+    /// The `slot` of every metered call, oldest first.
+    async fn usage_slots(&self) -> Vec<Option<String>> {
+        let q = "SELECT slot FROM ai_usage WHERE organisation_id = $1 ORDER BY created_at";
+        let s = opsagent_brain::adapters::db::ledger_storage::stmt(q, vec![self.org_id.into()]);
+        let rows = self.ctx.db.query_all_raw(s).await.unwrap();
+        rows.iter()
+            .map(|r| r.try_get::<Option<String>>("", "slot").unwrap())
+            .collect()
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn chat_turn_sticks_to_serving_slot() {
+    serve_with(opsagent_with_backup, |req, ctx| async move {
+        // Primary down; the backup answers both steps; the primary is not tried again.
+        let steps = vec![
+            FakeStep::Fail(ModelError::Outage),
+            tools(vec![call("c1", "get_scan", json!({}))]),
+            text("from the backup"),
+        ];
+        let w = World::new(req, ctx, steps).await;
+        let id = w.session(None).await;
+        let f = w.turn(id, "hi").await;
+        assert_eq!(names(&f).last(), Some(&"done"), "{f:?}");
+        assert_eq!(w.fake.requests().len(), 3);
+        let backup = Some("backup".to_owned());
+        assert_eq!(w.usage_slots().await, [backup.clone(), backup]);
+        let fell_back: Vec<_> = w
+            .audits("ai.call")
+            .await
+            .iter()
+            .map(|a| a.metadata["fell_back"].clone())
+            .collect();
+        assert_eq!(fell_back, [json!(true), json!(true)]);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn chat_turn_backup_failing_later_ends_turn() {
+    serve_with(opsagent_with_backup, |req, ctx| async move {
+        // The backup served step 1 and fails on step 2: the turn ends; no primary retry.
+        let steps = vec![
+            FakeStep::Fail(ModelError::Outage),
+            tools(vec![call("c1", "get_scan", json!({}))]),
+            FakeStep::Fail(ModelError::Outage),
+            text("never"),
+        ];
+        let w = World::new(req, ctx, steps).await;
+        let id = w.session(None).await;
+        let f = w.turn(id, "hi").await;
+        assert_eq!(names(&f), ["tool", "error"]);
+        assert_eq!(f[1].1["code"], "ai_unavailable");
+        assert_eq!(w.fake.requests().len(), 3);
+    })
+    .await;
+}

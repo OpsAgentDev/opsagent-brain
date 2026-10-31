@@ -129,7 +129,7 @@ impl ExplainFinding {
         if let Some(hit) = ai.explanation(org, &f.key.check_id, &hash).await? {
             return Ok(hit);
         }
-        let plan = self.access.plan(org, ModelRole::Routine).await?;
+        let mut plan = self.access.plan(org, ModelRole::Routine).await?;
         let req = ModelRequest {
             model: String::new(),
             system: EXPLAIN_PROMPT.into(),
@@ -142,7 +142,7 @@ impl ExplainFinding {
         };
         let turn = self
             .access
-            .call(scope, &plan, Purpose::Explain, req, &mut NoSink)
+            .call(scope, &mut plan, Purpose::Explain, req, &mut NoSink)
             .await?;
         let text = turn.text.trim();
         if text.is_empty() {
@@ -151,8 +151,8 @@ impl ExplainFinding {
         let e = Explanation {
             check_id: f.key.check_id.clone(),
             evidence_hash: hash,
-            provider: plan.provider,
-            model: plan.model.clone(),
+            provider: plan.provider(),
+            model: plan.model().to_owned(),
             text: text.into(),
             created_at: self.clock.now(),
         };

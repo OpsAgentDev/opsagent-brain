@@ -67,7 +67,7 @@ pub struct AiStatusOut {
 
 fn view(s: AiStatus) -> AiStatusOut {
     let ceiling = s.ceiling;
-    let key = s.key.map(|k| AiKeyOut {
+    let key = s.keys.primary.map(|k| AiKeyOut {
         provider: k.provider.as_str().into(),
         last4: k.last4,
         status: k.status.as_str().into(),

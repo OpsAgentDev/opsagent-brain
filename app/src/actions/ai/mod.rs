@@ -6,6 +6,7 @@ mod byok;
 mod chat;
 mod explain;
 mod failures;
+mod fallback;
 mod meter;
 mod notices;
 mod settings;
@@ -52,6 +53,10 @@ pub const AI_QUOTA_REACHED: &str = "ai_quota_reached";
 pub const AI_KEY_INVALID: &str = "ai_key_invalid";
 pub const AI_PROVIDER_OUTAGE: &str = "ai_provider_outage";
 pub const AI_RATE_LIMITED: &str = "ai_rate_limited";
+pub const AI_MODEL_INVALID: &str = "ai_model_invalid";
+pub const AI_ENDPOINT_INVALID: &str = "ai_endpoint_invalid";
+pub const AI_PRIMARY_REQUIRED: &str = "ai_primary_required";
+pub const MODELS_REQUIRED: &str = "models_required";
 
 pub struct Ai {
     pub access: Arc<AiAccess>,
@@ -199,14 +204,6 @@ async fn open_key(repos: &dyn Repos, kek: &dyn Kek, k: &ModelKey) -> AppResult<Z
     String::from_utf8(plain.to_vec())
         .map(Zeroizing::new)
         .map_err(|_| AppError::Internal("model key is not UTF-8".into()))
-}
-
-/// The role's model on `role`'s BYOK key.
-fn role_model(k: &ModelKey, role: ModelRole) -> &str {
-    match role {
-        ModelRole::Routine => &k.models.routine,
-        ModelRole::Chat => &k.models.chat,
-    }
 }
 
 /// The BYOK default for `role` from the key's live list: the first preferred id present,

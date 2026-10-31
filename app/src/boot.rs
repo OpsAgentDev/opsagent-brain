@@ -473,6 +473,7 @@ fn build_ai(d: &Deps, guard: Arc<recipients::MailGuard>) -> ai::Ai {
         d.uow.clone(),
         d.kek.clone(),
         d.models.clone(),
+        Arc::new(crate::adapters::dns::SystemResolver),
         ai::Notices::new(d.uow.clone(), d.mailer.clone(), guard),
         d.clock.clone(),
         ai::AiSettings::new(&d.config),

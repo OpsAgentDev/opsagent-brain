@@ -281,7 +281,7 @@ impl TextSink for Deltas<'_> {
 impl Turn {
     /// The tool loop, then the assistant message (possibly empty, maybe partial) is stored
     /// whether or not anyone still listens; the last event is `Done` or `Error`.
-    pub async fn run(self, events: UnboundedSender<ChatEvent>) {
+    pub async fn run(mut self, events: UnboundedSender<ChatEvent>) {
         let mut answer = String::new();
         let deadline = Instant::now() + TURN_LIMIT;
         let ended = timeout_at(deadline, self.converse(&events, &mut answer)).await;
@@ -324,7 +324,7 @@ impl Turn {
     /// Model calls and tool runs until the model ends its turn. `Ok(None)`: complete;
     /// `Ok(Some(reason))`: cut off; `answer` gets the text as it comes.
     async fn converse(
-        &self,
+        &mut self,
         events: &UnboundedSender<ChatEvent>,
         answer: &mut String,
     ) -> Result<Option<&'static str>, AiCallError> {
@@ -337,7 +337,7 @@ impl Turn {
             };
             let call = access.call(
                 &self.scope,
-                &self.plan,
+                &mut self.plan,
                 Purpose::Chat,
                 req.clone(),
                 &mut sink,
