@@ -1,10 +1,12 @@
 //! `Config`: every setting is an environment variable, and its default lives here and only here.
 use std::str::FromStr;
 
+use opsagent_core::endpoint::UrlPolicy;
+
 mod ai;
 pub use ai::{
-    model_price, preferred_models, ModelMode, ModelSettings, MODEL_CHAT, MODEL_ROUTINE,
-    OPENAI_TOOL_PREFIXES,
+    model_price, preferred_models, ModelMode, ModelSettings, OpsAgentConnection, MODEL_CHAT,
+    MODEL_ROUTINE, OPENAI_TOOL_PREFIXES,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,8 +95,10 @@ pub struct Config {
     pub stripe_automatic_tax: bool,
     /// Off: nothing is gated on billing state (the alpha organisations keep working).
     pub billing_enforced: bool,
-    /// Empty: no OpsAgent model key (`ai_unavailable`).
-    pub anthropic_api_key: String,
+    /// `None`: no OpsAgent model key (`ai_unavailable`).
+    pub opsagent: Option<OpsAgentConnection>,
+    pub opsagent_backup: Option<OpsAgentConnection>,
+    pub allow_private: bool,
     pub model_provider: ModelMode,
     pub anthropic_api_base: String,
     pub anthropic_version: String,
@@ -138,6 +142,19 @@ impl Config {
         let s = |k: &str, default: &str| get(k).unwrap_or_else(|| default.to_owned());
         let db_dev = "postgres://loco:loco@localhost:5432/opsagent_brain_development";
         let db_test = "postgres://loco:loco@localhost:5432/opsagent_brain_test";
+        let allow_private: bool = p(&get, "AI_ENDPOINT_ALLOW_PRIVATE", "false")?;
+        if allow_private && prod {
+            return Err(invalid(
+                "AI_ENDPOINT_ALLOW_PRIVATE",
+                "is not allowed in production",
+            ));
+        }
+        let policy = if allow_private {
+            UrlPolicy::Local
+        } else {
+            UrlPolicy::Trusted
+        };
+        let (opsagent, opsagent_backup) = ai::opsagent_connections(get, policy)?;
         let c = Self {
             env,
             port: p(&get, "PORT", "5150")?,
@@ -194,7 +211,9 @@ impl Config {
             stripe_api_version: s("STRIPE_API_VERSION", "2025-09-30.clover"),
             stripe_automatic_tax: p(&get, "STRIPE_AUTOMATIC_TAX", "false")?,
             billing_enforced: p(&get, "BILLING_ENFORCED", "false")?,
-            anthropic_api_key: s("OPSAGENT_ANTHROPIC_API_KEY", ""),
+            opsagent,
+            opsagent_backup,
+            allow_private,
             model_provider: ai::model_mode(&s("OPSAGENT_MODEL_PROVIDER", "live"), prod)?,
             anthropic_api_base: s(
                 "ANTHROPIC_API_BASE",
@@ -244,7 +263,9 @@ impl Config {
     pub fn model_settings(&self) -> ModelSettings {
         ModelSettings {
             mode: self.model_provider,
-            anthropic_api_key: self.anthropic_api_key.clone(),
+            opsagent: self.opsagent.clone(),
+            opsagent_backup: self.opsagent_backup.clone(),
+            allow_private: self.allow_private,
             anthropic_api_base: self.anthropic_api_base.clone(),
             anthropic_version: self.anthropic_version.clone(),
             openai_api_base: self.openai_api_base.clone(),
@@ -330,6 +351,7 @@ fn p<T: FromStr>(
 mod tests {
     use std::collections::HashMap;
 
+    use opsagent_core::model::AiProvider;
     use uuid::Uuid;
 
     use super::*;
@@ -478,7 +500,7 @@ mod tests {
     fn config_ai_defaults_dark() {
         for c in [cfg(&[]), cfg(&production(&[]))] {
             let m = c.model_settings();
-            assert!(m.anthropic_api_key.is_empty());
+            assert!(m.opsagent.is_none() && m.opsagent_backup.is_none() && !m.allow_private);
             assert_eq!(m.mode, ModelMode::Live);
             assert_eq!(m.anthropic_version, "2023-06-01");
             assert_eq!(m.anthropic_api_base, "https://api.anthropic.com");
@@ -488,14 +510,149 @@ mod tests {
             (MODEL_ROUTINE, MODEL_CHAT),
             ("claude-haiku-5-5", "claude-sonnet-5-5")
         );
-        let set = cfg(&[
-            ("OPSAGENT_ANTHROPIC_API_KEY", "sk-ant-x"),
-            ("ANTHROPIC_API_BASE", "http://127.0.0.1:1"),
-        ]);
-        let m = set.model_settings();
+        let set = cfg(&[("ANTHROPIC_API_BASE", "http://127.0.0.1:1")]);
         assert_eq!(
-            (m.anthropic_api_key.as_str(), m.anthropic_api_base.as_str()),
-            ("sk-ant-x", "http://127.0.0.1:1")
+            set.model_settings().anthropic_api_base,
+            "http://127.0.0.1:1"
+        );
+    }
+
+    fn ai_conn(pairs: &[(&str, &str)]) -> Option<OpsAgentConnection> {
+        cfg(pairs).opsagent
+    }
+
+    fn assert_invalid_var(pairs: &[(&str, &str)], var: &str) {
+        match vars(pairs) {
+            Err(ConfigError::Invalid { name, .. }) => assert_eq!(name, var),
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("{var} accepted"),
+        }
+    }
+
+    #[test]
+    fn opsagent_ai_env_defaults() {
+        let c = cfg(&[("OPSAGENT_AI_API_KEY", "k")]);
+        let p = c.opsagent.expect("primary");
+        assert_eq!(
+            (p.style, p.base_url, p.api_key.as_str()),
+            (AiProvider::Anthropic, None, "k")
+        );
+        assert_eq!(
+            (p.models.routine.as_str(), p.models.chat.as_str()),
+            ("claude-haiku-5-5", "claude-sonnet-5-5")
+        );
+        assert!(c.opsagent_backup.is_none());
+    }
+
+    #[test]
+    fn opsagent_ai_alias_used_when_empty() {
+        // Railway today sets only this variable.
+        let p = ai_conn(&[("OPSAGENT_ANTHROPIC_API_KEY", "k")]).expect("primary");
+        assert_eq!(
+            (p.style, p.base_url, p.api_key.as_str()),
+            (AiProvider::Anthropic, None, "k")
+        );
+        assert_eq!(
+            (p.models.routine.as_str(), p.models.chat.as_str()),
+            (MODEL_ROUTINE, MODEL_CHAT)
+        );
+        let both = ai_conn(&[
+            ("OPSAGENT_ANTHROPIC_API_KEY", "old"),
+            ("OPSAGENT_AI_API_KEY", "new"),
+        ]);
+        assert_eq!(both.unwrap().api_key, "new");
+        let empty = ai_conn(&[
+            ("OPSAGENT_ANTHROPIC_API_KEY", "old"),
+            ("OPSAGENT_AI_API_KEY", ""),
+        ]);
+        assert_eq!(empty.unwrap().api_key, "old");
+    }
+
+    #[test]
+    fn opsagent_ai_backup_exists_only_with_key() {
+        let none = cfg(&[
+            ("OPSAGENT_AI_BACKUP_STYLE", "openai"),
+            ("OPSAGENT_AI_BACKUP_CHAT_MODEL", "gpt-5"),
+        ]);
+        assert!(none.opsagent_backup.is_none());
+        let c = cfg(&[
+            ("OPSAGENT_AI_BACKUP_API_KEY", "b"),
+            ("OPSAGENT_AI_BACKUP_STYLE", "openai"),
+        ]);
+        let b = c.opsagent_backup.expect("backup");
+        assert_eq!((b.style, b.api_key.as_str()), (AiProvider::OpenAi, "b"));
+        assert_eq!(
+            (b.models.routine.as_str(), b.models.chat.as_str()),
+            ("gpt-5-mini", "gpt-5")
+        );
+        assert!(c.opsagent.is_none());
+    }
+
+    #[test]
+    fn opsagent_ai_bad_style_fails_boot() {
+        assert_invalid_var(
+            &[
+                ("OPSAGENT_AI_API_KEY", "k"),
+                ("OPSAGENT_AI_STYLE", "gemini"),
+            ],
+            "OPSAGENT_AI_STYLE",
+        );
+        let b = [
+            ("OPSAGENT_AI_BACKUP_API_KEY", "k"),
+            ("OPSAGENT_AI_BACKUP_STYLE", "x"),
+        ];
+        assert_invalid_var(&b, "OPSAGENT_AI_BACKUP_STYLE");
+    }
+
+    #[test]
+    fn opsagent_ai_unpriced_model_fails_boot() {
+        let p = [
+            ("OPSAGENT_AI_API_KEY", "k"),
+            ("OPSAGENT_AI_CHAT_MODEL", "llama-3"),
+        ];
+        assert_invalid_var(&p, "OPSAGENT_AI_CHAT_MODEL");
+        let b = [
+            ("OPSAGENT_AI_BACKUP_API_KEY", "k"),
+            ("OPSAGENT_AI_BACKUP_ROUTINE_MODEL", "llama-3"),
+        ];
+        assert_invalid_var(&b, "OPSAGENT_AI_BACKUP_ROUTINE_MODEL");
+    }
+
+    #[test]
+    fn opsagent_ai_base_url_needs_https() {
+        let http = [
+            ("OPSAGENT_AI_API_KEY", "k"),
+            ("OPSAGENT_AI_BASE_URL", "http://x.test"),
+        ];
+        assert_invalid_var(&http, "OPSAGENT_AI_BASE_URL");
+        let b = [
+            ("OPSAGENT_AI_BACKUP_API_KEY", "k"),
+            ("OPSAGENT_AI_BACKUP_BASE_URL", "http://x.test"),
+        ];
+        assert_invalid_var(&b, "OPSAGENT_AI_BACKUP_BASE_URL");
+        let ip = ai_conn(&[
+            ("OPSAGENT_AI_API_KEY", "k"),
+            ("OPSAGENT_AI_BASE_URL", "https://10.0.0.1/v1/"),
+        ]);
+        assert_eq!(ip.unwrap().base_url.as_deref(), Some("https://10.0.0.1/v1"));
+    }
+
+    #[test]
+    fn allow_private_admits_http_and_is_refused_in_production() {
+        let local = [
+            ("OPSAGENT_AI_API_KEY", "k"),
+            ("OPSAGENT_AI_BASE_URL", "http://127.0.0.1:9999"),
+            ("AI_ENDPOINT_ALLOW_PRIVATE", "true"),
+        ];
+        let c = cfg(&local);
+        assert!(c.model_settings().allow_private);
+        assert_eq!(
+            c.opsagent.unwrap().base_url.as_deref(),
+            Some("http://127.0.0.1:9999")
+        );
+        assert_invalid_var(
+            &production(&[("AI_ENDPOINT_ALLOW_PRIVATE", "true")]),
+            "AI_ENDPOINT_ALLOW_PRIVATE",
         );
     }
 

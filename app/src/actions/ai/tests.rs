@@ -114,13 +114,21 @@ impl Env {
     fn access_at(&self, now: DateTime<Utc>) -> Arc<AiAccess> {
         let models: Arc<dyn ModelProvider> = self.spy.clone();
         let s = AiSettings {
-            opsagent_key: self.opsagent_key.then(|| OPSAGENT_KEY.to_owned().into()),
+            opsagent: None,
+            opsagent_backup: None,
+            anthropic_base: "https://api.anthropic.com".into(),
+            openai_base: "https://api.openai.com/v1".into(),
+            policy: UrlPolicy::Public,
             billing_enforced: false,
             topups: false,
             web_base_url: "https://web.test/".into(),
             backoff: vec![std::time::Duration::ZERO; 3],
-            anthropic_base: "https://api.anthropic.com".into(),
-            openai_base: "https://api.openai.com/v1".into(),
+        };
+        let s = AiSettings {
+            opsagent: self
+                .opsagent_key
+                .then(|| s.conn(OpsAgentConnection::anthropic(OPSAGENT_KEY), Slot::Primary)),
+            ..s
         };
         let uow = Arc::new(self.store.clone());
         Arc::new(AiAccess::new(

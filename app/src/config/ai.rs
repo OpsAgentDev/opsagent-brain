@@ -1,7 +1,8 @@
 //! Dashboard AI settings: OpsAgent's model ids, the price table, BYOK defaults and tool
 //! support (dashboard-ai.md; plan 5 Global Constraints).
 use opsagent_core::{
-    ai::ModelRole,
+    ai::{ModelRole, RoleModels},
+    endpoint::{check_url, UrlPolicy},
     model::{AiProvider, ModelPrice},
 };
 use sea_orm::prelude::Decimal;
@@ -79,16 +80,118 @@ pub(super) fn model_mode(v: &str, production: bool) -> Result<ModelMode, ConfigE
     }
 }
 
-/// What the model adapters and `AiAccess` need. No `Debug`: it holds OpsAgent's key.
+/// One of OpsAgent's own model connections. No `Debug`: it holds the key.
+#[derive(Clone)]
+pub struct OpsAgentConnection {
+    pub style: AiProvider,
+    /// `None`: the style's official URL.
+    pub base_url: Option<String>,
+    pub api_key: String,
+    pub models: RoleModels,
+}
+
+impl OpsAgentConnection {
+    /// Anthropic's official URL with the default models.
+    pub fn anthropic(api_key: &str) -> Self {
+        Self {
+            style: AiProvider::Anthropic,
+            base_url: None,
+            api_key: api_key.to_owned(),
+            models: RoleModels {
+                routine: MODEL_ROUTINE.into(),
+                chat: MODEL_CHAT.into(),
+            },
+        }
+    }
+}
+
+/// The env names of one connection.
+struct ConnVars {
+    style: &'static str,
+    base_url: &'static str,
+    routine: &'static str,
+    chat: &'static str,
+}
+
+const PRIMARY: ConnVars = ConnVars {
+    style: "OPSAGENT_AI_STYLE",
+    base_url: "OPSAGENT_AI_BASE_URL",
+    routine: "OPSAGENT_AI_ROUTINE_MODEL",
+    chat: "OPSAGENT_AI_CHAT_MODEL",
+};
+const BACKUP: ConnVars = ConnVars {
+    style: "OPSAGENT_AI_BACKUP_STYLE",
+    base_url: "OPSAGENT_AI_BACKUP_BASE_URL",
+    routine: "OPSAGENT_AI_BACKUP_ROUTINE_MODEL",
+    chat: "OPSAGENT_AI_BACKUP_CHAT_MODEL",
+};
+
+/// OpsAgent's primary and backup connections; each exists iff its key is set. A bad style,
+/// URL or unpriced model fails boot naming the variable.
+pub(super) fn opsagent_connections(
+    get: impl Fn(&str) -> Option<String>,
+    policy: UrlPolicy,
+) -> Result<(Option<OpsAgentConnection>, Option<OpsAgentConnection>), ConfigError> {
+    let get = |k: &str| get(k).filter(|v| !v.is_empty());
+    let primary_key = get("OPSAGENT_AI_API_KEY").or_else(|| get("OPSAGENT_ANTHROPIC_API_KEY"));
+    let primary = primary_key
+        .map(|key| connection(&get, &PRIMARY, key, policy))
+        .transpose()?;
+    let backup = get("OPSAGENT_AI_BACKUP_API_KEY")
+        .map(|key| connection(&get, &BACKUP, key, policy))
+        .transpose()?;
+    Ok((primary, backup))
+}
+
+fn connection(
+    get: &impl Fn(&str) -> Option<String>,
+    v: &ConnVars,
+    api_key: String,
+    policy: UrlPolicy,
+) -> Result<OpsAgentConnection, ConfigError> {
+    let style = match get(v.style).as_deref() {
+        None => AiProvider::Anthropic,
+        Some(s) => {
+            AiProvider::parse(s).ok_or_else(|| invalid(v.style, "must be anthropic or openai"))?
+        }
+    };
+    let base_url = get(v.base_url)
+        .map(|raw| {
+            check_url(&raw, policy)
+                .map(|u| u.base)
+                .map_err(|e| invalid(v.base_url, e.reason()))
+        })
+        .transpose()?;
+    let model = |var: &'static str, role| {
+        let id = get(var).unwrap_or_else(|| preferred_models(style, role)[0].to_owned());
+        match model_price(&id) {
+            Some(_) => Ok(id),
+            None => Err(invalid(var, "is not in the price table")),
+        }
+    };
+    Ok(OpsAgentConnection {
+        style,
+        base_url,
+        api_key,
+        models: RoleModels {
+            routine: model(v.routine, ModelRole::Routine)?,
+            chat: model(v.chat, ModelRole::Chat)?,
+        },
+    })
+}
+
+/// What the model adapters and `AiAccess` need. No `Debug`: it holds OpsAgent's keys.
 #[derive(Clone)]
 pub struct ModelSettings {
     pub mode: ModelMode,
-    /// Empty: no OpsAgent key (`ai_unavailable` unless the organisation has its own).
-    pub anthropic_api_key: String,
+    pub opsagent: Option<OpsAgentConnection>,
+    pub opsagent_backup: Option<OpsAgentConnection>,
     pub anthropic_api_base: String,
     /// Sent as `anthropic-version`.
     pub anthropic_version: String,
     pub openai_api_base: String,
+    /// `AI_ENDPOINT_ALLOW_PRIVATE`: dev/test only.
+    pub allow_private: bool,
 }
 
 #[cfg(test)]

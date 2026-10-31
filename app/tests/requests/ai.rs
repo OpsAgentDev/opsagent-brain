@@ -285,7 +285,11 @@ async fn patch_key_rejects_toolless_chat_model() {
 #[serial]
 async fn delete_key_returns_to_opsagent() {
     serve_with(
-        |c| c.anthropic_api_key = "sk-ant-opsagent-test".into(),
+        |c| {
+            c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(
+                "sk-ant-opsagent-test",
+            ))
+        },
         |req, ctx| async move {
             let (t, org) = owner(&req, &ctx).await;
             assert_eq!(status(&req, &org).await["source"], "opsagent");
@@ -353,7 +357,9 @@ async fn topup_checkout_sends_payment_mode() {
     let base = api.uri();
     let config = |c: &mut opsagent_brain::config::Config| {
         stripe_on(base)(c);
-        c.anthropic_api_key = "sk-ant-test".into();
+        c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(
+            "sk-ant-test",
+        ));
     };
     serve_with(config, |req, ctx| async move {
         let (t, org, id) = org_with_customer(&req, &ctx).await;

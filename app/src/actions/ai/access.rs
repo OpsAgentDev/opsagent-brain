@@ -5,7 +5,10 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    ai::{period_quota, quota_period, KeySource, KeyStatus, ModelKey, ModelRole, Purpose},
+    ai::{
+        period_quota, quota_period, KeySource, KeyStatus, ModelKey, ModelRole, Purpose, RoleModels,
+        Slot,
+    },
     billing::OrgBilling,
     model::{AiProvider, ModelError, ModelProvider, ModelRequest, ModelTurn, TextSink},
     repo::Clock,
@@ -25,7 +28,7 @@ use crate::{
         uow::{Repos, UnitOfWork},
     },
     adapters::model::ModelProviders,
-    config::{model_price, MODEL_CHAT, MODEL_ROUTINE},
+    config::model_price,
     error::{AppError, AppResult},
 };
 
@@ -37,6 +40,22 @@ pub struct CallPlan {
     /// The BYOK key's id; `None` on OpsAgent's key.
     pub key_id: Option<Uuid>,
     pub(super) role: ModelRole,
+    pub(super) api_key: Zeroizing<String>,
+}
+
+/// One model connection, OpsAgent's or an organisation's. No `Debug`: it holds the key.
+#[derive(Clone)]
+pub struct Conn {
+    pub style: AiProvider,
+    pub source: KeySource,
+    pub slot: Slot,
+    /// The BYOK key's id; `None` on OpsAgent's connections.
+    pub key_id: Option<Uuid>,
+    pub base_url: String,
+    pub base_host: Option<String>,
+    /// A customer-supplied URL, checked on every call. OpsAgent's own are trusted.
+    pub custom: bool,
+    pub models: RoleModels,
     pub(super) api_key: Zeroizing<String>,
 }
 
@@ -126,14 +145,20 @@ impl AiAccess {
                 role,
                 api_key: open_key(&*self.uow, &*self.kek, &k).await?,
             },
-            Payer::OpsAgent => CallPlan {
-                provider: AiProvider::Anthropic,
-                source: KeySource::OpsAgent,
-                model: opsagent_model(role).to_owned(),
-                key_id: None,
-                role,
-                api_key: self.s.opsagent_key.clone().unwrap_or_default(),
-            },
+            Payer::OpsAgent => {
+                let c = self.s.opsagent.as_ref().ok_or(AiCallError::Unavailable)?;
+                CallPlan {
+                    provider: c.style,
+                    source: KeySource::OpsAgent,
+                    model: match role {
+                        ModelRole::Routine => c.models.routine.clone(),
+                        ModelRole::Chat => c.models.chat.clone(),
+                    },
+                    key_id: None,
+                    role,
+                    api_key: c.api_key.clone(),
+                }
+            }
         })
     }
 
@@ -144,7 +169,7 @@ impl AiAccess {
             Err(AppError::Refused { code, .. }) => code,
             Err(e) => return Err(e),
         };
-        let source = match (&snap.key, &self.s.opsagent_key) {
+        let source = match (&snap.key, &self.s.opsagent) {
             (Some(_), _) => Some(KeySource::Byok),
             (None, Some(_)) => Some(KeySource::OpsAgent),
             (None, None) => None,
@@ -213,7 +238,7 @@ impl AiAccess {
             }
             return Ok(Payer::Byok(k.clone()));
         }
-        if self.s.opsagent_key.is_none() {
+        if self.s.opsagent.is_none() {
             return Err(AiCallError::Unavailable.into());
         }
         let q = &snap.quota;
@@ -308,11 +333,4 @@ impl AiAccess {
 
 pub(super) fn quota_reached(detail: &str) -> AppError {
     refused(StatusCode::PAYMENT_REQUIRED, AI_QUOTA_REACHED, detail)
-}
-
-fn opsagent_model(role: ModelRole) -> &'static str {
-    match role {
-        ModelRole::Routine => MODEL_ROUTINE,
-        ModelRole::Chat => MODEL_CHAT,
-    }
 }

@@ -18,14 +18,15 @@ use std::{sync::Arc, time::Duration};
 
 use axum::http::StatusCode;
 use opsagent_core::{
-    ai::{ModelKey, ModelRole},
+    ai::{KeySource, ModelKey, ModelRole, Slot},
+    endpoint::UrlPolicy,
     model::{AiProvider, Endpoint, ModelInfo},
 };
 use opsagent_secrets::{Aad, Kek};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-pub use access::{AiAccess, AiStatus, CallPlan};
+pub use access::{AiAccess, AiStatus, CallPlan, Conn};
 pub use byok::{DeleteKey, KeyModel, KeyPatch, ListKeyModels, PatchKey, PutKey};
 pub use chat::{
     wrap_tool_result, ChatEvent, ChatSessions, ChatTurn, Turn, AI_BUSY, CHAT_PROMPT_VERSION,
@@ -39,7 +40,7 @@ pub use topup::StartTopup;
 
 use crate::{
     actions::uow::Repos,
-    config::{preferred_models, Config, ModelMode},
+    config::{preferred_models, Config, ModelMode, OpsAgentConnection},
     creds::Dek,
     error::{AppError, AppResult},
 };
@@ -64,37 +65,80 @@ pub struct Ai {
     pub chat_sessions: ChatSessions,
 }
 
-/// What the AI actions read from `Config`. No `Debug`: it holds OpsAgent's key.
+/// What the AI actions read from `Config`. No `Debug`: it holds OpsAgent's keys.
 #[derive(Clone)]
 pub struct AiSettings {
-    /// OpsAgent's Anthropic key; `None` when unset. `OPSAGENT_MODEL_PROVIDER=fake` counts as
-    /// set (the fake serves as OpsAgent's key, so its empty key is fine).
-    pub opsagent_key: Option<Zeroizing<String>>,
+    /// OpsAgent's connections; `None` when unset. `OPSAGENT_MODEL_PROVIDER=fake` gives an
+    /// anthropic primary with an empty key (the fake serves it).
+    pub opsagent: Option<Conn>,
+    pub opsagent_backup: Option<Conn>,
+    /// The styles' official URLs (`ANTHROPIC_API_BASE`/`OPENAI_API_BASE` override them).
+    pub anthropic_base: String,
+    pub openai_base: String,
+    /// `Public` for customers' URLs, `Local` when `AI_ENDPOINT_ALLOW_PRIVATE`.
+    pub policy: UrlPolicy,
     pub billing_enforced: bool,
     /// Top-ups need Stripe and OpsAgent's key: credits pay only for OpsAgent's key, so
-    /// with customers' own keys only (no `OPSAGENT_ANTHROPIC_API_KEY`) there is nothing to buy.
+    /// with customers' own keys only there is nothing to buy.
     pub topups: bool,
     pub web_base_url: String,
     /// The waits between retries of a rate-limited call (plan ruling 15).
     pub backoff: Vec<Duration>,
-    /// The styles' official URLs (`ANTHROPIC_API_BASE`/`OPENAI_API_BASE` override them).
-    pub anthropic_base: String,
-    pub openai_base: String,
 }
 
 impl AiSettings {
     pub fn new(c: &Config) -> Self {
         let m = c.model_settings();
-        let set = m.mode == ModelMode::Fake || !m.anthropic_api_key.is_empty();
-        Self {
-            opsagent_key: set.then(|| Zeroizing::new(m.anthropic_api_key.clone())),
-            billing_enforced: c.billing_enforced,
-            topups: set && c.stripe_configured(),
-            web_base_url: c.web_base_url.clone(),
-            backoff: [1, 2, 4].map(Duration::from_secs).to_vec(),
+        let fake = (m.mode == ModelMode::Fake).then(|| OpsAgentConnection::anthropic(""));
+        let mut s = Self {
+            opsagent: None,
+            opsagent_backup: None,
             anthropic_base: m.anthropic_api_base.clone(),
             openai_base: m.openai_api_base.clone(),
+            policy: if m.allow_private {
+                UrlPolicy::Local
+            } else {
+                UrlPolicy::Public
+            },
+            billing_enforced: c.billing_enforced,
+            topups: false,
+            web_base_url: c.web_base_url.clone(),
+            backoff: [1, 2, 4].map(Duration::from_secs).to_vec(),
+        };
+        s.opsagent = fake.or(m.opsagent).map(|o| s.conn(o, Slot::Primary));
+        s.opsagent_backup = m.opsagent_backup.map(|o| s.conn(o, Slot::Backup));
+        s.topups = s.opsagent.is_some() && c.stripe_configured();
+        s
+    }
+
+    fn conn(&self, o: OpsAgentConnection, slot: Slot) -> Conn {
+        let base_host = o
+            .base_url
+            .as_deref()
+            .and_then(|u| reqwest::Url::parse(u).ok())
+            .and_then(|u| u.host_str().map(str::to_owned));
+        Conn {
+            style: o.style,
+            source: KeySource::OpsAgent,
+            slot,
+            key_id: None,
+            base_url: self.base_for(o.style, o.base_url.as_deref()),
+            base_host,
+            custom: false,
+            models: o.models,
+            api_key: Zeroizing::new(o.api_key),
         }
+    }
+
+    /// `custom` when given, else `style`'s official URL.
+    pub fn base_for(&self, style: AiProvider, custom: Option<&str>) -> String {
+        custom.map_or_else(
+            || match style {
+                AiProvider::Anthropic => self.anthropic_base.clone(),
+                AiProvider::OpenAi => self.openai_base.clone(),
+            },
+            str::to_owned,
+        )
     }
 
     /// `style`'s official endpoint with `api_key`, on system DNS.

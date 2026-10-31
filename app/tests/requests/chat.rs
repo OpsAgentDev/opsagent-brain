@@ -263,7 +263,7 @@ impl World {
 }
 
 fn opsagent_key(c: &mut opsagent_brain::config::Config) {
-    c.anthropic_api_key = KEY.into();
+    c.opsagent = Some(opsagent_brain::config::OpsAgentConnection::anthropic(KEY));
 }
 
 #[tokio::test]
