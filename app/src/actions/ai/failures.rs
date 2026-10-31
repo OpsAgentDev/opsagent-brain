@@ -125,11 +125,16 @@ impl AiAccess {
         };
         let org = scope.organisation.id;
         let (r, err) = match e {
-            ModelError::RateLimited => return AiCallError::RateLimited,
-            ModelError::ModelGone => return AiCallError::ModelInvalid,
+            ModelError::RateLimited => (Ok(()), AiCallError::RateLimited),
+            ModelError::ModelGone => (Ok(()), AiCallError::ModelInvalid),
             ModelError::Auth => (self.key_failing(org, key_id).await, AiCallError::KeyFailing),
             ModelError::Outage => (self.outage(org, key_id).await, AiCallError::Outage),
-            e => return AiCallError::Internal(model_code(&e)),
+            e => (Ok(()), AiCallError::Internal(model_code(&e))),
+        };
+        // The backup failed with the primary failing: Dashboard AI has stopped.
+        let r = match (r, c.slot) {
+            (Ok(()), Slot::Backup) => self.stopped_if_primary_failing(org).await,
+            (r, _) => r,
         };
         if let Err(x) = r {
             // The key's failure is what the caller needs; the bookkeeping error is logged.
@@ -138,9 +143,33 @@ impl AiAccess {
         err
     }
 
+    async fn stopped_if_primary_failing(&self, org: Uuid) -> Result<(), AiCallError> {
+        match self.uow.ai().keys(org).await?.primary {
+            Some(p) if p.status == KeyStatus::Failing => self.stopped(org, &p).await,
+            _ => Ok(()),
+        }
+    }
+
+    /// "Has stopped", once per failure of `k` (its `status_since`).
+    async fn stopped(&self, org: Uuid, k: &ModelKey) -> Result<(), AiCallError> {
+        let n = Notice {
+            subject: "Your OpsAgent AI key is failing".into(),
+            text: format!(
+                "Your {} key ending {} was refused by the provider, so Dashboard AI has \
+                 stopped. Replace the key, or remove it to use OpsAgent's: {}",
+                provider_name(k.provider),
+                k.last4,
+                self.s.settings_url("")
+            ),
+        };
+        let key = format!("failing:{}:{}", k.id, k.status_since.timestamp());
+        Ok(self.notices.once(org, &key, n).await?)
+    }
+
     /// Marks the key `failing`; the owners hear of it on the transition only. A primary with
-    /// a usable backup is told when the backup serves (`backup_notice`, ruling 10); a backup
-    /// failing beside a working primary gets its own email; else Dashboard AI has stopped.
+    /// a usable backup is told when the backup serves (`backup_notice`, ruling 10) or fails
+    /// (`failed`: "has stopped"); a backup failing beside a working primary gets its own
+    /// email; a primary with no usable backup: Dashboard AI has stopped.
     async fn key_failing(&self, org: Uuid, key_id: Uuid) -> Result<(), AiCallError> {
         let now = self.clock.now();
         let ai = self.uow.ai();
@@ -178,22 +207,11 @@ impl AiAccess {
                 let once = format!("backup_failing:{key_id}:{}", k.status_since.timestamp());
                 return Ok(self.notices.once(org, &once, n).await?);
             }
-            _ => {}
+            // With the primary failing, `failed` tells the owners for the primary.
+            Slot::Backup => return Ok(()),
+            Slot::Primary => {}
         }
-        let n = Notice {
-            subject: "Your OpsAgent AI key is failing".into(),
-            text: format!(
-                "Your {} key ending {} was refused by the provider, so Dashboard AI has \
-                 stopped. Replace the key, or remove it to use OpsAgent's: {}",
-                provider_name(k.provider),
-                k.last4,
-                self.s.settings_url("")
-            ),
-        };
-        self.notices
-            .tell(org, &format!("failing:{key_id}"), n)
-            .await?;
-        Ok(())
+        self.stopped(org, &k).await
     }
 
     /// Tells the owners, once per failure of the primary, that the backup is serving.

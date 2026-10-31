@@ -1286,3 +1286,32 @@ async fn opsagent_failure_before_backup_logs_warn() {
         "{out}"
     );
 }
+
+#[tokio::test]
+async fn primary_failing_backup_outage_mails_has_stopped() {
+    let steps = vec![
+        fail(ModelError::Auth),
+        fail(ModelError::Outage),
+        fail(ModelError::Outage),
+    ];
+    let e = env(steps, true).await;
+    e.enable().await;
+    e.put_key().await;
+    e.put_backup().await;
+    let a = e.access();
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    let r = e.call(&a, &mut plan).await;
+    assert_eq!(r.unwrap_err(), AiCallError::Outage);
+    assert_eq!(e.status_of(Slot::Primary).await, KeyStatus::Failing);
+    assert_eq!(e.status_of(Slot::Backup).await, KeyStatus::ProviderOutage);
+    // A later call planned on the backup fails again: no second email.
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    assert_eq!(
+        e.call(&a, &mut plan).await.unwrap_err(),
+        AiCallError::Outage
+    );
+    let sent = e.mail.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].subject, "Your OpsAgent AI key is failing");
+    assert!(sent[0].text.contains("ending abcd") && sent[0].text.contains("has stopped"));
+}
