@@ -95,7 +95,8 @@ impl<S> State<S> {
                     self.event = value.to_owned();
                 }
                 "data" => {
-                    self.size += value.len();
+                    // +1: the joining newline, so empty `data:` lines count too.
+                    self.size += value.len() + 1;
                     self.data.push(value.to_owned());
                 }
                 _ => {} // comments (`:`), `id`, `retry`
@@ -162,6 +163,14 @@ mod tests {
     async fn sse_parser_refuses_an_event_past_the_cap() {
         let lines = "data: ".to_owned() + &"x".repeat(1000) + "\n";
         let chunk = lines.repeat(64).into_bytes();
+        let body = stream::iter((0..20).map(move |_| Ok::<_, ()>(chunk.clone())));
+        let got: Vec<_> = parse(body).collect().await;
+        assert_eq!(got, vec![Err(ModelError::Outage)]);
+    }
+
+    #[tokio::test]
+    async fn sse_parser_counts_empty_data_lines() {
+        let chunk = "data:\n".repeat(64 * 1024).into_bytes();
         let body = stream::iter((0..20).map(move |_| Ok::<_, ()>(chunk.clone())));
         let got: Vec<_> = parse(body).collect().await;
         assert_eq!(got, vec![Err(ModelError::Outage)]);
