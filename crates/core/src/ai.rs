@@ -33,6 +33,7 @@ macro_rules! named {
 
 named!(KeySource { OpsAgent => "opsagent", Byok => "byok" });
 named!(KeyStatus { Ok => "ok", Failing => "failing", ProviderOutage => "provider_outage" });
+named!(Slot { Primary => "primary", Backup => "backup" });
 named!(Purpose { Explain => "explain", Chat => "chat" });
 named!(ModelRole { Routine => "routine", Chat => "chat" });
 
@@ -53,11 +54,28 @@ pub struct ModelKey {
     pub status: KeyStatus,
     pub status_since: DateTime<Utc>,
     pub models: RoleModels,
-    /// Credits per calendar month (UTC); `None` is no ceiling.
-    pub monthly_credit_ceiling: Option<Decimal>,
+    pub slot: Slot,
+    /// A custom endpoint, stored with no trailing `/`; `None` is the style's official URL.
+    pub base_url: Option<String>,
     pub ciphertext: Vec<u8>,
     pub nonce: Vec<u8>,
     pub kek_version: i32,
+}
+
+/// An organisation's primary and backup connection of one payer.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OrgKeys {
+    pub primary: Option<ModelKey>,
+    pub backup: Option<ModelKey>,
+}
+
+impl OrgKeys {
+    pub fn get(&self, s: Slot) -> Option<&ModelKey> {
+        match s {
+            Slot::Primary => self.primary.as_ref(),
+            Slot::Backup => self.backup.as_ref(),
+        }
+    }
 }
 
 /// A key to store; the organisation is `AiRepo::put_key`'s argument.
@@ -66,7 +84,8 @@ pub struct NewModelKey {
     pub provider: AiProvider,
     pub last4: String,
     pub models: RoleModels,
-    pub monthly_credit_ceiling: Option<Decimal>,
+    pub slot: Slot,
+    pub base_url: Option<String>,
     pub ciphertext: Vec<u8>,
     pub nonce: Vec<u8>,
     pub kek_version: i32,
@@ -85,6 +104,10 @@ pub struct UsageRow {
     pub credits: Decimal,
     /// Priced at the role's default model (the model had no price).
     pub estimated: bool,
+    /// The connection that served the call; `None` when unrecorded.
+    pub slot: Option<Slot>,
+    /// Host of a custom endpoint; never the full URL.
+    pub base_host: Option<String>,
 }
 
 /// A cached explanation, shared by every finding of the check with the same evidence hash.
@@ -188,17 +211,28 @@ pub trait AiRepo: Send + Sync {
     /// `NotFound` for an unknown organisation.
     async fn set_enabled(&self, organisation_id: Uuid, on: bool) -> RepoResult<()>;
 
-    async fn key(&self, organisation_id: Uuid) -> RepoResult<Option<ModelKey>>;
-    /// Replaces the organisation's key (a new id), with status `ok` from now.
+    async fn keys(&self, organisation_id: Uuid) -> RepoResult<OrgKeys>;
+    /// Upserts the key of `k.slot` (a new id), with status `ok` from now.
     async fn put_key(&self, organisation_id: Uuid, k: &NewModelKey) -> RepoResult<ModelKey>;
-    /// `false` when the organisation has no key.
-    async fn update_key(
+    /// `false` when the slot is empty.
+    async fn update_key_models(
         &self,
         organisation_id: Uuid,
+        slot: Slot,
         models: &RoleModels,
-        ceiling: Option<Decimal>,
     ) -> RepoResult<bool>;
-    async fn delete_key(&self, organisation_id: Uuid) -> RepoResult<bool>;
+    /// `false` when the slot is empty. Deleting `primary` turns an existing backup into
+    /// `primary` in the same transaction.
+    async fn delete_key(&self, organisation_id: Uuid, slot: Slot) -> RepoResult<bool>;
+    /// Credits per calendar month (UTC) across both connections; `None` is no ceiling.
+    /// `NotFound` for an unknown organisation.
+    async fn credit_ceiling(&self, organisation_id: Uuid) -> RepoResult<Option<Decimal>>;
+    /// `NotFound` for an unknown organisation.
+    async fn set_credit_ceiling(
+        &self,
+        organisation_id: Uuid,
+        ceiling: Option<Decimal>,
+    ) -> RepoResult<()>;
     /// `true` only when the status changed (then `status_since = at`); `false` for another
     /// status-quo, an unknown key or a replaced one.
     async fn set_key_status(
@@ -388,6 +422,9 @@ mod tests {
         }
         for s in KeyStatus::ALL {
             assert_eq!(KeyStatus::parse(s.as_str()), Some(*s));
+        }
+        for s in Slot::ALL {
+            assert_eq!(Slot::parse(s.as_str()), Some(*s));
         }
         for s in Purpose::ALL {
             assert_eq!(Purpose::parse(s.as_str()), Some(*s));

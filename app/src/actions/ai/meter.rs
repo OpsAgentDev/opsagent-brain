@@ -1,7 +1,7 @@
 //! Metering a successful call: credits from the price table, the quota and top-up debit,
 //! the `ai.call` audit row, and the 80 % / 100 % owner emails.
 use opsagent_core::{
-    ai::{KeyStatus, Purpose, UsageRow},
+    ai::{KeyStatus, Purpose, Slot, UsageRow},
     audit::AuditEntry,
     model::{credits, Usage},
 };
@@ -48,6 +48,8 @@ impl AiAccess {
             usage: *usage,
             credits,
             estimated,
+            slot: Slot::Primary.into(),
+            base_host: None,
         };
         let tx = self.uow.begin().await?;
         let quota = match plan.key_id {

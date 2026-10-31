@@ -252,6 +252,8 @@ impl World {
             usage: Usage::default(),
             credits: Decimal::from(1000),
             estimated: false,
+            slot: None,
+            base_host: None,
         };
         Pg::new(&self.ctx.db)
             .record_usage(&row, Decimal::ZERO)

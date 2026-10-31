@@ -3,7 +3,7 @@
 use axum::http::StatusCode;
 use chrono::Duration;
 use opsagent_core::{
-    ai::{KeySource, KeyStatus, ModelRole},
+    ai::{KeySource, KeyStatus, ModelRole, Slot},
     model::{AiProvider, ModelError, ModelProvider},
     repo::RepoError,
 };
@@ -131,7 +131,7 @@ impl AiAccess {
         {
             return Ok(());
         }
-        let Some(k) = ai.key(org).await? else {
+        let Some(k) = ai.keys(org).await?.primary else {
             return Ok(());
         };
         let n = Notice {
@@ -156,7 +156,7 @@ impl AiAccess {
         let now = self.clock.now();
         let ai = self.uow.ai();
         // A refused key stays refused: an outage arriving late never re-enables it.
-        let current = ai.key(org).await?.filter(|k| k.id == key_id);
+        let current = ai.keys(org).await?.primary.filter(|k| k.id == key_id);
         if current.is_none_or(|k| k.status == KeyStatus::Failing) {
             return Ok(());
         }
@@ -166,7 +166,7 @@ impl AiAccess {
         {
             return Ok(());
         }
-        let Some(k) = ai.key(org).await?.filter(|k| k.id == key_id) else {
+        let Some(k) = ai.keys(org).await?.primary.filter(|k| k.id == key_id) else {
             return Ok(());
         };
         let long = now - k.status_since >= Duration::hours(OUTAGE_NOTICE_HOURS);
@@ -207,15 +207,18 @@ impl AiAccess {
             .filter(|d| *d != plan.model)
             .ok_or_else(gone)?;
         let ai = self.uow.ai();
-        let k = ai.key(org).await?.filter(|k| Some(k.id) == plan.key_id);
+        let k = ai
+            .keys(org)
+            .await?
+            .primary
+            .filter(|k| Some(k.id) == plan.key_id);
         let k = k.ok_or_else(gone)?;
         let mut models = k.models.clone();
         match plan.role {
             ModelRole::Routine => models.routine = default.clone(),
             ModelRole::Chat => models.chat = default.clone(),
         }
-        ai.update_key(org, &models, k.monthly_credit_ceiling)
-            .await?;
+        ai.update_key_models(org, Slot::Primary, &models).await?;
         let n = Notice {
             subject: "OpsAgent replaced a model on your AI key".into(),
             text: format!(

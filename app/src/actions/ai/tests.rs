@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use opsagent_core::{
-    ai::{AiRepo, KeySource, KeyStatus, ModelRole, Purpose, RoleModels, UsageRow},
+    ai::{AiRepo, KeySource, KeyStatus, ModelRole, Purpose, RoleModels, Slot, UsageRow},
     billing::{BillingRepo, BillingStatus, SubscriptionState, Tier},
     model::{
         AiProvider, ModelError, ModelInfo, ModelProvider, ModelRequest, ModelTurn, TextSink, Usage,
@@ -147,7 +147,7 @@ impl Env {
     }
 
     async fn key_status(&self, status: KeyStatus) {
-        let k = self.store.key(self.org()).await.unwrap().unwrap();
+        let k = self.store.keys(self.org()).await.unwrap().primary.unwrap();
         let at = Utc::now();
         assert!(self
             .store
@@ -167,6 +167,8 @@ impl Env {
             usage: Usage::default(),
             credits: dec(credits),
             estimated: false,
+            slot: None,
+            base_host: None,
         };
         self.store.record_usage(&row, Decimal::ZERO).await.unwrap();
     }
@@ -267,11 +269,11 @@ async fn outage_key_next_success_clears_it() {
     let a = e.access();
     let plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
     assert_eq!(e.call(&a, &plan).await.unwrap_err(), AiCallError::Outage);
-    let k = e.store.key(e.org()).await.unwrap().unwrap();
+    let k = e.store.keys(e.org()).await.unwrap().primary.unwrap();
     assert_eq!(k.status, KeyStatus::ProviderOutage);
     let plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
     e.call(&a, &plan).await.unwrap();
-    let k = e.store.key(e.org()).await.unwrap().unwrap();
+    let k = e.store.keys(e.org()).await.unwrap().primary.unwrap();
     assert_eq!(k.status, KeyStatus::Ok);
 }
 
@@ -283,7 +285,7 @@ async fn put_key_resets_status_to_ok() {
     e.key_status(KeyStatus::Failing).await;
     assert_eq!(refused_with(&e.access(), e.org()).await, AI_KEY_FAILING);
     e.put_key().await;
-    let k = e.store.key(e.org()).await.unwrap().unwrap();
+    let k = e.store.keys(e.org()).await.unwrap().primary.unwrap();
     assert_eq!(k.status, KeyStatus::Ok);
     assert!(e.access().plan(e.org(), ModelRole::Chat).await.is_ok());
 }
@@ -305,7 +307,7 @@ async fn late_outage_never_downgrades_failing() {
     );
     // A call planned before the refusal ends in an outage.
     assert_eq!(e.call(&a, &plan).await.unwrap_err(), AiCallError::Outage);
-    let k = e.store.key(e.org()).await.unwrap().unwrap();
+    let k = e.store.keys(e.org()).await.unwrap().primary.unwrap();
     assert_eq!(k.status, KeyStatus::Failing);
     assert_eq!(refused_with(&a, e.org()).await, AI_KEY_FAILING);
 }
@@ -519,7 +521,11 @@ async fn set_models(e: &Env, routine: &str, chat: &str) {
         routine: routine.into(),
         chat: chat.into(),
     };
-    assert!(e.store.update_key(e.org(), &models, None).await.unwrap());
+    assert!(e
+        .store
+        .update_key_models(e.org(), Slot::Primary, &models)
+        .await
+        .unwrap());
 }
 
 #[tokio::test]
@@ -555,7 +561,7 @@ async fn auth_error_marks_failing_and_mails_owners_once() {
         e.call(&a, &plan).await.unwrap_err(),
         AiCallError::KeyFailing
     );
-    let k = e.store.key(e.org()).await.unwrap().unwrap();
+    let k = e.store.keys(e.org()).await.unwrap().primary.unwrap();
     assert_eq!(k.status, KeyStatus::Failing);
     let sent = e.mail.sent();
     assert_eq!(sent.len(), 1);
@@ -575,7 +581,7 @@ async fn success_clears_failing() {
     // Another call marked the key failing while this one was planned.
     e.key_status(KeyStatus::Failing).await;
     e.call(&a, &plan).await.unwrap();
-    let k = e.store.key(e.org()).await.unwrap().unwrap();
+    let k = e.store.keys(e.org()).await.unwrap().primary.unwrap();
     assert_eq!(k.status, KeyStatus::Ok);
 }
 
@@ -660,7 +666,7 @@ async fn byok_model_gone_falls_back_saves_default_and_mails_once() {
         let plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
         assert_eq!(plan.model, "claude-retired-1");
         e.call(&a, &plan).await.unwrap();
-        let k = e.store.key(e.org()).await.unwrap().unwrap();
+        let k = e.store.keys(e.org()).await.unwrap().primary.unwrap();
         assert_eq!(k.models.chat, MODEL_CHAT);
         assert_eq!(k.models.routine, MODEL_ROUTINE);
     }
@@ -751,7 +757,7 @@ async fn put_key_checks_shape_before_any_call() {
         code(put.run(&e.scope, "gemini", BYOK_KEY).await.unwrap_err()),
         "invalid"
     );
-    assert!(e.store.key(e.org()).await.unwrap().is_none());
+    assert!(e.store.keys(e.org()).await.unwrap().primary.is_none());
 }
 
 #[tokio::test]
@@ -768,7 +774,7 @@ async fn outage_mailed_once_after_two_hours() {
         .unwrap();
     let r = e.call(&e.access_at(now), &plan).await;
     assert_eq!(r.unwrap_err(), AiCallError::Outage);
-    let k = e.store.key(e.org()).await.unwrap().unwrap();
+    let k = e.store.keys(e.org()).await.unwrap().primary.unwrap();
     assert_eq!(k.status, KeyStatus::ProviderOutage);
     assert!(e.mail.sent().is_empty());
     let later = e.access_at(now + Duration::hours(3));

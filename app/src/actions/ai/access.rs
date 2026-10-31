@@ -58,6 +58,8 @@ pub struct AiStatus {
     /// The BYOK key's models are unpriced, so its credits are estimates.
     pub estimated: bool,
     pub key: Option<ModelKey>,
+    /// Credits per calendar month (UTC) on BYOK; `None` is no ceiling.
+    pub ceiling: Option<Decimal>,
     pub topup_available: bool,
 }
 
@@ -65,6 +67,7 @@ pub struct AiStatus {
 struct Snapshot {
     enabled: bool,
     key: Option<ModelKey>,
+    ceiling: Option<Decimal>,
     quota: Quota,
     topup: Decimal,
     byok_month: Decimal,
@@ -162,6 +165,7 @@ impl AiAccess {
             byok_used_this_month: snap.byok_month,
             estimated,
             key: snap.key,
+            ceiling: snap.ceiling,
             topup_available: self.s.topups,
         })
     }
@@ -171,7 +175,8 @@ impl AiAccess {
         let (since, until) = quota_period(&OrgBilling::default(), self.clock.now());
         Ok(Snapshot {
             enabled: ai.enabled(org).await?,
-            key: ai.key(org).await?,
+            key: ai.keys(org).await?.primary,
+            ceiling: ai.credit_ceiling(org).await?,
             quota: self.quota(&*self.uow, org).await?,
             topup: ai.topup_balance(org).await?,
             byok_month: ai.credits_used(org, KeySource::Byok, since, until).await?,
@@ -203,9 +208,7 @@ impl AiAccess {
             if k.status == KeyStatus::Failing {
                 return Err(AiCallError::KeyFailing.into());
             }
-            if k.monthly_credit_ceiling
-                .is_some_and(|c| snap.byok_month >= c)
-            {
+            if snap.ceiling.is_some_and(|c| snap.byok_month >= c) {
                 return Err(quota_reached("Your monthly credit ceiling is reached."));
             }
             return Ok(Payer::Byok(k.clone()));
@@ -257,7 +260,7 @@ impl AiAccess {
         let ai = self.uow.ai();
         let left = match plan.key_id {
             Some(_) => {
-                let ceiling = ai.key(org).await?.and_then(|k| k.monthly_credit_ceiling);
+                let ceiling = ai.credit_ceiling(org).await?;
                 let Some(c) = ceiling else {
                     return Ok(());
                 };

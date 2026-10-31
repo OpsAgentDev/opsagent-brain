@@ -1,6 +1,9 @@
 use chrono::{DateTime, Duration, Utc};
 use opsagent_core::{
-    ai::{Explanation, KeySource, KeyStatus, NewModelKey, Purpose, RoleModels, UsageRow},
+    ai::{
+        Explanation, KeySource, KeyStatus, NewModelKey, OrgKeys, Purpose, RoleModels, Slot,
+        UsageRow,
+    },
     model::{AiProvider, Usage},
     repo::RepoError,
 };
@@ -31,7 +34,8 @@ fn new_key(provider: AiProvider, last4: &str) -> NewModelKey {
         provider,
         last4: last4.into(),
         models: models("small", "big"),
-        monthly_credit_ceiling: None,
+        slot: Slot::Primary,
+        base_url: None,
         ciphertext: vec![1, 2, 3],
         nonce: vec![4, 5],
         kek_version: 1,
@@ -54,6 +58,8 @@ fn usage(o: Uuid, source: KeySource, credits: &str) -> UsageRow {
         },
         credits: dec(credits),
         estimated: false,
+        slot: None,
+        base_host: None,
     }
 }
 
@@ -82,33 +88,106 @@ contract_suite! {
         assert!(matches!(s.ai().set_enabled(missing, true).await, Err(RepoError::NotFound)));
     }
 
-    async fn put_key_replaces_and_is_unique_per_org(s) {
+    async fn put_key_upserts_per_slot(s) {
         let (o, other) = (org(s).await, org(s).await);
-        assert_eq!(s.ai().key(o).await.unwrap(), None);
-        let first = s.ai().put_key(o, &new_key(AiProvider::OpenAi, "1111")).await.unwrap();
-        assert_eq!((first.organisation_id, first.status), (o, KeyStatus::Ok));
-        assert_eq!(s.ai().key(o).await.unwrap().as_ref(), Some(&first));
+        let ai = s.ai();
+        assert_eq!(ai.keys(o).await.unwrap(), OrgKeys::default());
+        let first = ai.put_key(o, &new_key(AiProvider::OpenAi, "1111")).await.unwrap();
+        assert_eq!((first.organisation_id, first.status, first.slot), (o, KeyStatus::Ok, Slot::Primary));
+        assert_eq!(ai.keys(o).await.unwrap().primary.as_ref(), Some(&first));
+        let mut b = new_key(AiProvider::Anthropic, "3333");
+        (b.slot, b.base_url) = (Slot::Backup, Some("https://llm.example.com/v1".into()));
+        let backup = ai.put_key(o, &b).await.unwrap();
+        assert_eq!((backup.slot, backup.base_url.as_deref()), (Slot::Backup, Some("https://llm.example.com/v1")));
+        let both = ai.keys(o).await.unwrap();
+        assert_eq!((both.get(Slot::Primary), both.get(Slot::Backup)), (Some(&first), Some(&backup)));
+        // A second primary replaces the first and leaves the backup alone.
         let at = now();
-        assert!(s.ai().set_key_status(o, first.id, KeyStatus::Failing, at).await.unwrap());
-        let mut k = new_key(AiProvider::Anthropic, "2222");
-        k.monthly_credit_ceiling = Some(dec("250.5"));
-        let second = s.ai().put_key(o, &k).await.unwrap();
+        assert!(ai.set_key_status(o, first.id, KeyStatus::Failing, at).await.unwrap());
+        let second = ai.put_key(o, &new_key(AiProvider::Anthropic, "2222")).await.unwrap();
         assert_ne!(second.id, first.id);
-        assert_eq!(s.ai().key(o).await.unwrap().as_ref(), Some(&second));
-        assert_eq!((second.provider, second.last4.as_str()), (AiProvider::Anthropic, "2222"));
-        assert_eq!(second.status, KeyStatus::Ok);
-        assert_eq!(second.monthly_credit_ceiling, Some(dec("250.5")));
+        assert_eq!((second.provider, second.last4.as_str(), second.status), (AiProvider::Anthropic, "2222", KeyStatus::Ok));
         assert_eq!((second.ciphertext.as_slice(), second.nonce.as_slice()), (&[1u8, 2, 3][..], &[4u8, 5][..]));
-        assert_eq!(s.ai().key(other).await.unwrap(), None);
+        let both = ai.keys(o).await.unwrap();
+        assert_eq!((both.primary.as_ref(), both.backup.as_ref()), (Some(&second), Some(&backup)));
+        assert_eq!(ai.keys(other).await.unwrap(), OrgKeys::default());
+        assert!(ai.put_key(Uuid::new_v4(), &new_key(AiProvider::OpenAi, "9999")).await.is_err());
+    }
 
-        assert!(s.ai().update_key(o, &models("a", "b"), Some(dec("10"))).await.unwrap());
-        let k = s.ai().key(o).await.unwrap().unwrap();
-        assert_eq!((k.models, k.monthly_credit_ceiling), (models("a", "b"), Some(dec("10"))));
-        assert!(!s.ai().update_key(other, &models("a", "b"), None).await.unwrap());
-        assert!(!s.ai().delete_key(other).await.unwrap());
-        assert!(s.ai().delete_key(o).await.unwrap());
-        assert_eq!(s.ai().key(o).await.unwrap(), None);
-        assert!(!s.ai().delete_key(o).await.unwrap());
+    async fn delete_primary_promotes_backup(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        let ai = s.ai();
+        assert!(!ai.delete_key(o, Slot::Primary).await.unwrap());
+        assert!(!ai.delete_key(other, Slot::Backup).await.unwrap());
+        ai.put_key(o, &new_key(AiProvider::OpenAi, "1111")).await.unwrap();
+        let mut b = new_key(AiProvider::Anthropic, "3333");
+        b.slot = Slot::Backup;
+        let backup = ai.put_key(o, &b).await.unwrap();
+        assert!(ai.delete_key(o, Slot::Primary).await.unwrap());
+        let keys = ai.keys(o).await.unwrap();
+        assert_eq!(keys.primary.as_ref().map(|k| (k.id, k.slot)), Some((backup.id, Slot::Primary)));
+        assert_eq!(keys.backup, None);
+        // A new primary now replaces the promoted one: no orphan backup.
+        let again = ai.put_key(o, &new_key(AiProvider::OpenAi, "4444")).await.unwrap();
+        let keys = ai.keys(o).await.unwrap();
+        assert_eq!((keys.primary.map(|k| k.id), keys.backup), (Some(again.id), None));
+        assert!(ai.delete_key(o, Slot::Primary).await.unwrap());
+        assert!(!ai.delete_key(o, Slot::Primary).await.unwrap());
+        assert_eq!(ai.keys(o).await.unwrap(), OrgKeys::default());
+    }
+
+    async fn delete_backup_keeps_primary(s) {
+        let o = org(s).await;
+        let ai = s.ai();
+        let primary = ai.put_key(o, &new_key(AiProvider::OpenAi, "1111")).await.unwrap();
+        assert!(!ai.delete_key(o, Slot::Backup).await.unwrap());
+        let mut b = new_key(AiProvider::Anthropic, "3333");
+        b.slot = Slot::Backup;
+        ai.put_key(o, &b).await.unwrap();
+        assert!(ai.delete_key(o, Slot::Backup).await.unwrap());
+        let keys = ai.keys(o).await.unwrap();
+        assert_eq!((keys.primary, keys.backup), (Some(primary), None));
+    }
+
+    async fn update_key_models_per_slot(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        let ai = s.ai();
+        assert!(!ai.update_key_models(o, Slot::Primary, &models("a", "b")).await.unwrap());
+        ai.put_key(o, &new_key(AiProvider::OpenAi, "1111")).await.unwrap();
+        assert!(!ai.update_key_models(o, Slot::Backup, &models("a", "b")).await.unwrap());
+        assert!(ai.update_key_models(o, Slot::Primary, &models("a", "b")).await.unwrap());
+        assert!(!ai.update_key_models(other, Slot::Primary, &models("a", "b")).await.unwrap());
+        let mut b = new_key(AiProvider::Anthropic, "3333");
+        b.slot = Slot::Backup;
+        ai.put_key(o, &b).await.unwrap();
+        assert!(ai.update_key_models(o, Slot::Backup, &models("c", "d")).await.unwrap());
+        let keys = ai.keys(o).await.unwrap();
+        assert_eq!(keys.primary.unwrap().models, models("a", "b"));
+        assert_eq!(keys.backup.unwrap().models, models("c", "d"));
+    }
+
+    async fn credit_ceiling_round_trips(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        let ai = s.ai();
+        assert_eq!(ai.credit_ceiling(o).await.unwrap(), None);
+        ai.set_credit_ceiling(o, Some(dec("50.00"))).await.unwrap();
+        assert_eq!(ai.credit_ceiling(o).await.unwrap(), Some(dec("50")));
+        assert_eq!(ai.credit_ceiling(other).await.unwrap(), None);
+        ai.set_credit_ceiling(o, None).await.unwrap();
+        assert_eq!(ai.credit_ceiling(o).await.unwrap(), None);
+        let missing = Uuid::new_v4();
+        assert!(matches!(ai.credit_ceiling(missing).await, Err(RepoError::NotFound)));
+        assert!(matches!(ai.set_credit_ceiling(missing, None).await, Err(RepoError::NotFound)));
+    }
+
+    async fn record_usage_stores_slot_and_host(s, seed) {
+        let o = org(s).await;
+        let mut row = usage(o, KeySource::Byok, "1");
+        (row.slot, row.base_host) = (Some(Slot::Backup), Some("llm.example.com".into()));
+        s.ai().record_usage(&row, Decimal::ZERO).await.unwrap();
+        s.ai().record_usage(&usage(o, KeySource::Byok, "2"), Decimal::ZERO).await.unwrap();
+        // Memory returns what it stored; Postgres is read back through its own columns.
+        assert_eq!(seed.usage_slots(o).await, vec![(Some(Slot::Backup), Some("llm.example.com".to_string())), (None, None)]);
     }
 
     async fn set_key_status_reports_transition_once(s) {
@@ -119,13 +198,13 @@ contract_suite! {
         assert!(!ai.set_key_status(o, k.id, KeyStatus::Ok, t1).await.unwrap());
         assert!(ai.set_key_status(o, k.id, KeyStatus::ProviderOutage, t1).await.unwrap());
         assert!(!ai.set_key_status(o, k.id, KeyStatus::ProviderOutage, t2).await.unwrap());
-        let got = ai.key(o).await.unwrap().unwrap();
+        let got = ai.keys(o).await.unwrap().primary.unwrap();
         assert_eq!((got.status, got.status_since), (KeyStatus::ProviderOutage, t1));
         // Another organisation or an unknown key id changes nothing.
         assert!(!ai.set_key_status(other, k.id, KeyStatus::Ok, t2).await.unwrap());
         assert!(!ai.set_key_status(o, Uuid::new_v4(), KeyStatus::Ok, t2).await.unwrap());
         assert!(ai.set_key_status(o, k.id, KeyStatus::Ok, t2).await.unwrap());
-        let got = ai.key(o).await.unwrap().unwrap();
+        let got = ai.keys(o).await.unwrap().primary.unwrap();
         assert_eq!((got.status, got.status_since), (KeyStatus::Ok, t2));
     }
 

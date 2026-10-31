@@ -66,6 +66,7 @@ pub struct AiStatusOut {
 }
 
 fn view(s: AiStatus) -> AiStatusOut {
+    let ceiling = s.ceiling;
     let key = s.key.map(|k| AiKeyOut {
         provider: k.provider.as_str().into(),
         last4: k.last4,
@@ -74,7 +75,7 @@ fn view(s: AiStatus) -> AiStatusOut {
             routine: k.models.routine,
             chat: k.models.chat,
         },
-        monthly_credit_ceiling: k.monthly_credit_ceiling.map(credits),
+        monthly_credit_ceiling: ceiling.map(credits),
     });
     AiStatusOut {
         enabled: s.enabled,

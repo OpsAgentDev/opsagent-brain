@@ -76,6 +76,8 @@ fn usage_row() -> UsageRow {
         usage: Usage::default(),
         credits: Decimal::ONE,
         estimated: false,
+        slot: None,
+        base_host: None,
     }
 }
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use opsagent_core::{
-    ai::{KeyStatus, ModelKey, ModelRole, NewModelKey, RoleModels},
+    ai::{KeyStatus, ModelKey, ModelRole, NewModelKey, RoleModels, Slot},
     audit::AuditEntry,
     model::{AiProvider, ModelError, ModelInfo},
 };
@@ -80,7 +80,8 @@ impl PutKey {
             provider,
             last4: last4.clone(),
             models,
-            monthly_credit_ceiling: None,
+            slot: Slot::Primary,
+            base_url: None,
             ciphertext: sealed.ciphertext,
             nonce: sealed.nonce.to_vec(),
             kek_version: dek.version,
@@ -111,7 +112,13 @@ pub struct KeyModel {
 /// The organisation's key and its live models list (404 without a key). A list that
 /// answers clears a failing key; a refused one marks it failing (502 `ai_key_failing`).
 async fn live_models(a: &AiAccess, org: uuid::Uuid) -> AppResult<(ModelKey, Vec<ModelInfo>)> {
-    let k = a.uow.ai().key(org).await?.ok_or(AppError::NotFound)?;
+    let k = a
+        .uow
+        .ai()
+        .keys(org)
+        .await?
+        .primary
+        .ok_or(AppError::NotFound)?;
     let api_key: Zeroizing<String> = open_key(&*a.uow, &*a.kek, &k).await?;
     let now = a.clock.now();
     match a.models.get(k.provider).list_models(&api_key).await {
@@ -188,7 +195,13 @@ impl PatchKey {
         if p.ceiling.flatten().is_some_and(|c| c < Decimal::ZERO) {
             return Err(invalid("monthly_credit_ceiling must not be negative"));
         }
-        let k = a.uow.ai().key(org).await?.ok_or(AppError::NotFound)?;
+        let k = a
+            .uow
+            .ai()
+            .keys(org)
+            .await?
+            .primary
+            .ok_or(AppError::NotFound)?;
         if let Some(m) = &p.models {
             let (_, list) = live_models(a, org).await?;
             let find = |id: &str| list.iter().find(|i| i.id == id);
@@ -202,8 +215,13 @@ impl PatchKey {
             }
         }
         let models = p.models.unwrap_or(k.models);
-        let ceiling = p.ceiling.unwrap_or(k.monthly_credit_ceiling);
-        a.uow.ai().update_key(org, &models, ceiling).await?;
+        a.uow
+            .ai()
+            .update_key_models(org, Slot::Primary, &models)
+            .await?;
+        if let Some(ceiling) = p.ceiling {
+            a.uow.ai().set_credit_ceiling(org, ceiling).await?;
+        }
         a.status(scope).await
     }
 }
@@ -222,7 +240,7 @@ impl DeleteKey {
     pub async fn run(&self, scope: &OrgScope) -> AppResult<()> {
         let org = scope.organisation.id;
         let tx = self.access.uow.begin().await?;
-        if !tx.ai().delete_key(org).await? {
+        if !tx.ai().delete_key(org, Slot::Primary).await? {
             return Err(AppError::NotFound);
         }
         let entry = AuditEntry::member(Some(org), scope.member.user_id, "ai.key.delete", None);
