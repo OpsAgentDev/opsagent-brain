@@ -40,6 +40,8 @@ fn builder() -> reqwest::ClientBuilder {
         .connect_timeout(TIMEOUT)
         .read_timeout(TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
+        // A proxy from the environment would connect around the pinned addresses.
+        .no_proxy()
 }
 
 /// The client for `ep`: the shared one on system DNS, else a one-off that connects only to

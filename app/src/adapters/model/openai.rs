@@ -123,7 +123,7 @@ fn stream_error(err: &Value) -> ModelError {
     let any = |want: &[&str]| names.iter().flatten().any(|n| want.contains(n));
     if any(&["rate_limit_exceeded"]) {
         ModelError::RateLimited
-    } else if any(&["server_error", "overloaded"]) {
+    } else if any(&["server_error", "overloaded", "server_is_overloaded"]) {
         ModelError::Outage
     } else {
         ModelError::Other("stream_error".into())
@@ -185,7 +185,11 @@ impl Acc {
 
     /// The finished turn; without a `finish_reason` the response was cut short.
     fn finish(self) -> Result<ModelTurn, ModelError> {
-        let stop = self.stop.ok_or(ModelError::Outage)?;
+        let mut stop = self.stop.ok_or(ModelError::Outage)?;
+        // Some gateways finish with `stop` after streaming tool calls.
+        if !self.calls.is_empty() {
+            stop = StopReason::ToolUse;
+        }
         let mut tool_calls = Vec::with_capacity(self.calls.len());
         for (_, p) in self.calls {
             let args = match p.args.trim() {

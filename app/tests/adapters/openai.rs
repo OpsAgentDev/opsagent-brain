@@ -167,6 +167,26 @@ async fn chat_completions_assembles_tool_calls_by_index() {
 }
 
 #[tokio::test]
+async fn chat_completions_tool_calls_with_stop_finish_is_tool_use() {
+    let server = MockServer::start().await;
+    let body = chunks(&[
+        delta(
+            json!({"tool_calls": [{"index": 0, "id": "call_a", "type": "function",
+            "function": {"name": "list_findings", "arguments": "{}"}}]}),
+        ),
+        finish("stop"),
+    ]);
+    completions_ok("/v1", body).mount(&server).await;
+    let b = base(&server);
+    let turn = OpenAiModels::new()
+        .stream(&ep(&b, true), &request("s"), &mut Collect::default())
+        .await
+        .unwrap();
+    assert_eq!(turn.stop, StopReason::ToolUse);
+    assert_eq!(turn.tool_calls.len(), 1);
+}
+
+#[tokio::test]
 async fn chat_completions_sends_tool_history() {
     let server = MockServer::start().await;
     completions_ok("/v1", chunks(&[finish("stop")]))
@@ -266,6 +286,7 @@ async fn chat_completions_error_chunk_maps() {
         ),
         (json!({"type": "server_error"}), ModelError::Outage),
         (json!({"code": "overloaded"}), ModelError::Outage),
+        (json!({"code": "server_is_overloaded"}), ModelError::Outage),
         (
             json!({"code": "invalid_prompt", "message": "provider text"}),
             ModelError::Other("stream_error".into()),
