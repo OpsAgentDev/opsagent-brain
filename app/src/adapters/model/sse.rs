@@ -10,6 +10,9 @@ pub fn events(
     parse(resp.bytes_stream())
 }
 
+/// The most a line may grow without a newline; past it the body is an `Outage`.
+const LINE_CAP: usize = 1024 * 1024;
+
 struct State<S> {
     body: S,
     buf: Vec<u8>,
@@ -38,6 +41,11 @@ where
             }
             if let Some(ev) = st.next_frame() {
                 return Some((Ok(ev), st));
+            }
+            // `next_frame` left only an unterminated line.
+            if st.buf.len() > LINE_CAP {
+                st.done = true;
+                return Some((Err(ModelError::Outage), st));
             }
             match st.body.next().await {
                 Some(Ok(chunk)) => st.buf.extend_from_slice(chunk.as_ref()),
@@ -124,5 +132,13 @@ mod tests {
         assert_eq!(got[0], Ok(("message".into(), "é".into())));
         assert_eq!(got[1], Err(ModelError::Outage));
         assert_eq!(got.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn sse_parser_refuses_a_line_past_the_cap() {
+        let chunk = vec![b'a'; 64 * 1024];
+        let body = stream::iter((0..20).map(move |_| Ok::<_, ()>(chunk.clone())));
+        let got: Vec<_> = parse(body).collect().await;
+        assert_eq!(got, vec![Err(ModelError::Outage)]);
     }
 }

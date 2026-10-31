@@ -49,7 +49,7 @@ pub struct CheckedUrl {
 
 /// Judge `raw` under `policy`.
 pub fn check_url(raw: &str, policy: UrlPolicy) -> Result<CheckedUrl, EndpointRefusal> {
-    let u = Url::parse(raw.trim()).map_err(|_| EndpointRefusal::Form)?;
+    let mut u = Url::parse(raw.trim()).map_err(|_| EndpointRefusal::Form)?;
     let scheme_ok = match policy {
         UrlPolicy::Local => matches!(u.scheme(), "http" | "https"),
         _ => u.scheme() == "https",
@@ -76,6 +76,10 @@ pub fn check_url(raw: &str, policy: UrlPolicy) -> Result<CheckedUrl, EndpointRef
         Host::Ipv4(a) => a.to_string(),
         Host::Ipv6(a) => a.to_string(),
     };
+    // The stored base names the cleaned host, so it, `host` and the pin all agree.
+    if matches!(u.host(), Some(Host::Domain(_))) {
+        u.set_host(Some(&host)).map_err(|_| EndpointRefusal::Form)?;
+    }
     Ok(CheckedUrl {
         base: u.as_str().trim_end_matches('/').to_string(),
         host,
@@ -201,6 +205,11 @@ mod tests {
         assert_eq!(
             check("https://metadata.internal."),
             Err(EndpointRefusal::Host)
+        );
+        let u = check("https://API.Example.COM./v1").unwrap();
+        assert_eq!(
+            (u.base.as_str(), u.host.as_str()),
+            ("https://api.example.com/v1", "api.example.com")
         );
     }
 

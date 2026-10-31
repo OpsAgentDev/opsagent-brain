@@ -140,6 +140,10 @@ pub(super) fn opsagent_connections(
     let backup = get("OPSAGENT_AI_BACKUP_API_KEY")
         .map(|key| connection(&get, &BACKUP, key, policy))
         .transpose()?;
+    if primary.is_none() && backup.is_some() {
+        let reason = "needs OPSAGENT_AI_API_KEY (a backup with no primary)";
+        return Err(invalid("OPSAGENT_AI_BACKUP_API_KEY", reason));
+    }
     Ok((primary, backup))
 }
 

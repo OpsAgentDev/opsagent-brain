@@ -14,10 +14,10 @@ use opsagent_core::{
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::{access::AiAccess, refused, AI_DISABLED};
+use super::{access::AiAccess, failures::AiCallError, refused, AI_DISABLED};
 use crate::{
     actions::{orgs::OrgScope, uow::UnitOfWork},
-    adapters::redact::redact,
+    adapters::{model::CALL_LIMIT, redact::redact},
     error::{AppError, AppResult},
     models::enum_str,
 };
@@ -140,10 +140,13 @@ impl ExplainFinding {
             tools: vec![],
             max_tokens: MAX_TOKENS,
         };
-        let turn = self
+        let mut sink = NoSink;
+        let call = self
             .access
-            .call(scope, &mut plan, Purpose::Explain, req, &mut NoSink)
-            .await?;
+            .call(scope, &mut plan, Purpose::Explain, req, &mut sink);
+        let turn = tokio::time::timeout(CALL_LIMIT, call)
+            .await
+            .unwrap_or(Err(AiCallError::Outage))?;
         let text = turn.text.trim();
         if text.is_empty() {
             return Err(AppError::Internal("model returned no text".into()));

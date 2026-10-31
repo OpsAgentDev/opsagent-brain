@@ -921,3 +921,23 @@ async fn subscription_checkout_webhook_unchanged() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn put_custom_endpoint_with_html_list_needs_models() {
+    let html = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("<html>hi</html>", "text/html"))
+        .mount(&html)
+        .await;
+    serve_with(private, |req, ctx| async move {
+        let (t, org) = owner(&req, &ctx).await;
+        openai(&ctx);
+        let res = put_slot(&req, &t, &org, "primary", custom(&html, CUSTOM_KEY)).await;
+        assert_eq!(res.status_code(), 422, "{}", res.text());
+        let p: Value = res.json();
+        assert_eq!(p["code"], "models_required");
+    })
+    .await;
+}

@@ -10,7 +10,7 @@ use opsagent_core::model::{
 };
 use serde_json::{json, Value};
 
-use super::{count, json, request, send, sse};
+use super::{count, json, limited, list_body, request, send, sse};
 
 pub const API_BASE: &str = "https://api.anthropic.com";
 
@@ -206,8 +206,7 @@ impl ModelProvider for AnthropicModels {
 
     async fn list_models(&self, ep: &Endpoint<'_>) -> Result<Vec<ModelInfo>, ModelError> {
         let http = self.request(ep, reqwest::Method::GET, "/v1/models?limit=1000")?;
-        let res = send(http).await?;
-        let body: Value = res.json().await.map_err(|_| ModelError::Outage)?;
+        let body = limited(async { list_body(send(http).await?).await }).await?;
         let ids = body["data"].as_array().into_iter().flatten();
         Ok(ids
             .filter_map(|m| m["id"].as_str())

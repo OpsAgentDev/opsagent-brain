@@ -318,3 +318,38 @@ async fn anthropic_list_models_marks_tool_support() {
         vec![info("claude-sonnet-5-5"), info("claude-haiku-5-5")]
     );
 }
+
+#[tokio::test]
+async fn anthropic_oversized_or_unparseable_list_and_endless_line_are_bounded() {
+    let big = MockServer::start().await;
+    let body = format!("{{\"data\":[\"{}\"]}}", "a".repeat(3 * 1024 * 1024));
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
+        .mount(&big)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "data: ".to_owned() + &"x".repeat(2 * 1024 * 1024),
+            "text/event-stream",
+        ))
+        .mount(&big)
+        .await;
+    let html = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("<html>hi</html>", "text/html"))
+        .mount(&html)
+        .await;
+    assert_eq!(
+        models().list_models(&ep(&big)).await,
+        Err(ModelError::Outage)
+    );
+    let got = models().list_models(&ep(&html)).await;
+    assert_eq!(got, Err(ModelError::Other("bad_response".into())));
+    let got = models()
+        .stream(&ep(&big), &request(vec![]), &mut Collect::default())
+        .await;
+    assert_eq!(got.unwrap_err(), ModelError::Outage);
+}

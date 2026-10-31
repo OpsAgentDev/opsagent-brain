@@ -168,8 +168,18 @@ impl AiAccess {
         let snap = self.snapshot(org).await?;
         Ok(match self.payer(&snap)? {
             Payer::Byok { serving, backup } => {
+                // A backup that cannot be opened must not fail a call the primary can serve.
                 let backup = match backup {
-                    Some(b) => Some(self.byok_conn(b).await?),
+                    Some(b) => match self.byok_conn(b).await {
+                        Ok(c) => Some(c),
+                        Err(_) => {
+                            tracing::warn!(
+                                error_code = "ai_backup_key_unreadable",
+                                "ai backup key not opened"
+                            );
+                            None
+                        }
+                    },
                     None => None,
                 };
                 CallPlan {

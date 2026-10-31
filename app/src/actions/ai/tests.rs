@@ -1320,3 +1320,81 @@ async fn primary_failing_backup_outage_mails_has_stopped() {
     assert_eq!(sent[0].subject, "Your OpsAgent AI key is failing");
     assert!(sent[0].text.contains("ending abcd") && sent[0].text.contains("has stopped"));
 }
+
+#[tokio::test]
+async fn put_custom_key_stores_the_cleaned_host() {
+    let e = env(vec![], false).await;
+    let public: IpAddr = "1.1.1.1".parse().unwrap();
+    e.hosts
+        .lock()
+        .unwrap()
+        .insert("api.example.com".into(), vec![public]);
+    let put = PutKey::new(e.access());
+    let input = KeyInput {
+        base_url: Some("https://API.Example.COM./v1".into()),
+        ..input("anthropic", BYOK_KEY)
+    };
+    let out = put.run(&e.scope, Slot::Primary, input).await.unwrap();
+    let stored = out.status.keys.primary.unwrap().base_url.unwrap();
+    assert_eq!(stored, "https://api.example.com/v1");
+    assert_eq!(host_of(&stored).as_deref(), Some("api.example.com"));
+    let set = e
+        .store
+        .audit_entries()
+        .into_iter()
+        .find(|x| x.action == "ai.key.set");
+    assert_eq!(set.unwrap().meta["base_host"], "api.example.com");
+}
+
+#[tokio::test]
+async fn ceiling_change_is_audited() {
+    let e = env(vec![], true).await;
+    let set = SetCeiling::new(e.access());
+    set.run(&e.scope, Some(Decimal::new(125, 1))).await.unwrap();
+    set.run(&e.scope, None).await.unwrap();
+    set.patch(&e.scope, Some(true), None).await.unwrap();
+    let metas: Vec<_> = e
+        .store
+        .audit_entries()
+        .into_iter()
+        .filter(|x| x.action == "ai.ceiling.set")
+        .map(|x| x.meta)
+        .collect();
+    assert_eq!(
+        metas,
+        vec![
+            serde_json::json!({ "monthly_credit_ceiling": "12.50" }),
+            serde_json::json!({ "monthly_credit_ceiling": null }),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn unreadable_backup_key_plans_without_backup() {
+    let e = env(vec![text()], false).await;
+    e.enable().await;
+    e.store_key(Slot::Primary, BYOK_KEY, None).await;
+    let org = e.org();
+    let dek = Dek::of(&e.store, &*kek(), org).await.unwrap();
+    let mut sealed = dek.seal_bytes(BACKUP_KEY.as_bytes(), &aad(org));
+    sealed.ciphertext[0] ^= 0xff;
+    let new = NewModelKey {
+        provider: AiProvider::Anthropic,
+        last4: "abcd".into(),
+        models: RoleModels {
+            routine: MODEL_ROUTINE.into(),
+            chat: MODEL_CHAT.into(),
+        },
+        slot: Slot::Backup,
+        base_url: None,
+        ciphertext: sealed.ciphertext,
+        nonce: sealed.nonce.to_vec(),
+        kek_version: dek.version,
+    };
+    e.store.put_key(org, &new).await.unwrap();
+    let a = e.access();
+    let mut plan = a.plan(org, ModelRole::Chat).await.unwrap();
+    assert!(plan.backup.is_none());
+    assert_eq!(plan.conn.slot, Slot::Primary);
+    e.call(&a, &mut plan).await.unwrap();
+}

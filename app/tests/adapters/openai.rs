@@ -447,3 +447,40 @@ async fn openai_status_mapping_401_429_404_500() {
         .await;
     assert_eq!(got.unwrap_err(), ModelError::Outage);
 }
+
+#[tokio::test]
+async fn oversized_or_unparseable_list_and_endless_line_are_bounded() {
+    let server = MockServer::start().await;
+    let big = format!("{{\"data\":[\"{}\"]}}", "a".repeat(3 * 1024 * 1024));
+    Mock::given(method("GET"))
+        .and(path("/big/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(big, "application/json"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/html/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("<html>hi</html>", "text/html"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/big/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "data: ".to_owned() + &"x".repeat(2 * 1024 * 1024),
+            "text/event-stream",
+        ))
+        .mount(&server)
+        .await;
+    let m = OpenAiModels::new();
+    let big = format!("{}/big", server.uri());
+    assert_eq!(
+        m.list_models(&ep(&big, true)).await,
+        Err(ModelError::Outage)
+    );
+    let html = format!("{}/html", server.uri());
+    let got = m.list_models(&ep(&html, true)).await;
+    assert_eq!(got, Err(ModelError::Other("bad_response".into())));
+    let got = m
+        .stream(&ep(&big, true), &request("s"), &mut Collect::default())
+        .await;
+    assert_eq!(got.unwrap_err(), ModelError::Outage);
+}

@@ -10,7 +10,7 @@ use opsagent_core::model::{
 };
 use serde_json::{json, Value};
 
-use super::{count, json, request, send, sse};
+use super::{count, json, limited, list_body, request, send, sse};
 use crate::config::OPENAI_TOOL_PREFIXES;
 
 pub const API_BASE: &str = "https://api.openai.com/v1";
@@ -239,8 +239,8 @@ impl ModelProvider for OpenAiModels {
     }
 
     async fn list_models(&self, ep: &Endpoint<'_>) -> Result<Vec<ModelInfo>, ModelError> {
-        let res = send(bearer(ep, reqwest::Method::GET, "/models")?).await?;
-        let body: Value = res.json().await.map_err(|_| ModelError::Outage)?;
+        let http = bearer(ep, reqwest::Method::GET, "/models")?;
+        let body = limited(async { list_body(send(http).await?).await }).await?;
         let ids = body["data"]
             .as_array()
             .ok_or_else(|| ModelError::Other("bad_response".into()))?;

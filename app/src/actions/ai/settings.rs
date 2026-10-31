@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use opsagent_core::audit::AuditEntry;
 use sea_orm::prelude::Decimal;
+use serde_json::json;
 
 use super::{invalid, AiAccess, AiStatus};
 use crate::{actions::orgs::OrgScope, error::AppResult};
@@ -41,6 +42,9 @@ impl SetCeiling {
         let tx = a.uow.begin().await?;
         if let Some(c) = ceiling {
             tx.ai().set_credit_ceiling(org, c).await?;
+            let meta = json!({ "monthly_credit_ceiling": c.map(|c| format!("{c:.2}")) });
+            let entry = AuditEntry::member(Some(org), scope.member.user_id, "ai.ceiling.set", None);
+            tx.audit().record(entry.with_meta(meta)).await?;
         }
         if let Some(on) = on {
             tx.ai().set_enabled(org, on).await?;

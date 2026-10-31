@@ -82,8 +82,46 @@ async fn send(req: reqwest::RequestBuilder) -> Result<reqwest::Response, ModelEr
     if status.is_success() {
         return Ok(res);
     }
-    let body: Value = res.json().await.unwrap_or(Value::Null);
+    let body = read_capped(res)
+        .await
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(Value::Null);
     Err(status_error(status, &body))
+}
+
+/// The most of a non-streamed body (an error or a models list) read from an endpoint.
+const BODY_CAP: usize = 2 * 1024 * 1024;
+
+/// Every call that lists models, and every explanation, ends within this.
+pub const CALL_LIMIT: Duration = Duration::from_secs(120);
+
+/// `res`'s body, read chunk by chunk; past `BODY_CAP` or broken, an `Outage`.
+async fn read_capped(mut res: reqwest::Response) -> Result<Vec<u8>, ModelError> {
+    let mut out = Vec::new();
+    while let Some(chunk) = res.chunk().await.map_err(|_| ModelError::Outage)? {
+        if out.len() + chunk.len() > BODY_CAP {
+            return Err(ModelError::Outage);
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
+/// A models-list body as JSON: too big or broken is an `Outage`, unparseable `bad_response`
+/// (so a custom endpoint gets `models_required`).
+async fn list_body(res: reqwest::Response) -> Result<Value, ModelError> {
+    let b = read_capped(res).await?;
+    serde_json::from_slice(&b).map_err(|_| ModelError::Other("bad_response".into()))
+}
+
+/// `f` cut at `CALL_LIMIT`; elapsed is an `Outage`.
+async fn limited<T>(
+    f: impl std::future::Future<Output = Result<T, ModelError>>,
+) -> Result<T, ModelError> {
+    tokio::time::timeout(CALL_LIMIT, f)
+        .await
+        .unwrap_or(Err(ModelError::Outage))
 }
 
 /// The status mapping both providers share (dashboard-ai.md, The model port).

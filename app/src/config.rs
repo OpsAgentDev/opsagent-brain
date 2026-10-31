@@ -576,6 +576,7 @@ mod tests {
         ]);
         assert!(none.opsagent_backup.is_none());
         let c = cfg(&[
+            ("OPSAGENT_AI_API_KEY", "p"),
             ("OPSAGENT_AI_BACKUP_API_KEY", "b"),
             ("OPSAGENT_AI_BACKUP_STYLE", "openai"),
         ]);
@@ -585,7 +586,13 @@ mod tests {
             (b.models.routine.as_str(), b.models.chat.as_str()),
             ("gpt-5-mini", "gpt-5")
         );
-        assert!(c.opsagent.is_none());
+        assert!(c.opsagent.is_some());
+    }
+
+    #[test]
+    fn opsagent_ai_backup_without_primary_fails_boot() {
+        let b = [("OPSAGENT_AI_BACKUP_API_KEY", "b")];
+        assert_invalid_var(&b, "OPSAGENT_AI_BACKUP_API_KEY");
     }
 
     #[test]
