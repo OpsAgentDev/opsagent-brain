@@ -10,7 +10,7 @@ use opsagent_core::model::{
 };
 use serde_json::{json, Value};
 
-use super::{count, json, limited, list_body, request, send, sse};
+use super::{count, json, limited, list_body, request, send, sse, CALL_LIMIT, STREAM_LIMIT};
 
 pub const API_BASE: &str = "https://api.anthropic.com";
 
@@ -180,33 +180,36 @@ impl ModelProvider for AnthropicModels {
         sink: &mut dyn TextSink,
     ) -> Result<ModelTurn, ModelError> {
         let http = self.request(ep, reqwest::Method::POST, "/v1/messages")?;
-        let res = send(http.json(&body(req))).await?;
-        let events = sse::events(res);
-        pin_mut!(events);
-        let mut acc = Acc {
-            turn: ModelTurn {
-                text: String::new(),
-                tool_calls: Vec::new(),
-                usage: Usage::default(),
-                stop: StopReason::EndTurn,
-            },
-            tools: BTreeMap::new(),
-        };
-        while let Some(ev) = events.next().await {
-            let (event, data) = ev?;
-            match event.as_str() {
-                "ping" => {}
-                "message_stop" => return Ok(acc.turn),
-                _ => acc.on(&event, &json(&data)?, sink)?,
+        limited(STREAM_LIMIT, async {
+            let res = send(http.json(&body(req))).await?;
+            let events = sse::events(res);
+            pin_mut!(events);
+            let mut acc = Acc {
+                turn: ModelTurn {
+                    text: String::new(),
+                    tool_calls: Vec::new(),
+                    usage: Usage::default(),
+                    stop: StopReason::EndTurn,
+                },
+                tools: BTreeMap::new(),
+            };
+            while let Some(ev) = events.next().await {
+                let (event, data) = ev?;
+                match event.as_str() {
+                    "ping" => {}
+                    "message_stop" => return Ok(acc.turn),
+                    _ => acc.on(&event, &json(&data)?, sink)?,
+                }
             }
-        }
-        // The body ended before `message_stop`.
-        Err(ModelError::Outage)
+            // The body ended before `message_stop`.
+            Err(ModelError::Outage)
+        })
+        .await
     }
 
     async fn list_models(&self, ep: &Endpoint<'_>) -> Result<Vec<ModelInfo>, ModelError> {
         let http = self.request(ep, reqwest::Method::GET, "/v1/models?limit=1000")?;
-        let body = limited(async { list_body(send(http).await?).await }).await?;
+        let body = limited(CALL_LIMIT, async { list_body(send(http).await?).await }).await?;
         let ids = body["data"].as_array().into_iter().flatten();
         Ok(ids
             .filter_map(|m| m["id"].as_str())

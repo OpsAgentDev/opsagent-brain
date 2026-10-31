@@ -10,7 +10,7 @@ use opsagent_core::model::{
 };
 use serde_json::{json, Value};
 
-use super::{count, json, limited, list_body, request, send, sse};
+use super::{count, json, limited, list_body, request, send, sse, CALL_LIMIT, STREAM_LIMIT};
 use crate::config::OPENAI_TOOL_PREFIXES;
 
 pub const API_BASE: &str = "https://api.openai.com/v1";
@@ -224,23 +224,26 @@ impl ModelProvider for OpenAiModels {
         sink: &mut dyn TextSink,
     ) -> Result<ModelTurn, ModelError> {
         let http = bearer(ep, reqwest::Method::POST, "/chat/completions")?;
-        let res = send(http.json(&body(ep, req))).await?;
-        let events = sse::events(res);
-        pin_mut!(events);
-        let mut acc = Acc::default();
-        while let Some(ev) = events.next().await {
-            let (_, data) = ev?;
-            if data.trim() == "[DONE]" {
-                break;
+        limited(STREAM_LIMIT, async {
+            let res = send(http.json(&body(ep, req))).await?;
+            let events = sse::events(res);
+            pin_mut!(events);
+            let mut acc = Acc::default();
+            while let Some(ev) = events.next().await {
+                let (_, data) = ev?;
+                if data.trim() == "[DONE]" {
+                    break;
+                }
+                acc.on(&json(&data)?, sink)?;
             }
-            acc.on(&json(&data)?, sink)?;
-        }
-        acc.finish()
+            acc.finish()
+        })
+        .await
     }
 
     async fn list_models(&self, ep: &Endpoint<'_>) -> Result<Vec<ModelInfo>, ModelError> {
         let http = bearer(ep, reqwest::Method::GET, "/models")?;
-        let body = limited(async { list_body(send(http).await?).await }).await?;
+        let body = limited(CALL_LIMIT, async { list_body(send(http).await?).await }).await?;
         let ids = body["data"]
             .as_array()
             .ok_or_else(|| ModelError::Other("bad_response".into()))?;

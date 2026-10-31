@@ -96,6 +96,9 @@ const BODY_CAP: usize = 2 * 1024 * 1024;
 /// Every call that lists models, and every explanation, ends within this.
 pub const CALL_LIMIT: Duration = Duration::from_secs(120);
 
+/// One streamed model call ends within this.
+const STREAM_LIMIT: Duration = Duration::from_secs(300);
+
 /// `res`'s body, read chunk by chunk; past `BODY_CAP` or broken, an `Outage`.
 async fn read_capped(mut res: reqwest::Response) -> Result<Vec<u8>, ModelError> {
     let mut out = Vec::new();
@@ -115,11 +118,12 @@ async fn list_body(res: reqwest::Response) -> Result<Value, ModelError> {
     serde_json::from_slice(&b).map_err(|_| ModelError::Other("bad_response".into()))
 }
 
-/// `f` cut at `CALL_LIMIT`; elapsed is an `Outage`.
+/// `f` cut at `limit`; elapsed is an `Outage`.
 async fn limited<T>(
+    limit: Duration,
     f: impl std::future::Future<Output = Result<T, ModelError>>,
 ) -> Result<T, ModelError> {
-    tokio::time::timeout(CALL_LIMIT, f)
+    tokio::time::timeout(limit, f)
         .await
         .unwrap_or(Err(ModelError::Outage))
 }
