@@ -30,6 +30,7 @@ mod orgs;
 mod passkeys;
 mod purge;
 mod recipients;
+mod resolver;
 mod resources;
 mod retention;
 mod runs;
