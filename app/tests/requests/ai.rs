@@ -7,7 +7,7 @@ use opsagent_brain::{adapters::db::Pg, models::_entities::audit_events};
 use opsagent_core::{
     ai::AiRepo,
     billing::BillingRepo,
-    model::{ModelError, ModelInfo, ModelProvider, ModelRequest, ModelTurn, TextSink},
+    model::{Endpoint, ModelError, ModelInfo, ModelProvider, ModelRequest, ModelTurn, TextSink},
 };
 use sea_orm::{prelude::Decimal, ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::{json, Value};
@@ -32,14 +32,14 @@ struct ListOnly(Vec<ModelInfo>);
 impl ModelProvider for ListOnly {
     async fn stream(
         &self,
-        _: &str,
+        _: &Endpoint<'_>,
         _: &ModelRequest,
         _: &mut dyn TextSink,
     ) -> Result<ModelTurn, ModelError> {
         unreachable!("settings make no model call")
     }
 
-    async fn list_models(&self, _: &str) -> Result<Vec<ModelInfo>, ModelError> {
+    async fn list_models(&self, _: &Endpoint<'_>) -> Result<Vec<ModelInfo>, ModelError> {
         Ok(self.0.clone())
     }
 }

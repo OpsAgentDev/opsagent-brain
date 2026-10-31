@@ -288,7 +288,14 @@ impl AiAccess {
     ) -> Result<ModelTurn, ModelError> {
         let mut waits = self.s.backoff.iter();
         loop {
-            match p.stream(&plan.api_key, req, &mut *sink).await {
+            match p
+                .stream(
+                    &self.s.official(plan.provider, &plan.api_key),
+                    req,
+                    &mut *sink,
+                )
+                .await
+            {
                 Err(ModelError::RateLimited) => match waits.next() {
                     Some(d) => tokio::time::sleep(*d).await,
                     None => return Err(ModelError::RateLimited),

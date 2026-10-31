@@ -1,5 +1,7 @@
 //! The model port (dashboard-ai.md, The model port): one streamed turn of a chat model, with
 //! tools, behind a provider-neutral shape. No I/O here.
+use std::net::SocketAddr;
+
 use async_trait::async_trait;
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -131,17 +133,29 @@ pub trait TextSink: Send {
     fn delta(&mut self, text: &str);
 }
 
+/// Where one model call goes. No `Debug`: it holds the key.
+#[derive(Clone, Copy)]
+pub struct Endpoint<'a> {
+    /// No trailing `/`; the adapter appends its paths.
+    pub base_url: &'a str,
+    pub api_key: &'a str,
+    /// Not the style's official URL.
+    pub custom: bool,
+    /// The checked addresses to connect to; empty means system DNS.
+    pub pin: &'a [SocketAddr],
+}
+
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
     /// One model call; text deltas go to `sink` as they arrive.
     async fn stream(
         &self,
-        api_key: &str,
+        ep: &Endpoint<'_>,
         req: &ModelRequest,
         sink: &mut dyn TextSink,
     ) -> Result<ModelTurn, ModelError>;
 
-    async fn list_models(&self, api_key: &str) -> Result<Vec<ModelInfo>, ModelError>;
+    async fn list_models(&self, ep: &Endpoint<'_>) -> Result<Vec<ModelInfo>, ModelError>;
 }
 
 /// List prices in US dollars per million tokens.

@@ -62,7 +62,12 @@ impl PutKey {
             return Err(key_invalid());
         }
         let a = &self.access;
-        let list = match a.models.get(provider).list_models(key).await {
+        let list = match a
+            .models
+            .get(provider)
+            .list_models(&a.s.official(provider, key))
+            .await
+        {
             Ok(l) => l,
             Err(ModelError::Auth) => return Err(key_invalid()),
             Err(_) => return Err(provider_down()),
@@ -121,7 +126,12 @@ async fn live_models(a: &AiAccess, org: uuid::Uuid) -> AppResult<(ModelKey, Vec<
         .ok_or(AppError::NotFound)?;
     let api_key: Zeroizing<String> = open_key(&*a.uow, &*a.kek, &k).await?;
     let now = a.clock.now();
-    match a.models.get(k.provider).list_models(&api_key).await {
+    match a
+        .models
+        .get(k.provider)
+        .list_models(&a.s.official(k.provider, &api_key))
+        .await
+    {
         Ok(list) => {
             a.uow
                 .ai()

@@ -482,7 +482,7 @@ mod tests {
             assert_eq!(m.mode, ModelMode::Live);
             assert_eq!(m.anthropic_version, "2023-06-01");
             assert_eq!(m.anthropic_api_base, "https://api.anthropic.com");
-            assert_eq!(m.openai_api_base, "https://api.openai.com");
+            assert_eq!(m.openai_api_base, "https://api.openai.com/v1");
         }
         assert_eq!(
             (MODEL_ROUTINE, MODEL_CHAT),

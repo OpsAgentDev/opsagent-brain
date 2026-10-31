@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 use opsagent_core::{
     billing::{BillingProvider, BillingResult, CheckoutRequest},
-    model::{ModelError, ModelInfo, ModelProvider, ModelRequest, ModelTurn, TextSink},
+    model::{Endpoint, ModelError, ModelInfo, ModelProvider, ModelRequest, ModelTurn, TextSink},
 };
 use uuid::Uuid;
 
@@ -126,15 +126,15 @@ impl BillingProvider for Swappable<dyn BillingProvider> {
 impl ModelProvider for Swappable<dyn ModelProvider> {
     async fn stream(
         &self,
-        api_key: &str,
+        ep: &Endpoint<'_>,
         req: &ModelRequest,
         sink: &mut dyn TextSink,
     ) -> Result<ModelTurn, ModelError> {
-        self.get().stream(api_key, req, sink).await
+        self.get().stream(ep, req, sink).await
     }
 
-    async fn list_models(&self, api_key: &str) -> Result<Vec<ModelInfo>, ModelError> {
-        self.get().list_models(api_key).await
+    async fn list_models(&self, ep: &Endpoint<'_>) -> Result<Vec<ModelInfo>, ModelError> {
+        self.get().list_models(ep).await
     }
 }
 

@@ -1,95 +1,213 @@
-//! OpenAI's Responses API (streamed, `store: false`). Serves BYOK only.
+//! OpenAI-style Chat Completions (streamed, with the usage chunk requested), for the official
+//! API and every compatible endpoint.
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use futures::{pin_mut, StreamExt};
 use opsagent_core::model::{
-    ModelError, ModelInfo, ModelMessage, ModelProvider, ModelRequest, ModelTurn, MsgRole, Part,
-    StopReason, TextSink, ToolCall, Usage,
+    Endpoint, ModelError, ModelInfo, ModelMessage, ModelProvider, ModelRequest, ModelTurn, MsgRole,
+    Part, StopReason, TextSink, ToolCall, Usage,
 };
 use serde_json::{json, Value};
 
-use super::{count, http_client, json, send, sse};
+use super::{count, json, request, send, sse};
 use crate::config::OPENAI_TOOL_PREFIXES;
 
-pub const API_BASE: &str = "https://api.openai.com";
+pub const API_BASE: &str = "https://api.openai.com/v1";
 
-pub struct OpenAiModels {
-    base: String,
-    http: reqwest::Client,
-}
+#[derive(Default)]
+pub struct OpenAiModels;
 
 impl OpenAiModels {
-    /// Fails only if the TLS backend cannot initialise.
-    pub fn new(base: &str) -> Result<Self, reqwest::Error> {
-        Ok(Self {
-            base: base.trim_end_matches('/').to_owned(),
-            http: http_client()?,
-        })
-    }
-
-    fn request(&self, method: reqwest::Method, path: &str, key: &str) -> reqwest::RequestBuilder {
-        let url = format!("{}{path}", self.base);
-        self.http.request(method, url).bearer_auth(key)
+    pub fn new() -> Self {
+        Self
     }
 }
 
-fn body(req: &ModelRequest) -> Value {
+fn bearer(
+    ep: &Endpoint,
+    method: reqwest::Method,
+    path: &str,
+) -> Result<reqwest::RequestBuilder, ModelError> {
+    Ok(request(ep, method, path)?.bearer_auth(ep.api_key))
+}
+
+fn body(ep: &Endpoint, req: &ModelRequest) -> Value {
     let tools: Vec<Value> = req
         .tools
         .iter()
         .map(|t| {
-            json!({"type": "function", "name": t.name, "description": t.description,
-                   "parameters": t.input_schema})
+            json!({"type": "function", "function": {"name": t.name,
+                   "description": t.description, "parameters": t.input_schema}})
         })
         .collect();
+    let mut messages = vec![json!({"role": "system", "content": req.system})];
+    messages.extend(req.messages.iter().flat_map(messages_of));
     let mut b = json!({
         "model": req.model,
-        "instructions": req.system,
-        "input": req.messages.iter().flat_map(items).collect::<Vec<_>>(),
-        "max_output_tokens": req.max_tokens,
+        "messages": messages,
         "stream": true,
-        "store": false,
+        "stream_options": {"include_usage": true},
     });
+    // Plan ruling 7: reasoning models on the official API refuse `max_tokens`; many
+    // compatible vendors read only `max_tokens`.
+    let max = if ep.custom {
+        "max_tokens"
+    } else {
+        "max_completion_tokens"
+    };
+    b[max] = json!(req.max_tokens);
     if !tools.is_empty() {
         b["tools"] = Value::Array(tools);
     }
     b
 }
 
-/// One input item per part: text as a role message, tool calls and results as their items.
-fn items(m: &ModelMessage) -> Vec<Value> {
-    let role = m.role.as_str();
+/// An assistant message as one message (text and tool calls together); a user message as
+/// its text and one `tool` message per tool result, in order.
+fn messages_of(m: &ModelMessage) -> Vec<Value> {
+    if m.role == MsgRole::Assistant {
+        let text: String = m.parts.iter().filter_map(text_of).collect();
+        let calls: Vec<Value> = m
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                Part::ToolCall(c) => Some(json!({"id": c.id, "type": "function",
+                    "function": {"name": c.name, "arguments": c.args.to_string()}})),
+                _ => None,
+            })
+            .collect();
+        return match (calls.is_empty(), text.is_empty()) {
+            (true, true) => vec![],
+            (true, false) => vec![json!({"role": "assistant", "content": text})],
+            (false, _) => {
+                let content = (!text.is_empty()).then_some(text);
+                vec![json!({"role": "assistant", "content": content, "tool_calls": calls})]
+            }
+        };
+    }
     m.parts
         .iter()
         .filter_map(|p| match p {
-            Part::Text(t) if t.is_empty() => None,
-            Part::Text(t) => Some(json!({"role": role, "content": t})),
-            Part::ToolCall(c) if m.role == MsgRole::Assistant => Some(json!({
-                "type": "function_call", "call_id": c.id, "name": c.name,
-                "arguments": c.args.to_string()})),
-            Part::ToolCall(_) => None,
-            Part::ToolResult { call_id, content } => Some(json!({
-                "type": "function_call_output", "call_id": call_id, "output": content})),
+            Part::ToolResult { call_id, content } => {
+                Some(json!({"role": "tool", "tool_call_id": call_id, "content": content}))
+            }
+            p => text_of(p)
+                .filter(|t| !t.is_empty())
+                .map(|t| json!({"role": "user", "content": t})),
         })
         .collect()
 }
 
-/// `input_tokens` includes the cached ones; `Usage` keeps them apart.
+fn text_of(p: &Part) -> Option<&str> {
+    match p {
+        Part::Text(t) => Some(t),
+        _ => None,
+    }
+}
+
+/// `prompt_tokens` includes the cached ones; `Usage` keeps them apart.
 fn usage(u: &Value) -> Usage {
-    let cached = count(&u["input_tokens_details"], "cached_tokens");
+    let cached = count(&u["prompt_tokens_details"], "cached_tokens");
     Usage {
-        input_tokens: count(u, "input_tokens").saturating_sub(cached),
-        output_tokens: count(u, "output_tokens"),
+        input_tokens: count(u, "prompt_tokens").saturating_sub(cached),
+        output_tokens: count(u, "completion_tokens"),
         cache_read_tokens: cached,
         cache_write_tokens: 0,
     }
 }
 
-/// The error a `response.failed` or `error` event carries.
-fn stream_error(code: Option<&str>) -> ModelError {
-    match code {
-        Some("rate_limit_exceeded") => ModelError::RateLimited,
-        Some("server_error" | "server_is_overloaded") => ModelError::Outage,
-        _ => ModelError::Other("stream_error".into()),
+/// The error an in-stream `{"error": ...}` chunk carries (its `code` or `type`).
+fn stream_error(err: &Value) -> ModelError {
+    let names = [err["code"].as_str(), err["type"].as_str()];
+    let any = |want: &[&str]| names.iter().flatten().any(|n| want.contains(n));
+    if any(&["rate_limit_exceeded"]) {
+        ModelError::RateLimited
+    } else if any(&["server_error", "overloaded"]) {
+        ModelError::Outage
+    } else {
+        ModelError::Other("stream_error".into())
+    }
+}
+
+/// A tool call being streamed: id and name from its first fragment, arguments so far.
+struct Pending {
+    id: String,
+    name: String,
+    args: String,
+}
+
+/// The turn so far, built from the stream's chunks.
+#[derive(Default)]
+struct Acc {
+    text: String,
+    calls: BTreeMap<u64, Pending>,
+    usage: Option<Usage>,
+    stop: Option<StopReason>,
+}
+
+impl Acc {
+    fn on(&mut self, v: &Value, sink: &mut dyn TextSink) -> Result<(), ModelError> {
+        if v["error"].is_object() {
+            return Err(stream_error(&v["error"]));
+        }
+        if v["usage"].is_object() {
+            self.usage = Some(usage(&v["usage"]));
+        }
+        let choice = &v["choices"][0];
+        let d = &choice["delta"];
+        if let Some(t) = d["content"].as_str().filter(|t| !t.is_empty()) {
+            sink.delta(t);
+            self.text.push_str(t);
+        }
+        for c in d["tool_calls"].as_array().into_iter().flatten() {
+            let s = |v: &Value| v.as_str().unwrap_or_default().to_owned();
+            let p = self
+                .calls
+                .entry(count(c, "index"))
+                .or_insert_with(|| Pending {
+                    id: s(&c["id"]),
+                    name: s(&c["function"]["name"]),
+                    args: String::new(),
+                });
+            p.args
+                .push_str(c["function"]["arguments"].as_str().unwrap_or_default());
+        }
+        if let Some(r) = choice["finish_reason"].as_str() {
+            self.stop = Some(match r {
+                "tool_calls" => StopReason::ToolUse,
+                "length" => StopReason::MaxTokens,
+                _ => StopReason::EndTurn,
+            });
+        }
+        Ok(())
+    }
+
+    /// The finished turn; without a `finish_reason` the response was cut short.
+    fn finish(self) -> Result<ModelTurn, ModelError> {
+        let stop = self.stop.ok_or(ModelError::Outage)?;
+        let mut tool_calls = Vec::with_capacity(self.calls.len());
+        for (_, p) in self.calls {
+            let args = match p.args.trim() {
+                "" => json!({}),
+                a => json(a)?,
+            };
+            tool_calls.push(ToolCall {
+                id: p.id,
+                name: p.name,
+                args,
+            });
+        }
+        let usage = self.usage.unwrap_or_else(|| {
+            tracing::warn!(error_code = "usage_missing", "model stream sent no usage");
+            Usage::default()
+        });
+        Ok(ModelTurn {
+            text: self.text,
+            tool_calls,
+            usage,
+            stop,
+        })
     }
 }
 
@@ -97,77 +215,37 @@ fn stream_error(code: Option<&str>) -> ModelError {
 impl ModelProvider for OpenAiModels {
     async fn stream(
         &self,
-        api_key: &str,
+        ep: &Endpoint<'_>,
         req: &ModelRequest,
         sink: &mut dyn TextSink,
     ) -> Result<ModelTurn, ModelError> {
-        let http = self.request(reqwest::Method::POST, "/v1/responses", api_key);
-        let res = send(http.json(&body(req))).await?;
+        let http = bearer(ep, reqwest::Method::POST, "/chat/completions")?;
+        let res = send(http.json(&body(ep, req))).await?;
         let events = sse::events(res);
         pin_mut!(events);
-        let mut text = String::new();
-        let mut tool_calls = Vec::new();
+        let mut acc = Acc::default();
         while let Some(ev) = events.next().await {
-            let (event, data) = ev?;
-            let v = json(&data)?;
-            let stop = match event.as_str() {
-                "response.output_text.delta" => {
-                    let t = v["delta"].as_str().unwrap_or_default();
-                    sink.delta(t);
-                    text.push_str(t);
-                    continue;
-                }
-                "response.output_item.done" if v["item"]["type"] == "function_call" => {
-                    let it = &v["item"];
-                    let s = |k: &str| it[k].as_str().unwrap_or_default().to_owned();
-                    let args = match it["arguments"].as_str().map(str::trim) {
-                        None | Some("") => json!({}),
-                        Some(a) => json(a)?,
-                    };
-                    tool_calls.push(ToolCall {
-                        id: s("call_id"),
-                        name: s("name"),
-                        args,
-                    });
-                    continue;
-                }
-                "response.completed" if !tool_calls.is_empty() => StopReason::ToolUse,
-                "response.completed" => StopReason::EndTurn,
-                "response.incomplete" => {
-                    let reason = v["response"]["incomplete_details"]["reason"].as_str();
-                    if reason == Some("max_output_tokens") {
-                        StopReason::MaxTokens
-                    } else {
-                        StopReason::EndTurn
-                    }
-                }
-                "response.failed" => {
-                    return Err(stream_error(v["response"]["error"]["code"].as_str()))
-                }
-                "error" => return Err(stream_error(v["code"].as_str())),
-                _ => continue,
-            };
-            let usage = usage(&v["response"]["usage"]);
-            return Ok(ModelTurn {
-                text,
-                tool_calls,
-                usage,
-                stop,
-            });
+            let (_, data) = ev?;
+            if data.trim() == "[DONE]" {
+                break;
+            }
+            acc.on(&json(&data)?, sink)?;
         }
-        // The body ended before the response did.
-        Err(ModelError::Outage)
+        acc.finish()
     }
 
-    async fn list_models(&self, api_key: &str) -> Result<Vec<ModelInfo>, ModelError> {
-        let res = send(self.request(reqwest::Method::GET, "/v1/models", api_key)).await?;
+    async fn list_models(&self, ep: &Endpoint<'_>) -> Result<Vec<ModelInfo>, ModelError> {
+        let res = send(bearer(ep, reqwest::Method::GET, "/models")?).await?;
         let body: Value = res.json().await.map_err(|_| ModelError::Outage)?;
-        let ids = body["data"].as_array().into_iter().flatten();
+        let ids = body["data"]
+            .as_array()
+            .ok_or_else(|| ModelError::Other("bad_response".into()))?;
         Ok(ids
+            .iter()
             .filter_map(|m| m["id"].as_str())
             .map(|id| ModelInfo {
                 id: id.to_owned(),
-                tools: OPENAI_TOOL_PREFIXES.iter().any(|p| id.starts_with(p)),
+                tools: ep.custom || OPENAI_TOOL_PREFIXES.iter().any(|p| id.starts_with(p)),
             })
             .collect())
     }

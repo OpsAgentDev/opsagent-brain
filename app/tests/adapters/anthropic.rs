@@ -1,8 +1,8 @@
 //! `AnthropicModels` against a wiremock Messages API.
 use opsagent_brain::adapters::model::anthropic::AnthropicModels;
 use opsagent_core::model::{
-    ModelError, ModelInfo, ModelMessage, ModelProvider, ModelRequest, MsgRole, Part, StopReason,
-    ToolCall, ToolDef, Usage,
+    Endpoint, ModelError, ModelInfo, ModelMessage, ModelProvider, ModelRequest, MsgRole, Part,
+    StopReason, ToolCall, ToolDef, Usage,
 };
 use serde_json::{json, Value};
 use wiremock::{
@@ -14,8 +14,18 @@ use super::{sse_body, status_cases, Collect};
 
 const KEY: &str = "sk-ant-test";
 
-fn models(server: &MockServer) -> AnthropicModels {
-    AnthropicModels::new(&server.uri(), "2023-06-01").unwrap()
+fn models() -> AnthropicModels {
+    AnthropicModels::new("2023-06-01")
+}
+
+/// The official-style endpoint at `server` (leaked: a test's base outlives the call).
+fn ep(server: &MockServer) -> Endpoint<'static> {
+    Endpoint {
+        base_url: server.uri().leak(),
+        api_key: KEY,
+        custom: false,
+        pin: &[],
+    }
 }
 
 fn tool(name: &str) -> ToolDef {
@@ -91,8 +101,12 @@ async fn anthropic_streams_text_and_usage() {
     ]);
     messages_ok(body).expect(1).mount(&server).await;
     let mut sink = Collect::default();
-    let turn = models(&server)
-        .stream(KEY, &request(vec![tool("a"), tool("b")]), &mut sink)
+    let turn = models()
+        .stream(
+            &ep(&server),
+            &request(vec![tool("a"), tool("b")]),
+            &mut sink,
+        )
         .await
         .unwrap();
     assert_eq!(sink.0, vec!["Hel", "lo."]);
@@ -202,8 +216,8 @@ async fn anthropic_assembles_tool_use_from_json_deltas() {
             content: "<untrusted>x</untrusted>".into(),
         }],
     });
-    let turn = models(&server)
-        .stream(KEY, &req, &mut Collect::default())
+    let turn = models()
+        .stream(&ep(&server), &req, &mut Collect::default())
         .await
         .unwrap();
     assert_eq!(turn.stop, StopReason::ToolUse);
@@ -243,8 +257,8 @@ async fn anthropic_status_mapping_401_429_404_500() {
             .respond_with(ResponseTemplate::new(status).set_body_json(body.clone()))
             .mount(&server)
             .await;
-        let got = models(&server)
-            .stream(KEY, &request(vec![]), &mut Collect::default())
+        let got = models()
+            .stream(&ep(&server), &request(vec![]), &mut Collect::default())
             .await;
         assert_eq!(got.unwrap_err(), want, "{status}");
     }
@@ -255,8 +269,8 @@ async fn anthropic_status_mapping_401_429_404_500() {
         .respond_with(ResponseTemplate::new(400).set_body_json(gone))
         .mount(&server)
         .await;
-    let got = models(&server)
-        .stream(KEY, &request(vec![]), &mut Collect::default())
+    let got = models()
+        .stream(&ep(&server), &request(vec![]), &mut Collect::default())
         .await;
     assert_eq!(got.unwrap_err(), ModelError::ModelGone);
     // An overloaded error mid-stream is an outage.
@@ -266,14 +280,17 @@ async fn anthropic_status_mapping_401_429_404_500() {
         json!({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}),
     )]);
     messages_ok(body).mount(&server).await;
-    let got = models(&server)
-        .stream(KEY, &request(vec![]), &mut Collect::default())
+    let got = models()
+        .stream(&ep(&server), &request(vec![]), &mut Collect::default())
         .await;
     assert_eq!(got.unwrap_err(), ModelError::Outage);
     // Nothing listening is an outage too.
-    let down = AnthropicModels::new("http://127.0.0.1:1", "2023-06-01").unwrap();
-    let got = down
-        .stream(KEY, &request(vec![]), &mut Collect::default())
+    let down = Endpoint {
+        base_url: "http://127.0.0.1:1",
+        ..ep(&server)
+    };
+    let got = models()
+        .stream(&down, &request(vec![]), &mut Collect::default())
         .await;
     assert_eq!(got.unwrap_err(), ModelError::Outage);
 }
@@ -291,7 +308,7 @@ async fn anthropic_list_models_marks_tool_support() {
         })))
         .mount(&server)
         .await;
-    let got = models(&server).list_models(KEY).await.unwrap();
+    let got = models().list_models(&ep(&server)).await.unwrap();
     let info = |id: &str| ModelInfo {
         id: id.into(),
         tools: true,

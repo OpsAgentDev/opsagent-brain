@@ -5,36 +5,35 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use futures::{pin_mut, StreamExt};
 use opsagent_core::model::{
-    ModelError, ModelInfo, ModelMessage, ModelProvider, ModelRequest, ModelTurn, Part, StopReason,
-    TextSink, ToolCall, Usage,
+    Endpoint, ModelError, ModelInfo, ModelMessage, ModelProvider, ModelRequest, ModelTurn, Part,
+    StopReason, TextSink, ToolCall, Usage,
 };
 use serde_json::{json, Value};
 
-use super::{count, http_client, json, send, sse};
+use super::{count, json, request, send, sse};
 
 pub const API_BASE: &str = "https://api.anthropic.com";
 
 pub struct AnthropicModels {
-    base: String,
     version: String,
-    http: reqwest::Client,
 }
 
 impl AnthropicModels {
-    /// Fails only if the TLS backend cannot initialise.
-    pub fn new(base: &str, version: &str) -> Result<Self, reqwest::Error> {
-        Ok(Self {
-            base: base.trim_end_matches('/').to_owned(),
+    pub fn new(version: &str) -> Self {
+        Self {
             version: version.to_owned(),
-            http: http_client()?,
-        })
+        }
     }
 
-    fn request(&self, method: reqwest::Method, path: &str, key: &str) -> reqwest::RequestBuilder {
-        self.http
-            .request(method, format!("{}{path}", self.base))
-            .header("x-api-key", key)
-            .header("anthropic-version", &self.version)
+    fn request(
+        &self,
+        ep: &Endpoint,
+        method: reqwest::Method,
+        path: &str,
+    ) -> Result<reqwest::RequestBuilder, ModelError> {
+        Ok(request(ep, method, path)?
+            .header("x-api-key", ep.api_key)
+            .header("anthropic-version", &self.version))
     }
 }
 
@@ -176,11 +175,11 @@ impl Acc {
 impl ModelProvider for AnthropicModels {
     async fn stream(
         &self,
-        api_key: &str,
+        ep: &Endpoint<'_>,
         req: &ModelRequest,
         sink: &mut dyn TextSink,
     ) -> Result<ModelTurn, ModelError> {
-        let http = self.request(reqwest::Method::POST, "/v1/messages", api_key);
+        let http = self.request(ep, reqwest::Method::POST, "/v1/messages")?;
         let res = send(http.json(&body(req))).await?;
         let events = sse::events(res);
         pin_mut!(events);
@@ -205,8 +204,8 @@ impl ModelProvider for AnthropicModels {
         Err(ModelError::Outage)
     }
 
-    async fn list_models(&self, api_key: &str) -> Result<Vec<ModelInfo>, ModelError> {
-        let http = self.request(reqwest::Method::GET, "/v1/models?limit=1000", api_key);
+    async fn list_models(&self, ep: &Endpoint<'_>) -> Result<Vec<ModelInfo>, ModelError> {
+        let http = self.request(ep, reqwest::Method::GET, "/v1/models?limit=1000")?;
         let res = send(http).await?;
         let body: Value = res.json().await.map_err(|_| ModelError::Outage)?;
         let ids = body["data"].as_array().into_iter().flatten();

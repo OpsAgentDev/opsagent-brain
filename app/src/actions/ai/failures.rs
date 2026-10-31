@@ -198,7 +198,10 @@ impl AiAccess {
         p: &dyn ModelProvider,
     ) -> Result<String, AiCallError> {
         let org = scope.organisation.id;
-        let list = match p.list_models(&plan.api_key).await {
+        let list = match p
+            .list_models(&self.s.official(plan.provider, &plan.api_key))
+            .await
+        {
             Ok(l) => l,
             Err(e) => return Err(self.failed(scope, plan, e).await),
         };

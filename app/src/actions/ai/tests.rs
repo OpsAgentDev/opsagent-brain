@@ -7,7 +7,8 @@ use opsagent_core::{
     ai::{AiRepo, KeySource, KeyStatus, ModelRole, Purpose, RoleModels, Slot, UsageRow},
     billing::{BillingRepo, BillingStatus, SubscriptionState, Tier},
     model::{
-        AiProvider, ModelError, ModelInfo, ModelProvider, ModelRequest, ModelTurn, TextSink, Usage,
+        AiProvider, Endpoint, ModelError, ModelInfo, ModelProvider, ModelRequest, ModelTurn,
+        TextSink, Usage,
     },
 };
 use sea_orm::prelude::Decimal;
@@ -45,16 +46,16 @@ struct Spy {
 impl ModelProvider for Spy {
     async fn stream(
         &self,
-        api_key: &str,
+        ep: &Endpoint<'_>,
         req: &ModelRequest,
         sink: &mut dyn TextSink,
     ) -> Result<ModelTurn, ModelError> {
-        self.keys.lock().unwrap().push(api_key.into());
-        self.fake.stream(api_key, req, sink).await
+        self.keys.lock().unwrap().push(ep.api_key.into());
+        self.fake.stream(ep, req, sink).await
     }
 
-    async fn list_models(&self, api_key: &str) -> Result<Vec<ModelInfo>, ModelError> {
-        self.fake.list_models(api_key).await
+    async fn list_models(&self, ep: &Endpoint<'_>) -> Result<Vec<ModelInfo>, ModelError> {
+        self.fake.list_models(ep).await
     }
 }
 
@@ -118,6 +119,8 @@ impl Env {
             topups: false,
             web_base_url: "https://web.test/".into(),
             backoff: vec![std::time::Duration::ZERO; 3],
+            anthropic_base: "https://api.anthropic.com".into(),
+            openai_base: "https://api.openai.com/v1".into(),
         };
         let uow = Arc::new(self.store.clone());
         Arc::new(AiAccess::new(

@@ -19,7 +19,7 @@ use std::{sync::Arc, time::Duration};
 use axum::http::StatusCode;
 use opsagent_core::{
     ai::{ModelKey, ModelRole},
-    model::{AiProvider, ModelInfo},
+    model::{AiProvider, Endpoint, ModelInfo},
 };
 use opsagent_secrets::{Aad, Kek};
 use uuid::Uuid;
@@ -77,6 +77,9 @@ pub struct AiSettings {
     pub web_base_url: String,
     /// The waits between retries of a rate-limited call (plan ruling 15).
     pub backoff: Vec<Duration>,
+    /// The styles' official URLs (`ANTHROPIC_API_BASE`/`OPENAI_API_BASE` override them).
+    pub anthropic_base: String,
+    pub openai_base: String,
 }
 
 impl AiSettings {
@@ -89,6 +92,22 @@ impl AiSettings {
             topups: set && c.stripe_configured(),
             web_base_url: c.web_base_url.clone(),
             backoff: [1, 2, 4].map(Duration::from_secs).to_vec(),
+            anthropic_base: m.anthropic_api_base.clone(),
+            openai_base: m.openai_api_base.clone(),
+        }
+    }
+
+    /// `style`'s official endpoint with `api_key`, on system DNS.
+    fn official<'a>(&'a self, style: AiProvider, api_key: &'a str) -> Endpoint<'a> {
+        let base_url = match style {
+            AiProvider::Anthropic => &self.anthropic_base,
+            AiProvider::OpenAi => &self.openai_base,
+        };
+        Endpoint {
+            base_url,
+            api_key,
+            custom: false,
+            pin: &[],
         }
     }
 

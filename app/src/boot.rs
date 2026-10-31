@@ -162,12 +162,9 @@ fn models(s: &ModelSettings) -> AppResult<ModelProviders> {
             openai: fake,
         });
     }
-    let built = |_| internal("models: HTTP client could not be built");
     Ok(ModelProviders {
-        anthropic: Arc::new(
-            AnthropicModels::new(&s.anthropic_api_base, &s.anthropic_version).map_err(built)?,
-        ),
-        openai: Arc::new(OpenAiModels::new(&s.openai_api_base).map_err(built)?),
+        anthropic: Arc::new(AnthropicModels::new(&s.anthropic_version)),
+        openai: Arc::new(OpenAiModels::new()),
     })
 }
 
