@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use url::{Host, Url};
 
 /// How strictly a base URL is judged. `Public` is BYOK custom URLs, `Trusted` is OpsAgent's
-/// own env URLs (https only), `Local` is dev/test (`AI_ENDPOINT_ALLOW_PRIVATE`).
+/// own env URLs (https, no user info/query/fragment, port 443 or none; any host), `Local` is
+/// dev/test (`AI_ENDPOINT_ALLOW_PRIVATE`; http allowed, any port).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UrlPolicy {
     Public,
@@ -56,12 +57,10 @@ pub fn check_url(raw: &str, policy: UrlPolicy) -> Result<CheckedUrl, EndpointRef
     if !scheme_ok {
         return Err(EndpointRefusal::Scheme);
     }
-    if policy != UrlPolicy::Trusted {
-        let user_info = !u.username().is_empty() || u.password().is_some();
-        let bad_port = policy == UrlPolicy::Public && u.port().is_some();
-        if user_info || u.query().is_some() || u.fragment().is_some() || bad_port {
-            return Err(EndpointRefusal::Form);
-        }
+    let user_info = !u.username().is_empty() || u.password().is_some();
+    let bad_port = policy != UrlPolicy::Local && u.port().is_some();
+    if user_info || u.query().is_some() || u.fragment().is_some() || bad_port {
+        return Err(EndpointRefusal::Form);
     }
     let host = match u.host().ok_or(EndpointRefusal::Form)? {
         Host::Domain(d) => {
@@ -106,7 +105,10 @@ fn public_v4(a: Ipv4Addr) -> bool {
     let [o0, o1, o2, _] = a.octets();
     let cgnat = o0 == 100 && (64..128).contains(&o1);
     let benchmark = o0 == 198 && (o1 == 18 || o1 == 19);
-    let documentation = matches!((o0, o1, o2), (192, 0, 2) | (198, 51, 100) | (203, 0, 113));
+    let documentation = matches!(
+        (o0, o1, o2),
+        (192, 0, 0) | (192, 0, 2) | (198, 51, 100) | (203, 0, 113)
+    );
     !(o0 == 0 // 0/8 incl. unspecified
         || a.is_loopback()
         || a.is_private()
@@ -127,6 +129,8 @@ fn public_v6(a: Ipv6Addr) -> bool {
         || s[0] & 0xffc0 == 0xfe80 // fe80::/10
         || s[0] & 0xfe00 == 0xfc00 // fc00::/7
         || (s[0] == 0x2001 && s[1] == 0x0db8)
+        || s[0] == 0x2002 // 6to4
+        || (s[..6] == [0x64, 0xff9b, 0, 0, 0, 0]) // NAT64
         // IPv4-compatible ::a.b.c.d is judged as its IPv4
         || (s[..6] == [0; 6] && !public_v4(Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8, (s[7] >> 8) as u8, s[7] as u8))))
 }
@@ -201,7 +205,10 @@ mod tests {
     #[test]
     fn check_url_trusted_allows_ip_and_local_but_needs_https() {
         let t = |u| check_url(u, UrlPolicy::Trusted);
-        assert_eq!(t("https://10.0.0.1:8443/v1").unwrap().port, 8443);
+        assert_eq!(t("https://10.0.0.1/v1").unwrap().port, 443);
+        for u in ["https://u@a.com", "https://a.com?x=1", "https://a.com:8443"] {
+            assert_eq!(t(u), Err(EndpointRefusal::Form), "{u}");
+        }
         assert_eq!(t("https://localhost/v1").unwrap().host, "localhost");
         assert_eq!(t("http://api.example.com"), Err(EndpointRefusal::Scheme));
     }
