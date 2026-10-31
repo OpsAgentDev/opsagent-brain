@@ -130,7 +130,9 @@ fn public_v6(a: Ipv6Addr) -> bool {
         || s[0] & 0xfe00 == 0xfc00 // fc00::/7
         || (s[0] == 0x2001 && s[1] == 0x0db8)
         || s[0] == 0x2002 // 6to4
-        || (s[..6] == [0x64, 0xff9b, 0, 0, 0, 0]) // NAT64
+        || (s[..2] == [0x64, 0xff9b] && (s[2..6] == [0; 4] || s[2] == 1)) // NAT64, 64:ff9b:1::/48
+        || (s[..4] == [0; 4] && s[4] == 0xffff && s[5] == 0) // ::ffff:0:0/96 IPv4-translated
+        || (s[0] == 0x2001 && (s[1] == 0 || (s[1] == 2 && s[2] == 0))) // Teredo, benchmarking
         // IPv4-compatible ::a.b.c.d is judged as its IPv4
         || (s[..6] == [0; 6] && !public_v4(Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8, (s[7] >> 8) as u8, s[7] as u8))))
 }
@@ -247,6 +249,13 @@ mod tests {
             "fc00::1",
             "ff02::1",
             "2001:db8::1",
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b:1::1",
+            "2002:a00:1::1",
+            "192.0.0.8",
+            "::ffff:0:a9fe:a9fe",
+            "2001::1",
+            "2001:2::1",
             "::ffff:10.0.0.1",
             "::ffff:169.254.169.254",
         ] {
