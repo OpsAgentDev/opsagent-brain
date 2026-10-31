@@ -212,7 +212,8 @@ impl Env {
 
     async fn put_key(&self) {
         let put = PutKey::new(self.access());
-        put.run(&self.scope, "anthropic", BYOK_KEY).await.unwrap();
+        let input = input("anthropic", BYOK_KEY);
+        put.run(&self.scope, Slot::Primary, input).await.unwrap();
     }
 
     /// Stores a sealed key straight into `slot`, on `base_url` when given.
@@ -462,12 +463,8 @@ async fn call_rechecks_byok_ceiling_before_the_provider() {
     let e = env(vec![text()], true).await;
     e.enable().await;
     e.put_key().await;
-    let patch = KeyPatch {
-        ceiling: Some(Some(dec(10))),
-        ..Default::default()
-    };
-    PatchKey::new(e.access())
-        .run(&e.scope, patch)
+    SetCeiling::new(e.access())
+        .run(&e.scope, Some(dec(10)))
         .await
         .unwrap();
     let a = e.access();
@@ -623,23 +620,17 @@ async fn byok_ceiling_refuses_with_quota_reached() {
     let e = env(vec![], true).await;
     e.enable().await;
     e.put_key().await;
-    let patch = KeyPatch {
-        ceiling: Some(Some(dec(10))),
-        ..Default::default()
-    };
-    PatchKey::new(e.access())
-        .run(&e.scope, patch)
+    SetCeiling::new(e.access())
+        .run(&e.scope, Some(dec(10)))
         .await
         .unwrap();
     e.used(KeySource::Byok, 9).await;
     assert!(e.access().plan(e.org(), ModelRole::Chat).await.is_ok());
     e.used(KeySource::Byok, 1).await;
     assert_eq!(refused_with(&e.access(), e.org()).await, AI_QUOTA_REACHED);
-    let negative = KeyPatch {
-        ceiling: Some(Some(dec(-1))),
-        ..Default::default()
-    };
-    let err = PatchKey::new(e.access()).run(&e.scope, negative).await;
+    let err = SetCeiling::new(e.access())
+        .run(&e.scope, Some(dec(-1)))
+        .await;
     assert_eq!(code(err.unwrap_err()), "invalid");
 }
 
@@ -882,6 +873,15 @@ async fn ai_call_audit_has_no_content() {
     assert!(!text.contains("answer") && !text.contains("system"));
 }
 
+fn input(style: &str, key: &str) -> KeyInput {
+    KeyInput {
+        style: style.into(),
+        base_url: None,
+        api_key: key.into(),
+        models: None,
+    }
+}
+
 #[tokio::test]
 async fn put_key_checks_shape_before_any_call() {
     let e = env(vec![], true).await;
@@ -891,11 +891,16 @@ async fn put_key_checks_shape_before_any_call() {
         ("openai", "pk-123456789012345678"),
         ("anthropic", "sk-ant-short"),
     ] {
-        let err = put.run(&e.scope, p, k).await.unwrap_err();
+        let err = put.run(&e.scope, Slot::Primary, input(p, k)).await;
+        let err = err.unwrap_err();
         assert_eq!(code(err), AI_KEY_INVALID, "{k}");
     }
     assert_eq!(
-        code(put.run(&e.scope, "gemini", BYOK_KEY).await.unwrap_err()),
+        code(
+            put.run(&e.scope, Slot::Primary, input("gemini", BYOK_KEY))
+                .await
+                .unwrap_err()
+        ),
         "invalid"
     );
     assert!(e.store.keys(e.org()).await.unwrap().primary.is_none());

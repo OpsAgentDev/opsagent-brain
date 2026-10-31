@@ -626,9 +626,9 @@ async fn byok_key_revoked_mid_chat_errors_and_next_turn_refused() {
         let w = World::new(req, ctx, steps).await;
         let put = w
             .req
-            .put(&format!("/v1/orgs/{}/ai/key", w.org))
+            .put(&format!("/v1/orgs/{}/ai/keys/primary", w.org))
             .add_header("X-CSRF-Token", &w.csrf)
-            .json(&json!({ "provider": "anthropic", "api_key": "sk-ant-api03-byok-abcd" }))
+            .json(&json!({ "style": "anthropic", "api_key": "sk-ant-api03-byok-abcd" }))
             .await;
         assert_eq!(put.status_code(), 200, "{}", put.text());
         let id = w.session(None).await;

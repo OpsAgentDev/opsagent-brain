@@ -91,7 +91,7 @@ pub(super) fn untrusted(source: &str, text: &str, max: usize) -> String {
     format!("<untrusted source=\"{source}\">{text}</untrusted>")
 }
 
-struct NoSink;
+pub(super) struct NoSink;
 impl TextSink for NoSink {
     fn delta(&mut self, _: &str) {}
 }

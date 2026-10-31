@@ -479,7 +479,7 @@ fn build_ai(d: &Deps, guard: Arc<recipients::MailGuard>) -> ai::Ai {
         ai::AiSettings::new(&d.config),
     ));
     ai::Ai {
-        set_enabled: ai::SetEnabled::new(access.clone()),
+        set_ceiling: ai::SetCeiling::new(access.clone()),
         put_key: ai::PutKey::new(access.clone()),
         list_key_models: ai::ListKeyModels::new(access.clone()),
         patch_key: ai::PatchKey::new(access.clone()),

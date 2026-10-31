@@ -21,7 +21,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::{
-    failures::AiCallError, notices::Notices, open_key, refused, AiSettings, AI_DISABLED,
+    failures::AiCallError, host_of, notices::Notices, open_key, refused, AiSettings, AI_DISABLED,
     AI_QUOTA_REACHED,
 };
 use crate::{
@@ -187,12 +187,8 @@ impl AiAccess {
     }
 
     /// `k` as a connection, its key opened.
-    async fn byok_conn(&self, k: &ModelKey) -> AppResult<Conn> {
-        let base_host = k
-            .base_url
-            .as_deref()
-            .and_then(|u| reqwest::Url::parse(u).ok())
-            .and_then(|u| u.host_str().map(str::to_owned));
+    pub(super) async fn byok_conn(&self, k: &ModelKey) -> AppResult<Conn> {
+        let base_host = k.base_url.as_deref().and_then(host_of);
         Ok(Conn {
             style: k.provider,
             source: KeySource::Byok,

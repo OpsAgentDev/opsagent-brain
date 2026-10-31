@@ -28,7 +28,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 pub use access::{AiAccess, AiStatus, CallPlan, Conn};
-pub use byok::{DeleteKey, KeyModel, KeyPatch, ListKeyModels, PatchKey, PutKey};
+pub use byok::{DeleteKey, KeyInput, KeyModel, ListKeyModels, PatchKey, PutKey, PutKeyOutcome};
 pub use chat::{
     wrap_tool_result, ChatEvent, ChatSessions, ChatTurn, Turn, AI_BUSY, CHAT_PROMPT_VERSION,
     CHAT_SYSTEM_PROMPT, CHAT_TOOLS,
@@ -36,7 +36,7 @@ pub use chat::{
 pub use explain::{current_hash, ExplainFinding, EXPLAIN_PROMPT_VERSION};
 pub use failures::AiCallError;
 pub use notices::Notices;
-pub use settings::SetEnabled;
+pub use settings::SetCeiling;
 pub use topup::StartTopup;
 
 use crate::{
@@ -60,7 +60,7 @@ pub const MODELS_REQUIRED: &str = "models_required";
 
 pub struct Ai {
     pub access: Arc<AiAccess>,
-    pub set_enabled: SetEnabled,
+    pub set_ceiling: SetCeiling,
     pub put_key: PutKey,
     pub list_key_models: ListKeyModels,
     pub patch_key: PatchKey,
@@ -117,11 +117,7 @@ impl AiSettings {
     }
 
     fn conn(&self, o: OpsAgentConnection, slot: Slot) -> Conn {
-        let base_host = o
-            .base_url
-            .as_deref()
-            .and_then(|u| reqwest::Url::parse(u).ok())
-            .and_then(|u| u.host_str().map(str::to_owned));
+        let base_host = o.base_url.as_deref().and_then(host_of);
         Conn {
             style: o.style,
             source: KeySource::OpsAgent,
@@ -165,6 +161,13 @@ impl AiSettings {
         let base = self.web_base_url.trim_end_matches('/');
         format!("{base}/settings/ai{query}")
     }
+}
+
+/// The host of `url`, the only part of a base URL that is stored, shown or audited.
+pub fn host_of(url: &str) -> Option<String> {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
 }
 
 pub(crate) fn refused(status: StatusCode, code: &'static str, detail: &str) -> AppError {
