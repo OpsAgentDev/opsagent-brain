@@ -29,13 +29,15 @@ fn subject(topic: &str, name: &str) -> String {
 
 /// Mail to the fixed `to` (CONTACT_TO) with the visitor as Reply-To. Plain text only.
 pub fn contact_forward(to: &str, c: &ContactForward) -> Mail {
+    let text = format!(
+        "Name: {}\nEmail: {}\nTopic: {}\n\n{}\n",
+        c.name, c.email, c.topic, c.message
+    );
     Mail {
         to: to.into(),
         subject: subject(c.topic, c.name),
-        text: format!(
-            "Name: {}\nEmail: {}\nTopic: {}\n\n{}\n",
-            c.name, c.email, c.topic, c.message
-        ),
+        html: Some(super::branded("New contact message", &text, None)),
+        text,
         reply_to: Some(c.email.into()),
         ..Default::default()
     }
@@ -59,7 +61,7 @@ mod tests {
         let m = contact_forward("info@opsagent.dev", &fwd("Ann"));
         assert_eq!(m.to, "info@opsagent.dev");
         assert_eq!(m.reply_to.as_deref(), Some("v@x.io"));
-        assert_eq!(m.html, None);
+        assert!(m.html.is_some());
         for part in ["Ann", "v@x.io", "security", "Hello there, audit please."] {
             assert!(m.text.contains(part), "{part}");
         }

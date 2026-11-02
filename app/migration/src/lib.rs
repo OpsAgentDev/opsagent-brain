@@ -25,6 +25,7 @@ mod m20261028_000020_audit_purge;
 mod m20261029_000021_billing;
 mod m20261030_000022_dashboard_ai;
 mod m20261031_000023_ai_connections;
+mod m20261102_000024_human_reviews;
 
 pub struct Migrator;
 
@@ -55,6 +56,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261029_000021_billing::Migration),
             Box::new(m20261030_000022_dashboard_ai::Migration),
             Box::new(m20261031_000023_ai_connections::Migration),
+            Box::new(m20261102_000024_human_reviews::Migration),
             // inject-above (do not remove this comment)
         ]
     }

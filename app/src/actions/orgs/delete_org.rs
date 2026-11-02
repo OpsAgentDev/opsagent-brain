@@ -246,6 +246,9 @@ mod tests {
                 fn chat(&self) -> &dyn opsagent_core::chat::ChatRepo {
                     self.0.chat()
                 }
+                fn human_reviews(&self) -> &dyn opsagent_core::human_review::HumanReviewsRepo {
+                    self.0.human_reviews()
+                }
             }
         };
     }

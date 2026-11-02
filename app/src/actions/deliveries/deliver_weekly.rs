@@ -5,10 +5,11 @@
 use opsagent_core::{connection::Connection, run::RunStatus};
 use opsagent_deliver::{
     model::{Weekly, WeeklyExtras},
-    render_html, render_slack, render_text,
+    render_html, render_notice, render_slack, render_text,
     repo::{SENT, WEEKLY},
     route::Recipient,
     weekly::build_weekly,
+    NoticeEmail,
 };
 use opsagent_ledger::{run_chunked, ChunkOutcome, LedgerError, RunChunkedOptions, RunRow};
 use uuid::Uuid;
@@ -128,13 +129,14 @@ impl DeliverWeekly {
 
     fn weekly_mail(&self, w: &Weekly, to: &Recipient) -> Mail {
         let k = &self.kit;
-        let (mut text, mut html) = (render_text(w), render_html(w));
-        if !to.member {
-            let url = unsubscribe_url(&k.web_base_url, &k.unsubscribe_key, to.id);
-            text += &format!("\nUnsubscribe: {url}\n");
-            let footer = format!("<p><a href=\"{url}\">Unsubscribe</a></p>\n</body>");
-            html = html.replacen("</body>", &footer, 1);
+        let mut w = w.clone();
+        if to.member {
+            w.unsubscribe_url = None;
+        } else {
+            w.human_review_url = None;
+            w.unsubscribe_url = Some(unsubscribe_url(&k.web_base_url, &k.unsubscribe_key, to.id));
         }
+        let (text, html) = (render_text(&w), render_html(&w));
         Mail {
             to: to.email.clone(),
             subject: format!(
@@ -166,7 +168,9 @@ impl DeliverWeekly {
         live.sort_by_key(|c| c.created_at);
         let mut parts = Vec::new();
         for c in &live {
-            parts.push(render_text(&self.weekly(c).await?));
+            let mut w = self.weekly(c).await?;
+            w.human_review_url = None;
+            parts.push(render_text(&w));
         }
         let name = r
             .orgs()
@@ -177,11 +181,24 @@ impl DeliverWeekly {
             .unwrap_or_default();
         let subject = format!("OpsAgent weekly summary: {}", mail_safe_name(&name));
         let text = parts.join("\n----\n\n");
+        let html = render_notice(&NoticeEmail {
+            preheader: format!("Weekly summary for {}", mail_safe_name(&name)),
+            heading: format!("Weekly summary: {name}"),
+            paragraphs: text
+                .lines()
+                .filter(|l| !l.trim().is_empty() && *l != "----")
+                .map(str::to_string)
+                .collect(),
+            button: Some(("Open the dashboard".into(), self.kit.web_base_url.clone())),
+            footnote: None,
+            unsubscribe_url: None,
+        });
         for o in r.recipients().owners(org).await.map_err(lerr)? {
             let mail = Mail {
                 to: o.email,
                 subject: subject.clone(),
                 text: text.clone(),
+                html: Some(html.clone()),
                 ..Default::default()
             };
             out.email(&format!("summary:{}", o.id), mail, o.member, SENT)

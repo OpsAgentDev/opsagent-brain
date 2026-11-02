@@ -411,6 +411,9 @@ async fn no_slack_falls_back_to_owner_email() {
             "{}",
             sent[0].text
         );
+        let link = sent[0].text.rsplit(": ").next().unwrap();
+        let html = sent[0].html.as_deref().unwrap();
+        assert!(html.contains("OpsAgent") && html.contains(&format!("href=\"{link}\"")));
         let r = rows(&ctx, &w).await;
         assert_eq!(
             (r[0].kind.as_str(), r[0].status.as_str()),
@@ -573,6 +576,24 @@ async fn concurrent_deliveries_post_once() {
             .unwrap()
             .unwrap();
         assert_eq!(skipped.partial_reason.as_deref(), Some("overlap"));
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn alert_button_is_the_finding_link_never_text_from_the_finding() {
+    serve(|req, ctx| async move {
+        let w = world(&req, &ctx, "evil@example.com").await;
+        let mail = prepare(&ctx);
+        baselined(&ctx, &w).await;
+        let id = crit(&ctx, &w, "Visit https://evil.example/x now").await;
+        alert(&ctx, &w).await;
+        let html = mail.sent()[0].html.clone().unwrap();
+        let hrefs: Vec<_> = html.split("href=\"").skip(1).collect();
+        assert_eq!(hrefs.len(), 1, "{html}");
+        assert!(hrefs[0].contains(&format!("/findings/{id}\"")), "{html}");
+        assert!(html.contains("https://evil.example/x"), "shown as text");
     })
     .await;
 }

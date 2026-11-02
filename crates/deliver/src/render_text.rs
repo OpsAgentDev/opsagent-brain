@@ -164,12 +164,15 @@ impl RenderText for Weekly {
         let plain = |s: &str| s.to_string();
         let mut out = weekly_lines(self, &plain, &plain).concat();
         out += &weekly_tail(self, &format!("Dashboard: {}", self.link));
+        if let Some(url) = &self.unsubscribe_url {
+            out += &format!("\nUnsubscribe: {url}\n");
+        }
         out
     }
 }
 
 /// The weekly as Slack mrkdwn: escaped, bold labels, and fitted under SLACK_MAX
-/// by dropping trailing lines (the dashboard and "Need a human?" lines always stay).
+/// by dropping trailing lines (the dashboard and human-review line always stay).
 pub fn render_slack(w: &Weekly) -> String {
     let bold = |s: &str| format!("*{s}*");
     let mut lines = weekly_lines(w, &slack_item, &bold);
@@ -185,7 +188,10 @@ pub fn render_slack(w: &Weekly) -> String {
 }
 
 fn weekly_tail(w: &Weekly, dashboard: &str) -> String {
-    format!("\n{dashboard}\nNeed a human? {}\n", w.need_a_human_url)
+    let review = w.human_review_url.as_ref().map_or(String::new(), |u| {
+        format!("Want an expert to look at this? Request a human review in your dashboard: {u}\n")
+    });
+    format!("\n{dashboard}\n{review}")
 }
 
 type Fmt<'a> = &'a dyn Fn(&str) -> String;

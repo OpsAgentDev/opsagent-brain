@@ -14,6 +14,7 @@ pub mod email_suppressions;
 pub mod evidence;
 pub mod finding_events;
 pub mod findings;
+pub mod human_review_requests;
 pub mod integrations;
 pub mod invites;
 pub mod magic_links;

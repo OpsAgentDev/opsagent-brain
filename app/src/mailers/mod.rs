@@ -1,4 +1,5 @@
 pub mod contact;
+pub mod human_review;
 pub mod magic_link;
 pub mod waitlist;
 
@@ -24,6 +25,42 @@ pub struct Mail {
     pub idempotency_key: Option<String>,
     /// Reply-To address; never the To.
     pub reply_to: Option<String>,
+}
+
+/// Branded HTML for a text mail: each non-empty line becomes a paragraph. The `button`
+/// (label, trusted url) is always supplied by the caller, never read from the text; a line that
+/// is exactly that url, or ends in `: <url>`, loses it (a short leftover label is dropped).
+/// Everything is escaped by the template.
+pub fn branded(heading: &str, text: &str, button: Option<(&str, &str)>) -> String {
+    let paragraphs = text
+        .lines()
+        .map(|l| {
+            let l = l.trim();
+            let Some((_, url)) = button else {
+                return l.to_owned();
+            };
+            if l == url {
+                return String::new();
+            }
+            match l
+                .strip_suffix(url)
+                .and_then(|h| h.trim_end().strip_suffix(':'))
+            {
+                Some(head) if head.len() < 40 => String::new(),
+                Some(head) => format!("{head}."),
+                None => l.to_owned(),
+            }
+        })
+        .filter(|l| !l.is_empty())
+        .collect();
+    opsagent_deliver::render_notice(&opsagent_deliver::NoticeEmail {
+        preheader: heading.into(),
+        heading: heading.into(),
+        paragraphs,
+        button: button.map(|(l, u)| (l.to_owned(), u.to_owned())),
+        footnote: None,
+        unsubscribe_url: None,
+    })
 }
 
 #[async_trait]
@@ -210,6 +247,76 @@ pub fn from_config(config: &Config) -> Result<Arc<dyn Mailer>, ConfigError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_mailer_sends_branded_escaped_html() {
+        use crate::mailers::{contact::*, human_review::*, magic_link::*, waitlist::*};
+        let link = "https://w.io/a?x=1&y=2";
+        let ml = magic_link("a@b.io", link, "123456");
+        let h = ml.html.as_deref().unwrap();
+        assert!(
+            h.contains("OpsAgent") && h.contains("https://w.io/a?x=1&#38;y=2"),
+            "{h}"
+        );
+        assert!(
+            !h.contains("Sign in to OpsAgent:"),
+            "link line left as text"
+        );
+        assert!(
+            h.contains("123456") && !h.contains("code: 123456"),
+            "code in its own paragraph"
+        );
+        for m in [
+            invite("a@b.io", "Acme", link),
+            recipient_confirm("a@b.io", "Acme", link),
+        ] {
+            let h = m.html.as_deref().unwrap();
+            assert!(
+                h.contains("OpsAgent") && h.contains("href=\"https://w.io/a?x=1&#38;y=2\""),
+                "{h}"
+            );
+        }
+        assert!(waitlist_confirmation("a@b.io")
+            .html
+            .unwrap()
+            .contains("OpsAgent"));
+        let c = contact_forward(
+            "t@x.io",
+            &ContactForward {
+                name: "A",
+                email: "v@x.io",
+                topic: "general",
+                message: "<img src=x>",
+            },
+        );
+        let h = c.html.unwrap();
+        assert!(!h.contains("<img src=x>") && h.contains("&#60;img"), "{h}");
+        let n = Notice {
+            org_name: "Org",
+            org_slug: "org",
+            requester: "r@x.io",
+            kind: opsagent_core::human_review::ReviewKind::Finding,
+            price_cents: 9900,
+            label: "L",
+            reference: "ref",
+            note: Some("<b>hi</b>"),
+        };
+        for m in [founder_notice("f@x.io", &n), confirmation(&n)] {
+            let h = m.html.unwrap();
+            assert!(h.contains("OpsAgent") && !h.contains("<b>hi</b>"));
+        }
+    }
+
+    #[test]
+    fn branded_turns_the_first_url_into_the_button() {
+        let h = branded(
+            "T",
+            "Your trial ends.\n\nManage billing: https://w.io/s/billing",
+            Some(("Manage billing", "https://w.io/s/billing")),
+        );
+        assert!(h.contains("https://w.io/s/billing") && h.contains("Your trial ends."));
+        assert!(!h.contains("Manage billing:"));
+    }
+
     use super::*;
     use std::sync::{Arc, Mutex};
 

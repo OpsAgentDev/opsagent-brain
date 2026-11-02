@@ -11,7 +11,8 @@ use axum::{
 use crate::{actions::orgs::OrgScope, api_error::ApiError, state::AppState};
 
 /// What a read-only organisation may still do: pay, or leave.
-const EXEMPT: [(&str, &str); 3] = [
+const EXEMPT: [(&str, &str); 4] = [
+    ("POST", "/v1/orgs/{org}/human-reviews"),
     ("POST", "/v1/orgs/{org}/billing/checkout"),
     ("POST", "/v1/orgs/{org}/billing/portal"),
     ("DELETE", "/v1/orgs/{org}"),

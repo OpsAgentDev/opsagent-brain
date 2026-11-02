@@ -261,6 +261,8 @@ async fn seed_everything(seed: &super::PgSeed, o: Uuid, client: &str, email: &st
          INSERT INTO invites (id, organisation_id, email, role, token_hash, expires_at) VALUES (gen_random_uuid(), '{o}', '{email}', 'member', 'i{o}', now());
          INSERT INTO email_suppressions (id, organisation_id, email_hash, reason, expires_at) VALUES (gen_random_uuid(), '{o}', 'h', 'ignored', now());
          INSERT INTO audit_events (id, organisation_id, actor_type, action) VALUES (gen_random_uuid(), '{o}', 'system', 'x');
+         INSERT INTO human_review_requests (id, organisation_id, kind, finding_id, target_label, price_cents, requested_by, requester_email)
+           VALUES (gen_random_uuid(), '{o}', 'finding', gen_random_uuid(), 't', 4900, gen_random_uuid(), 'a@example.com');
          INSERT INTO model_keys (id, organisation_id, provider, last4, ciphertext, nonce, kek_version, models)
            VALUES (gen_random_uuid(), '{o}', 'openai', 'abcd', '\\x00', '\\x00', 1, '{{\"routine\":\"r\",\"chat\":\"c\"}}');
          INSERT INTO explanations (id, organisation_id, check_id, evidence_hash, provider, model, text)
@@ -328,7 +330,7 @@ async fn purge_removes_every_row_of_old_deleted_org() {
     let st = sea_orm::Statement::from_string(sea_orm::DbBackend::Postgres, cols);
     let tables = seed.raw().query_all_raw(st).await.unwrap();
     // A new tenant table fails here: add it to the purge (`PURGE`) and to `seed_everything`.
-    assert_eq!(tables.len(), 23);
+    assert_eq!(tables.len(), 24);
     for r in tables {
         let t: String = r.try_get("", "t").unwrap();
         let q = format!("SELECT count(*) AS n FROM {t} WHERE organisation_id = '{doomed}'");

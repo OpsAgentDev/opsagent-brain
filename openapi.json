@@ -3580,6 +3580,120 @@
         }
       }
     },
+    "/orgs/{org}/human-reviews": {
+      "get": {
+        "tags": [
+          "human-reviews"
+        ],
+        "operationId": "human-reviews_list",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HumanReviews"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "human-reviews"
+        ],
+        "summary": "Owner only. Allowed while the organisation is read-only: it is invoiced separately.",
+        "operationId": "human-reviews_create",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HumanReviewIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HumanReviewCreated"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs/{org}/integrations": {
       "get": {
         "tags": [
@@ -5651,6 +5765,154 @@
           },
           "variant": {
             "type": "string"
+          }
+        }
+      },
+      "HumanReviewCreated": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "HumanReviewIn": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "finding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`finding` (needs `finding_id`) or `account` (needs `connection_id`)."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Up to 2000 characters."
+          }
+        }
+      },
+      "HumanReviewOffer": {
+        "type": "object",
+        "required": [
+          "kind",
+          "price_cents",
+          "title",
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`finding` or `account`."
+          },
+          "price_cents": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "HumanReviewRequestOut": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "target_label",
+          "price_cents",
+          "requester_email",
+          "created_at"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "price_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The price when asked."
+          },
+          "requester_email": {
+            "type": "string"
+          },
+          "target_label": {
+            "type": "string",
+            "description": "The finding title or connection name when asked."
+          }
+        }
+      },
+      "HumanReviews": {
+        "type": "object",
+        "required": [
+          "offers",
+          "requests"
+        ],
+        "properties": {
+          "offers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HumanReviewOffer"
+            }
+          },
+          "requests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HumanReviewRequestOut"
+            },
+            "description": "The latest 50, newest first."
           }
         }
       },

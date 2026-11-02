@@ -100,8 +100,81 @@ fn weekly_html_escapes_user_strings() {
     assert!(!h.contains("<script>"), "{h}");
     assert!(h.contains("script&#62;alert(1)"), "escaped, not dropped");
     assert!(!h.contains("<b>acme</b>"));
-    assert!(h.contains("Need a human?"));
-    assert!(h.contains("https://harun.dev"));
+    assert!(!h.contains("harun.dev"));
+    assert!(h.contains("Request a human review"));
+    assert!(h.contains(&format!("{LINK_BASE}/settings/human-review")));
+}
+
+fn plain_weekly() -> opsagent_deliver::model::Weekly {
+    build_weekly(
+        &conn(),
+        &[],
+        None,
+        &WeeklyExtras::default(),
+        now(),
+        LINK_BASE,
+    )
+}
+
+#[test]
+fn human_review_line_only_when_url_set_in_html_and_text() {
+    let mut w = plain_weekly();
+    w.unsubscribe_url = Some("https://x.test/unsub?t=1".into());
+    let (h, t) = (render_html(&w), render_text(&w));
+    for out in [&h, &t] {
+        assert!(out.contains("/settings/human-review"), "{out}");
+        assert!(out.contains("Want an expert to look at this?"), "{out}");
+        assert!(!out.contains("harun.dev"));
+    }
+    let foot = h.find("opsagent.dev").expect("footer");
+    let unsub = h.find("https://x.test/unsub?t=1").expect("unsub");
+    assert!(unsub > foot && unsub < foot + h[foot..].find("</table>").expect("end"));
+    assert!(t.contains("Unsubscribe: https://x.test/unsub?t=1"));
+    w.human_review_url = None;
+    w.unsubscribe_url = None;
+    let (h, t) = (render_html(&w), render_text(&w));
+    for out in [&h, &t] {
+        assert!(!out.contains("human-review"), "{out}");
+        assert!(!out.contains("nsubscribe"), "{out}");
+    }
+}
+
+#[test]
+fn notice_escapes_and_renders_button() {
+    use opsagent_deliver::{render_notice, NoticeEmail};
+    let mut n = NoticeEmail {
+        preheader: "p".into(),
+        heading: "<script>h</script>".into(),
+        paragraphs: vec!["<script>p</script>".into()],
+        button: Some(("Go now".into(), "https://x.test/go?a=1&b=2".into())),
+        footnote: None,
+        unsubscribe_url: None,
+    };
+    let h = render_notice(&n);
+    assert!(!h.contains("<script>"), "{h}");
+    assert!(
+        h.contains("Go now") && h.contains("href=\"https://x.test/go?a=1&#38;b=2\""),
+        "{h}"
+    );
+    assert!(h.contains("color-scheme"));
+    n.button = None;
+    assert!(!render_notice(&n).contains("<a "));
+    if let Ok(dir) = std::env::var("PLAN8_SAMPLES") {
+        let mut w = plain_weekly();
+        w.unsubscribe_url = Some("https://x.test/unsub".into());
+        std::fs::write(format!("{dir}/plan8-weekly.html"), render_html(&w)).unwrap();
+        n.heading = "Your AI key expires soon".into();
+        n.paragraphs = vec![
+            "The Anthropic key for Acme expires on 30 November.".into(),
+            "Replace it in settings to keep AI summaries running.".into(),
+        ];
+        n.button = Some((
+            "Open settings".into(),
+            "https://opsagent.dev/settings".into(),
+        ));
+        n.footnote = Some("You get this because you own the account.".into());
+        std::fs::write(format!("{dir}/plan8-notice.html"), render_notice(&n)).unwrap();
+    }
 }
 
 fn recipient(email: &str) -> Recipient {
@@ -204,8 +277,8 @@ fn weekly_slack_is_escaped_and_fits() {
     assert!(!t.contains("<!channel>"));
     assert!(t.contains("&lt;!channel&gt; admin &amp; co"));
     assert!(t.contains("+$5.00"));
-    assert!(t.contains("Need a human?"));
-    assert!(t.contains("https://harun.dev"));
+    assert!(t.contains("Request a human review"));
+    assert!(t.contains("/settings/human-review"));
     assert!(t.contains(LINK_BASE));
 }
 
@@ -224,7 +297,10 @@ fn untracked_spend_renders_as_not_tracked_not_zero() {
         ("slack", render_slack(&w)),
         ("html", render_html(&w)),
     ] {
-        assert!(out.contains("not tracked yet"), "{name}: {out}");
+        assert!(
+            out.to_lowercase().contains("not tracked yet"),
+            "{name}: {out}"
+        );
         assert!(!out.contains("$0.00"), "{name}: {out}");
     }
 }

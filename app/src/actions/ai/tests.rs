@@ -686,6 +686,8 @@ async fn auth_error_marks_failing_and_mails_owners_once() {
     assert_eq!(sent[0].to, "owner@example.com");
     assert!(sent[0].text.contains("abcd") && sent[0].text.contains("Anthropic"));
     assert!(!sent[0].text.contains(BYOK_KEY));
+    let html = sent[0].html.as_deref().unwrap();
+    assert!(html.contains("OpsAgent") && html.contains("href=\"https://web.test/settings/ai\""));
     assert!(e.store.ai_usage_rows().is_empty());
 }
 

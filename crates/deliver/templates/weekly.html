@@ -1,57 +1,51 @@
-<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><title>OpsAgent weekly report: {{ w.connection_name }}</title></head>
-<body>
-<h1>OpsAgent weekly report: {{ w.connection_name }}</h1>
+{% extends "layout.html" %}
+{% macro row(label, value, color) %}
+<tr><td style="padding:10px 16px;border-top:1px solid #e5e7eb;font-size:14px;line-height:20px;">
+<div style="font-size:12px;line-height:16px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#6b7280;">{{ label }}</div>
+<div style="font-size:16px;line-height:24px;color:{{ color }};">{{ value }}</div>
+</td></tr>
+{% endmacro %}
+{% macro items(label, list) %}
+<tr><td style="padding:10px 16px;border-top:1px solid #e5e7eb;font-size:14px;line-height:20px;">
+<div style="font-size:12px;line-height:16px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#6b7280;">{{ label }}</div>
+{% for (sev, color, title) in list %}<div style="font-size:15px;line-height:22px;padding-top:4px;color:#1f2937;"><span style="font-weight:700;color:{{ color }};">{{ sev }}</span> &nbsp;{{ title }}</div>{% else %}<div style="font-size:15px;line-height:22px;padding-top:4px;color:#059669;">None</div>{% endfor %}
+</td></tr>
+{% endmacro %}
+{% block title %}OpsAgent weekly report: {{ w.connection_name }}{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 4px 0;font-size:22px;line-height:28px;font-weight:700;color:#0b1020;">Weekly report</h1>
+<p style="margin:0 0 24px 0;font-size:15px;line-height:22px;color:#6b7280;">{{ w.connection_name }}</p>
 {% if w.first_week %}
-<p>This is the first week; baselines forming.</p>
-<p>Inventory: {{ self.inventory() }}</p>
+<p style="margin:0 0 16px 0;">This is the first week; baselines forming.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #e5e7eb;border-radius:8px;margin:0 0 24px 0;">
+{% call row("Inventory", self.inventory(), "#1f2937") %}
+</table>
 {% else %}
-<h2>Spend</h2>
-{% if let Some(s) = w.spend %}
-<p>{{ self.usd(s.this_week_usd) }} this week vs {{ self.usd(s.last_week_usd) }} last week ({{ self.signed_usd(s.delta_usd) }})</p>
-{% if !s.anomalies.is_empty() %}
-<ul>
-{% for (day, amount, baseline) in s.anomalies %}
-<li>Anomaly {{ day }}: {{ self.usd(amount) }} vs baseline {{ self.usd(baseline) }}</li>
-{% endfor %}
-</ul>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #e5e7eb;border-radius:8px;margin:0 0 16px 0;">
+<tr><td style="padding:12px 16px;font-size:16px;font-weight:700;color:#0b1020;">Cost and posture</td></tr>
+{% call row("Spend", self.spend(), self.spend_color()) %}
+{% if let Some(s) = w.spend %}{% for (day, amount, baseline) in s.anomalies %}{% call row("Anomaly", self.anomaly(day, amount, baseline), "#d97706") %}{% endfor %}{% endif %}
+{% call row("Recommended cost action", self.cost_action(), "#1f2937") %}
+{% call row("Posture score", self.posture(), self.posture_color()) %}
+{% call row("Untagged spend", self.untagged(), "#1f2937") %}
+</table>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #e5e7eb;border-radius:8px;margin:0 0 16px 0;">
+<tr><td style="padding:12px 16px;font-size:16px;font-weight:700;color:#0b1020;">Security and resilience</td></tr>
+{% call row("IAM", self.iam(), "#1f2937") %}
+{% call row("Backups", self.backups(), self.backups_color()) %}
+{% call items("Certificate calendar", self.item_rows(&w.certificates)) %}
+</table>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #e5e7eb;border-radius:8px;margin:0 0 24px 0;">
+<tr><td style="padding:12px 16px;font-size:16px;font-weight:700;color:#0b1020;">Needs you</td></tr>
+{% call items("Awaiting your decision", self.item_rows(&w.awaiting_decision)) %}
+<tr><td style="padding:10px 16px;border-top:1px solid #e5e7eb;">
+<div style="font-size:12px;line-height:16px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#6b7280;">What the agent would have done</div>
+{% for line in w.would_have_done %}<div style="font-size:15px;line-height:22px;padding-top:4px;color:#1f2937;">{{ line }}</div>{% else %}<div style="font-size:15px;line-height:22px;padding-top:4px;color:#1f2937;">Nothing</div>{% endfor %}
+</td></tr>
+</table>
 {% endif %}
-{% else %}
-<p>Spend: not tracked yet</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td style="background-color:#22d3ee;border-radius:6px;"><a href="{{ w.link }}" style="display:inline-block;padding:12px 24px;font-size:16px;font-weight:700;line-height:20px;color:#0b1020;text-decoration:none;">Open the dashboard</a></td></tr></table>
+{% if let Some(url) = w.human_review_url %}
+<p style="margin:20px 0 0 0;font-size:14px;line-height:22px;color:#6b7280;">Want an expert to look at this? <a href="{{ url }}" style="color:#0b1020;font-weight:700;text-decoration:underline;">Request a human review</a> in your dashboard</p>
 {% endif %}
-<h2>Recommended cost action</h2>
-{% if let Some(a) = w.recommended_cost_action %}
-<p>{{ a.title }} (saves {{ self.usd(a.savings_monthly_usd) }}/month)</p>
-{% else %}
-<p>None this week.</p>
-{% endif %}
-<h2>Posture score</h2>
-{% if let Some(score) = w.posture.score %}
-<p>{{ score }}{% if let Some(d) = w.posture.delta %} ({{ self.signed(d) }}){% endif %}</p>
-{% else %}
-<p>Not yet scored.</p>
-{% endif %}
-<h2>IAM</h2>
-<p>{{ w.iam.open }} open ({{ w.iam.opened }} new, {{ w.iam.resolved }} resolved this week)</p>
-<h2>Backups</h2>
-<p>{{ w.backups.open_issues }} open issues; last successful restore test {% if let Some(d) = w.backups.last_restore_test_on %}{{ d }}{% else %}not recorded{% endif %}</p>
-<h2>Certificate calendar</h2>
-<ul>
-{% for i in w.certificates %}<li>[{{ self.sev(i.severity) }}] {{ i.title }}</li>{% else %}<li>None</li>{% endfor %}
-</ul>
-<h2>Untagged spend</h2>
-<p>{% if let Some(p) = w.untagged_spend_pct %}{{ "{:.1}"|format(p) }}%{% else %}Unknown{% endif %}</p>
-<h2>Awaiting your decision</h2>
-<ul>
-{% for i in w.awaiting_decision %}<li>[{{ self.sev(i.severity) }}] {{ i.title }}</li>{% else %}<li>None</li>{% endfor %}
-</ul>
-<h2>What the agent would have done</h2>
-<ul>
-{% for line in w.would_have_done %}<li>{{ line }}</li>{% else %}<li>Nothing</li>{% endfor %}
-</ul>
-{% endif %}
-<p><a href="{{ w.link }}">Open the dashboard</a></p>
-<p>Need a human? <a href="{{ w.need_a_human_url }}">{{ w.need_a_human_url }}</a></p>
-</body>
-</html>
+{% endblock %}

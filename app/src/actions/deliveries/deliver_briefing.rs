@@ -19,7 +19,7 @@ use crate::{
     actions::runs::classify::{lerr, LResult},
     adapters::slack::SlackError,
     error::{AppError, AppResult},
-    mailers::{magic_link::mail_safe_name, Mail},
+    mailers::{branded, magic_link::mail_safe_name, Mail},
 };
 
 const CHUNK: &str = "deliver";
@@ -114,6 +114,11 @@ impl DeliverBriefing {
             let mail = Mail {
                 to: o.email,
                 subject: subject.clone(),
+                html: Some(branded(
+                    &subject,
+                    &body,
+                    Some(("Open the dashboard", link_base)),
+                )),
                 text: body.clone(),
                 ..Default::default()
             };

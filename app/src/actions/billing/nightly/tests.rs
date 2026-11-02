@@ -155,6 +155,11 @@ async fn trial_reminders_day_12_and_14_once() {
     assert!(m[0]
         .text
         .ends_with("https://opsagent.test/settings/billing"));
+    let html = m[0].html.as_deref().unwrap();
+    assert!(
+        html.contains("OpsAgent")
+            && html.contains("href=\"https://opsagent.test/settings/billing\"")
+    );
     let keys: std::collections::HashSet<_> = m.iter().map(|m| &m.idempotency_key).collect();
     assert_eq!(keys.len(), 4);
     // Converted: no more reminders for an active subscription.

@@ -7,6 +7,7 @@ mod chat;
 mod connections;
 mod deliveries;
 mod findings;
+mod human_reviews;
 mod integrations;
 mod oauth;
 mod orgs;
@@ -37,6 +38,7 @@ use opsagent_core::{
     chat::ChatRepo,
     connection::{Connection, ConnectionsRepo, SealedCreds, Verification},
     finding::FindingsRepo,
+    human_review::{HumanReviewsRepo, ReviewRequest},
     oauth::{AccessToken, ConsentRequest, Grant, OAuthClient, OAuthRepo, RefreshToken},
     org::{Invite, Organisation, OrganisationsRepo, Role},
     passkey::{PasskeysRepo, StoredPasskey},
@@ -164,6 +166,8 @@ pub struct MemState {
     ai: ai::AiState,
     chat_sessions: Vec<opsagent_core::chat::ChatSession>,
     chat_messages: Vec<opsagent_core::chat::ChatMessage>,
+    /// `(organisation_id, request)`, in insert order.
+    human_reviews: Vec<(Uuid, ReviewRequest)>,
     /// Test hooks: `purge_org` of this organisation fails; `delete_expired` takes this long.
     fail_purge: Option<Uuid>,
     ttl_delay: Option<std::time::Duration>,
@@ -232,6 +236,9 @@ impl Repos for MemStore {
         self
     }
     fn chat(&self) -> &dyn ChatRepo {
+        self
+    }
+    fn human_reviews(&self) -> &dyn HumanReviewsRepo {
         self
     }
 }
@@ -307,6 +314,9 @@ impl Repos for MemTx {
         &self.work
     }
     fn chat(&self) -> &dyn ChatRepo {
+        &self.work
+    }
+    fn human_reviews(&self) -> &dyn HumanReviewsRepo {
         &self.work
     }
 }

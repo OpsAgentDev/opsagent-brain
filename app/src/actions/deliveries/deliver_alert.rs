@@ -26,7 +26,7 @@ use super::{
 };
 use crate::{
     actions::runs::classify::{lerr, LResult},
-    mailers::{magic_link::mail_safe_name, Mail},
+    mailers::{branded, magic_link::mail_safe_name, Mail},
 };
 
 const CHUNK: &str = "deliver";
@@ -49,6 +49,8 @@ pub struct DeliverAlert {
 struct Msg {
     text: String,
     subject: String,
+    /// Trusted web link built from the base and ids: the email button.
+    link: String,
 }
 
 /// Where this run's messages go; Slack stays off for the rest of the run once it failed.
@@ -131,6 +133,7 @@ impl DeliverAlert {
             let n = candidates.len();
             let msg = (n > 0).then(|| Msg {
                 text: render_baseline(n, base),
+                link: format!("{}/findings", base.trim_end_matches('/')),
                 subject: format!("First scan: {n} critical findings ({account})"),
             });
             route.once(BASELINE, msg, &ids(&candidates)).await?;
@@ -149,6 +152,7 @@ impl DeliverAlert {
         {
             let msg = Msg {
                 text: render_alert(f, &self.info(&c, f).await?, base),
+                link: format!("{}/findings/{}", base.trim_end_matches('/'), f.id),
                 subject: format!("Urgent: {} ({account})", mail_safe_name(&f.title)),
             };
             route
@@ -160,6 +164,7 @@ impl DeliverAlert {
             if plan.rollup_allowed {
                 let msg = Msg {
                     text: render_rollup(n, base),
+                    link: format!("{}/findings", base.trim_end_matches('/')),
                     subject: format!("Urgent: {n} more urgent findings ({account})"),
                 };
                 let key = format!("alert:rollup:{}", run.id);
@@ -267,6 +272,11 @@ impl Route<'_> {
             let mail = Mail {
                 to: o.email,
                 subject: m.subject.clone(),
+                html: Some(branded(
+                    &m.subject,
+                    &body,
+                    Some(("View in OpsAgent", &m.link)),
+                )),
                 text: body.clone(),
                 ..Default::default()
             };

@@ -8,6 +8,7 @@ mod connections;
 mod contact;
 mod deliveries;
 mod findings;
+mod human_reviews;
 mod integrations;
 pub mod ledger_storage;
 mod oauth;
@@ -33,6 +34,7 @@ use opsagent_core::{
     chat::ChatRepo,
     connection::ConnectionsRepo,
     finding::FindingsRepo,
+    human_review::HumanReviewsRepo,
     oauth::OAuthRepo,
     org::{OrganisationsRepo, Role},
     passkey::PasskeysRepo,
@@ -169,6 +171,9 @@ impl<C: Conn> Repos for Pg<C> {
         self
     }
     fn chat(&self) -> &dyn ChatRepo {
+        self
+    }
+    fn human_reviews(&self) -> &dyn HumanReviewsRepo {
         self
     }
 }

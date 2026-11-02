@@ -12,6 +12,7 @@ pub use super::email_suppressions::Entity as EmailSuppressions;
 pub use super::evidence::Entity as Evidence;
 pub use super::finding_events::Entity as FindingEvents;
 pub use super::findings::Entity as Findings;
+pub use super::human_review_requests::Entity as HumanReviewRequests;
 pub use super::integrations::Entity as Integrations;
 pub use super::invites::Entity as Invites;
 pub use super::magic_links::Entity as MagicLinks;

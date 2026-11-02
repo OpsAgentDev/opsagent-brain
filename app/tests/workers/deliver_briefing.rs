@@ -353,6 +353,9 @@ async fn revoked_token_falls_back_once_and_slack_is_not_retried_next_day() {
             sent[0].text
         );
         assert!(sent[0].text.contains("first scan"), "{}", sent[0].text);
+        let html = sent[0].html.as_deref().unwrap();
+        assert!(html.contains("OpsAgent") && html.contains("Open the dashboard"));
+        assert_eq!(html.matches("href=\"").count(), 1, "{html}");
         let r = rows(&ctx, &w).await;
         let st: Vec<_> = r
             .iter()

@@ -77,7 +77,7 @@ macro_rules! orphans {
 /// Every tenant table, children before parents (the foreign keys), each delete scoped to
 /// organisation $1; `members` and `users` follow (`PURGE_MEMBERS`), then the organisation.
 /// The orphaned users' own rows go here, while their memberships still identify them.
-const PURGE: [(&str, &str); 34] = [
+const PURGE: [(&str, &str); 35] = [
     ("audit_events", "DELETE FROM audit_events WHERE organisation_id = $1"),
     ("side_effects", "DELETE FROM side_effects WHERE run_id IN (SELECT id FROM runs WHERE organisation_id = $1)"),
     ("api_call_stats", "DELETE FROM api_call_stats WHERE run_id IN (SELECT id FROM runs WHERE organisation_id = $1)"),
@@ -98,6 +98,7 @@ const PURGE: [(&str, &str); 34] = [
     ("schedules", "DELETE FROM schedules WHERE organisation_id = $1"),
     ("runs", "DELETE FROM runs WHERE organisation_id = $1"),
     ("recipients", "DELETE FROM recipients WHERE organisation_id = $1"),
+    ("human_review_requests", "DELETE FROM human_review_requests WHERE organisation_id = $1"),
     ("oauth_consent_requests", "DELETE FROM oauth_consent_requests WHERE organisation_id = $1 \
       OR grant_id IN (SELECT id FROM oauth_grants WHERE organisation_id = $1)"),
     ("oauth_access_tokens", "DELETE FROM oauth_access_tokens WHERE organisation_id = $1"),
