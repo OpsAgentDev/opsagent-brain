@@ -187,7 +187,10 @@ pub struct Weekly {
     pub would_have_done: Vec<String>,
     pub inventory: SeverityCounts,
     pub link: String,
-    pub need_a_human_url: String,
+    /// Member recipients only; `None` hides the human-review line.
+    pub human_review_url: Option<String>,
+    /// Set per non-member recipient; rendered in the footer.
+    pub unsubscribe_url: Option<String>,
 }
 
 impl Item {

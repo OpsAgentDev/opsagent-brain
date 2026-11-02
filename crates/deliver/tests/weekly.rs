@@ -5,7 +5,7 @@ use common::*;
 use opsagent_core::finding::Severity;
 use opsagent_deliver::model::{EventKind, FindingStatus, SpendSnapshot, WeeklyExtras};
 use opsagent_deliver::render_text;
-use opsagent_deliver::weekly::{build_weekly, NEED_A_HUMAN_URL};
+use opsagent_deliver::weekly::build_weekly;
 
 fn spend() -> SpendSnapshot {
     SpendSnapshot {
@@ -42,8 +42,10 @@ fn recommended_cost_action_is_largest_open_saving() {
     let action = w.recommended_cost_action.expect("action");
     assert_eq!(action.title, "big");
     assert_eq!(action.savings_monthly_usd, 300.0);
-    assert_eq!(w.need_a_human_url, "https://harun.dev");
-    assert_eq!(NEED_A_HUMAN_URL, "https://harun.dev");
+    assert_eq!(
+        w.human_review_url.as_deref(),
+        Some(&*format!("{LINK_BASE}/settings/human-review"))
+    );
 }
 
 #[test]
@@ -94,8 +96,8 @@ fn weekly_text_has_every_section_with_delta_signs() {
         "admin user",
         "would have done",
         "Delete unattached volume vol-1",
-        "Need a human?",
-        "https://harun.dev",
+        "Request a human review",
+        "/settings/human-review",
     ] {
         assert!(t.contains(needle), "missing {needle:?} in:\n{t}");
     }

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>{% block title %}OpsAgent{% endblock %}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f3f4f6;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;font-size:1px;line-height:1px;color:#f3f4f6;">{{ preheader }}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f3f4f6;">
+<tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;">
+<tr><td style="background-color:#0b1020;padding:20px 28px;border-radius:10px 10px 0 0;font-size:20px;line-height:24px;font-weight:700;letter-spacing:0.2px;color:#ffffff;">OpsAgent<span style="color:#22d3ee;">.</span></td></tr>
+<tr><td style="background-color:#ffffff;padding:32px 28px;border-radius:0 0 10px 10px;font-size:16px;line-height:24px;color:#1f2937;">
+{% block content %}{% endblock %}
+</td></tr>
+<tr><td style="padding:20px 28px;text-align:center;font-size:12px;line-height:18px;color:#6b7280;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="font-size:12px;line-height:18px;color:#6b7280;">
+OpsAgent &middot; opsagent.dev
+{% if let Some(url) = unsubscribe_url %}<br><a href="{{ url }}" style="color:#6b7280;text-decoration:underline;">Unsubscribe</a>{% endif %}
+</td></tr></table>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>

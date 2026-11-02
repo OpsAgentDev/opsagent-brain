@@ -8,8 +8,6 @@ use crate::model::{
     Weekly, WeeklyExtras,
 };
 
-/// "Need a human?" consultancy link, in every weekly report.
-pub const NEED_A_HUMAN_URL: &str = "https://harun.dev";
 const AWAITING_MAX: usize = 10;
 
 pub fn build_weekly(
@@ -86,6 +84,10 @@ pub fn build_weekly(
         would_have_done: extras.would_have_done.clone(),
         inventory: conn.counts_by_severity,
         link: connection_link(link_base, conn.id),
-        need_a_human_url: NEED_A_HUMAN_URL.into(),
+        human_review_url: Some(format!(
+            "{}/settings/human-review",
+            link_base.trim_end_matches('/')
+        )),
+        unsubscribe_url: None,
     }
 }
