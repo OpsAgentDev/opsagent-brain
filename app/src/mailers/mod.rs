@@ -27,36 +27,28 @@ pub struct Mail {
     pub reply_to: Option<String>,
 }
 
-/// Branded HTML for a text mail: each non-empty line becomes a paragraph. With a `button`
-/// label, the first URL in the text becomes the button and leaves the text; a short leftover
-/// label such as "Manage billing:" is dropped. Everything is escaped by the template.
-pub fn branded(heading: &str, text: &str, button: Option<&str>) -> String {
-    let mut text = text.to_owned();
-    let mut btn = None;
-    if let Some(label) = button {
-        let start = text.find("http://").or_else(|| text.find("https://"));
-        if let Some(i) = start {
-            let end = text[i..]
-                .find(char::is_whitespace)
-                .map_or(text.len(), |e| i + e);
-            btn = Some((label.to_owned(), text[i..end].to_owned()));
-            text.replace_range(i..end, "");
-        }
-    }
+/// Branded HTML for a text mail: each non-empty line becomes a paragraph. The `button`
+/// (label, trusted url) is always supplied by the caller, never read from the text; a line that
+/// is exactly that url, or ends in `: <url>`, loses it (a short leftover label is dropped).
+/// Everything is escaped by the template.
+pub fn branded(heading: &str, text: &str, button: Option<(&str, &str)>) -> String {
     let paragraphs = text
         .lines()
         .map(|l| {
             let l = l.trim();
-            let Some(head) = l.strip_suffix(':') else {
+            let Some((_, url)) = button else {
                 return l.to_owned();
             };
-            // Dropped label: the button says it. A longer sentence keeps its words.
-            if btn.is_some() && head.len() < 40 {
-                String::new()
-            } else if btn.is_some() {
-                format!("{head}.")
-            } else {
-                l.to_owned()
+            if l == url {
+                return String::new();
+            }
+            match l
+                .strip_suffix(url)
+                .and_then(|h| h.trim_end().strip_suffix(':'))
+            {
+                Some(head) if head.len() < 40 => String::new(),
+                Some(head) => format!("{head}."),
+                None => l.to_owned(),
             }
         })
         .filter(|l| !l.is_empty())
@@ -65,7 +57,7 @@ pub fn branded(heading: &str, text: &str, button: Option<&str>) -> String {
         preheader: heading.into(),
         heading: heading.into(),
         paragraphs,
-        button: btn,
+        button: button.map(|(l, u)| (l.to_owned(), u.to_owned())),
         footnote: None,
         unsubscribe_url: None,
     })
@@ -269,13 +261,24 @@ mod tests {
             !h.contains("Sign in to OpsAgent:"),
             "link line left as text"
         );
+        assert!(
+            h.contains("123456") && !h.contains("code: 123456"),
+            "code in its own paragraph"
+        );
         for m in [
             invite("a@b.io", "Acme", link),
             recipient_confirm("a@b.io", "Acme", link),
-            waitlist_confirmation("a@b.io"),
         ] {
-            assert!(m.html.as_deref().unwrap().contains("OpsAgent"));
+            let h = m.html.as_deref().unwrap();
+            assert!(
+                h.contains("OpsAgent") && h.contains("href=\"https://w.io/a?x=1&#38;y=2\""),
+                "{h}"
+            );
         }
+        assert!(waitlist_confirmation("a@b.io")
+            .html
+            .unwrap()
+            .contains("OpsAgent"));
         let c = contact_forward(
             "t@x.io",
             &ContactForward {
@@ -308,7 +311,7 @@ mod tests {
         let h = branded(
             "T",
             "Your trial ends.\n\nManage billing: https://w.io/s/billing",
-            Some("Manage billing"),
+            Some(("Manage billing", "https://w.io/s/billing")),
         );
         assert!(h.contains("https://w.io/s/billing") && h.contains("Your trial ends."));
         assert!(!h.contains("Manage billing:"));

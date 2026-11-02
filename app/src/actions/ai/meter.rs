@@ -100,6 +100,7 @@ impl AiAccess {
         if used >= q.quota {
             let n = Notice {
                 subject: "Your OpsAgent AI credits are used up".into(),
+                link: url.clone(),
                 text: format!(
                     "Your organisation has used all {} Dashboard AI credits for this period. \
                      They renew on {end}. Until then, buy a top-up or add your own key: {url}",
@@ -112,6 +113,7 @@ impl AiAccess {
         if used * Decimal::from(100) >= q.quota * Decimal::from(80) {
             let n = Notice {
                 subject: "You have used 80% of your OpsAgent AI credits".into(),
+                link: url.clone(),
                 text: format!(
                     "Your organisation has used 80% of its {} Dashboard AI credits for this \
                      period. They renew on {end}. Top-ups and your own key: {url}",

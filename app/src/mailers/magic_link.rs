@@ -10,8 +10,10 @@ pub fn magic_link(to: &str, link: &str, code: &str) -> Mail {
         subject: format!("Your OpsAgent sign-in code: {code}"),
         html: Some(super::branded(
             "Sign in to OpsAgent",
-            &text,
-            Some("Sign in"),
+            &format!(
+                "Or enter this code:\n\n{code}\n\nThe link and code work once and expire in 15 minutes."
+            ),
+            Some(("Sign in", link)),
         )),
         text,
         ..Default::default()
@@ -27,7 +29,7 @@ pub fn invite(to: &str, org_name: &str, link: &str) -> Mail {
         html: Some(super::branded(
             &format!("You are invited to {org_name}"),
             &text,
-            Some("Accept invite"),
+            Some(("Accept invite", link)),
         )),
         text,
         ..Default::default()
@@ -59,7 +61,7 @@ pub fn recipient_confirm(to: &str, org_name: &str, link: &str) -> Mail {
         html: Some(super::branded(
             "Confirm your email",
             &text,
-            Some("Confirm email"),
+            Some(("Confirm email", link)),
         )),
         text,
         ..Default::default()

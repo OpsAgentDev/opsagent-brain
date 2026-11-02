@@ -19,6 +19,8 @@ pub struct Notices {
 pub(super) struct Notice {
     pub subject: String,
     pub text: String,
+    /// Trusted settings link: the email button.
+    pub link: String,
 }
 
 impl Notices {
@@ -44,7 +46,11 @@ impl Notices {
             let mail = Mail {
                 to: o.email,
                 subject: n.subject.clone(),
-                html: Some(branded(&n.subject, &n.text, Some("Open settings"))),
+                html: Some(branded(
+                    &n.subject,
+                    &n.text,
+                    Some(("Open settings", &n.link)),
+                )),
                 text: n.text.clone(),
                 idempotency_key: Some(format!("ai:{org}:{key}:{}", o.id)),
                 ..Default::default()

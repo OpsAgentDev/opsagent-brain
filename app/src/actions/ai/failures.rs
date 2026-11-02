@@ -154,6 +154,7 @@ impl AiAccess {
     async fn stopped(&self, org: Uuid, k: &ModelKey) -> Result<(), AiCallError> {
         let n = Notice {
             subject: "Your OpsAgent AI key is failing".into(),
+            link: self.s.settings_url(""),
             text: format!(
                 "Your {} key ending {} was refused by the provider, so Dashboard AI has \
                  stopped. Replace the key, or remove it to use OpsAgent's: {}",
@@ -211,6 +212,7 @@ impl AiAccess {
         }
         let n = Notice {
             subject: "Your OpsAgent AI backup key is in use".into(),
+            link: self.s.settings_url(""),
             text: format!(
                 "Your {} key ending {} was refused, so Dashboard AI is using your backup key \
                  ending {}. Replace the primary key: {}",
@@ -249,6 +251,7 @@ impl AiAccess {
         }
         let n = Notice {
             subject: "Your AI provider has been down for 2 hours".into(),
+            link: self.s.settings_url(""),
             text: format!(
                 "{} has not answered Dashboard AI calls on your key ending {} for over \
                  {OUTAGE_NOTICE_HOURS} hours. Check the provider's status page, or manage \
@@ -299,6 +302,7 @@ impl AiAccess {
         plan.conn.models = models;
         let n = Notice {
             subject: "OpsAgent replaced a model on your AI key".into(),
+            link: self.s.settings_url(""),
             text: format!(
                 "{} no longer offers {} on your key ending {}, so Dashboard AI now uses {} \
                  for {} work. Pick another model: {}",

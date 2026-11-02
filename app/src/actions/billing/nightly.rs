@@ -154,7 +154,8 @@ impl BillingSync {
         );
         let subject = format!("Your OpsAgent trial ends on {date}");
         let key = format!("billing:trial_reminder:{day}");
-        self.mail_owners(org, ends, &key, &subject, &text).await
+        self.mail_owners(org, ends, &key, &subject, &text, &self.billing_url())
+            .await
     }
 
     async fn paused_notice(&self, org: Uuid, b: &OrgBilling, now: DateTime<Utc>) -> LResult<bool> {
@@ -168,7 +169,8 @@ impl BillingSync {
         );
         let key = format!("billing:paused:{}", period.timestamp());
         let subject = "OpsAgent is paused: payment overdue";
-        self.mail_owners(org, period, &key, subject, &text).await
+        self.mail_owners(org, period, &key, subject, &text, &self.billing_url())
+            .await
     }
 
     fn billing_url(&self) -> String {
@@ -206,6 +208,7 @@ impl BillingSync {
         key: &str,
         subject: &str,
         text: &str,
+        link: &str,
     ) -> LResult<bool> {
         let marker = self.marker(org, anchor).await?;
         let owners = self.uow.recipients().owners(org).await.map_err(lerr)?;
@@ -223,7 +226,7 @@ impl BillingSync {
             let mail = Mail {
                 to: o.email,
                 subject: subject.into(),
-                html: Some(branded(subject, text, Some("Manage billing"))),
+                html: Some(branded(subject, text, Some(("Manage billing", link)))),
                 text: text.into(),
                 idempotency_key: Some(format!("{marker}:{key}")),
                 ..Default::default()
