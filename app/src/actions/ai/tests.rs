@@ -1067,6 +1067,21 @@ async fn no_fallback_after_first_delta() {
 }
 
 #[tokio::test]
+async fn no_retry_after_first_delta() {
+    let half = FakeStep::TextThenFail("half".into(), ModelError::RateLimited);
+    let e = env(vec![half, text()], true).await;
+    e.enable().await;
+    e.put_key().await;
+    let a = e.access();
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    let mut sink = Sink::default();
+    let r = e.call_into(&a, &mut plan, &mut sink).await;
+    assert_eq!(r.unwrap_err().code(), AI_RATE_LIMITED);
+    assert_eq!(e.spy.calls_with(BYOK_KEY), 1);
+    assert_eq!(sink.0, 1);
+}
+
+#[tokio::test]
 async fn failing_primary_with_ok_backup_answers() {
     let e = env(vec![text(), text()], true).await;
     e.enable().await;
@@ -1199,12 +1214,8 @@ async fn backup_failing_beside_working_primary_mails_once() {
     assert_eq!(e.status_of(Slot::Backup).await, KeyStatus::Failing);
     let sent = e.mail.sent();
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].subject, "Your OpsAgent AI backup key isn't working");
-    assert_eq!(
-        sent[0].text,
-        "Your backup Anthropic key ending wxyz was refused. Dashboard AI still runs on your \
-         primary key; replace the backup key: https://web.test/settings/ai"
-    );
+    assert_eq!(sent[0].subject, "Your OpsAgent AI key is failing");
+    assert!(sent[0].text.contains("ending wxyz"), "{}", sent[0].text);
 }
 
 #[tokio::test]

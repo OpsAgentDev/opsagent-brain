@@ -10,7 +10,7 @@ use opsagent_core::model::{
 };
 use serde_json::{json, Value};
 
-use super::{count, json, limited, list_body, request, send, sse, CALL_LIMIT, STREAM_LIMIT};
+use super::{count, json, limited, limits, list_body, request, send, sse};
 
 pub const API_BASE: &str = "https://api.anthropic.com";
 
@@ -85,9 +85,10 @@ fn message(m: &ModelMessage) -> Value {
 fn stream_error(err: &Value) -> ModelError {
     match err["type"].as_str() {
         Some("authentication_error" | "permission_error") => ModelError::Auth,
-        Some("rate_limit_error") => ModelError::RateLimited,
+        // Overloaded is transient: retried like a rate limit before any backup.
+        Some("rate_limit_error" | "overloaded_error") => ModelError::RateLimited,
         Some("not_found_error") => ModelError::ModelGone,
-        Some("api_error" | "overloaded_error") => ModelError::Outage,
+        Some("api_error") => ModelError::Outage,
         _ => ModelError::Other("stream_error".into()),
     }
 }
@@ -180,7 +181,7 @@ impl ModelProvider for AnthropicModels {
         sink: &mut dyn TextSink,
     ) -> Result<ModelTurn, ModelError> {
         let http = self.request(ep, reqwest::Method::POST, "/v1/messages")?;
-        limited(STREAM_LIMIT, async {
+        limited(limits().stream, async {
             let res = send(http.json(&body(req))).await?;
             let events = sse::events(res);
             pin_mut!(events);
@@ -209,7 +210,7 @@ impl ModelProvider for AnthropicModels {
 
     async fn list_models(&self, ep: &Endpoint<'_>) -> Result<Vec<ModelInfo>, ModelError> {
         let http = self.request(ep, reqwest::Method::GET, "/v1/models?limit=1000")?;
-        let body = limited(CALL_LIMIT, async { list_body(send(http).await?).await }).await?;
+        let body = limited(limits().call, async { list_body(send(http).await?).await }).await?;
         let ids = body["data"].as_array().into_iter().flatten();
         Ok(ids
             .filter_map(|m| m["id"].as_str())

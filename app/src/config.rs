@@ -1,5 +1,5 @@
 //! `Config`: every setting is an environment variable, and its default lives here and only here.
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
 use opsagent_core::endpoint::UrlPolicy;
 
@@ -103,6 +103,7 @@ pub struct Config {
     pub anthropic_api_base: String,
     pub anthropic_version: String,
     pub openai_api_base: String,
+    pub ai_limits: crate::adapters::model::ModelLimits,
 }
 
 /// Required in production (no default there); the same list as deployment.md and deploy/README.md.
@@ -221,6 +222,7 @@ impl Config {
             ),
             anthropic_version: s("ANTHROPIC_VERSION", "2023-06-01"),
             openai_api_base: s("OPENAI_API_BASE", crate::adapters::model::openai::API_BASE),
+            ai_limits: ai_limits(&get)?,
         };
         if c.session_secret.len() < 16 {
             return Err(invalid("SESSION_SECRET", "must be at least 16 bytes"));
@@ -269,6 +271,7 @@ impl Config {
             anthropic_api_base: self.anthropic_api_base.clone(),
             anthropic_version: self.anthropic_version.clone(),
             openai_api_base: self.openai_api_base.clone(),
+            limits: self.ai_limits,
         }
     }
 
@@ -335,6 +338,24 @@ fn connectors(v: &str, production: bool) -> Result<ConnectorMode, ConfigError> {
 }
 
 /// `name` parsed, else `default`. The value is not echoed: it may be a secret set under the wrong name.
+/// `OPSAGENT_AI_MAX_RESPONSE_BYTES`, `_CALL_TIMEOUT_SECS`, `_STREAM_TIMEOUT_SECS`; each above 0.
+fn ai_limits(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<crate::adapters::model::ModelLimits, ConfigError> {
+    let d = crate::adapters::model::ModelLimits::default();
+    let pos = |name: &'static str, default: u64| -> Result<u64, ConfigError> {
+        match p(get, name, &default.to_string())? {
+            0 => Err(invalid(name, "must be above 0")),
+            n => Ok(n),
+        }
+    };
+    Ok(crate::adapters::model::ModelLimits {
+        body_cap: pos("OPSAGENT_AI_MAX_RESPONSE_BYTES", d.body_cap as u64)? as usize,
+        call: Duration::from_secs(pos("OPSAGENT_AI_CALL_TIMEOUT_SECS", d.call.as_secs())?),
+        stream: Duration::from_secs(pos("OPSAGENT_AI_STREAM_TIMEOUT_SECS", d.stream.as_secs())?),
+    })
+}
+
 fn p<T: FromStr>(
     get: &impl Fn(&str) -> Option<String>,
     name: &'static str,
@@ -590,9 +611,40 @@ mod tests {
     }
 
     #[test]
-    fn opsagent_ai_backup_without_primary_fails_boot() {
-        let b = [("OPSAGENT_AI_BACKUP_API_KEY", "b")];
-        assert_invalid_var(&b, "OPSAGENT_AI_BACKUP_API_KEY");
+    fn ai_limits_default_and_override() {
+        assert_eq!(
+            cfg(&[]).ai_limits,
+            crate::adapters::model::ModelLimits::default()
+        );
+        let c = cfg(&[
+            ("OPSAGENT_AI_MAX_RESPONSE_BYTES", "4194304"),
+            ("OPSAGENT_AI_CALL_TIMEOUT_SECS", "240"),
+            ("OPSAGENT_AI_STREAM_TIMEOUT_SECS", "600"),
+        ]);
+        let l = c.ai_limits;
+        assert_eq!(
+            (l.body_cap, l.call.as_secs(), l.stream.as_secs()),
+            (4194304, 240, 600)
+        );
+        assert_invalid_var(
+            &[("OPSAGENT_AI_CALL_TIMEOUT_SECS", "0")],
+            "OPSAGENT_AI_CALL_TIMEOUT_SECS",
+        );
+        assert_invalid_var(
+            &[("OPSAGENT_AI_STREAM_TIMEOUT_SECS", "x")],
+            "OPSAGENT_AI_STREAM_TIMEOUT_SECS",
+        );
+    }
+
+    #[test]
+    fn opsagent_ai_backup_without_primary_becomes_primary() {
+        let c = cfg(&[
+            ("OPSAGENT_AI_BACKUP_API_KEY", "b"),
+            ("OPSAGENT_AI_BACKUP_STYLE", "openai"),
+        ]);
+        let p = c.opsagent.expect("promoted");
+        assert_eq!((p.style, p.api_key.as_str()), (AiProvider::OpenAi, "b"));
+        assert!(c.opsagent_backup.is_none());
     }
 
     #[test]
