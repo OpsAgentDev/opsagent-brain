@@ -10,7 +10,7 @@ use opsagent_core::model::{
 };
 use serde_json::{json, Value};
 
-use super::{count, json, limited, list_body, request, send, sse, CALL_LIMIT, STREAM_LIMIT};
+use super::{count, json, limited, limits, list_body, request, send, sse};
 use crate::config::OPENAI_TOOL_PREFIXES;
 
 pub const API_BASE: &str = "https://api.openai.com/v1";
@@ -121,9 +121,9 @@ fn usage(u: &Value) -> Usage {
 fn stream_error(err: &Value) -> ModelError {
     let names = [err["code"].as_str(), err["type"].as_str()];
     let any = |want: &[&str]| names.iter().flatten().any(|n| want.contains(n));
-    if any(&["rate_limit_exceeded"]) {
+    if any(&["rate_limit_exceeded", "overloaded", "server_is_overloaded"]) {
         ModelError::RateLimited
-    } else if any(&["server_error", "overloaded", "server_is_overloaded"]) {
+    } else if any(&["server_error"]) {
         ModelError::Outage
     } else {
         ModelError::Other("stream_error".into())
@@ -224,7 +224,7 @@ impl ModelProvider for OpenAiModels {
         sink: &mut dyn TextSink,
     ) -> Result<ModelTurn, ModelError> {
         let http = bearer(ep, reqwest::Method::POST, "/chat/completions")?;
-        limited(STREAM_LIMIT, async {
+        limited(limits().stream, async {
             let res = send(http.json(&body(ep, req))).await?;
             let events = sse::events(res);
             pin_mut!(events);
@@ -243,7 +243,7 @@ impl ModelProvider for OpenAiModels {
 
     async fn list_models(&self, ep: &Endpoint<'_>) -> Result<Vec<ModelInfo>, ModelError> {
         let http = bearer(ep, reqwest::Method::GET, "/models")?;
-        let body = limited(CALL_LIMIT, async { list_body(send(http).await?).await }).await?;
+        let body = limited(limits().call, async { list_body(send(http).await?).await }).await?;
         let ids = body["data"]
             .as_array()
             .ok_or_else(|| ModelError::Other("bad_response".into()))?;

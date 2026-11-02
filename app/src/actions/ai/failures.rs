@@ -168,8 +168,8 @@ impl AiAccess {
 
     /// Marks the key `failing`; the owners hear of it on the transition only. A primary with
     /// a usable backup is told when the backup serves (`backup_notice`, ruling 10) or fails
-    /// (`failed`: "has stopped"); a backup failing beside a working primary gets its own
-    /// email; a primary with no usable backup: Dashboard AI has stopped.
+    /// (`failed`: "has stopped"); a backup failing beside a working primary, or a primary with
+    /// no usable backup: the same "has stopped" email.
     async fn key_failing(&self, org: Uuid, key_id: Uuid) -> Result<(), AiCallError> {
         let now = self.clock.now();
         let ai = self.uow.ai();
@@ -193,23 +193,9 @@ impl AiAccess {
             .is_some_and(|p| p.status != KeyStatus::Failing);
         match k.slot {
             Slot::Primary if backup_ok => return Ok(()),
-            Slot::Backup if primary_ok => {
-                let n = Notice {
-                    subject: "Your OpsAgent AI backup key isn't working".into(),
-                    text: format!(
-                        "Your backup {} key ending {} was refused. Dashboard AI still runs on \
-                         your primary key; replace the backup key: {}",
-                        provider_name(k.provider),
-                        k.last4,
-                        self.s.settings_url("")
-                    ),
-                };
-                let once = format!("backup_failing:{key_id}:{}", k.status_since.timestamp());
-                return Ok(self.notices.once(org, &once, n).await?);
-            }
             // With the primary failing, `failed` tells the owners for the primary.
-            Slot::Backup => return Ok(()),
-            Slot::Primary => {}
+            Slot::Backup if !primary_ok => return Ok(()),
+            Slot::Backup | Slot::Primary => {}
         }
         self.stopped(org, &k).await
     }

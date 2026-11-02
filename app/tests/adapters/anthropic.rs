@@ -273,7 +273,7 @@ async fn anthropic_status_mapping_401_429_404_500() {
         .stream(&ep(&server), &request(vec![]), &mut Collect::default())
         .await;
     assert_eq!(got.unwrap_err(), ModelError::ModelGone);
-    // An overloaded error mid-stream is an outage.
+    // An overloaded error mid-stream is retried like a rate limit.
     let server = MockServer::start().await;
     let body = sse_body(&[(
         "error",
@@ -283,7 +283,7 @@ async fn anthropic_status_mapping_401_429_404_500() {
     let got = models()
         .stream(&ep(&server), &request(vec![]), &mut Collect::default())
         .await;
-    assert_eq!(got.unwrap_err(), ModelError::Outage);
+    assert_eq!(got.unwrap_err(), ModelError::RateLimited);
     // Nothing listening is an outage too.
     let down = Endpoint {
         base_url: "http://127.0.0.1:1",

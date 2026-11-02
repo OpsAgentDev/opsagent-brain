@@ -33,7 +33,8 @@ pub fn status_cases() -> Vec<(u16, Value, ModelError)> {
         (429, err("rate_limit_error"), ModelError::RateLimited),
         (404, err("not_found_error"), ModelError::ModelGone),
         (500, err("api_error"), ModelError::Outage),
-        (529, err("overloaded_error"), ModelError::Outage),
+        (529, err("overloaded_error"), ModelError::RateLimited),
+        (503, err("overloaded_error"), ModelError::RateLimited),
         (
             400,
             err("invalid_request_error"),
