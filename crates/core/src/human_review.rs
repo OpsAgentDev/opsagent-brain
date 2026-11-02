@@ -62,7 +62,8 @@ pub struct ReviewRequest {
 #[async_trait]
 pub trait HumanReviewsRepo: Send + Sync {
     async fn insert(&self, r: &NewReviewRequest) -> RepoResult<Uuid>;
-    /// Requests of `org` created after `since`.
+    /// Requests of `org` created after `since`. Inside a transaction it also holds the org's
+    /// request lock until commit, so a following `insert` cannot race another request.
     async fn count_since(&self, org: Uuid, since: DateTime<Utc>) -> RepoResult<u64>;
     /// Newest first.
     async fn list(&self, org: Uuid, limit: u64) -> RepoResult<Vec<ReviewRequest>>;

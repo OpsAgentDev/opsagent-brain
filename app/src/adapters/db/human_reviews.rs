@@ -6,11 +6,12 @@ use opsagent_core::{
     repo::{RepoError, RepoResult},
 };
 use sea_orm::{
-    ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set,
+    ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, Set,
 };
 use uuid::Uuid;
 
-use super::{db_err, utc, Conn, Pg};
+use super::{db_err, ledger_storage::stmt, utc, Conn, Pg};
 use crate::models::_entities::human_review_requests::{self, Column as Col};
 
 fn row(m: human_review_requests::Model) -> RepoResult<ReviewRequest> {
@@ -54,6 +55,12 @@ impl<C: Conn> HumanReviewsRepo for Pg<C> {
     }
 
     async fn count_since(&self, org: Uuid, since: DateTime<Utc>) -> RepoResult<u64> {
+        // Serialises the org's count-then-insert so concurrent requests cannot pass the cap.
+        let lock = "SELECT pg_advisory_xact_lock(hashtext('human_review:' || $1::text))";
+        self.db()
+            .execute_raw(stmt(lock, vec![org.into()]))
+            .await
+            .map_err(db_err)?;
         human_review_requests::Entity::find()
             .filter(Col::OrganisationId.eq(org))
             .filter(Col::CreatedAt.gt(since))

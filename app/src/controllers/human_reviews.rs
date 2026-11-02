@@ -15,7 +15,7 @@ use crate::{
 };
 
 #[derive(Serialize, ToSchema)]
-pub struct Offer {
+pub struct HumanReviewOffer {
     /// `finding` or `account`.
     pub kind: String,
     pub price_cents: i32,
@@ -24,7 +24,7 @@ pub struct Offer {
 }
 
 #[derive(Serialize, ToSchema)]
-pub struct ReviewRequest {
+pub struct HumanReviewRequestOut {
     pub id: Uuid,
     pub kind: String,
     pub finding_id: Option<Uuid>,
@@ -40,9 +40,9 @@ pub struct ReviewRequest {
 
 #[derive(Serialize, ToSchema)]
 pub struct HumanReviews {
-    pub offers: Vec<Offer>,
+    pub offers: Vec<HumanReviewOffer>,
     /// The latest 50, newest first.
-    pub requests: Vec<ReviewRequest>,
+    pub requests: Vec<HumanReviewRequestOut>,
 }
 
 #[utoipa::path(get, path = "/orgs/{org}/human-reviews", tag = "human-reviews", params(OrgPath),
@@ -60,7 +60,7 @@ async fn list(
     Ok(Json(HumanReviews {
         offers: OFFERS
             .iter()
-            .map(|o| Offer {
+            .map(|o| HumanReviewOffer {
                 kind: o.kind.as_str().into(),
                 price_cents: o.price_cents,
                 title: o.title.into(),
@@ -69,7 +69,7 @@ async fn list(
             .collect(),
         requests: got
             .into_iter()
-            .map(|r| ReviewRequest {
+            .map(|r| HumanReviewRequestOut {
                 id: r.id,
                 kind: r.kind.as_str().into(),
                 finding_id: r.finding_id,
@@ -85,7 +85,7 @@ async fn list(
 }
 
 #[derive(Deserialize, ToSchema)]
-pub struct NewRequest {
+pub struct HumanReviewIn {
     /// `finding` (needs `finding_id`) or `account` (needs `connection_id`).
     pub kind: String,
     pub finding_id: Option<Uuid>,
@@ -95,20 +95,20 @@ pub struct NewRequest {
 }
 
 #[derive(Serialize, ToSchema)]
-pub struct Created {
+pub struct HumanReviewCreated {
     pub id: Uuid,
 }
 
 /// Owner only. Allowed while the organisation is read-only: it is invoiced separately.
 #[utoipa::path(post, path = "/orgs/{org}/human-reviews", tag = "human-reviews", params(OrgPath),
-    request_body = NewRequest,
-    responses((status = 201, body = Created), (status = 403, body = Problem), (status = 404, body = Problem),
+    request_body = HumanReviewIn,
+    responses((status = 201, body = HumanReviewCreated), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 422, body = Problem), (status = 429, body = Problem)))]
 async fn create(
     State(app): State<AppState>,
     scope: OrgScope,
-    ApiJson(body): ApiJson<NewRequest>,
-) -> Result<(StatusCode, Json<Created>), ApiError> {
+    ApiJson(body): ApiJson<HumanReviewIn>,
+) -> Result<(StatusCode, Json<HumanReviewCreated>), ApiError> {
     scope.require_owner()?;
     let input = ReviewInput {
         kind: body.kind,
@@ -120,7 +120,7 @@ async fn create(
     let id = request
         .run(&scope.organisation, &scope.member, input)
         .await?;
-    Ok((StatusCode::CREATED, Json(Created { id })))
+    Ok((StatusCode::CREATED, Json(HumanReviewCreated { id })))
 }
 
 pub fn api() -> OpenApiRouter<AppState> {
