@@ -126,8 +126,9 @@ fn human_review_line_only_when_url_set_in_html_and_text() {
         assert!(out.contains("Want an expert to look at this?"), "{out}");
         assert!(!out.contains("harun.dev"));
     }
-    let foot = h.rfind("</table>").expect("table");
-    assert!(h.find("https://x.test/unsub?t=1").expect("unsub") < foot);
+    let foot = h.find("opsagent.dev").expect("footer");
+    let unsub = h.find("https://x.test/unsub?t=1").expect("unsub");
+    assert!(unsub > foot && unsub < foot + h[foot..].find("</table>").expect("end"));
     assert!(t.contains("Unsubscribe: https://x.test/unsub?t=1"));
     w.human_review_url = None;
     w.unsubscribe_url = None;
