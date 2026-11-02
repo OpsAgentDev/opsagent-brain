@@ -1,10 +1,12 @@
 use super::Mail;
 
 pub fn waitlist_confirmation(to: &str) -> Mail {
+    let text = "Thanks for joining the OpsAgent waitlist. The alpha opens in small groups, and we'll email you once when your spot is ready. Reply to this email if you have questions.";
     Mail {
         to: to.into(),
         subject: "You're on the OpsAgent waitlist".into(),
-        text: "Thanks for joining the OpsAgent waitlist. The alpha opens in small groups, and we'll email you once when your spot is ready. Reply to this email if you have questions.".into(),
+        html: Some(super::branded("You're on the waitlist", text, None)),
+        text: text.into(),
         ..Default::default()
     }
 }

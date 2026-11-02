@@ -22,10 +22,7 @@ fn price(cents: i32) -> String {
 
 /// To the fixed `to` (CONTACT_TO), Reply-To the requester. No dashboard link.
 pub fn founder_notice(to: &str, n: &Notice) -> Mail {
-    Mail {
-        to: to.into(),
-        subject: format!("Human review requested: {} · {}", n.kind.as_str(), n.org_name),
-        text: format!(
+    let text = format!(
             "Organisation: {} ({})\nRequester: {}\nProduct: {} review, {}\nTarget: {} ({})\n\nNote:\n{}\n",
             n.org_name,
             n.org_slug,
@@ -35,7 +32,16 @@ pub fn founder_notice(to: &str, n: &Notice) -> Mail {
             n.label,
             n.reference,
             n.note.unwrap_or("(none)"),
+    );
+    Mail {
+        to: to.into(),
+        subject: format!(
+            "Human review requested: {} · {}",
+            n.kind.as_str(),
+            n.org_name
         ),
+        html: Some(super::branded("Human review requested", &text, None)),
+        text,
         reply_to: Some(n.requester.into()),
         ..Default::default()
     }
@@ -43,15 +49,17 @@ pub fn founder_notice(to: &str, n: &Notice) -> Mail {
 
 /// To the requester.
 pub fn confirmation(n: &Notice) -> Mail {
-    Mail {
-        to: n.requester.into(),
-        subject: "We got your human review request".into(),
-        text: format!(
+    let text = format!(
             "You asked for a {} review of {} for {}.\n\nHarun will reply within 1 business day with a confirmation and invoice. Nothing is changed in your account.\n",
             n.kind.as_str(),
             n.label,
             price(n.price_cents),
-        ),
+    );
+    Mail {
+        to: n.requester.into(),
+        subject: "We got your human review request".into(),
+        html: Some(super::branded("We got your request", &text, None)),
+        text,
         ..Default::default()
     }
 }

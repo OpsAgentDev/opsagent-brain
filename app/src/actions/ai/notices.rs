@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::{
     actions::{recipients::MailGuard, uow::UnitOfWork},
     error::AppResult,
-    mailers::{Mail, Mailer},
+    mailers::{branded, Mail, Mailer},
 };
 
 pub struct Notices {
@@ -44,6 +44,7 @@ impl Notices {
             let mail = Mail {
                 to: o.email,
                 subject: n.subject.clone(),
+                html: Some(branded(&n.subject, &n.text, Some("Open settings"))),
                 text: n.text.clone(),
                 idempotency_key: Some(format!("ai:{org}:{key}:{}", o.id)),
                 ..Default::default()

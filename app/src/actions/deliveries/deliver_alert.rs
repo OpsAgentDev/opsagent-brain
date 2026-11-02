@@ -26,7 +26,7 @@ use super::{
 };
 use crate::{
     actions::runs::classify::{lerr, LResult},
-    mailers::{magic_link::mail_safe_name, Mail},
+    mailers::{branded, magic_link::mail_safe_name, Mail},
 };
 
 const CHUNK: &str = "deliver";
@@ -267,6 +267,7 @@ impl Route<'_> {
             let mail = Mail {
                 to: o.email,
                 subject: m.subject.clone(),
+                html: Some(branded(&m.subject, &body, Some("View in OpsAgent"))),
                 text: body.clone(),
                 ..Default::default()
             };

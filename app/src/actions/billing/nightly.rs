@@ -25,7 +25,7 @@ use uuid::Uuid;
 use super::{enqueue_sync, BillingSync};
 use crate::{
     actions::runs::classify::{lerr, LResult},
-    mailers::Mail,
+    mailers::{branded, Mail},
 };
 
 const TRIAL_DAYS: i64 = 14;
@@ -223,6 +223,7 @@ impl BillingSync {
             let mail = Mail {
                 to: o.email,
                 subject: subject.into(),
+                html: Some(branded(subject, text, Some("Manage billing"))),
                 text: text.into(),
                 idempotency_key: Some(format!("{marker}:{key}")),
                 ..Default::default()

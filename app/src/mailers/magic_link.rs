@@ -2,22 +2,34 @@ use super::Mail;
 use opsagent_core::org::is_bidi;
 
 pub fn magic_link(to: &str, link: &str, code: &str) -> Mail {
+    let text = format!(
+        "Sign in to OpsAgent:\n\n{link}\n\nOr enter this code: {code}\n\nThe link and code work once and expire in 15 minutes."
+    );
     Mail {
         to: to.into(),
         subject: format!("Your OpsAgent sign-in code: {code}"),
-        text: format!(
-            "Sign in to OpsAgent:\n\n{link}\n\nOr enter this code: {code}\n\nThe link and code work once and expire in 15 minutes."
-        ),
+        html: Some(super::branded(
+            "Sign in to OpsAgent",
+            &text,
+            Some("Sign in"),
+        )),
+        text,
         ..Default::default()
     }
 }
 
 pub fn invite(to: &str, org_name: &str, link: &str) -> Mail {
     let org_name = &mail_safe_name(org_name);
+    let text = format!("Join {org_name} on OpsAgent:\n\n{link}\n\nSign in with this email address to accept. The invite expires in 7 days.");
     Mail {
         to: to.into(),
         subject: format!("You are invited to {org_name} on OpsAgent"),
-        text: format!("Join {org_name} on OpsAgent:\n\n{link}\n\nSign in with this email address to accept. The invite expires in 7 days."),
+        html: Some(super::branded(
+            &format!("You are invited to {org_name}"),
+            &text,
+            Some("Accept invite"),
+        )),
+        text,
         ..Default::default()
     }
 }
@@ -40,10 +52,16 @@ pub fn mail_safe_name(raw: &str) -> String {
 
 pub fn recipient_confirm(to: &str, org_name: &str, link: &str) -> Mail {
     let org_name = &mail_safe_name(org_name);
+    let text = format!("{org_name} wants to send you OpsAgent reports by email. Confirm here:\n\n{link}\n\nIgnore this mail to receive nothing. The link expires in 7 days.");
     Mail {
         to: to.into(),
         subject: format!("Confirm OpsAgent reports for {org_name}"),
-        text: format!("{org_name} wants to send you OpsAgent reports by email. Confirm here:\n\n{link}\n\nIgnore this mail to receive nothing. The link expires in 7 days."),
+        html: Some(super::branded(
+            "Confirm your email",
+            &text,
+            Some("Confirm email"),
+        )),
+        text,
         ..Default::default()
     }
 }
