@@ -10,6 +10,7 @@ mod deliveries;
 mod explanations;
 mod findings;
 mod health;
+mod human_reviews;
 mod integrations;
 mod logging;
 mod mcp_auth;

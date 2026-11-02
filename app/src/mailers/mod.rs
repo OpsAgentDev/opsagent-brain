@@ -1,4 +1,5 @@
 pub mod contact;
+pub mod human_review;
 pub mod magic_link;
 pub mod waitlist;
 

@@ -6,6 +6,7 @@ pub mod connections;
 pub mod contact;
 pub mod deliveries;
 pub mod findings;
+pub mod human_reviews;
 pub mod integrations;
 pub mod members;
 pub mod oauth;
@@ -42,6 +43,7 @@ pub struct Actions {
     pub retention: retention::Retention,
     pub billing: billing::Billing,
     pub ai: ai::Ai,
+    pub human_reviews: human_reviews::HumanReviews,
 }
 
 /// Fixed-window counters shared by every rate limit.

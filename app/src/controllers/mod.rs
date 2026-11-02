@@ -8,6 +8,7 @@ pub mod contact;
 pub mod deliveries;
 pub mod findings;
 pub mod health;
+pub mod human_reviews;
 pub mod integrations;
 pub mod members;
 pub mod oauth;
