@@ -155,6 +155,7 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
 }
 
 fn models(s: &ModelSettings) -> AppResult<ModelProviders> {
+    crate::adapters::model::set_limits(s.limits);
     if s.mode == ModelMode::Fake {
         let fake: Arc<dyn ModelProvider> = Arc::new(FakeModels::demo());
         return Ok(ModelProviders {

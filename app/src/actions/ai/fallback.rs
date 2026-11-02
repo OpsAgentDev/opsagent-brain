@@ -146,7 +146,8 @@ impl AiAccess {
         let mut waits = waits.iter();
         loop {
             match p.stream(&Self::endpoint(c, &pin), req, &mut *sink).await {
-                Err(ModelError::RateLimited) => match waits.next() {
+                // Text already shown is never repeated by a retry.
+                Err(ModelError::RateLimited) if !sink.sent => match waits.next() {
                     Some(d) => tokio::time::sleep(*d).await,
                     None => return Err(ModelError::RateLimited),
                 },

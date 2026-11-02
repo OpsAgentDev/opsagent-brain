@@ -285,8 +285,11 @@ async fn chat_completions_error_chunk_maps() {
             ModelError::RateLimited,
         ),
         (json!({"type": "server_error"}), ModelError::Outage),
-        (json!({"code": "overloaded"}), ModelError::Outage),
-        (json!({"code": "server_is_overloaded"}), ModelError::Outage),
+        (json!({"code": "overloaded"}), ModelError::RateLimited),
+        (
+            json!({"code": "server_is_overloaded"}),
+            ModelError::RateLimited,
+        ),
         (
             json!({"code": "invalid_prompt", "message": "provider text"}),
             ModelError::Other("stream_error".into()),

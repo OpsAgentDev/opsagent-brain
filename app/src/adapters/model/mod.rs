@@ -90,20 +90,46 @@ async fn send(req: reqwest::RequestBuilder) -> Result<reqwest::Response, ModelEr
     Err(status_error(status, &body))
 }
 
-/// The most of a non-streamed body (an error or a models list) read from an endpoint.
-const BODY_CAP: usize = 2 * 1024 * 1024;
+/// Size and time caps on provider calls; `OPSAGENT_AI_*` overrides, set once at boot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModelLimits {
+    /// The most of a non-streamed body (an error or a models list) read from an endpoint.
+    pub body_cap: usize,
+    /// Every call that lists models, and every explanation, ends within this.
+    pub call: Duration,
+    /// One streamed model call ends within this.
+    pub stream: Duration,
+}
 
-/// Every call that lists models, and every explanation, ends within this.
-pub const CALL_LIMIT: Duration = Duration::from_secs(120);
+impl Default for ModelLimits {
+    fn default() -> Self {
+        Self {
+            body_cap: 2 * 1024 * 1024,
+            call: Duration::from_secs(120),
+            stream: Duration::from_secs(300),
+        }
+    }
+}
 
-/// One streamed model call ends within this.
-const STREAM_LIMIT: Duration = Duration::from_secs(300);
+// shortcut: one process-wide value (config is per process); pass it in if it ever varies per call.
+static LIMITS: OnceLock<ModelLimits> = OnceLock::new();
 
-/// `res`'s body, read chunk by chunk; past `BODY_CAP` or broken, an `Outage`.
+/// Sets the limits; the first call wins.
+pub fn set_limits(l: ModelLimits) {
+    let _ = LIMITS.set(l);
+}
+
+/// The limits set at boot, else the defaults.
+pub fn limits() -> ModelLimits {
+    *LIMITS.get_or_init(ModelLimits::default)
+}
+
+/// `res`'s body, read chunk by chunk; past `limits().body_cap` or broken, an `Outage`.
 async fn read_capped(mut res: reqwest::Response) -> Result<Vec<u8>, ModelError> {
+    let cap = limits().body_cap;
     let mut out = Vec::new();
     while let Some(chunk) = res.chunk().await.map_err(|_| ModelError::Outage)? {
-        if out.len() + chunk.len() > BODY_CAP {
+        if out.len() + chunk.len() > cap {
             return Err(ModelError::Outage);
         }
         out.extend_from_slice(&chunk);
@@ -132,12 +158,22 @@ async fn limited<T>(
 fn status_error(status: StatusCode, body: &Value) -> ModelError {
     match status.as_u16() {
         401 | 403 => ModelError::Auth,
-        429 => ModelError::RateLimited,
+        // 529 and an overloaded 5xx are transient: retried like a rate limit before any backup.
+        429 | 529 => ModelError::RateLimited,
+        500..=599 if overloaded(&body["error"]) => ModelError::RateLimited,
         404 => ModelError::ModelGone,
         500..=599 => ModelError::Outage,
         _ if names_missing_model(&body["error"]) => ModelError::ModelGone,
         s => ModelError::Other(format!("http_{s}")),
     }
+}
+
+/// An error body naming overload (Anthropic's `type`, OpenAI's `code` or `type`).
+fn overloaded(err: &Value) -> bool {
+    let names = ["overloaded_error", "overloaded", "server_is_overloaded"];
+    [&err["type"], &err["code"]]
+        .iter()
+        .any(|v| v.as_str().is_some_and(|n| names.contains(&n)))
 }
 
 /// A `not_found_error` whose message is about the model (read, never repeated).

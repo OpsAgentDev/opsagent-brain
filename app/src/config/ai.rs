@@ -126,8 +126,9 @@ const BACKUP: ConnVars = ConnVars {
     chat: "OPSAGENT_AI_BACKUP_CHAT_MODEL",
 };
 
-/// OpsAgent's primary and backup connections; each exists iff its key is set. A bad style,
-/// URL or unpriced model fails boot naming the variable.
+/// OpsAgent's primary and backup connections; each exists iff its key is set, and a backup
+/// with no primary is promoted to primary. A bad style, URL or unpriced model fails boot
+/// naming the variable.
 pub(super) fn opsagent_connections(
     get: impl Fn(&str) -> Option<String>,
     policy: UrlPolicy,
@@ -141,8 +142,8 @@ pub(super) fn opsagent_connections(
         .map(|key| connection(&get, &BACKUP, key, policy))
         .transpose()?;
     if primary.is_none() && backup.is_some() {
-        let reason = "needs OPSAGENT_AI_API_KEY (a backup with no primary)";
-        return Err(invalid("OPSAGENT_AI_BACKUP_API_KEY", reason));
+        tracing::warn!("OPSAGENT_AI_BACKUP_API_KEY set without a primary key; using it as primary");
+        return Ok((backup, None));
     }
     Ok((primary, backup))
 }
@@ -196,6 +197,7 @@ pub struct ModelSettings {
     pub openai_api_base: String,
     /// `AI_ENDPOINT_ALLOW_PRIVATE`: dev/test only.
     pub allow_private: bool,
+    pub limits: crate::adapters::model::ModelLimits,
 }
 
 #[cfg(test)]

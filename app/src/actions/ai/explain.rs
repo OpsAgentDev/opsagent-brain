@@ -17,7 +17,7 @@ use uuid::Uuid;
 use super::{access::AiAccess, failures::AiCallError, refused, AI_DISABLED};
 use crate::{
     actions::{orgs::OrgScope, uow::UnitOfWork},
-    adapters::{model::CALL_LIMIT, redact::redact},
+    adapters::{model::limits, redact::redact},
     error::{AppError, AppResult},
     models::enum_str,
 };
@@ -144,7 +144,7 @@ impl ExplainFinding {
         let call = self
             .access
             .call(scope, &mut plan, Purpose::Explain, req, &mut sink);
-        let turn = tokio::time::timeout(CALL_LIMIT, call)
+        let turn = tokio::time::timeout(limits().call, call)
             .await
             .unwrap_or(Err(AiCallError::Outage))?;
         let text = turn.text.trim();
