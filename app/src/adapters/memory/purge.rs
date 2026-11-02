@@ -47,6 +47,10 @@ impl MemState {
             .collect();
         let mut put = |table, n| c.insert(table, n);
         put(
+            "human_review_requests",
+            drain(&mut s.human_reviews, |r| r.0 == org),
+        );
+        put(
             "recipients",
             drain(&mut s.recipients, |r| r.row.organisation_id == org),
         );

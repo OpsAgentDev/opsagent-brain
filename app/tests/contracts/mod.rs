@@ -24,6 +24,7 @@ mod chat;
 mod connections;
 mod deliveries;
 mod findings;
+mod human_reviews;
 mod integrations;
 mod oauth;
 mod orgs;

@@ -3,9 +3,9 @@
 use async_trait::async_trait;
 use opsagent_core::{
     ai::AiRepo, audit::AuditLog, billing::BillingRepo, chat::ChatRepo, connection::ConnectionsRepo,
-    finding::FindingsRepo, oauth::OAuthRepo, org::OrganisationsRepo, passkey::PasskeysRepo,
-    repo::RepoResult, resource::ResourcesRepo, retention::RetentionRepo, run::RunsRepo,
-    user::UsersRepo,
+    finding::FindingsRepo, human_review::HumanReviewsRepo, oauth::OAuthRepo,
+    org::OrganisationsRepo, passkey::PasskeysRepo, repo::RepoResult, resource::ResourcesRepo,
+    retention::RetentionRepo, run::RunsRepo, user::UsersRepo,
 };
 use opsagent_deliver::repo::{DeliveriesRepo, IntegrationsRepo, RecipientsRepo, SchedulesRepo};
 use opsagent_ledger::{Queue, Storage};
@@ -35,6 +35,8 @@ pub trait Repos: Send + Sync {
     fn ai(&self) -> &dyn AiRepo;
     /// Dashboard chat history.
     fn chat(&self) -> &dyn ChatRepo;
+    /// Human review requests.
+    fn human_reviews(&self) -> &dyn HumanReviewsRepo;
 }
 
 /// Writes through a `Tx` are discarded unless it is committed.
