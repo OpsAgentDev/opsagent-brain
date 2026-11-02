@@ -11,9 +11,9 @@ use sea_orm::{
 use uuid::Uuid;
 
 use super::{db_err, utc, Conn, Pg};
-use crate::models::_entities::human_review_requests::{self as hr, Column as Col};
+use crate::models::_entities::human_review_requests::{self, Column as Col};
 
-fn row(m: hr::Model) -> RepoResult<ReviewRequest> {
+fn row(m: human_review_requests::Model) -> RepoResult<ReviewRequest> {
     Ok(ReviewRequest {
         id: m.id,
         kind: ReviewKind::parse(&m.kind)
@@ -33,7 +33,7 @@ fn row(m: hr::Model) -> RepoResult<ReviewRequest> {
 impl<C: Conn> HumanReviewsRepo for Pg<C> {
     async fn insert(&self, r: &NewReviewRequest) -> RepoResult<Uuid> {
         let id = Uuid::new_v4();
-        let m = hr::ActiveModel {
+        let m = human_review_requests::ActiveModel {
             id: Set(id),
             organisation_id: Set(r.organisation_id),
             kind: Set(r.kind.as_str().into()),
@@ -46,7 +46,7 @@ impl<C: Conn> HumanReviewsRepo for Pg<C> {
             requester_email: Set(r.requester_email.clone()),
             created_at: Set(r.created_at.into()),
         };
-        hr::Entity::insert(m)
+        human_review_requests::Entity::insert(m)
             .exec_without_returning(self.db())
             .await
             .map_err(db_err)?;
@@ -54,7 +54,7 @@ impl<C: Conn> HumanReviewsRepo for Pg<C> {
     }
 
     async fn count_since(&self, org: Uuid, since: DateTime<Utc>) -> RepoResult<u64> {
-        hr::Entity::find()
+        human_review_requests::Entity::find()
             .filter(Col::OrganisationId.eq(org))
             .filter(Col::CreatedAt.gt(since))
             .count(self.db())
@@ -63,7 +63,7 @@ impl<C: Conn> HumanReviewsRepo for Pg<C> {
     }
 
     async fn list(&self, org: Uuid, limit: u64) -> RepoResult<Vec<ReviewRequest>> {
-        hr::Entity::find()
+        human_review_requests::Entity::find()
             .filter(Col::OrganisationId.eq(org))
             .order_by_desc(Col::CreatedAt)
             .order_by_desc(Col::Id)
