@@ -20,6 +20,9 @@ const TRIAL_DAYS: &str = "14";
 const TOPUP_CENTS: &str = "1500";
 /// `metadata[purpose]` of a top-up Checkout session; the webhook grants on it.
 pub const TOPUP_PURPOSE: &str = "ai_topup";
+/// Stripe product tax code "Software as a service (SaaS) - business use"; Managed Payments
+/// requires one on every line item.
+pub const SAAS_TAX_CODE: &str = "txcd_10103001";
 
 /// No `Debug`: it holds the secret key.
 #[derive(Clone)]
@@ -169,10 +172,13 @@ impl BillingProvider for StripeBilling {
                 "line_items[0][price_data][product_data][name]",
                 "OpsAgent AI credits (1,000)".into(),
             ),
+            (
+                "line_items[0][price_data][product_data][tax_code]",
+                SAAS_TAX_CODE.into(),
+            ),
             ("line_items[0][quantity]", "1".into()),
-            // Cards only: the webhook grants on a paid `checkout.session.completed`, and a
-            // delayed method would complete unpaid.
-            ("payment_method_types[0]", "card".into()),
+            // No `payment_method_types`: Managed Payments picks methods and refuses the field.
+            // A delayed method completes unpaid; the webhook grants on its async success.
             ("metadata[purpose]", TOPUP_PURPOSE.into()),
             ("success_url", success_url.to_owned()),
             ("cancel_url", cancel_url.to_owned()),
