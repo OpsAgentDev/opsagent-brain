@@ -204,10 +204,16 @@ impl HandleWebhook {
             "checkout.session.completed" | "checkout.session.async_payment_succeeded"
         );
         let mut paid_review = None;
+        let mut check_id = None;
         if paid_event && purpose == Some(Some(TOPUP_PURPOSE)) {
             topup_completed(tx.as_ref(), &ev).await?;
         } else if paid_event && purpose == Some(Some(HUMAN_REVIEW_PURPOSE)) {
             paid_review = review_paid(tx.as_ref(), &ev, self.clock.now()).await?;
+            if let Some((org, r)) = &paid_review {
+                if let Some(id) = r.finding_id {
+                    check_id = tx.findings().get(org.id, id).await?.map(|f| f.key.check_id);
+                }
+            }
         } else if ev.kind == "checkout.session.completed" {
             self.checkout_completed(tx.as_ref(), &ev).await?;
         } else if paid_event {
@@ -229,7 +235,7 @@ impl HandleWebhook {
         }
         tx.commit().await?;
         if let Some((org, review)) = paid_review {
-            mail_paid(&*self.mailer, &self.contact_to, &org, &review).await;
+            mail_paid(&*self.mailer, &self.contact_to, &org, &review, check_id).await;
         }
         Ok(())
     }

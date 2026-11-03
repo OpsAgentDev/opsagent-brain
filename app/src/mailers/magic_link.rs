@@ -8,12 +8,16 @@ pub fn magic_link(to: &str, link: &str, code: &str) -> Mail {
     Mail {
         to: to.into(),
         subject: format!("Your OpsAgent sign-in code: {code}"),
-        html: Some(super::branded(
-            "Sign in to OpsAgent",
-            &format!(
-                "Or enter this code:\n\n{code}\n\nThe link and code work once and expire in 15 minutes."
-            ),
-            Some(("Sign in", link)),
+        html: Some(opsagent_deliver::render_notice(
+            &opsagent_deliver::NoticeEmail {
+                preheader: "Sign in to OpsAgent".into(),
+                heading: "Sign in to OpsAgent".into(),
+                paragraphs: vec!["Or enter this code:".into()],
+                button: Some(("Sign in".into(), link.into())),
+                footnote: Some("The link and code work once and expire in 15 minutes.".into()),
+                unsubscribe_url: None,
+                code: Some(code.into()),
+            },
         )),
         text,
         ..Default::default()
@@ -86,7 +90,20 @@ pub fn recipient_confirm(to: &str, org_name: &str, link: &str) -> Mail {
 
 #[cfg(test)]
 mod tests {
-    use super::{invite, mail_safe_name};
+    use super::{invite, magic_link, mail_safe_name};
+
+    #[test]
+    fn magic_link_shows_the_code_in_a_block() {
+        let m = magic_link("a@example.com", "https://x.test/l", "123456");
+        let html = m.html.unwrap();
+        assert!(html.contains("letter-spacing:8px"), "{html}");
+        let block = html.split("letter-spacing:8px").nth(1).unwrap();
+        assert!(block.contains("123456"), "{block}");
+        assert_eq!(
+            m.text,
+            "Sign in to OpsAgent:\n\nhttps://x.test/l\n\nOr enter this code: 123456\n\nThe link and code work once and expire in 15 minutes."
+        );
+    }
 
     #[test]
     fn org_name_is_capped_and_has_no_control_chars() {

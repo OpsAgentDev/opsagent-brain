@@ -471,6 +471,8 @@ async fn slack_revoked_mid_run_falls_back_and_keeps_caps() {
             "{subjects:?}"
         );
         assert!(mail.sent()[4].text.ends_with("/findings"));
+        let html = mail.sent()[4].html.clone().unwrap();
+        assert!(html.contains("c5") && html.contains("c6"), "{html}");
         let open = findings::Entity::find()
             .filter(findings::Column::ConnectionId.eq(w.conn))
             .filter(findings::Column::AlertedAt.is_null())

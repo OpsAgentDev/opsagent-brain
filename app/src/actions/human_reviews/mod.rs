@@ -33,9 +33,13 @@ pub(crate) async fn mail_paid(
     contact_to: &str,
     org: &Organisation,
     r: &ReviewRequest,
+    check_id: Option<String>,
 ) {
     let reference = match (r.finding_id, r.connection_id) {
-        (Some(id), _) => format!("finding {id}"),
+        (Some(id), _) => match check_id {
+            Some(c) => format!("finding {c} ({id})"),
+            None => format!("finding {id}"),
+        },
         (_, Some(id)) => format!("connection {id}"),
         _ => String::new(),
     };
