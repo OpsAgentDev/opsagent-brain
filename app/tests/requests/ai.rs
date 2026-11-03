@@ -850,7 +850,7 @@ async fn topup_checkout_sends_payment_mode() {
             .and(body_string_contains("price_data%5D%5Bunit_amount%5D=1500"))
             .and(body_string_contains("price_data%5D%5Bcurrency%5D=usd"))
             .and(body_string_contains("metadata%5Bpurpose%5D=ai_topup"))
-            .and(body_string_contains("payment_method_types%5B0%5D=card"))
+            .and(body_string_contains("tax_code%5D=txcd_10103001"))
             .and(body_string_contains("settings%2Fai%3Ftopup%3Dsuccess"))
             .and(body_string_contains("settings%2Fai%3Ftopup%3Dcanceled"))
             .respond_with(
@@ -872,14 +872,42 @@ async fn topup_checkout_sends_payment_mode() {
 }
 
 fn topup_event(id: &str, org: Uuid) -> Value {
+    topup_event_as(id, "checkout.session.completed", "paid", org)
+}
+
+fn topup_event_as(id: &str, kind: &str, payment_status: &str, org: Uuid) -> Value {
     event(
         id,
-        "checkout.session.completed",
+        kind,
         10,
         json!({ "id": "cs_t", "object": "checkout.session", "mode": "payment",
-            "payment_status": "paid", "client_reference_id": org.to_string(),
+            "payment_status": payment_status, "client_reference_id": org.to_string(),
             "customer": "cus_1", "metadata": { "purpose": "ai_topup" } }),
     )
+}
+
+#[tokio::test]
+#[serial]
+async fn topup_delayed_payment_grants_on_async_success() {
+    serve_with(
+        stripe_on("http://127.0.0.1:1".into()),
+        |req, ctx| async move {
+            let (_, _, id) = org_with_customer(&req, &ctx).await;
+            let repo = Pg::new(&ctx.db);
+            let unpaid = topup_event_as("evt_d1", "checkout.session.completed", "unpaid", id);
+            deliver(&req, &unpaid).await;
+            assert_eq!(repo.topup_balance(id).await.unwrap(), Decimal::ZERO);
+            let ok = topup_event_as(
+                "evt_d2",
+                "checkout.session.async_payment_succeeded",
+                "paid",
+                id,
+            );
+            deliver(&req, &ok).await;
+            assert_eq!(repo.topup_balance(id).await.unwrap(), Decimal::from(1000));
+        },
+    )
+    .await;
 }
 
 #[tokio::test]

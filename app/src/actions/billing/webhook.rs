@@ -17,8 +17,9 @@ use crate::{
     error::{AppError, AppResult},
 };
 
-const HANDLED: [&str; 6] = [
+const HANDLED: [&str; 7] = [
     "checkout.session.completed",
+    "checkout.session.async_payment_succeeded",
     "customer.subscription.created",
     "customer.subscription.updated",
     "customer.subscription.deleted",
@@ -66,7 +67,7 @@ async fn topup_completed(tx: &dyn Tx, ev: &Event) -> AppResult<()> {
         warn_skip(ev, "top-up session without organisation");
         return Ok(());
     };
-    // The top-up session allows cards only, so a completed session is paid; this guards it.
+    // A delayed payment method completes unpaid; its `async_payment_succeeded` grants instead.
     if o["payment_status"] != "paid" {
         warn_skip(ev, "top-up session not paid");
         return Ok(());
@@ -151,10 +152,16 @@ impl HandleWebhook {
         }
         let o = &ev.data.object;
         let topup = o["mode"] == "payment" && o["metadata"]["purpose"] == TOPUP_PURPOSE;
-        if ev.kind == "checkout.session.completed" && topup {
+        let paid_event = matches!(
+            ev.kind.as_str(),
+            "checkout.session.completed" | "checkout.session.async_payment_succeeded"
+        );
+        if paid_event && topup {
             topup_completed(tx.as_ref(), &ev).await?;
         } else if ev.kind == "checkout.session.completed" {
             self.checkout_completed(tx.as_ref(), &ev).await?;
+        } else if paid_event {
+            // A subscription's delayed payment: its subscription events carry the state.
         } else {
             let customer = ev.data.object["customer"].as_str();
             match customer {
