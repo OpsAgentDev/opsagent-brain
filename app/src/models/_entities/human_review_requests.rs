@@ -22,6 +22,9 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub requester_email: String,
     pub created_at: DateTimeWithTimeZone,
+    #[sea_orm(column_type = "Text")]
+    pub payment: String,
+    pub paid_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

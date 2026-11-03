@@ -3622,7 +3622,7 @@
         "tags": [
           "human-reviews"
         ],
-        "summary": "Owner only. Allowed while the organisation is read-only: it is invoiced separately.",
+        "summary": "Owner only. Allowed while the organisation is read-only: it is paid separately. 502\n`billing_unavailable` when Stripe fails.",
         "operationId": "human-reviews_create",
         "parameters": [
           {
@@ -3683,6 +3683,15 @@
             }
           },
           "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
             "content": {
               "application/json": {
                 "schema": {
@@ -5774,6 +5783,13 @@
           "id"
         ],
         "properties": {
+          "checkout_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The hosted Stripe Checkout page to pay on; null when Stripe is not configured (invoiced)."
+          },
           "id": {
             "type": "string",
             "format": "uuid"
@@ -5846,6 +5862,7 @@
           "target_label",
           "price_cents",
           "requester_email",
+          "payment",
           "created_at"
         ],
         "properties": {
@@ -5879,6 +5896,17 @@
               "string",
               "null"
             ]
+          },
+          "paid_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "payment": {
+            "type": "string",
+            "description": "`invoice` (invoiced outside the product), `pending` (awaiting Stripe payment) or `paid`."
           },
           "price_cents": {
             "type": "integer",

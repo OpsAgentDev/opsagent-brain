@@ -9,8 +9,15 @@ use sea_orm::{entity::prelude::*, ActiveModelTrait, Set};
 use serde_json::{json, Value};
 use serial_test::serial;
 use uuid::Uuid;
+use wiremock::{
+    matchers::{body_string_contains, method, path},
+    Mock, MockServer, ResponseTemplate,
+};
 
-use super::support::*;
+use super::{
+    billing::{deliver, event, stripe_on},
+    support::*,
+};
 use crate::workers::full_scan::{noisy, scan};
 
 struct Failing;
@@ -299,6 +306,220 @@ async fn list_returns_offers_and_own_requests_newest_first() {
         let res = req.get(&url).await;
         assert_eq!(res.status_code(), 200);
         check(res.json());
+    })
+    .await;
+}
+
+/// Mounts Stripe's customer create (`cus_1`) and a Checkout session for `kind` at `cents`.
+async fn mount_checkout(api: &MockServer, kind: &str, cents: u32) {
+    Mock::given(method("POST"))
+        .and(path("/v1/customers"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "cus_1" })))
+        .mount(api)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/checkout/sessions"))
+        .and(body_string_contains("mode=payment"))
+        .and(body_string_contains("customer=cus_1"))
+        .and(body_string_contains(format!(
+            "price_data%5D%5Bunit_amount%5D={cents}&"
+        )))
+        .and(body_string_contains("price_data%5D%5Bcurrency%5D=usd"))
+        .and(body_string_contains(format!(
+            "product_data%5D%5Bname%5D=OpsAgent+human+review%3A+{kind}"
+        )))
+        .and(body_string_contains("tax_code%5D=txcd_10103001"))
+        .and(body_string_contains("metadata%5Bpurpose%5D=human_review"))
+        .and(body_string_contains("metadata%5Breview_request_id%5D="))
+        .and(body_string_contains("settings%2Fhuman-review%3Fpaid%3D1"))
+        .and(body_string_contains(
+            "settings%2Fhuman-review%3Fcanceled%3D1",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "url": "https://checkout.test/r" })),
+        )
+        .expect(1)
+        .mount(api)
+        .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn with_stripe_a_request_returns_checkout_and_mails_nothing() {
+    let api = MockServer::start().await;
+    serve_with(stripe_on(api.uri()), |mut req, ctx| async move {
+        let (t, org, conn, fid) = fixture(&mut req, &ctx, "o@example.com").await;
+        mount_checkout(&api, "finding", 9900).await;
+        let mail = prepare(&ctx);
+        let res = post(&req, &t, &org, json!({"kind":"finding","finding_id":fid})).await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        let body = res.json::<Value>();
+        assert_eq!(body["checkout_url"], "https://checkout.test/r");
+        let r = rows(&ctx, &org).await;
+        assert_eq!((r[0].payment.as_str(), r[0].paid_at), ("pending", None));
+        assert_eq!(body["id"], r[0].id.to_string());
+        let sent = api.received_requests().await.unwrap();
+        let session = sent
+            .iter()
+            .find(|q| q.url.path() == "/v1/checkout/sessions")
+            .unwrap();
+        let idem = session
+            .headers
+            .get("Idempotency-Key")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(idem, format!("human_review:{}", r[0].id));
+        let form = String::from_utf8_lossy(&session.body);
+        assert!(
+            form.contains(&format!("metadata%5Breview_request_id%5D={}", r[0].id)),
+            "{form}"
+        );
+        assert!(mail.sent().is_empty(), "{:?}", mail.sent());
+        api.verify().await;
+
+        api.reset().await;
+        mount_checkout(&api, "account", 49900).await;
+        let res = post(
+            &req,
+            &t,
+            &org,
+            json!({"kind":"account","connection_id":conn}),
+        )
+        .await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        assert_eq!(
+            res.json::<Value>()["checkout_url"],
+            "https://checkout.test/r"
+        );
+        assert!(mail.sent().is_empty());
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn with_stripe_down_a_request_is_502_and_mails_nothing() {
+    let api = MockServer::start().await;
+    serve_with(stripe_on(api.uri()), |mut req, ctx| async move {
+        let (t, org, _, fid) = fixture(&mut req, &ctx, "o@example.com").await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&api)
+            .await;
+        let mail = prepare(&ctx);
+        let res = post(&req, &t, &org, json!({"kind":"finding","finding_id":fid})).await;
+        assert_eq!(res.status_code(), 502, "{}", res.text());
+        assert_eq!(res.json::<Value>()["code"], "billing_unavailable");
+        assert_eq!(rows(&ctx, &org).await[0].payment, "pending");
+        assert!(mail.sent().is_empty());
+    })
+    .await;
+}
+
+fn paid_event(id: &str, kind: &str, status: &str, org: Uuid, review: Uuid) -> Value {
+    event(
+        id,
+        kind,
+        10,
+        json!({ "id": "cs_h", "object": "checkout.session", "mode": "payment",
+            "payment_status": status, "client_reference_id": org.to_string(), "customer": "cus_1",
+            "metadata": { "purpose": "human_review", "review_request_id": review.to_string() } }),
+    )
+}
+
+#[tokio::test]
+#[serial]
+async fn webhook_marks_paid_once_then_mails() {
+    let api = MockServer::start().await;
+    serve_with(stripe_on(api.uri()), |mut req, ctx| async move {
+        let (t, org, _, fid) = fixture(&mut req, &ctx, "o@example.com").await;
+        mount_checkout(&api, "finding", 9900).await;
+        let note = json!({"kind":"finding","finding_id":fid,"note":"please"});
+        assert_eq!(post(&req, &t, &org, note).await.status_code(), 201);
+        let r = rows(&ctx, &org).await.remove(0);
+        let (o, id) = (r.organisation_id, r.id);
+        let mail = prepare(&ctx);
+        let done = "checkout.session.completed";
+        // Unpaid (a delayed method) does nothing.
+        deliver(&req, &paid_event("evt_h0", done, "unpaid", o, id)).await;
+        assert_eq!(rows(&ctx, &org).await[0].payment, "pending");
+        assert!(mail.sent().is_empty());
+        deliver(&req, &paid_event("evt_h1", done, "paid", o, id)).await;
+        let row = rows(&ctx, &org).await.remove(0);
+        assert_eq!(row.payment, "paid");
+        assert!(row.paid_at.is_some());
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        let founder = sent.iter().find(|m| m.to == "info@opsagent.dev").unwrap();
+        assert_eq!(founder.subject, "Human review paid: finding · o@example.com");
+        assert_eq!(founder.reply_to.as_deref(), Some("o@example.com"));
+        assert!(founder.text.contains(&format!("finding {fid}")), "{}", founder.text);
+        assert!(founder.text.contains("please"));
+        let owner = sent.iter().find(|m| m.to == "o@example.com").unwrap();
+        assert!(owner.text.contains(
+            "Payment received. Harun will reply within 1 business day. Nothing is changed in your account."
+        ), "{}", owner.text);
+        // A replay and a second event for the same request send nothing more.
+        deliver(&req, &paid_event("evt_h1", done, "paid", o, id)).await;
+        let late = "checkout.session.async_payment_succeeded";
+        deliver(&req, &paid_event("evt_h2", late, "paid", o, id)).await;
+        assert_eq!(mail.sent().len(), 2);
+        // Another org's id never marks it.
+        deliver(&req, &paid_event("evt_h3", done, "paid", Uuid::new_v4(), id)).await;
+        assert_eq!(mail.sent().len(), 2);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn webhook_async_payment_marks_paid() {
+    let api = MockServer::start().await;
+    serve_with(stripe_on(api.uri()), |mut req, ctx| async move {
+        let (t, org, _, fid) = fixture(&mut req, &ctx, "o@example.com").await;
+        mount_checkout(&api, "finding", 9900).await;
+        assert_eq!(
+            post(&req, &t, &org, json!({"kind":"finding","finding_id":fid}))
+                .await
+                .status_code(),
+            201
+        );
+        let r = rows(&ctx, &org).await.remove(0);
+        let mail = prepare(&ctx);
+        let late = "checkout.session.async_payment_succeeded";
+        deliver(
+            &req,
+            &paid_event("evt_a1", late, "paid", r.organisation_id, r.id),
+        )
+        .await;
+        assert_eq!(rows(&ctx, &org).await[0].payment, "paid");
+        assert_eq!(mail.sent().len(), 2);
+        let list = req
+            .get(&format!("/v1/orgs/{org}/human-reviews"))
+            .await
+            .json::<Value>();
+        assert_eq!(list["requests"][0]["payment"], "paid");
+        assert!(list["requests"][0]["paid_at"].is_string());
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn without_stripe_requests_are_invoiced() {
+    serve(|mut req, ctx| async move {
+        let (t, org, _, fid) = fixture(&mut req, &ctx, "o@example.com").await;
+        let res = post(&req, &t, &org, json!({"kind":"finding","finding_id":fid})).await;
+        assert_eq!(res.status_code(), 201);
+        assert!(res.json::<Value>()["checkout_url"].is_null());
+        assert_eq!(rows(&ctx, &org).await[0].payment, "invoice");
+        let list = req
+            .get(&format!("/v1/orgs/{org}/human-reviews"))
+            .await
+            .json::<Value>();
+        assert_eq!(list["requests"][0]["payment"], "invoice");
+        assert!(list["requests"][0]["paid_at"].is_null());
     })
     .await;
 }

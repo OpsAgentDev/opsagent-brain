@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::TimeZone;
 use opsagent_core::billing::{
-    BillingProvider, BillingRepo, BillingResult, CheckoutRequest, SubscriptionState,
+    BillingProvider, BillingRepo, BillingResult, CheckoutRequest, ReviewCheckout, SubscriptionState,
 };
 use opsagent_core::{audit::Actor, org::OrganisationsRepo, org::Role};
 use opsagent_ledger::redis;
@@ -33,6 +33,9 @@ impl BillingProvider for NoStripe {
         unreachable!()
     }
     async fn portal_session(&self, _: &str, _: &str) -> BillingResult<String> {
+        unreachable!()
+    }
+    async fn human_review_session(&self, _: &ReviewCheckout, _: &str) -> BillingResult<String> {
         unreachable!()
     }
     async fn topup_session(

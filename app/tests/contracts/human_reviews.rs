@@ -1,5 +1,5 @@
 use chrono::{Duration, Utc};
-use opsagent_core::human_review::{NewReviewRequest, ReviewKind};
+use opsagent_core::human_review::{NewReviewRequest, Payment, ReviewKind};
 use uuid::Uuid;
 
 use super::{contract_suite, org_id};
@@ -15,6 +15,7 @@ fn new(org: Uuid, label: &str, age: Duration) -> NewReviewRequest {
         price_cents: 4900,
         requested_by: Uuid::new_v4(),
         requester_email: "owner@example.com".into(),
+        payment: Payment::Invoice,
         created_at: Utc::now() - age,
     }
 }
@@ -55,5 +56,30 @@ contract_suite! {
         s.human_reviews().insert(&r).await.unwrap();
         let g = s.human_reviews().list(o, 1).await.unwrap().remove(0);
         assert_eq!((g.kind, g.finding_id, g.connection_id, g.note), (ReviewKind::Account, None, r.connection_id, None));
+    }
+
+    async fn review_mark_paid_once_and_only_pending(s) {
+        let (a, b) = (org_id(s, "acme").await, org_id(s, "other").await);
+        let now = chrono::DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
+        let mut r = new(a, "Open bucket", Duration::zero());
+        let invoiced = s.human_reviews().insert(&r).await.unwrap();
+        r.payment = Payment::Pending;
+        let id = s.human_reviews().insert(&r).await.unwrap();
+        let g = s.human_reviews().list(a, 10).await.unwrap();
+        assert!(g.iter().all(|x| x.paid_at.is_none()));
+        assert_eq!(g.iter().find(|x| x.id == id).unwrap().payment, Payment::Pending);
+        // Another org, an unknown id and an invoiced row are never marked.
+        assert_eq!(s.human_reviews().mark_paid(b, id, now).await.unwrap(), None);
+        assert_eq!(s.human_reviews().mark_paid(a, Uuid::new_v4(), now).await.unwrap(), None);
+        assert_eq!(s.human_reviews().mark_paid(a, invoiced, now).await.unwrap(), None);
+        let paid = s.human_reviews().mark_paid(a, id, now).await.unwrap().expect("flipped");
+        assert_eq!((paid.id, paid.payment, paid.target_label.as_str()), (id, Payment::Paid, "Open bucket"));
+        assert_eq!(paid.paid_at, Some(now));
+        assert_eq!((paid.requester_email.as_str(), paid.note.as_deref()), ("owner@example.com", Some("please look")));
+        assert_eq!(s.human_reviews().mark_paid(a, id, now).await.unwrap(), None);
+        let g = s.human_reviews().list(a, 10).await.unwrap();
+        let listed = g.iter().find(|x| x.id == id).unwrap();
+        assert_eq!((listed.payment, listed.paid_at), (Payment::Paid, paid.paid_at));
+        assert_eq!(g.iter().find(|x| x.id == invoiced).unwrap().payment, Payment::Invoice);
     }
 }

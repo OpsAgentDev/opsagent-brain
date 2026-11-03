@@ -1,5 +1,5 @@
 //! Human review requests (human-review.md): a record of who asked for a review of what, at
-//! which price. There is no status; the founder answers by email.
+//! which price, and whether it is paid. The founder answers by email.
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -29,6 +29,34 @@ impl ReviewKind {
     }
 }
 
+/// How a request is paid: `Invoice` outside the product (no Stripe), or Stripe Checkout,
+/// `Pending` until its webhook marks it `Paid`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Payment {
+    Invoice,
+    Pending,
+    Paid,
+}
+
+impl Payment {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Invoice => "invoice",
+            Self::Pending => "pending",
+            Self::Paid => "paid",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "invoice" => Some(Self::Invoice),
+            "pending" => Some(Self::Pending),
+            "paid" => Some(Self::Paid),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewReviewRequest {
     pub organisation_id: Uuid,
@@ -42,6 +70,7 @@ pub struct NewReviewRequest {
     pub price_cents: i32,
     pub requested_by: Uuid,
     pub requester_email: String,
+    pub payment: Payment,
     pub created_at: DateTime<Utc>,
 }
 
@@ -56,6 +85,8 @@ pub struct ReviewRequest {
     pub price_cents: i32,
     pub requested_by: Uuid,
     pub requester_email: String,
+    pub payment: Payment,
+    pub paid_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -67,4 +98,25 @@ pub trait HumanReviewsRepo: Send + Sync {
     async fn count_since(&self, org: Uuid, since: DateTime<Utc>) -> RepoResult<u64>;
     /// Newest first.
     async fn list(&self, org: Uuid, limit: u64) -> RepoResult<Vec<ReviewRequest>>;
+    /// Sets `Paid` and `paid_at = now` on `org`'s request `id` if it is `Pending`, and returns
+    /// it; `None` when it is unknown, another org's, or not pending (so a replay is a no-op).
+    async fn mark_paid(
+        &self,
+        org: Uuid,
+        id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<Option<ReviewRequest>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payment_round_trips() {
+        for p in [Payment::Invoice, Payment::Pending, Payment::Paid] {
+            assert_eq!(Payment::parse(p.as_str()), Some(p));
+        }
+        assert_eq!(Payment::parse("free"), None);
+    }
 }

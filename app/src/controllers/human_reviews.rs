@@ -35,6 +35,9 @@ pub struct HumanReviewRequestOut {
     /// The price when asked.
     pub price_cents: i32,
     pub requester_email: String,
+    /// `invoice` (invoiced outside the product), `pending` (awaiting Stripe payment) or `paid`.
+    pub payment: String,
+    pub paid_at: Option<DateTime<FixedOffset>>,
     pub created_at: DateTime<FixedOffset>,
 }
 
@@ -78,6 +81,8 @@ async fn list(
                 note: r.note,
                 price_cents: r.price_cents,
                 requester_email: r.requester_email,
+                payment: r.payment.as_str().into(),
+                paid_at: r.paid_at.map(|t| t.fixed_offset()),
                 created_at: r.created_at.fixed_offset(),
             })
             .collect(),
@@ -97,13 +102,16 @@ pub struct HumanReviewIn {
 #[derive(Serialize, ToSchema)]
 pub struct HumanReviewCreated {
     pub id: Uuid,
+    /// The hosted Stripe Checkout page to pay on; null when Stripe is not configured (invoiced).
+    pub checkout_url: Option<String>,
 }
 
-/// Owner only. Allowed while the organisation is read-only: it is invoiced separately.
+/// Owner only. Allowed while the organisation is read-only: it is paid separately. 502
+/// `billing_unavailable` when Stripe fails.
 #[utoipa::path(post, path = "/orgs/{org}/human-reviews", tag = "human-reviews", params(OrgPath),
     request_body = HumanReviewIn,
     responses((status = 201, body = HumanReviewCreated), (status = 403, body = Problem), (status = 404, body = Problem),
-        (status = 422, body = Problem), (status = 429, body = Problem)))]
+        (status = 422, body = Problem), (status = 429, body = Problem), (status = 502, body = Problem)))]
 async fn create(
     State(app): State<AppState>,
     scope: OrgScope,
@@ -117,10 +125,9 @@ async fn create(
         note: body.note,
     };
     let request = &app.actions.human_reviews.request;
-    let id = request
-        .run(&scope.organisation, &scope.member, input)
-        .await?;
-    Ok((StatusCode::CREATED, Json(HumanReviewCreated { id })))
+    let (id, checkout_url) = request.run(&scope, input).await?;
+    let created = HumanReviewCreated { id, checkout_url };
+    Ok((StatusCode::CREATED, Json(created)))
 }
 
 pub fn api() -> OpenApiRouter<AppState> {
