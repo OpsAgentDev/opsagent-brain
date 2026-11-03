@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use opsagent_core::{repo::RepoError, user::Email};
+use opsagent_core::{
+    repo::RepoError,
+    user::{Email, SignupAllowlist},
+};
 use uuid::Uuid;
 
 use super::redeem_magic_link::sign_in_entry;
@@ -33,17 +36,19 @@ fn google_is_authoritative(email: &Email, hosted_domain: Option<&str>) -> bool {
 /// Finds or links the user for a Google identity and records the sign-in.
 pub struct SignInGoogle {
     uow: Arc<dyn UnitOfWork>,
+    signup: SignupAllowlist,
 }
 
 impl SignInGoogle {
-    pub fn new(uow: Arc<dyn UnitOfWork>) -> Self {
-        Self { uow }
+    pub fn new(uow: Arc<dyn UnitOfWork>, signup: SignupAllowlist) -> Self {
+        Self { uow, signup }
     }
 
     pub async fn run(&self, profile: GoogleProfile) -> AppResult<Uuid> {
         let tx = self.uow.begin().await?;
         let authoritative =
             google_is_authoritative(&profile.email, profile.hosted_domain.as_deref());
+        let may_create = self.signup.allows(&profile.email);
         let user = tx
             .users()
             .find_or_create_google(
@@ -51,9 +56,15 @@ impl SignInGoogle {
                 &profile.email,
                 profile.name,
                 authoritative,
+                may_create,
             )
             .await
             .map_err(|e| match e {
+                RepoError::Conflict("signup_closed") => AppError::Refused {
+                    status: StatusCode::FORBIDDEN,
+                    code: "signup_closed",
+                    detail: "OpsAgent is in private alpha and sign-ups are closed.".into(),
+                },
                 RepoError::Conflict("account_exists") => AppError::Refused {
                     status: StatusCode::CONFLICT,
                     code: "account_exists",
@@ -91,7 +102,7 @@ mod tests {
         let store = MemStore::default();
         let email = Email::parse("dev@gmail.com").unwrap();
         let existing = store.users().find_or_create_by_email(&email).await.unwrap();
-        let action = SignInGoogle::new(Arc::new(store.clone()));
+        let action = SignInGoogle::new(Arc::new(store.clone()), Default::default());
         let profile = |email: &Email| GoogleProfile {
             google_id: "sub-1".into(),
             email: email.clone(),
@@ -142,7 +153,7 @@ mod tests {
         let store = MemStore::default();
         let email = Email::parse("a@corp.com").unwrap();
         let existing = store.users().find_or_create_by_email(&email).await.unwrap();
-        let action = SignInGoogle::new(Arc::new(store.clone()));
+        let action = SignInGoogle::new(Arc::new(store.clone()), Default::default());
         let refused = action.run(profile("s1", "a@corp.com", None)).await;
         assert!(matches!(
             refused,
@@ -161,7 +172,7 @@ mod tests {
     #[tokio::test]
     async fn refuses_to_create_a_user_for_an_unmanaged_address() {
         let store = MemStore::default();
-        let action = SignInGoogle::new(Arc::new(store.clone()));
+        let action = SignInGoogle::new(Arc::new(store.clone()), Default::default());
         for hd in [None, Some("other.com")] {
             let res = action.run(profile("s1", "victim@corp.com", hd)).await;
             assert!(matches!(
@@ -192,7 +203,7 @@ mod tests {
     #[tokio::test]
     async fn never_overwrites_a_different_google_id() {
         let store = MemStore::default();
-        let action = SignInGoogle::new(Arc::new(store.clone()));
+        let action = SignInGoogle::new(Arc::new(store.clone()), Default::default());
         action
             .run(profile("s1", "a@gmail.com", None))
             .await
@@ -205,5 +216,47 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn closed_signup_refuses_new_google_user_but_not_existing() {
+        let closed = || SignupAllowlist::parse("opsagent.dev");
+        let store = MemStore::default();
+        let action = SignInGoogle::new(Arc::new(store.clone()), closed());
+        let err = action
+            .run(profile("s1", "new@gmail.com", None))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AppError::Refused {
+                    status: StatusCode::FORBIDDEN,
+                    code: "signup_closed",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        let email = Email::parse("old@gmail.com").unwrap();
+        let old = store.users().find_or_create_by_email(&email).await.unwrap();
+        assert_eq!(
+            action
+                .run(profile("s2", "old@gmail.com", None))
+                .await
+                .unwrap(),
+            old.id
+        );
+        assert_eq!(
+            action
+                .run(profile("s2", "x@gmail.com", None))
+                .await
+                .unwrap(),
+            old.id
+        );
+        let ok = action
+            .run(profile("s3", "me@opsagent.dev", Some("opsagent.dev")))
+            .await;
+        assert!(ok.is_ok());
     }
 }

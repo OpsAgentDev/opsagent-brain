@@ -101,6 +101,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
         github_id: i64,
         email: &Email,
         name: Option<String>,
+        may_create: bool,
     ) -> RepoResult<User> {
         let gh = github_id.to_string();
         if let Some(u) = self.user_where(users::Column::GithubId.eq(&gh)).await? {
@@ -119,6 +120,9 @@ impl<C: Conn> UsersRepo for Pg<C> {
             a.updated_at = Set(now());
             return user(a.update(db).await.map_err(db_err)?);
         }
+        if !may_create {
+            return Err(RepoError::Conflict("signup_closed"));
+        }
         user(
             new_user(email, name, Some(github_id), None)
                 .insert(db)
@@ -133,6 +137,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
         email: &Email,
         name: Option<String>,
         authoritative: bool,
+        may_create: bool,
     ) -> RepoResult<User> {
         if let Some(u) = self
             .user_where(users::Column::GoogleId.eq(google_id))
@@ -158,6 +163,9 @@ impl<C: Conn> UsersRepo for Pg<C> {
         }
         if !authoritative {
             return Err(RepoError::Conflict("google_email_unmanaged"));
+        }
+        if !may_create {
+            return Err(RepoError::Conflict("signup_closed"));
         }
         user(
             new_user(email, name, None, Some(google_id.to_owned()))

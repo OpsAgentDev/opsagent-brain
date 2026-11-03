@@ -32,6 +32,27 @@ impl Email {
     }
 }
 
+/// Email domains allowed to sign up; empty means open. Exact match: no subdomains.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SignupAllowlist(Vec<String>);
+
+impl SignupAllowlist {
+    /// From a comma-separated list; entries are trimmed and lower-cased, blanks dropped.
+    pub fn parse(raw: &str) -> Self {
+        Self(
+            raw.split(',')
+                .map(|d| d.trim().to_lowercase())
+                .filter(|d| !d.is_empty())
+                .collect(),
+        )
+    }
+
+    pub fn allows(&self, email: &Email) -> bool {
+        let domain = email.as_str().rsplit_once('@').map_or("", |(_, d)| d);
+        self.0.is_empty() || self.0.iter().any(|d| d == domain)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct User {
     pub id: Uuid,
@@ -59,23 +80,26 @@ pub trait UsersRepo: Send + Sync {
     /// Safe under concurrent first use.
     async fn find_or_create_by_email(&self, email: &Email) -> RepoResult<User>;
     /// Match on GitHub id, else link to the user with `email`, else create. `name` fills a
-    /// missing name only.
+    /// missing name only. Creating needs `may_create`, otherwise `RepoError::Conflict("signup_closed")`.
     async fn find_or_create_github(
         &self,
         github_id: i64,
         email: &Email,
         name: Option<String>,
+        may_create: bool,
     ) -> RepoResult<User>;
     /// Match on the Google `sub`, else link to the user with `email`, else create. `name` fills a
     /// missing name only. Linking needs `authoritative` and no other Google id on that user,
     /// otherwise `RepoError::Conflict("account_exists")`; creating needs `authoritative`, otherwise
-    /// `RepoError::Conflict("google_email_unmanaged")`.
+    /// `RepoError::Conflict("google_email_unmanaged")`; creating also needs `may_create`, otherwise
+    /// `RepoError::Conflict("signup_closed")`.
     async fn find_or_create_google(
         &self,
         google_id: &str,
         email: &Email,
         name: Option<String>,
         authoritative: bool,
+        may_create: bool,
     ) -> RepoResult<User>;
     /// Stores a link for `user_id` (sent to `email`); only the hashes of the token and of the
     /// mailed code are kept.
@@ -106,7 +130,17 @@ pub trait UsersRepo: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::Email;
+    use super::{Email, SignupAllowlist};
+
+    #[test]
+    fn signup_allowlist_is_open_when_empty_and_exact_otherwise() {
+        let ok = |l: &SignupAllowlist, e: &str| l.allows(&Email::parse(e).unwrap());
+        assert!(ok(&SignupAllowlist::parse(""), "x@gmail.com"));
+        assert!(ok(&SignupAllowlist::parse(" , "), "x@gmail.com"));
+        let l = SignupAllowlist::parse(" OpsAgent.dev , example.org");
+        assert!(ok(&l, "x@opsagent.dev") && ok(&l, "y@EXAMPLE.org"));
+        assert!(!ok(&l, "z@gmail.com") && !ok(&l, "a@mail.opsagent.dev"));
+    }
 
     #[test]
     fn email_parse_normalises_case_and_rejects_garbage() {

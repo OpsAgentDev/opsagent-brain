@@ -293,6 +293,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.config.web_base_url.clone(),
                 d.clock.clone(),
                 d.config.session_secret.clone(),
+                d.config.signup_allowed_domains.clone(),
             ),
             redeem_magic_link: auth::RedeemMagicLink::new(d.uow.clone(), d.clock.clone()),
             verify_code: auth::VerifyCode::new(
@@ -301,8 +302,14 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.clock.clone(),
                 d.config.session_secret.clone(),
             ),
-            sign_in_github: auth::SignInGithub::new(d.uow.clone()),
-            sign_in_google: auth::SignInGoogle::new(d.uow.clone()),
+            sign_in_github: auth::SignInGithub::new(
+                d.uow.clone(),
+                d.config.signup_allowed_domains.clone(),
+            ),
+            sign_in_google: auth::SignInGoogle::new(
+                d.uow.clone(),
+                d.config.signup_allowed_domains.clone(),
+            ),
             current_user: auth::CurrentUser::new(d.uow.clone()),
             passkeys: auth::Passkeys::new(d.uow.clone(), d.webauthn.clone(), d.clock.clone()),
         },

@@ -1,5 +1,8 @@
 use chrono::{Duration, Utc};
-use opsagent_core::{repo::RepoError, user::Email};
+use opsagent_core::{
+    repo::{RepoError, RepoResult},
+    user::{Email, User},
+};
 use uuid::Uuid;
 
 use super::contract_suite;
@@ -24,12 +27,12 @@ contract_suite! {
     async fn github_links_existing_email_user(s) {
         let e = email("ada@example.com");
         let u = s.users().find_or_create_by_email(&e).await.unwrap();
-        let g = s.users().find_or_create_github(42, &e, Some("Ada".into())).await.unwrap();
+        let g = s.users().find_or_create_github(42, &e, Some("Ada".into()), true).await.unwrap();
         assert_eq!((g.id, g.github_id, g.name.as_deref()), (u.id, Some(42), Some("Ada")));
         // Matched on the GitHub id from now on, whatever the email.
-        let again = s.users().find_or_create_github(42, &email("new@example.com"), None).await.unwrap();
+        let again = s.users().find_or_create_github(42, &email("new@example.com"), None, true).await.unwrap();
         assert_eq!((again.id, again.name.as_deref()), (u.id, Some("Ada")));
-        let other = s.users().find_or_create_github(43, &email("bob@example.com"), None).await.unwrap();
+        let other = s.users().find_or_create_github(43, &email("bob@example.com"), None, true).await.unwrap();
         assert_ne!(other.id, u.id);
         assert_eq!((other.github_id, other.email.as_str()), (Some(43), "bob@example.com"));
     }
@@ -37,11 +40,11 @@ contract_suite! {
     async fn google_links_existing_email_user_then_matches_sub(s) {
         let e = email("ada@example.com");
         let u = s.users().find_or_create_by_email(&e).await.unwrap();
-        let g = s.users().find_or_create_google("sub-1", &e, Some("Ada".into()), true).await.unwrap();
+        let g = s.users().find_or_create_google("sub-1", &e, Some("Ada".into()), true, true).await.unwrap();
         assert_eq!((g.id, g.google_id.as_deref(), g.name.as_deref()), (u.id, Some("sub-1"), Some("Ada")));
-        let again = s.users().find_or_create_google("sub-1", &email("new@example.com"), None, false).await.unwrap();
+        let again = s.users().find_or_create_google("sub-1", &email("new@example.com"), None, false, true).await.unwrap();
         assert_eq!(again.id, u.id);
-        let other = s.users().find_or_create_google("sub-2", &email("bob@example.com"), None, true).await.unwrap();
+        let other = s.users().find_or_create_google("sub-2", &email("bob@example.com"), None, true, true).await.unwrap();
         assert_ne!(other.id, u.id);
         assert_eq!((other.google_id.as_deref(), other.email.as_str()), (Some("sub-2"), "bob@example.com"));
     }
@@ -49,18 +52,32 @@ contract_suite! {
     async fn google_refuses_unauthoritative_link_and_other_sub(s) {
         let e = email("eve@corp.com");
         s.users().find_or_create_by_email(&e).await.unwrap();
-        let refused = s.users().find_or_create_google("s1", &e, None, false).await;
+        let refused = s.users().find_or_create_google("s1", &e, None, false, true).await;
         assert!(matches!(refused, Err(RepoError::Conflict("account_exists"))));
-        s.users().find_or_create_google("s1", &e, None, true).await.unwrap();
-        let other = s.users().find_or_create_google("s2", &e, None, true).await;
+        s.users().find_or_create_google("s1", &e, None, true, true).await.unwrap();
+        let other = s.users().find_or_create_google("s2", &e, None, true, true).await;
         assert!(matches!(other, Err(RepoError::Conflict("account_exists"))));
     }
 
     async fn google_refuses_to_create_for_unmanaged_address(s) {
         let e = email("mallory@corp.com");
-        let refused = s.users().find_or_create_google("s1", &e, None, false).await;
+        let refused = s.users().find_or_create_google("s1", &e, None, false, true).await;
         assert!(matches!(refused, Err(RepoError::Conflict("google_email_unmanaged"))));
         assert!(s.users().find_by_email(&e).await.unwrap().is_none());
+    }
+
+    async fn closed_signup_refuses_create_but_not_match_or_link(s) {
+        let closed = |r: RepoResult<User>| matches!(r, Err(RepoError::Conflict("signup_closed")));
+        let e = email("new@corp.com");
+        assert!(closed(s.users().find_or_create_github(7, &e, None, false).await));
+        assert!(closed(s.users().find_or_create_google("g7", &e, None, true, false).await));
+        assert!(s.users().find_by_email(&e).await.unwrap().is_none());
+        let u = s.users().find_or_create_by_email(&e).await.unwrap();
+        // Linking by email, then matching on the provider id, is not a sign-up.
+        assert_eq!(s.users().find_or_create_github(7, &e, None, false).await.unwrap().id, u.id);
+        assert_eq!(s.users().find_or_create_github(7, &email("o@x.com"), None, false).await.unwrap().id, u.id);
+        assert_eq!(s.users().find_or_create_google("g7", &e, None, true, false).await.unwrap().id, u.id);
+        assert_eq!(s.users().find_or_create_google("g7", &email("o@x.com"), None, true, false).await.unwrap().id, u.id);
     }
 
     async fn magic_link_consumed_once_and_not_after_expiry(s) {

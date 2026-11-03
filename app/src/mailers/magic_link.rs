@@ -20,6 +20,22 @@ pub fn magic_link(to: &str, link: &str, code: &str) -> Mail {
     }
 }
 
+/// Sent instead of a link when sign-ups are closed to the address's domain.
+pub fn signup_closed(to: &str, web_base_url: &str) -> Mail {
+    let text = "OpsAgent is in private alpha. Sign-ups are closed for now; join the waitlist at opsagent.dev.";
+    Mail {
+        to: to.into(),
+        subject: "OpsAgent sign-ups are closed for now".into(),
+        html: Some(super::branded(
+            "Sign-ups are closed for now",
+            text,
+            Some(("Join the waitlist", web_base_url)),
+        )),
+        text: text.into(),
+        ..Default::default()
+    }
+}
+
 pub fn invite(to: &str, org_name: &str, link: &str) -> Mail {
     let org_name = &mail_safe_name(org_name);
     let text = format!("Join {org_name} on OpsAgent:\n\n{link}\n\nSign in with this email address to accept. The invite expires in 7 days.");

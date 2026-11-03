@@ -95,6 +95,8 @@ pub struct Config {
     pub stripe_automatic_tax: bool,
     /// Off: nothing is gated on billing state (the alpha organisations keep working).
     pub billing_enforced: bool,
+    /// Email domains that may sign up; empty is open (`SIGNUP_ALLOWED_DOMAINS`).
+    pub signup_allowed_domains: opsagent_core::user::SignupAllowlist,
     /// `None`: no OpsAgent model key (`ai_unavailable`).
     pub opsagent: Option<OpsAgentConnection>,
     pub opsagent_backup: Option<OpsAgentConnection>,
@@ -212,6 +214,10 @@ impl Config {
             stripe_api_version: s("STRIPE_API_VERSION", "2025-09-30.clover"),
             stripe_automatic_tax: p(&get, "STRIPE_AUTOMATIC_TAX", "false")?,
             billing_enforced: p(&get, "BILLING_ENFORCED", "false")?,
+            signup_allowed_domains: opsagent_core::user::SignupAllowlist::parse(&s(
+                "SIGNUP_ALLOWED_DOMAINS",
+                "",
+            )),
             opsagent,
             opsagent_backup,
             allow_private,
@@ -500,6 +506,15 @@ mod tests {
             ("STRIPE_WEBHOOK_SECRET", "whsec_x"),
         ]);
         assert!(both.webhook_configured());
+    }
+
+    #[test]
+    fn signup_domains_parse_from_env() {
+        use opsagent_core::user::Email;
+        let ok = |c: &Config, e: &str| c.signup_allowed_domains.allows(&Email::parse(e).unwrap());
+        assert!(ok(&cfg(&[]), "x@gmail.com"));
+        let c = cfg(&[("SIGNUP_ALLOWED_DOMAINS", " OpsAgent.dev , example.org")]);
+        assert!(ok(&c, "x@opsagent.dev") && !ok(&c, "z@gmail.com"));
     }
 
     #[test]

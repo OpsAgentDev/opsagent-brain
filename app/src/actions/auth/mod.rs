@@ -49,6 +49,7 @@ pub(crate) mod test_support {
             WEB.into(),
             Arc::new(SystemClock),
             SECRET.into(),
+            Default::default(),
         )
     }
 
