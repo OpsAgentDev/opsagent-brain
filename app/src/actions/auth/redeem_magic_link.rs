@@ -92,6 +92,7 @@ mod tests {
             WEB.into(),
             at(0),
             SECRET.into(),
+            Default::default(),
         );
         let input = MagicLinkInput {
             email: "late@example.com".into(),

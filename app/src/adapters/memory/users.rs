@@ -56,6 +56,7 @@ impl UsersRepo for MemStore {
         github_id: i64,
         email: &Email,
         name: Option<String>,
+        may_create: bool,
     ) -> RepoResult<User> {
         let mut s = self.state();
         if let Some(u) = s.user_mut(|u| u.github_id == Some(github_id)) {
@@ -66,6 +67,9 @@ impl UsersRepo for MemStore {
             u.name = u.name.take().or(name);
             return Ok(u.clone());
         }
+        if !may_create {
+            return Err(RepoError::Conflict("signup_closed"));
+        }
         Ok(s.new_user(email, name, Some(github_id), None))
     }
 
@@ -75,6 +79,7 @@ impl UsersRepo for MemStore {
         email: &Email,
         name: Option<String>,
         authoritative: bool,
+        may_create: bool,
     ) -> RepoResult<User> {
         let mut s = self.state();
         if let Some(u) = s.user_mut(|u| u.google_id.as_deref() == Some(google_id)) {
@@ -90,6 +95,9 @@ impl UsersRepo for MemStore {
         }
         if !authoritative {
             return Err(RepoError::Conflict("google_email_unmanaged"));
+        }
+        if !may_create {
+            return Err(RepoError::Conflict("signup_closed"));
         }
         Ok(s.new_user(email, name, None, Some(google_id.to_owned())))
     }

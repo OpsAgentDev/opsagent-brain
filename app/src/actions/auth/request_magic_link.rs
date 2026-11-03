@@ -3,7 +3,11 @@
 use std::{net::IpAddr, sync::Arc};
 
 use chrono::Duration;
-use opsagent_core::{oauth::rules::consent_return_to, repo::Clock, user::Email};
+use opsagent_core::{
+    oauth::rules::consent_return_to,
+    repo::Clock,
+    user::{Email, SignupAllowlist},
+};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -34,6 +38,7 @@ pub struct RequestMagicLink {
     clock: Arc<dyn Clock>,
     /// Keys the stored code hashes (`SESSION_SECRET`).
     secret: String,
+    signup: SignupAllowlist,
 }
 
 impl RequestMagicLink {
@@ -44,6 +49,7 @@ impl RequestMagicLink {
         web_base_url: String,
         clock: Arc<dyn Clock>,
         secret: String,
+        signup: SignupAllowlist,
     ) -> Self {
         Self {
             users,
@@ -52,6 +58,7 @@ impl RequestMagicLink {
             web_base_url,
             clock,
             secret,
+            signup,
         }
     }
 
@@ -86,6 +93,13 @@ impl RequestMagicLink {
             }
         }
         let users = self.users.users();
+        if !self.signup.allows(&email) && users.find_by_email(&email).await?.is_none() {
+            let mail = mail::signup_closed(email.as_str(), &self.web_base_url);
+            if let Err(e) = self.mailer.send(mail).await {
+                tracing::error!(error = %e, "signup closed mail failed");
+            }
+            return Ok(());
+        }
         let user = users.find_or_create_by_email(&email).await?;
         let return_to = input.return_to.as_deref().and_then(consent_return_to);
         let token = new_token();
@@ -184,5 +198,50 @@ mod tests {
         // An invalid address is also a quiet success.
         action.run(input("not-an-email")).await.unwrap();
         assert_eq!(mail.sent().len(), PER_EMAIL as usize);
+    }
+
+    fn closed(store: &MemStore, mail: &Arc<CaptureMailer>) -> RequestMagicLink {
+        RequestMagicLink::new(
+            Arc::new(store.clone()),
+            Arc::new(crate::adapters::memory::MemRateLimiter::default()),
+            mail.clone(),
+            WEB.into(),
+            Arc::new(opsagent_core::repo::SystemClock),
+            SECRET.into(),
+            opsagent_core::user::SignupAllowlist::parse("opsagent.dev"),
+        )
+    }
+
+    #[tokio::test]
+    async fn closed_domain_new_address_gets_waitlist_mail_and_no_user() {
+        let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
+        closed(&store, &mail)
+            .run(input("Out@gmail.com"))
+            .await
+            .unwrap();
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].subject, "OpsAgent sign-ups are closed for now");
+        assert_eq!(sent[0].to, "out@gmail.com");
+        assert!(!sent[0].text.contains("token="));
+        let email = Email::parse("out@gmail.com").unwrap();
+        assert!(store.users().find_by_email(&email).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn closed_domain_existing_user_and_allowed_domain_get_links() {
+        let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
+        let old = Email::parse("old@gmail.com").unwrap();
+        store.users().find_or_create_by_email(&old).await.unwrap();
+        let action = closed(&store, &mail);
+        action.run(input("old@gmail.com")).await.unwrap();
+        action.run(input("new@opsagent.dev")).await.unwrap();
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 2);
+        assert!(sent
+            .iter()
+            .all(|m| m.subject.starts_with("Your OpsAgent sign-in code")));
+        let email = Email::parse("new@opsagent.dev").unwrap();
+        assert!(store.users().find_by_email(&email).await.unwrap().is_some());
     }
 }
