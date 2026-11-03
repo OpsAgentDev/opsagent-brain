@@ -445,6 +445,10 @@ async fn webhook_marks_paid_once_then_mails() {
         deliver(&req, &paid_event("evt_h0", done, "unpaid", o, id)).await;
         assert_eq!(rows(&ctx, &org).await[0].payment, "pending");
         assert!(mail.sent().is_empty());
+        // Another org's id never marks it, even while it is pending.
+        deliver(&req, &paid_event("evt_h3", done, "paid", Uuid::new_v4(), id)).await;
+        assert_eq!(rows(&ctx, &org).await[0].payment, "pending");
+        assert!(mail.sent().is_empty());
         deliver(&req, &paid_event("evt_h1", done, "paid", o, id)).await;
         let row = rows(&ctx, &org).await.remove(0);
         assert_eq!(row.payment, "paid");
@@ -464,9 +468,6 @@ async fn webhook_marks_paid_once_then_mails() {
         deliver(&req, &paid_event("evt_h1", done, "paid", o, id)).await;
         let late = "checkout.session.async_payment_succeeded";
         deliver(&req, &paid_event("evt_h2", late, "paid", o, id)).await;
-        assert_eq!(mail.sent().len(), 2);
-        // Another org's id never marks it.
-        deliver(&req, &paid_event("evt_h3", done, "paid", Uuid::new_v4(), id)).await;
         assert_eq!(mail.sent().len(), 2);
     })
     .await;
