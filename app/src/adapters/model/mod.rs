@@ -36,8 +36,16 @@ impl ModelProviders {
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 fn builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
-        .connect_timeout(TIMEOUT)
+    let b = reqwest::Client::builder();
+    // The shared client outlives each test's runtime and mock server, so a pooled connection
+    // would be reused against a dead or different server (flaky `Outage`). Debug builds
+    // (tests) don't pool; release keeps keep-alive.
+    let b = if cfg!(debug_assertions) {
+        b.pool_max_idle_per_host(0)
+    } else {
+        b
+    };
+    b.connect_timeout(TIMEOUT)
         .read_timeout(TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         // A proxy from the environment would connect around the pinned addresses.
