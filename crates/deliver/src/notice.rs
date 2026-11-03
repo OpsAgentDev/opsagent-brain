@@ -10,6 +10,8 @@ pub struct NoticeEmail {
     pub button: Option<(String, String)>,
     pub footnote: Option<String>,
     pub unsubscribe_url: Option<String>,
+    /// A one-time code shown in a large monospace block after the paragraphs.
+    pub code: Option<String>,
 }
 
 #[derive(Template)]
@@ -21,6 +23,7 @@ struct NoticeHtml<'a> {
     button: &'a Option<(String, String)>,
     footnote: &'a Option<String>,
     unsubscribe_url: &'a Option<String>,
+    code: &'a Option<String>,
 }
 
 pub fn render_notice(n: &NoticeEmail) -> String {
@@ -32,6 +35,7 @@ pub fn render_notice(n: &NoticeEmail) -> String {
         button: &n.button,
         footnote: &n.footnote,
         unsubscribe_url: &n.unsubscribe_url,
+        code: &n.code,
     }
     .render()
     .unwrap_or_default()

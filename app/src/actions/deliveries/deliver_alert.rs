@@ -51,6 +51,8 @@ struct Msg {
     subject: String,
     /// Trusted web link built from the base and ids: the email button.
     link: String,
+    /// Extra email-only lines (the roll-up's finding titles), ahead of the plain text.
+    detail: Vec<String>,
 }
 
 /// Where this run's messages go; Slack stays off for the rest of the run once it failed.
@@ -135,6 +137,7 @@ impl DeliverAlert {
                 text: render_baseline(n, base),
                 link: format!("{}/findings", base.trim_end_matches('/')),
                 subject: format!("First scan: {n} critical findings ({account})"),
+                detail: vec![],
             });
             route.once(BASELINE, msg, &ids(&candidates)).await?;
             return Ok(outcome("delivered", "baseline"));
@@ -154,6 +157,7 @@ impl DeliverAlert {
                 text: render_alert(f, &self.info(&c, f).await?, base),
                 link: format!("{}/findings/{}", base.trim_end_matches('/'), f.id),
                 subject: format!("Urgent: {} ({account})", mail_safe_name(&f.title)),
+                detail: vec![],
             };
             route
                 .once(&format!("alert:{}", f.id), Some(msg), &[f.id])
@@ -166,6 +170,11 @@ impl DeliverAlert {
                     text: render_rollup(n, base),
                     link: format!("{}/findings", base.trim_end_matches('/')),
                     subject: format!("Urgent: {n} more urgent findings ({account})"),
+                    detail: candidates
+                        .iter()
+                        .filter(|f| plan.rollup.contains(&f.id))
+                        .map(|f| mail_safe_name(&f.title))
+                        .collect(),
                 };
                 let key = format!("alert:rollup:{}", run.id);
                 route.once(&key, Some(msg), &plan.rollup).await?;
@@ -267,7 +276,13 @@ impl Route<'_> {
             .owners(self.c.organisation_id)
             .await
             .map_err(lerr)?;
-        let body = plain(&m.text);
+        let body = m
+            .detail
+            .iter()
+            .map(String::as_str)
+            .chain([plain(&m.text).as_str()])
+            .collect::<Vec<_>>()
+            .join("\n");
         for o in owners {
             let mail = Mail {
                 to: o.email,

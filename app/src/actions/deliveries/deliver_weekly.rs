@@ -192,6 +192,7 @@ impl DeliverWeekly {
             button: Some(("Open the dashboard".into(), self.kit.web_base_url.clone())),
             footnote: None,
             unsubscribe_url: None,
+            code: None,
         });
         for o in r.recipients().owners(org).await.map_err(lerr)? {
             let mail = Mail {

@@ -60,6 +60,7 @@ pub fn branded(heading: &str, text: &str, button: Option<(&str, &str)>) -> Strin
         button: button.map(|(l, u)| (l.to_owned(), u.to_owned())),
         footnote: None,
         unsubscribe_url: None,
+        code: None,
     })
 }
 

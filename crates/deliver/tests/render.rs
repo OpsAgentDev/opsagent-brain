@@ -149,8 +149,13 @@ fn notice_escapes_and_renders_button() {
         button: Some(("Go now".into(), "https://x.test/go?a=1&b=2".into())),
         footnote: None,
         unsubscribe_url: None,
+        code: Some("12<3>45".into()),
     };
     let h = render_notice(&n);
+    assert!(
+        h.contains("letter-spacing") && h.contains("12&#60;3&#62;45"),
+        "{h}"
+    );
     assert!(!h.contains("<script>"), "{h}");
     assert!(
         h.contains("Go now") && h.contains("href=\"https://x.test/go?a=1&#38;b=2\""),

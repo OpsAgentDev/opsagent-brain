@@ -182,6 +182,12 @@ async fn other_orgs_targets_are_404_without_side_effects() {
         }
         assert!(rows(&ctx, &org).await.is_empty());
         assert!(mail.sent().is_empty());
+        let audits = audit_events::Entity::find()
+            .filter(audit_events::Column::Action.eq("human_review.request"))
+            .all(&ctx.db)
+            .await
+            .unwrap();
+        assert!(audits.is_empty(), "{audits:?}");
     })
     .await;
 }
@@ -209,9 +215,12 @@ async fn sixth_request_in_a_day_is_429() {
         for _ in 0..5 {
             assert_eq!(post(&req, &t, &org, body.clone()).await.status_code(), 201);
         }
+        let mail = prepare(&ctx);
         let res = post(&req, &t, &org, body).await;
         assert_eq!(res.status_code(), 429);
+        assert_eq!(res.json::<Value>()["code"], "rate_limited");
         assert_eq!(rows(&ctx, &org).await.len(), 5);
+        assert!(mail.sent().is_empty(), "{:?}", mail.sent());
     })
     .await;
 }
@@ -458,7 +467,12 @@ async fn webhook_marks_paid_once_then_mails() {
         let founder = sent.iter().find(|m| m.to == "info@opsagent.dev").unwrap();
         assert_eq!(founder.subject, "Human review paid: finding · o@example.com");
         assert_eq!(founder.reply_to.as_deref(), Some("o@example.com"));
-        assert!(founder.text.contains(&format!("finding {fid}")), "{}", founder.text);
+        let check = findings::Entity::find_by_id(fid).one(&ctx.db).await.unwrap().unwrap().check_id;
+        assert!(
+            founder.text.contains(&format!("finding {check} ({fid})")),
+            "{}",
+            founder.text
+        );
         assert!(founder.text.contains("please"));
         let owner = sent.iter().find(|m| m.to == "o@example.com").unwrap();
         assert!(owner.text.contains(
@@ -521,6 +535,48 @@ async fn without_stripe_requests_are_invoiced() {
             .json::<Value>();
         assert_eq!(list["requests"][0]["payment"], "invoice");
         assert!(list["requests"][0]["paid_at"].is_null());
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn read_only_org_can_still_request() {
+    use super::billing_gate::{enforced, owner_org, set_billing};
+    serve_with(enforced, |mut req, ctx| async move {
+        let (t, org, id) = owner_org(&req, &prepare(&ctx)).await;
+        set_billing(&ctx, id, "active", "team", 0).await;
+        let c = create_connection(&req, &t, &org, "fake", "noisy").await;
+        let conn: Uuid = c["id"].as_str().unwrap().parse().unwrap();
+        let mut a: connections::ActiveModel = connections::Entity::find_by_id(conn)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap()
+            .into();
+        a.status = Set("connected".into());
+        a.external_account_id = Set(Some("noisy-owner".into()));
+        a.update(&ctx.db).await.unwrap();
+        scan(&ctx, conn, 0, &noisy()).await;
+        ctx.drain_jobs().await;
+        let f = findings::Entity::find()
+            .filter(findings::Column::ConnectionId.eq(conn))
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        set_billing(&ctx, id, "canceled", "team", 0).await;
+        // Writes are refused (402), the human review is exempt.
+        let res = req
+            .patch(&format!("/v1/orgs/{org}"))
+            .add_header("X-CSRF-Token", &t)
+            .json(&json!({ "name": "Acme 2" }))
+            .await;
+        assert_eq!(res.status_code(), 402, "{}", res.text());
+        let res = post(&req, &t, &org, json!({"kind":"finding","finding_id":f.id})).await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        assert_eq!(rows(&ctx, &org).await.len(), 1);
+        let _ = &mut req;
     })
     .await;
 }
