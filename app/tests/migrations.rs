@@ -197,10 +197,10 @@ async fn jobs_table_has_spec_columns_and_both_partial_indexes() {
     exec(&db, free).await.unwrap();
     exec(&db, free).await.unwrap();
 
-    // Fourteen steps: jobs is followed by the oauth, magic-link return_to, waitlist, contact,
+    // Fifteen steps: jobs is followed by the oauth, magic-link return_to, waitlist, contact,
     // sign-in, urgent-alerts, resource-history index, retention, audit-purge, billing,
-    // dashboard-ai, ai-connections and human-reviews migrations.
-    Migrator::down(&db, Some(14)).await.unwrap();
+    // dashboard-ai, ai-connections, human-reviews and human-review-payment migrations.
+    Migrator::down(&db, Some(15)).await.unwrap();
     assert!(exec(&db, "SELECT 1 FROM jobs").await.is_err());
     Migrator::up(&db, None).await.unwrap();
 }
@@ -213,7 +213,7 @@ async fn ai_connections_migration_keeps_key_as_primary_and_moves_ceiling() {
     let db = migration::sea_orm::Database::connect(&url).await.unwrap();
     Migrator::fresh(&db).await.unwrap();
     // Back to before 000023, with a key that carries a ceiling.
-    Migrator::down(&db, Some(2)).await.unwrap();
+    Migrator::down(&db, Some(3)).await.unwrap();
     let org = "'00000000-0000-0000-0000-0000000000c1'";
     exec(
         &db,
@@ -265,4 +265,45 @@ async fn ai_connections_migration_keeps_key_as_primary_and_moves_ceiling() {
         .await
         .unwrap_err();
     assert!(is_unique_violation(&err), "{err}");
+}
+
+#[tokio::test]
+#[serial]
+async fn human_review_payment_migration_invoices_existing_rows() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://loco:loco@localhost:5432/opsagent_brain_test".into());
+    let db = migration::sea_orm::Database::connect(&url).await.unwrap();
+    Migrator::fresh(&db).await.unwrap();
+    Migrator::down(&db, Some(1)).await.unwrap();
+    let org = "'00000000-0000-0000-0000-0000000000d1'";
+    exec(
+        &db,
+        &format!("INSERT INTO organisations (id, name, slug) VALUES ({org}, 'o', 'o')"),
+    )
+    .await
+    .unwrap();
+    let insert = |id: &str, extra: &str| {
+        format!(
+            "INSERT INTO human_review_requests (id, organisation_id, kind, finding_id, \
+             target_label, price_cents, requested_by, requester_email{}) VALUES ('{id}', {org}, \
+             'finding', gen_random_uuid(), 't', 9900, gen_random_uuid(), 'a@b.c'{})",
+            if extra.is_empty() { "" } else { ", payment" },
+            extra,
+        )
+    };
+    exec(&db, &insert("00000000-0000-0000-0000-0000000000d2", ""))
+        .await
+        .unwrap();
+    Migrator::up(&db, None).await.unwrap();
+    let st = migration::sea_orm::Statement::from_string(
+        migration::sea_orm::DbBackend::Postgres,
+        format!("SELECT payment, paid_at IS NULL AS unpaid FROM human_review_requests WHERE organisation_id = {org}"),
+    );
+    let r = db.query_one_raw(st).await.unwrap().unwrap();
+    assert_eq!(r.try_get::<String>("", "payment").unwrap(), "invoice");
+    assert!(r.try_get::<bool>("", "unpaid").unwrap());
+    let bad = insert("00000000-0000-0000-0000-0000000000d3", ", 'free'");
+    assert!(exec(&db, &bad).await.is_err());
+    let ok = insert("00000000-0000-0000-0000-0000000000d4", ", 'pending'");
+    exec(&db, &ok).await.unwrap();
 }

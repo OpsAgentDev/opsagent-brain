@@ -4,6 +4,8 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     billing::{BillingError, BillingProvider, BillingStatus as B, SubscriptionState},
+    human_review::ReviewRequest,
+    org::Organisation,
     repo::{Clock, RepoError},
 };
 use serde::Deserialize;
@@ -12,9 +14,13 @@ use uuid::Uuid;
 
 use super::{provider_failed, unavailable, BillingSettings};
 use crate::{
-    actions::uow::{Tx, UnitOfWork},
-    adapters::stripe::{verify_stripe_signature, TOPUP_PURPOSE},
+    actions::{
+        human_reviews::mail_paid,
+        uow::{Tx, UnitOfWork},
+    },
+    adapters::stripe::{verify_stripe_signature, HUMAN_REVIEW_PURPOSE, TOPUP_PURPOSE},
     error::{AppError, AppResult},
+    mailers::Mailer,
 };
 
 const HANDLED: [&str; 7] = [
@@ -82,6 +88,41 @@ async fn topup_completed(tx: &dyn Tx, ev: &Event) -> AppResult<()> {
     Ok(())
 }
 
+/// A paid human review session marks its request paid, once: `mark_paid` flips only a
+/// `pending` row of the organisation named by `client_reference_id`. Returns what to mail.
+async fn review_paid(
+    tx: &dyn Tx,
+    ev: &Event,
+    now: DateTime<Utc>,
+) -> AppResult<Option<(Organisation, ReviewRequest)>> {
+    let o = &ev.data.object;
+    let uuid = |v: &Value| v.as_str().and_then(|r| r.parse::<Uuid>().ok());
+    let (org, id) = (
+        uuid(&o["client_reference_id"]),
+        uuid(&o["metadata"]["review_request_id"]),
+    );
+    let (Some(org), Some(id)) = (org, id) else {
+        warn_skip(ev, "human review session without organisation or request");
+        return Ok(None);
+    };
+    if o["payment_status"] != "paid" {
+        warn_skip(ev, "human review session not paid");
+        return Ok(None);
+    }
+    let Some(review) = tx.human_reviews().mark_paid(org, id, now).await? else {
+        warn_skip(
+            ev,
+            "human review session for an unknown or already paid request",
+        );
+        return Ok(None);
+    };
+    let Some(organisation) = tx.orgs().get(org).await? else {
+        warn_skip(ev, "human review session for an unknown organisation");
+        return Ok(None);
+    };
+    Ok(Some((organisation, review)))
+}
+
 fn ts(v: &Value) -> Option<DateTime<Utc>> {
     v.as_i64().and_then(|s| DateTime::from_timestamp(s, 0))
 }
@@ -109,26 +150,32 @@ fn status_of(stripe: &str) -> Option<B> {
 /// `POST /v1/webhooks/stripe`: verifies the signature over the raw body (400
 /// `bad_signature`), then applies each event once (`stripe_events`), in one transaction with
 /// its writes, so a failed write is retried by Stripe rather than lost. Unhandled types and
-/// unknown customers are acknowledged and ignored. 503 until the webhook secret is set.
+/// unknown customers are acknowledged and ignored. A paid human review is mailed after commit.
+/// 503 until the webhook secret is set.
 pub struct HandleWebhook {
     uow: Arc<dyn UnitOfWork>,
     provider: Arc<dyn BillingProvider>,
+    mailer: Arc<dyn Mailer>,
     clock: Arc<dyn Clock>,
     settings: BillingSettings,
+    contact_to: String,
 }
 
 impl HandleWebhook {
     pub fn new(
         uow: Arc<dyn UnitOfWork>,
-        provider: Arc<dyn BillingProvider>,
+        (provider, mailer): (Arc<dyn BillingProvider>, Arc<dyn Mailer>),
         clock: Arc<dyn Clock>,
         settings: BillingSettings,
+        contact_to: String,
     ) -> Self {
         Self {
             uow,
             provider,
+            mailer,
             clock,
             settings,
+            contact_to,
         }
     }
 
@@ -151,13 +198,16 @@ impl HandleWebhook {
             return Ok(());
         }
         let o = &ev.data.object;
-        let topup = o["mode"] == "payment" && o["metadata"]["purpose"] == TOPUP_PURPOSE;
+        let purpose = (o["mode"] == "payment").then(|| o["metadata"]["purpose"].as_str());
         let paid_event = matches!(
             ev.kind.as_str(),
             "checkout.session.completed" | "checkout.session.async_payment_succeeded"
         );
-        if paid_event && topup {
+        let mut paid_review = None;
+        if paid_event && purpose == Some(Some(TOPUP_PURPOSE)) {
             topup_completed(tx.as_ref(), &ev).await?;
+        } else if paid_event && purpose == Some(Some(HUMAN_REVIEW_PURPOSE)) {
+            paid_review = review_paid(tx.as_ref(), &ev, self.clock.now()).await?;
         } else if ev.kind == "checkout.session.completed" {
             self.checkout_completed(tx.as_ref(), &ev).await?;
         } else if paid_event {
@@ -178,6 +228,9 @@ impl HandleWebhook {
             }
         }
         tx.commit().await?;
+        if let Some((org, review)) = paid_review {
+            mail_paid(&*self.mailer, &self.contact_to, &org, &review).await;
+        }
         Ok(())
     }
 
@@ -326,6 +379,7 @@ mod tests {
             orgs::test_support::owned_org,
         },
         adapters::memory::{FixedClock, MemStore},
+        mailers::CaptureMailer,
     };
 
     #[tokio::test]
@@ -352,9 +406,10 @@ mod tests {
         let sig = format!("t={},v1={v1}", now.timestamp());
         let hook = HandleWebhook::new(
             Arc::new(store.clone()),
-            Arc::new(NoStripe),
+            (Arc::new(NoStripe), Arc::new(CaptureMailer::default())),
             Arc::new(FixedClock(now)),
             settings(),
+            "info@opsagent.dev".into(),
         );
         hook.run(Some(&sig), body.as_bytes()).await.unwrap();
         // Recorded with the transaction, so Stripe's redelivery is a no-op.

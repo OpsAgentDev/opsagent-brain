@@ -2,7 +2,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    human_review::{HumanReviewsRepo, NewReviewRequest, ReviewKind, ReviewRequest},
+    human_review::{HumanReviewsRepo, NewReviewRequest, Payment, ReviewKind, ReviewRequest},
     repo::{RepoError, RepoResult},
 };
 use sea_orm::{
@@ -26,6 +26,9 @@ fn row(m: human_review_requests::Model) -> RepoResult<ReviewRequest> {
         price_cents: m.price_cents,
         requested_by: m.requested_by,
         requester_email: m.requester_email,
+        payment: Payment::parse(&m.payment)
+            .ok_or_else(|| RepoError::Storage(format!("unknown payment {:?}", m.payment)))?,
+        paid_at: m.paid_at.map(utc),
         created_at: utc(m.created_at),
     })
 }
@@ -46,6 +49,8 @@ impl<C: Conn> HumanReviewsRepo for Pg<C> {
             requested_by: Set(r.requested_by),
             requester_email: Set(r.requester_email.clone()),
             created_at: Set(r.created_at.into()),
+            payment: Set(r.payment.as_str().into()),
+            paid_at: Set(None),
         };
         human_review_requests::Entity::insert(m)
             .exec_without_returning(self.db())
@@ -81,5 +86,24 @@ impl<C: Conn> HumanReviewsRepo for Pg<C> {
             .into_iter()
             .map(row)
             .collect()
+    }
+
+    async fn mark_paid(
+        &self,
+        org: Uuid,
+        id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<Option<ReviewRequest>> {
+        let at: sea_orm::prelude::DateTimeWithTimeZone = now.into();
+        let done = human_review_requests::Entity::update_many()
+            .col_expr(Col::Payment, Payment::Paid.as_str().into())
+            .col_expr(Col::PaidAt, Some(at).into())
+            .filter(Col::OrganisationId.eq(org))
+            .filter(Col::Id.eq(id))
+            .filter(Col::Payment.eq(Payment::Pending.as_str()))
+            .exec_with_returning(self.db())
+            .await
+            .map_err(db_err)?;
+        done.into_iter().next().map(row).transpose()
     }
 }

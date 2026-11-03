@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    human_review::{HumanReviewsRepo, NewReviewRequest, ReviewRequest},
+    human_review::{HumanReviewsRepo, NewReviewRequest, Payment, ReviewRequest},
     repo::RepoResult,
 };
 use uuid::Uuid;
@@ -22,6 +22,8 @@ impl HumanReviewsRepo for MemStore {
             price_cents: r.price_cents,
             requested_by: r.requested_by,
             requester_email: r.requester_email.clone(),
+            payment: r.payment,
+            paid_at: None,
             created_at: r.created_at,
         };
         self.state().human_reviews.push((r.organisation_id, row));
@@ -49,5 +51,22 @@ impl HumanReviewsRepo for MemStore {
         rows.sort_by_key(|a| std::cmp::Reverse((a.created_at, a.id)));
         rows.truncate(limit as usize);
         Ok(rows)
+    }
+
+    async fn mark_paid(
+        &self,
+        org: Uuid,
+        id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<Option<ReviewRequest>> {
+        let mut s = self.state();
+        let row = s
+            .human_reviews
+            .iter_mut()
+            .find(|(o, r)| *o == org && r.id == id && r.payment == Payment::Pending);
+        Ok(row.map(|(_, r)| {
+            (r.payment, r.paid_at) = (Payment::Paid, Some(now));
+            r.clone()
+        }))
     }
 }

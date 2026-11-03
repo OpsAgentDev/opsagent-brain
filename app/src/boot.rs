@@ -251,7 +251,9 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             request: human_reviews::RequestReview::new(
                 d.uow.clone(),
                 d.mailer.clone(),
+                d.billing.clone(),
                 d.clock.clone(),
+                billing::BillingSettings::new(&d.config),
                 d.config.contact_to.clone(),
             ),
             list: human_reviews::ListReviews::new(d.uow.clone()),
@@ -265,9 +267,10 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 portal: billing::OpenPortal::new(d.uow.clone(), d.billing.clone(), s.clone()),
                 webhook: billing::HandleWebhook::new(
                     d.uow.clone(),
-                    d.billing.clone(),
+                    (d.billing.clone(), d.mailer.clone()),
                     d.clock.clone(),
                     s.clone(),
+                    d.config.contact_to.clone(),
                 ),
                 sync: billing::BillingSync::new(
                     d.uow.clone(),

@@ -6,7 +6,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
-use opsagent_core::billing::{BillingError, BillingProvider, BillingResult, CheckoutRequest};
+use opsagent_core::billing::{
+    BillingError, BillingProvider, BillingResult, CheckoutRequest, ReviewCheckout,
+};
 use reqwest::{Method, StatusCode};
 use serde_json::Value;
 use sha2::Sha256;
@@ -20,6 +22,8 @@ const TRIAL_DAYS: &str = "14";
 const TOPUP_CENTS: &str = "1500";
 /// `metadata[purpose]` of a top-up Checkout session; the webhook grants on it.
 pub const TOPUP_PURPOSE: &str = "ai_topup";
+/// `metadata[purpose]` of a human review Checkout session; the webhook marks it paid.
+pub const HUMAN_REVIEW_PURPOSE: &str = "human_review";
 /// Stripe product tax code "Software as a service (SaaS) - business use"; Managed Payments
 /// requires one on every line item.
 pub const SAAS_TAX_CODE: &str = "txcd_10103001";
@@ -82,6 +86,38 @@ impl StripeBilling {
 
     async fn post(&self, path: &str, form: Form, idem: &str) -> BillingResult<Value> {
         self.call(Method::POST, path, Some(form), Some(idem)).await
+    }
+
+    /// A one-time `mode=payment` Checkout form: one USD `price_data` line, SaaS tax code.
+    fn payment_form(
+        &self,
+        customer_id: &str,
+        organisation_id: Uuid,
+        unit_amount: String,
+        name: String,
+        (success_url, cancel_url): (&str, &str),
+    ) -> Form {
+        let mut form: Form = vec![
+            ("mode", "payment".into()),
+            ("customer", customer_id.to_owned()),
+            ("client_reference_id", organisation_id.to_string()),
+            ("line_items[0][price_data][currency]", "usd".into()),
+            ("line_items[0][price_data][unit_amount]", unit_amount),
+            ("line_items[0][price_data][product_data][name]", name),
+            (
+                "line_items[0][price_data][product_data][tax_code]",
+                SAAS_TAX_CODE.into(),
+            ),
+            ("line_items[0][quantity]", "1".into()),
+            // No `payment_method_types`: Managed Payments picks methods and refuses the field.
+            ("success_url", success_url.to_owned()),
+            ("cancel_url", cancel_url.to_owned()),
+        ];
+        if self.s.automatic_tax {
+            form.push(("automatic_tax[enabled]", "true".into()));
+            form.push(("customer_update[address]", "auto".into()));
+        }
+        form
     }
 }
 
@@ -162,31 +198,31 @@ impl BillingProvider for StripeBilling {
         cancel_url: &str,
         idem: &str,
     ) -> BillingResult<String> {
-        let mut form: Form = vec![
-            ("mode", "payment".into()),
-            ("customer", customer_id.to_owned()),
-            ("client_reference_id", organisation_id.to_string()),
-            ("line_items[0][price_data][currency]", "usd".into()),
-            ("line_items[0][price_data][unit_amount]", TOPUP_CENTS.into()),
-            (
-                "line_items[0][price_data][product_data][name]",
-                "OpsAgent AI credits (1,000)".into(),
-            ),
-            (
-                "line_items[0][price_data][product_data][tax_code]",
-                SAAS_TAX_CODE.into(),
-            ),
-            ("line_items[0][quantity]", "1".into()),
-            // No `payment_method_types`: Managed Payments picks methods and refuses the field.
-            // A delayed method completes unpaid; the webhook grants on its async success.
-            ("metadata[purpose]", TOPUP_PURPOSE.into()),
-            ("success_url", success_url.to_owned()),
-            ("cancel_url", cancel_url.to_owned()),
-        ];
-        if self.s.automatic_tax {
-            form.push(("automatic_tax[enabled]", "true".into()));
-            form.push(("customer_update[address]", "auto".into()));
-        }
+        let mut form = self.payment_form(
+            customer_id,
+            organisation_id,
+            TOPUP_CENTS.into(),
+            "OpsAgent AI credits (1,000)".into(),
+            (success_url, cancel_url),
+        );
+        // A delayed method completes unpaid; the webhook grants on its async success.
+        form.push(("metadata[purpose]", TOPUP_PURPOSE.into()));
+        field(&self.post("checkout/sessions", form, idem).await?, "url")
+    }
+
+    async fn human_review_session(&self, r: &ReviewCheckout, idem: &str) -> BillingResult<String> {
+        let mut form = self.payment_form(
+            &r.customer_id,
+            r.organisation_id,
+            r.price_cents.to_string(),
+            format!("OpsAgent human review: {}", r.kind.as_str()),
+            (&r.success_url, &r.cancel_url),
+        );
+        form.push(("metadata[purpose]", HUMAN_REVIEW_PURPOSE.into()));
+        form.push((
+            "metadata[review_request_id]",
+            r.review_request_id.to_string(),
+        ));
         field(&self.post("checkout/sessions", form, idem).await?, "url")
     }
 

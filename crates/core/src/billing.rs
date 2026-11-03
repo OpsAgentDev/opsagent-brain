@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::repo::RepoResult;
+use crate::{human_review::ReviewKind, repo::RepoResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -195,6 +195,19 @@ pub struct CheckoutRequest {
     pub cancel_url: String,
 }
 
+/// A hosted Checkout session paying one human review (human-review.md, Paid through Stripe
+/// Checkout): a one-time payment of `price_cents`, tagged with the request id.
+#[derive(Debug, Clone)]
+pub struct ReviewCheckout {
+    pub organisation_id: Uuid,
+    pub customer_id: String,
+    pub review_request_id: Uuid,
+    pub kind: ReviewKind,
+    pub price_cents: i32,
+    pub success_url: String,
+    pub cancel_url: String,
+}
+
 /// The payment provider. Every write carries the caller's idempotency key `idem`.
 #[async_trait]
 pub trait BillingProvider: Send + Sync {
@@ -220,6 +233,11 @@ pub trait BillingProvider: Send + Sync {
         cancel_url: &str,
         idem: &str,
     ) -> BillingResult<String>;
+
+    /// Returns the hosted Checkout URL for one human review (one-time payment,
+    /// `metadata[purpose]=human_review`, `metadata[review_request_id]`).
+    async fn human_review_session(&self, req: &ReviewCheckout, idem: &str)
+        -> BillingResult<String>;
 
     /// Returns the hosted Customer Portal URL.
     async fn portal_session(&self, customer_id: &str, return_url: &str) -> BillingResult<String>;

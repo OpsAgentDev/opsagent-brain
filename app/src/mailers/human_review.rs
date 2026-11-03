@@ -22,6 +22,15 @@ fn price(cents: i32) -> String {
 
 /// To the fixed `to` (CONTACT_TO), Reply-To the requester. No dashboard link.
 pub fn founder_notice(to: &str, n: &Notice) -> Mail {
+    founder(to, n, "Human review requested")
+}
+
+/// `founder_notice` once Stripe Checkout has been paid.
+pub fn founder_paid(to: &str, n: &Notice) -> Mail {
+    founder(to, n, "Human review paid")
+}
+
+fn founder(to: &str, n: &Notice, heading: &str) -> Mail {
     let text = format!(
             "Organisation: {} ({})\nRequester: {}\nProduct: {} review, {}\nTarget: {} ({})\n\nNote:\n{}\n",
             n.org_name,
@@ -35,12 +44,8 @@ pub fn founder_notice(to: &str, n: &Notice) -> Mail {
     );
     Mail {
         to: to.into(),
-        subject: format!(
-            "Human review requested: {} · {}",
-            n.kind.as_str(),
-            n.org_name
-        ),
-        html: Some(super::branded("Human review requested", &text, None)),
+        subject: format!("{heading}: {} · {}", n.kind.as_str(), n.org_name),
+        html: Some(super::branded(heading, &text, None)),
         text,
         reply_to: Some(n.requester.into()),
         ..Default::default()
@@ -49,11 +54,26 @@ pub fn founder_notice(to: &str, n: &Notice) -> Mail {
 
 /// To the requester.
 pub fn confirmation(n: &Notice) -> Mail {
+    confirm(
+        n,
+        "Harun will reply within 1 business day with a confirmation and invoice.",
+    )
+}
+
+/// `confirmation` once Stripe Checkout has been paid.
+pub fn paid_confirmation(n: &Notice) -> Mail {
+    confirm(
+        n,
+        "Payment received. Harun will reply within 1 business day.",
+    )
+}
+
+fn confirm(n: &Notice, next: &str) -> Mail {
     let text = format!(
-            "You asked for a {} review of {} for {}.\n\nHarun will reply within 1 business day with a confirmation and invoice. Nothing is changed in your account.\n",
-            n.kind.as_str(),
-            n.label,
-            price(n.price_cents),
+        "You asked for a {} review of {} for {}.\n\n{next} Nothing is changed in your account.\n",
+        n.kind.as_str(),
+        n.label,
+        price(n.price_cents),
     );
     Mail {
         to: n.requester.into(),

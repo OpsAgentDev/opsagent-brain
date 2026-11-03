@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use opsagent_core::{
-    billing::{BillingProvider, BillingResult, CheckoutRequest},
+    billing::{BillingProvider, BillingResult, CheckoutRequest, ReviewCheckout},
     model::{Endpoint, ModelError, ModelInfo, ModelProvider, ModelRequest, ModelTurn, TextSink},
 };
 use uuid::Uuid;
@@ -90,6 +90,14 @@ impl BillingProvider for Swappable<dyn BillingProvider> {
 
     async fn portal_session(&self, customer_id: &str, return_url: &str) -> BillingResult<String> {
         self.get().portal_session(customer_id, return_url).await
+    }
+
+    async fn human_review_session(
+        &self,
+        req: &ReviewCheckout,
+        idem: &str,
+    ) -> BillingResult<String> {
+        self.get().human_review_session(req, idem).await
     }
 
     async fn topup_session(
