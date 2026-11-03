@@ -12,7 +12,7 @@ pub fn magic_link(to: &str, link: &str, code: &str) -> Mail {
             &opsagent_deliver::NoticeEmail {
                 preheader: "Sign in to OpsAgent".into(),
                 heading: "Sign in to OpsAgent".into(),
-                paragraphs: vec!["Or enter this code:".into()],
+                paragraphs: vec!["Enter this code on the sign-in page, or use the button below.".into()],
                 button: Some(("Sign in".into(), link.into())),
                 footnote: Some("The link and code work once and expire in 15 minutes.".into()),
                 unsubscribe_url: None,
