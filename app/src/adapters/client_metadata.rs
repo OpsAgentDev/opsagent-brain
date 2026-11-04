@@ -1,4 +1,4 @@
-//! Fetches Client ID Metadata Documents with an SSRF guard: https only, public addresses only
+//! Fetches Client ID Metadata Documents with an SSRF guard: https on port 443 only, public addresses only
 //! (checked after DNS resolution, and the connection is pinned to the vetted address), no
 //! redirects, 5 s timeout, 64 KB cap.
 use std::{
@@ -92,7 +92,11 @@ impl ClientMetadataSource for HttpClientMetadata {
         if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
             return Err(err("only plain https URLs are fetched"));
         }
-        let port = url.port_or_known_default().unwrap_or(443);
+        // The url crate drops an explicit :443, so any remaining port is a non-default one.
+        if url.port().is_some() {
+            return Err(err("only port 443 is fetched"));
+        }
+        let port = 443;
         // Brackets off an IPv6 literal; `lookup_host` parses IP literals without a DNS query.
         let host = url
             .host_str()
@@ -144,6 +148,14 @@ impl ClientMetadataSource for HttpClientMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn fetch_refuses_a_non_443_port_before_any_lookup() {
+        let r = HttpClientMetadata
+            .fetch("https://93.184.216.34:8443/client.json")
+            .await;
+        assert!(matches!(r, Err(e) if e.0 == "only port 443 is fetched"));
+    }
 
     #[test]
     fn address_allowed_rejects_private() {
