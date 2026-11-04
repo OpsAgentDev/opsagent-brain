@@ -239,7 +239,14 @@ pub fn from_config(config: &Config) -> Result<Arc<dyn Mailer>, ConfigError> {
             MailerChoice::Resend(key) => Arc::new(ResendMailer {
                 key,
                 from,
-                http: reqwest::Client::new(),
+                http: reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(15))
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .map_err(|e| ConfigError::Invalid {
+                        name: "RESEND_API_KEY",
+                        reason: e.to_string(),
+                    })?,
             }),
             MailerChoice::Log => Arc::new(LogMailer),
         },

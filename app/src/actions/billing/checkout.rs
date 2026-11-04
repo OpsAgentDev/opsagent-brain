@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use opsagent_core::billing::{BillingProvider, BillingStatus, CheckoutRequest, Tier};
-use uuid::Uuid;
-
 use super::{conflict, provider_failed, unavailable, BillingSettings};
 use crate::{
     actions::{orgs::OrgScope, uow::UnitOfWork},
     error::{AppError, AppResult},
+};
+use opsagent_core::{
+    billing::{BillingProvider, BillingStatus, CheckoutRequest, Tier},
+    repo::Clock,
 };
 
 /// A Stripe Checkout URL for the organisation (owner only; the caller checks). The Stripe
@@ -16,6 +17,7 @@ use crate::{
 pub struct StartCheckout {
     uow: Arc<dyn UnitOfWork>,
     provider: Arc<dyn BillingProvider>,
+    clock: Arc<dyn Clock>,
     settings: BillingSettings,
 }
 
@@ -23,11 +25,13 @@ impl StartCheckout {
     pub fn new(
         uow: Arc<dyn UnitOfWork>,
         provider: Arc<dyn BillingProvider>,
+        clock: Arc<dyn Clock>,
         settings: BillingSettings,
     ) -> Self {
         Self {
             uow,
             provider,
+            clock,
             settings,
         }
     }
@@ -54,16 +58,22 @@ impl StartCheckout {
             Some(c) => c,
             None => create_customer(&*self.uow, &*self.provider, scope).await?,
         };
+        let trial = b.status == BillingStatus::None && tier == Tier::Team;
+        // One session per organisation, plan and half hour: a second tab gets the same session,
+        // and Stripe completes a session once, so two tabs cannot both pay.
+        let idem = format!(
+            "checkout:{}:{price_id}:{trial}:{}",
+            org.id,
+            self.clock.now().timestamp() / 1800
+        );
         let req = CheckoutRequest {
             organisation_id: org.id,
             customer_id,
             price_id,
-            trial: b.status == BillingStatus::None && tier == Tier::Team,
+            trial,
             success_url: self.settings.return_url("success"),
             cancel_url: self.settings.return_url("canceled"),
         };
-        // A fresh key: each click is its own session.
-        let idem = format!("checkout:{}", Uuid::new_v4());
         let url = self.provider.checkout_session(&req, &idem).await;
         url.map_err(provider_failed)
     }

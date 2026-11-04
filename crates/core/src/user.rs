@@ -38,7 +38,11 @@ pub struct SignupAllowlist(Vec<String>);
 
 impl SignupAllowlist {
     /// From a comma-separated list; entries are trimmed and lower-cased, blanks dropped.
+    /// A `*` entry means open to everyone.
     pub fn parse(raw: &str) -> Self {
+        if raw.split(',').any(|d| d.trim() == "*") {
+            return Self(Vec::new());
+        }
         Self(
             raw.split(',')
                 .map(|d| d.trim().to_lowercase())
@@ -137,6 +141,7 @@ mod tests {
         let ok = |l: &SignupAllowlist, e: &str| l.allows(&Email::parse(e).unwrap());
         assert!(ok(&SignupAllowlist::parse(""), "x@gmail.com"));
         assert!(ok(&SignupAllowlist::parse(" , "), "x@gmail.com"));
+        assert!(ok(&SignupAllowlist::parse("a.com, *"), "x@gmail.com"));
         let l = SignupAllowlist::parse(" OpsAgent.dev , example.org");
         assert!(ok(&l, "x@opsagent.dev") && ok(&l, "y@EXAMPLE.org"));
         assert!(!ok(&l, "z@gmail.com") && !ok(&l, "a@mail.opsagent.dev"));
