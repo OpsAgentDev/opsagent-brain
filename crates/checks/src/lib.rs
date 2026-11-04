@@ -6,6 +6,9 @@ pub mod check_04_backups;
 pub mod check_05_certificates;
 pub mod check_06_logging;
 pub mod check_07_gpu;
+pub mod check_11_encryption;
+pub mod check_12_hardening;
+pub mod check_13_credentials;
 pub mod ctx;
 
 pub use ctx::{Check, CheckCtx, MetricStore};
@@ -20,5 +23,8 @@ pub fn all() -> Vec<Box<dyn Check>> {
         Box::new(check_05_certificates::Certificates),
         Box::new(check_06_logging::LoggingGaps),
         Box::new(check_07_gpu::GpuAndTraining),
+        Box::new(check_11_encryption::EncryptionAtRest),
+        Box::new(check_12_hardening::InstanceHardening),
+        Box::new(check_13_credentials::CredentialDepth),
     ]
 }

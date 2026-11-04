@@ -81,9 +81,14 @@ pub fn credential_report_users(
             ));
             continue;
         }
+        let keys_active = active.len() as u8;
         let (mut age, mut used): (Option<i64>, Option<i64>) = (None, None);
+        let mut unused_age: Option<i64> = None;
         for k in active {
             let rotated = days_since(&col(&row, &format!("{k}_last_rotated")), now);
+            if days_since(&col(&row, &format!("{k}_last_used_date")), now).is_none() {
+                unused_age = unused_age.max(rotated);
+            }
             // A never-used key counts as unused since it was created.
             let last = days_since(&col(&row, &format!("{k}_last_used_date")), now).or(rotated);
             age = age.max(rotated);
@@ -92,12 +97,23 @@ pub fn credential_report_users(
                 (a, b) => a.or(b),
             };
         }
+        let console = col(&row, "password_enabled") == "true";
+        // A password never used counts as unused since it was last set.
+        let console_days = console
+            .then(|| {
+                days_since(&col(&row, "password_last_used"), now)
+                    .or_else(|| days_since(&col(&row, "password_last_changed"), now))
+            })
+            .flatten();
         let attrs = json!({
             "service": "iam",
             "key_age_days": age,
             "key_last_used_days": used,
+            "access_keys_active": keys_active,
+            "unused_key_age_days": unused_age,
+            "console_last_used_days": console_days,
             "mfa": mfa,
-            "console": col(&row, "password_enabled") == "true",
+            "console": console,
             "admin": admins(&user),
         });
         out.push(t.resource(

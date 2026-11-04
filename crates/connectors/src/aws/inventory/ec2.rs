@@ -39,6 +39,9 @@ pub async fn ec2_instances(ec2: &aws_sdk_ec2::Client, t: &Target<'_>) -> Result<
                 "state": i.state().and_then(|s| s.name()).map(|s| s.as_str()),
                 "instance_type": ty,
                 "accelerated": accelerated(ty),
+                "metadata_http_tokens": i.metadata_options().and_then(|m| m.http_tokens()).map(|x| x.as_str()),
+                "metadata_http_endpoint": i.metadata_options().and_then(|m| m.http_endpoint()).map(|x| x.as_str()),
+                "has_public_ip": i.public_ip_address().is_some(),
                 "cpu_avg_7d": null,
                 "monthly_cost_usd": null,
             });
@@ -65,10 +68,37 @@ pub async fn ec2_volumes(ec2: &aws_sdk_ec2::Client, t: &Target<'_>) -> Result<Ve
             let attrs = json!({
                 "service": "ebs",
                 "attached": !v.attachments().is_empty(),
+                "encrypted": v.encrypted(),
                 "size_gb": v.size(),
                 "monthly_cost_usd": null,
             });
             let arn = t.arn("ec2", &format!("volume/{id}"));
+            out.push(t.resource(
+                ResourceKind::Storage,
+                arn,
+                name_or(&tags, id),
+                tags.clone(),
+                attrs,
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// Snapshots the account owns (`OwnerIds=self`); only their encryption flag is read.
+pub async fn ec2_snapshots(ec2: &aws_sdk_ec2::Client, t: &Target<'_>) -> Result<Vec<Resource>> {
+    let mut out = vec![];
+    let mut pages = ec2
+        .describe_snapshots()
+        .owner_ids("self")
+        .into_paginator()
+        .send();
+    while let Some(page) = pages.next().await {
+        for s in page.map_err(provider_err)?.snapshots() {
+            let id = s.snapshot_id().unwrap_or_default();
+            let tags = ec2_tags(s.tags());
+            let attrs = json!({"service": "ebs_snapshot", "encrypted": s.encrypted()});
+            let arn = t.arn("ec2", &format!("snapshot/{id}"));
             out.push(t.resource(
                 ResourceKind::Storage,
                 arn,

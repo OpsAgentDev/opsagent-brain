@@ -13,12 +13,14 @@ mod s3;
 
 pub use acm::certificates;
 pub use backup::{backups, mark_backup_coverage};
-pub use ec2::{ec2_addresses, ec2_instances, ec2_volumes, load_balancers, security_groups};
+pub use ec2::{
+    ec2_addresses, ec2_instances, ec2_snapshots, ec2_volumes, load_balancers, security_groups,
+};
 pub use gpu::{gpu_utilisation, training_jobs};
 pub use iam::{credential_report, credential_report_users, iam_users};
 pub use logging::{cloudtrails, guardduty};
 pub use logs::log_groups;
-pub use rds::{rds_instances, rds_snapshots};
+pub use rds::{rds_cluster_snapshots, rds_clusters, rds_instances, rds_snapshots};
 pub use s3::s3_buckets;
 
 use super::client::provider_err;
@@ -34,11 +36,14 @@ pub const INVENTORY_ACTIONS: &[&str] = &[
     "ec2:DescribeRegions",
     "ec2:DescribeInstances",
     "ec2:DescribeVolumes",
+    "ec2:DescribeSnapshots",
     "ec2:DescribeAddresses",
     "ec2:DescribeSecurityGroups",
     "ec2:DescribeNetworkInterfaces",
     "elasticloadbalancing:DescribeLoadBalancers",
     "rds:DescribeDBInstances",
+    "rds:DescribeDBClusters",
+    "rds:DescribeDBClusterSnapshots",
     "rds:DescribeDBSnapshots",
     "rds:DescribeDBSnapshotAttributes",
     "s3:ListAllMyBuckets",
@@ -252,7 +257,7 @@ async fn regional(
     let rds = aws_sdk_rds::Client::new(&cfg);
     let ct = aws_sdk_cloudtrail::Client::new(&cfg);
     let gd = aws_sdk_guardduty::Client::new(&cfg);
-    let (mut a, mut b, c, d, e, mut f, g, h, i) = tokio::join!(
+    let (mut a, mut b, c, d, e, mut f, g, h, i, j, k, l) = tokio::join!(
         gate(want("ec2"), ec2_instances(&ec2, t)),
         gate(want("ebs"), ec2_volumes(&ec2, t)),
         gate(want("eip"), ec2_addresses(&ec2, t)),
@@ -262,6 +267,9 @@ async fn regional(
         gate(want("rds"), rds_snapshots(&rds, t)),
         gate(want("cloudtrail"), cloudtrails(&ct, t)),
         gate(want("guardduty"), guardduty(&gd, t)),
+        gate(want("ebs_snapshot"), ec2_snapshots(&ec2, t)),
+        gate(want("rds_cluster"), rds_clusters(&rds, t)),
+        gate(want("rds_cluster_snapshot"), rds_cluster_snapshots(&rds, t)),
     );
     protection_and_ml(&cfg, t, want, out, &mut a, &mut b, &mut f).await;
     for (svc, r) in [
@@ -274,6 +282,9 @@ async fn regional(
         ("rds", g),
         ("cloudtrail", h),
         ("guardduty", i),
+        ("ebs_snapshot", j),
+        ("rds_cluster", k),
+        ("rds_cluster_snapshot", l),
     ] {
         out.record(svc, t.region, r);
     }

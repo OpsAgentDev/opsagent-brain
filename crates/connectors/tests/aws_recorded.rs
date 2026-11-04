@@ -278,7 +278,9 @@ mod inventory {
         assert_eq!(
             r[0].attributes,
             json!({"service": "ec2", "state": "running", "instance_type": "m5.large",
-                   "accelerated": false, "cpu_avg_7d": null, "monthly_cost_usd": null})
+                   "accelerated": false, "metadata_http_tokens": null,
+                   "metadata_http_endpoint": null, "has_public_ip": false,
+                   "cpu_avg_7d": null, "monthly_cost_usd": null})
         );
         assert_eq!(r[1].name, "i-0bbb");
         assert_eq!(r[1].attributes["accelerated"], true);
@@ -309,7 +311,8 @@ mod inventory {
         );
         assert_eq!(
             r[0].attributes,
-            json!({"service": "ebs", "attached": true, "size_gb": 100, "monthly_cost_usd": null})
+            json!({"service": "ebs", "attached": true, "encrypted": null, "size_gb": 100,
+                   "monthly_cost_usd": null})
         );
         assert_eq!(r[1].attributes["attached"], false);
     }
@@ -465,6 +468,8 @@ admin,arn:aws:iam::123456789012:user/admin,2020-01-01T00:00:00+00:00,true,N/A,N/
         assert_eq!(
             r[0].attributes,
             json!({"service": "iam", "key_age_days": 120, "key_last_used_days": 100,
+                   "access_keys_active": 1, "unused_key_age_days": null,
+                   "console_last_used_days": null,
                    "mfa": false, "console": true, "admin": false})
         );
         assert_eq!(r[1].attributes["key_last_used_days"], 10);

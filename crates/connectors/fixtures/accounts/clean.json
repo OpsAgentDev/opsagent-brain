@@ -15,7 +15,10 @@
         "instance_type": "m5.large",
         "accelerated": false,
         "cpu_avg_7d": 45.0,
-        "monthly_cost_usd": 60.0
+        "monthly_cost_usd": 60.0,
+        "metadata_http_tokens": "required",
+        "metadata_http_endpoint": "enabled",
+        "has_public_ip": false
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -31,7 +34,8 @@
         "service": "ebs",
         "attached": true,
         "size_gb": 100,
-        "monthly_cost_usd": 10.0
+        "monthly_cost_usd": 10.0,
+        "encrypted": true
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -49,7 +53,10 @@
         "key_last_used_days": 1,
         "mfa": true,
         "console": true,
-        "admin": false
+        "admin": false,
+        "access_keys_active": 1,
+        "unused_key_age_days": null,
+        "console_last_used_days": 2
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
@@ -126,7 +133,8 @@
         "backup_retention_days": 7,
         "in_backup_plan": true,
         "backup_last_job_status": "COMPLETED",
-        "backup_last_job_at": "2026-09-30T00:00:00Z"
+        "backup_last_job_at": "2026-09-30T00:00:00Z",
+        "encrypted": true
       },
       "observed_at": "2026-10-01T00:00:00Z"
     },
