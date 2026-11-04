@@ -809,9 +809,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-guardduty"
-version = "1.151.0"
+version = "1.152.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "528c8d2dee58a94e109ed517c113e1202293d9d6347e7b843779b2fc73444e7e"
+checksum = "4bdd75174a2be7abb45f8be6e0788be41b328e423bf6150d2d6a386e538559b0"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
