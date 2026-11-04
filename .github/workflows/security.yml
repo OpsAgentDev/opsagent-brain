@@ -1,0 +1,52 @@
+name: security
+# Advisory audit, secret scan and CodeQL. Runs on PRs, main and weekly (new advisories land when the repo is quiet).
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 detect --source /repo --no-banner --redact
+
+  codeql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: github/codeql-action/init@8c78abb9b62512e3c45dea6559ffd924ed8549c8 # v3.28.0
+        with:
+          languages: rust
+          build-mode: none
+      - uses: github/codeql-action/analyze@8c78abb9b62512e3c45dea6559ffd924ed8549c8 # v3.28.0

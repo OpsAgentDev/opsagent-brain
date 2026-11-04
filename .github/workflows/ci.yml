@@ -35,13 +35,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: ./.github/actions/build-room
       - run: sudo apt-get update && sudo apt-get install -y lld
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: scripts/check-crate-isolation.sh
@@ -49,9 +49,6 @@ jobs:
       - run: scripts/check-logging.sh
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
   test:
     needs: lint
@@ -73,11 +70,11 @@ jobs:
         options: >-
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: ./.github/actions/build-room
       - run: sudo apt-get update && sudo apt-get install -y lld
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --workspace
@@ -89,11 +86,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: ./.github/actions/build-room
       - run: docker build -t opsagent-brain:ci .
       - run: docker save opsagent-brain:ci | gzip > brain-image.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: brain-image
           path: brain-image.tar.gz
@@ -104,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - run: docker build -f deploy/backup/Dockerfile .
 
   # The production image: refuses to boot with no variables; serves /readyz with a complete set.
@@ -125,8 +122,8 @@ jobs:
         options: >-
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: brain-image
       - run: docker load < brain-image.tar.gz && docker tag opsagent-brain:ci brain
@@ -154,8 +151,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: brain-image
       - run: docker load < brain-image.tar.gz && docker tag opsagent-brain:ci opsagent-brain:compose
@@ -174,7 +171,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Smoke target must be production (the session cookie is real)
+        run: case "$BASE_URL" in https://brain.opsagent.dev|https://brain.opsagent.dev/*) ;; *) echo "base_url must be https://brain.opsagent.dev"; exit 1;; esac
+        env:
+          BASE_URL: ${{ inputs.base_url }}
       - run: scripts/smoke.sh "$BASE_URL"
         env:
           BASE_URL: ${{ inputs.base_url }}
