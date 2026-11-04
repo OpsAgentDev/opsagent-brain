@@ -126,7 +126,7 @@ fn human_review_line_only_when_url_set_in_html_and_text() {
         assert!(out.contains("Want an expert to look at this?"), "{out}");
         assert!(!out.contains("harun.dev"));
     }
-    let foot = h.find("opsagent.dev").expect("footer");
+    let foot = h.find("&middot; opsagent.dev").expect("footer");
     let unsub = h.find("https://x.test/unsub?t=1").expect("unsub");
     assert!(unsub > foot && unsub < foot + h[foot..].find("</table>").expect("end"));
     assert!(t.contains("Unsubscribe: https://x.test/unsub?t=1"));
@@ -164,6 +164,8 @@ fn notice_escapes_and_renders_button() {
     assert!(h.contains("color-scheme"));
     n.button = None;
     assert!(!render_notice(&n).contains("<a "));
+    // The shared layout carries the logo (hosted PNG; mail clients do not render SVG).
+    assert!(render_notice(&n).contains(r#"src="https://opsagent.dev/email/logo.png""#));
     if let Ok(dir) = std::env::var("PLAN8_SAMPLES") {
         let mut w = plain_weekly();
         w.unsubscribe_url = Some("https://x.test/unsub".into());
