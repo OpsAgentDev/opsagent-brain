@@ -365,7 +365,7 @@ async fn insecure_inventory_has_expected_shapes() {
 #[tokio::test]
 async fn new_security_services_are_scopable() {
     let c = FakeConnector::new("insecure").unwrap();
-    for svc in ["ebs_snapshot", "rds_cluster"] {
+    for svc in ["ebs_snapshot", "rds_cluster", "rds_cluster_snapshot"] {
         let scope = Scope {
             regions: vec![],
             services: vec![svc.into()],

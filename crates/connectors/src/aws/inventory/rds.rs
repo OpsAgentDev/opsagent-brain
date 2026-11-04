@@ -95,3 +95,28 @@ pub async fn rds_snapshots(rds: &aws_sdk_rds::Client, t: &Target<'_>) -> Result<
     }
     Ok(out)
 }
+
+/// Manual Aurora and Multi-AZ cluster snapshots; own service, only their encryption flag is read.
+pub async fn rds_cluster_snapshots(
+    rds: &aws_sdk_rds::Client,
+    t: &Target<'_>,
+) -> Result<Vec<Resource>> {
+    let mut out = vec![];
+    let mut pages = rds
+        .describe_db_cluster_snapshots()
+        .snapshot_type("manual")
+        .into_paginator()
+        .send();
+    while let Some(page) = pages.next().await {
+        for s in page.map_err(provider_err)?.db_cluster_snapshots() {
+            out.push(t.resource(
+                ResourceKind::Database,
+                s.db_cluster_snapshot_arn().unwrap_or_default().to_owned(),
+                s.db_cluster_snapshot_identifier().unwrap_or_default(),
+                BTreeMap::new(),
+                json!({"service": "rds_cluster_snapshot", "encrypted": s.storage_encrypted()}),
+            ));
+        }
+    }
+    Ok(out)
+}

@@ -43,6 +43,7 @@ async fn security_checks_run_on_the_fake_connector() {
     let mut want = vec![
         row("11", "cluster-plain", "unencrypted_database", High),
         row("11", "db-plain", "unencrypted_database", High),
+        row("11", "snap-cluster-plain", "unencrypted_snapshot", Low),
         row("11", "snap-ebs-plain", "unencrypted_snapshot", Low),
         row("11", "snap-rds-plain", "unencrypted_snapshot", Low),
         row("11", "vol-plain-attached", "unencrypted_volume", Medium),

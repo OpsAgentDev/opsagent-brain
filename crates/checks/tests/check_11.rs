@@ -29,6 +29,7 @@ async fn insecure_exact_set() {
         t("vol-plain-detached", "unencrypted_volume", Low),
         t("snap-ebs-plain", "unencrypted_snapshot", Low),
         t("snap-rds-plain", "unencrypted_snapshot", Low),
+        t("snap-cluster-plain", "unencrypted_snapshot", Low),
     ];
     want.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
     assert_eq!(set(&run(&EncryptionAtRest, &r, &c)), want);
@@ -92,4 +93,15 @@ fn unreadable_service_is_skipped_but_others_still_report() {
         set(&run_with(&parts, &EncryptionAtRest, &rs, &[])),
         vec![t("vol", "unencrypted_volume", Medium)]
     );
+}
+
+#[test]
+fn title_uses_the_name_not_the_arn() {
+    let mut r = res(
+        "arn:aws:ec2:r:1:volume/vol-1",
+        json!({"service":"ebs","attached":true,"encrypted":false}),
+    );
+    r.name = "data".into();
+    let d = run(&EncryptionAtRest, &[r], &[]);
+    assert_eq!(d[0].title, "Volume data is not encrypted at rest");
 }

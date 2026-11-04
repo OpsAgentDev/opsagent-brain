@@ -23,13 +23,12 @@ impl Check for EncryptionAtRest {
         let mut out = vec![];
         for r in ctx.resources {
             let a = &r.attributes;
-            let id = &r.identity;
             // Only an explicit `false` is a gap; a missing or null flag was not readable.
             if a["encrypted"] != false || ctx.unavailable.contains(r.service()) {
                 continue;
             }
             let (variant, sev, what) = match r.service() {
-                "rds" | "rds_cluster" if a["snapshot"] == true => {
+                "rds" if a["snapshot"] == true => {
                     ("unencrypted_snapshot", Severity::Low, "Snapshot")
                 }
                 "rds" | "rds_cluster" => ("unencrypted_database", Severity::High, "Database"),
@@ -41,10 +40,12 @@ impl Check for EncryptionAtRest {
                     };
                     ("unencrypted_volume", sev, "Volume")
                 }
-                "ebs_snapshot" => ("unencrypted_snapshot", Severity::Low, "Snapshot"),
+                "ebs_snapshot" | "rds_cluster_snapshot" => {
+                    ("unencrypted_snapshot", Severity::Low, "Snapshot")
+                }
                 _ => continue,
             };
-            let title = format!("{what} {id} is not encrypted at rest");
+            let title = format!("{what} {} is not encrypted at rest", r.name);
             let s = format!("{title}.");
             let ex = match r.service() {
                 "ebs" => format!("encrypted=false attached={}", a["attached"]),

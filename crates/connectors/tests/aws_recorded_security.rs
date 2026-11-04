@@ -3,8 +3,8 @@
 use aws_smithy_mocks::{mock, mock_client, RuleMode};
 use chrono::TimeZone;
 use opsagent_connectors::aws::inventory::{
-    credential_report_users, ec2_instances, ec2_snapshots, ec2_volumes, rds_clusters,
-    rds_instances, Target,
+    credential_report_users, ec2_instances, ec2_snapshots, ec2_volumes, rds_cluster_snapshots,
+    rds_clusters, rds_instances, Target,
 };
 use serde_json::json;
 
@@ -186,4 +186,32 @@ dormant,arn:aws:iam::123456789012:user/dormant,2020-01-01T00:00:00+00:00,true,N/
     assert_eq!(a(1)["access_keys_active"], 0);
     assert_eq!(a(1)["unused_key_age_days"], serde_json::Value::Null);
     assert_eq!(a(1)["console_last_used_days"], 293);
+}
+
+#[tokio::test]
+async fn describe_db_cluster_snapshots_maps_storage_encrypted_manual_only() {
+    use aws_sdk_rds::operation::describe_db_cluster_snapshots::DescribeDbClusterSnapshotsOutput;
+    use aws_sdk_rds::types::DbClusterSnapshot;
+    let rule = mock!(aws_sdk_rds::Client::describe_db_cluster_snapshots)
+        .match_requests(|r| r.snapshot_type() == Some("manual"))
+        .then_output(|| {
+            DescribeDbClusterSnapshotsOutput::builder()
+                .db_cluster_snapshots(
+                    DbClusterSnapshot::builder()
+                        .db_cluster_snapshot_identifier("aurora-snap")
+                        .db_cluster_snapshot_arn(
+                            "arn:aws:rds:eu-west-1:123456789012:cluster-snapshot:aurora-snap",
+                        )
+                        .storage_encrypted(false)
+                        .build(),
+                )
+                .build()
+        });
+    let rds = mock_client!(aws_sdk_rds, RuleMode::Sequential, [&rule]);
+    let r = rds_cluster_snapshots(&rds, &T).await.unwrap();
+    assert_eq!(r[0].name, "aurora-snap");
+    assert_eq!(
+        r[0].attributes,
+        json!({"service": "rds_cluster_snapshot", "encrypted": false})
+    );
 }

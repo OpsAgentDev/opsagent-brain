@@ -309,6 +309,20 @@
         "admin": false
       },
       "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "database",
+      "identity": "snap-cluster-plain",
+      "name": "snap-cluster-plain",
+      "tags": {},
+      "attributes": {
+        "service": "rds_cluster_snapshot",
+        "encrypted": false
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
     }
   ],
   "cost_daily": [
