@@ -117,6 +117,7 @@ mod tests {
             "https://web.test".into(),
             at(0),
             BillingGate::new(false, at(0)),
+            Arc::new(crate::adapters::memory::MemRateLimiter::default()),
         );
         invite
             .run(&scope, owner.id, "new@example.com", "member")
