@@ -60,6 +60,9 @@ pub struct Config {
     pub session_secret: String,
     /// Keys unsubscribe links; empty falls back to `session_secret` (see `unsubscribe_key`).
     pub unsubscribe_secret: String,
+    /// Optional. With it, `CF-Connecting-IP` is the client address on requests that carry it in
+    /// `X-Origin-Auth` (see `adapters::client_ip`); unset keeps the `X-Forwarded-For` rule.
+    pub trusted_proxy_secret: Option<String>,
     pub cookie_secure: bool,
     /// Empty means host-only cookie (local development).
     pub cookie_domain: String,
@@ -185,6 +188,7 @@ impl Config {
                 ),
             ),
             unsubscribe_secret: s("UNSUBSCRIBE_SECRET", ""),
+            trusted_proxy_secret: get("TRUSTED_PROXY_SECRET"),
             cookie_secure: p(&get, "COOKIE_SECURE", pick("false", "true", "true"))?,
             cookie_domain: s("COOKIE_DOMAIN", pick("", "", "opsagent.dev")),
             github_client_id: s("GITHUB_CLIENT_ID", ""),
@@ -509,6 +513,13 @@ mod tests {
             ("STRIPE_WEBHOOK_SECRET", "whsec_x"),
         ]);
         assert!(both.webhook_configured());
+    }
+
+    #[test]
+    fn trusted_proxy_secret_is_optional_even_in_production() {
+        assert_eq!(cfg(&production(&[])).trusted_proxy_secret, None);
+        let c = cfg(&production(&[("TRUSTED_PROXY_SECRET", "origin-secret")]));
+        assert_eq!(c.trusted_proxy_secret.as_deref(), Some("origin-secret"));
     }
 
     #[test]
