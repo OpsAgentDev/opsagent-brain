@@ -343,6 +343,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.config.web_base_url.clone(),
                 d.clock.clone(),
                 gate.clone(),
+                d.limiter.clone(),
             ),
             accept_invite: members::AcceptInvite::new(d.uow.clone(), d.clock.clone(), gate.clone()),
             remove_member: members::RemoveMember::new(d.uow.clone(), d.clock.clone()),
