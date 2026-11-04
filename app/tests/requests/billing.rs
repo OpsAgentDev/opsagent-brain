@@ -54,10 +54,15 @@ async fn post_raw(req: &TestServer, body: &str, sig: &str) -> TestResponse {
         .await
 }
 
+/// Posts `event` signed now and returns whatever Stripe would see.
+pub async fn deliver_any(req: &TestServer, event: &Value) -> TestResponse {
+    let body = event.to_string();
+    post_raw(req, &body, &sign(&body, Utc::now().timestamp())).await
+}
+
 /// Posts `event` signed now and asserts Stripe gets a 200 (anything else is retried).
 pub async fn deliver(req: &TestServer, event: &Value) -> TestResponse {
-    let body = event.to_string();
-    let res = post_raw(req, &body, &sign(&body, Utc::now().timestamp())).await;
+    let res = deliver_any(req, event).await;
     assert_eq!(res.status_code(), 200, "{}: {}", event["id"], res.text());
     res
 }
@@ -153,6 +158,15 @@ async fn checkout_owner_only_and_returns_url() {
         // The customer is created once, on first use, and reused after.
         let res = checkout(&req, &t, &org, json!({ "tier": "team" })).await;
         assert_eq!(res.status_code(), 200, "{}", res.text());
+        // Both clicks carry one idempotency key, so Stripe hands back the same session.
+        let seen = api.received_requests().await.unwrap();
+        let keys: Vec<_> = seen
+            .iter()
+            .filter(|r| r.url.path() == "/v1/checkout/sessions")
+            .map(|r| r.headers.get("idempotency-key").unwrap().clone())
+            .collect();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0], keys[1]);
         let bad = checkout(&req, &t, &org, json!({ "tier": "gold" })).await;
         assert_eq!(bad.status_code(), 422, "{}", bad.text());
 

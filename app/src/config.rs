@@ -95,7 +95,7 @@ pub struct Config {
     pub stripe_automatic_tax: bool,
     /// Off: nothing is gated on billing state (the alpha organisations keep working).
     pub billing_enforced: bool,
-    /// Email domains that may sign up; empty is open (`SIGNUP_ALLOWED_DOMAINS`).
+    /// Email domains that may sign up; `*` or empty is open (`SIGNUP_ALLOWED_DOMAINS`, required in production).
     pub signup_allowed_domains: opsagent_core::user::SignupAllowlist,
     /// `None`: no OpsAgent model key (`ai_unavailable`).
     pub opsagent: Option<OpsAgentConnection>,
@@ -109,7 +109,7 @@ pub struct Config {
 }
 
 /// Required in production (no default there); the same list as deployment.md and deploy/README.md.
-const PRODUCTION_REQUIRED: [&str; 7] = [
+const PRODUCTION_REQUIRED: [&str; 8] = [
     "DATABASE_URL",
     "REDIS_URL",
     "APP_BASE_URL",
@@ -117,6 +117,8 @@ const PRODUCTION_REQUIRED: [&str; 7] = [
     "SESSION_SECRET",
     "OPSAGENT_KEK",
     "OPSAGENT_CONNECTORS",
+    // Sign-up is closed by default; an unset or misspelled variable must not open it. `*` means open.
+    "SIGNUP_ALLOWED_DOMAINS",
 ];
 
 impl Config {
@@ -436,6 +438,7 @@ mod tests {
             ("WEB_BASE_URL", "https://opsagent.dev"),
             ("SESSION_SECRET", "a-production-session-secret"),
             ("OPSAGENT_KEK", "k"),
+            ("SIGNUP_ALLOWED_DOMAINS", "opsagent.dev"),
             ("OPSAGENT_CONNECTORS", "aws"),
             ("OPSAGENT_AWS_OUTBOUND_ROLE_ARN", "arn:aws:iam::1:role/o"),
             (

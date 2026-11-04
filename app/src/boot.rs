@@ -263,7 +263,12 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             let s = billing::BillingSettings::new(&d.config);
             billing::Billing {
                 get_billing: billing::GetBilling::new(d.uow.clone(), s.clone()),
-                checkout: billing::StartCheckout::new(d.uow.clone(), d.billing.clone(), s.clone()),
+                checkout: billing::StartCheckout::new(
+                    d.uow.clone(),
+                    d.billing.clone(),
+                    d.clock.clone(),
+                    s.clone(),
+                ),
                 portal: billing::OpenPortal::new(d.uow.clone(), d.billing.clone(), s.clone()),
                 webhook: billing::HandleWebhook::new(
                     d.uow.clone(),

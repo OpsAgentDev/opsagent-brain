@@ -233,10 +233,14 @@ impl HandleWebhook {
                 None => warn_skip(&ev, "stripe event without a customer"),
             }
         }
-        tx.commit().await?;
+        // Mail before the commit: a failed send rolls the event back, so Stripe's redelivery
+        // is not deduped away and the paid notice is retried.
         if let Some((org, review)) = paid_review {
-            mail_paid(&*self.mailer, &self.contact_to, &org, &review, check_id).await;
+            if !mail_paid(&*self.mailer, &self.contact_to, &org, &review, check_id).await {
+                return Err(AppError::Internal("paid review mail failed".into()));
+            }
         }
+        tx.commit().await?;
         Ok(())
     }
 

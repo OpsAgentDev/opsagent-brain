@@ -18,23 +18,27 @@ use crate::mailers::{
     Mail, Mailer,
 };
 
-/// Sends each mail; a failed send is logged and does not fail the caller.
-async fn send_all(mailer: &dyn Mailer, mails: [Mail; 2]) {
+/// Sends each mail; a failed send is logged. True when every mail went out.
+async fn send_all(mailer: &dyn Mailer, mails: [Mail; 2]) -> bool {
+    let mut all = true;
     for mail in mails {
         if mailer.send(mail).await.is_err() {
             tracing::error!(error_code = "mail_failed", "human review mail failed");
+            all = false;
         }
     }
+    all
 }
 
-/// The founder and requester mails for a request the webhook just marked paid.
+/// The founder and requester mails for a request the webhook just marked paid. False when a
+/// send failed: the webhook then rolls back so Stripe redelivers and the mail is retried.
 pub(crate) async fn mail_paid(
     mailer: &dyn Mailer,
     contact_to: &str,
     org: &Organisation,
     r: &ReviewRequest,
     check_id: Option<String>,
-) {
+) -> bool {
     let reference = match (r.finding_id, r.connection_id) {
         (Some(id), _) => match check_id {
             Some(c) => format!("finding {c} ({id})"),
@@ -58,7 +62,7 @@ pub(crate) async fn mail_paid(
         founder_paid(contact_to, &notice),
         paid_confirmation(&notice),
     ];
-    send_all(mailer, mails).await;
+    send_all(mailer, mails).await
 }
 
 pub struct HumanReviews {

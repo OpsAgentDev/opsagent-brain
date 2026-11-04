@@ -15,7 +15,7 @@ use wiremock::{
 };
 
 use super::{
-    billing::{deliver, event, stripe_on},
+    billing::{deliver, deliver_any, event, stripe_on},
     support::*,
 };
 use crate::workers::full_scan::{noisy, scan};
@@ -482,6 +482,41 @@ async fn webhook_marks_paid_once_then_mails() {
         deliver(&req, &paid_event("evt_h1", done, "paid", o, id)).await;
         let late = "checkout.session.async_payment_succeeded";
         deliver(&req, &paid_event("evt_h2", late, "paid", o, id)).await;
+        assert_eq!(mail.sent().len(), 2);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn webhook_with_a_failing_mailer_is_retried_not_lost() {
+    let api = MockServer::start().await;
+    serve_with(stripe_on(api.uri()), |mut req, ctx| async move {
+        let (t, org, _, fid) = fixture(&mut req, &ctx, "o@example.com").await;
+        mount_checkout(&api, "finding", 9900).await;
+        assert_eq!(
+            post(&req, &t, &org, json!({"kind":"finding","finding_id":fid}))
+                .await
+                .status_code(),
+            201
+        );
+        let r = rows(&ctx, &org).await.remove(0);
+        let ev = paid_event(
+            "evt_m1",
+            "checkout.session.completed",
+            "paid",
+            r.organisation_id,
+            r.id,
+        );
+        let failing: Arc<dyn Mailer> = Arc::new(Failing);
+        ctx.set_mailer(failing);
+        // Mail down: Stripe sees a failure and the event is not recorded as handled.
+        assert_eq!(deliver_any(&req, &ev).await.status_code(), 500);
+        assert_eq!(rows(&ctx, &org).await[0].payment, "pending");
+        // The redelivery of the same event succeeds and sends both mails.
+        let mail = prepare(&ctx);
+        deliver(&req, &ev).await;
+        assert_eq!(rows(&ctx, &org).await[0].payment, "paid");
         assert_eq!(mail.sent().len(), 2);
     })
     .await;
