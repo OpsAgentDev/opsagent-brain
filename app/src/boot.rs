@@ -35,8 +35,9 @@ use crate::{
     controllers,
     error::{AppError, AppResult},
     jobs::{
-        BillingGated, BillingSyncJob, DeliverAlertJob, DeliverBriefingJob, DeliverWeeklyJob,
-        FullScanJob, JobHandler, RetentionJob, Scheduler, VerifyJob, WatchScanJob, WorkerRunner,
+        BillingGated, BillingSyncJob, DeliverAlertJob, DeliverBriefingJob, DeliverReviewNoticeJob,
+        DeliverWeeklyJob, FullScanJob, JobHandler, RetentionJob, Scheduler, VerifyJob,
+        WatchScanJob, WorkerRunner,
     },
     mailers::{self, Mailer},
     mcp, middleware,
@@ -257,6 +258,12 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.config.contact_to.clone(),
             ),
             list: human_reviews::ListReviews::new(d.uow.clone()),
+            deliver_notice: human_reviews::DeliverReviewNotice::new(
+                d.uow.clone(),
+                d.redis.clone(),
+                d.mailer.clone(),
+                d.config.contact_to.clone(),
+            ),
         },
         retention: retention::Retention::new(d.uow.clone(), d.redis.clone(), d.clock.clone()),
         billing: {
@@ -272,10 +279,9 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 portal: billing::OpenPortal::new(d.uow.clone(), d.billing.clone(), s.clone()),
                 webhook: billing::HandleWebhook::new(
                     d.uow.clone(),
-                    (d.billing.clone(), d.mailer.clone()),
+                    d.billing.clone(),
                     d.clock.clone(),
                     s.clone(),
-                    d.config.contact_to.clone(),
                 ),
                 sync: billing::BillingSync::new(
                     d.uow.clone(),
@@ -602,7 +608,7 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
     }
 }
 
-/// The job runner with the eight job handlers, the only registry of job kinds. The queue and
+/// The job runner with the nine job handlers, the only registry of job kinds. The queue and
 /// the job work share the state's one pool (`pool_size` with a worker).
 pub fn worker(state: &AppState) -> WorkerRunner {
     let (runs, deliveries) = (&state.actions.runs, &state.actions.deliveries);
@@ -629,6 +635,9 @@ pub fn worker(state: &AppState) -> WorkerRunner {
         )))),
         Arc::new(RetentionJob(Arc::new(state.actions.retention.clone()))),
         Arc::new(BillingSyncJob(Arc::new(state.actions.billing.sync.clone()))),
+        Arc::new(DeliverReviewNoticeJob(Arc::new(
+            state.actions.human_reviews.deliver_notice.clone(),
+        ))),
     ];
     let source = Arc::new(PgQueue(state.db.clone()));
     WorkerRunner::new(source, handlers, &state.config, state.clock.clone())

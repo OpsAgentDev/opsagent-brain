@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use opsagent_brain::mailers::{Mail, Mailer};
+use opsagent_brain::mailers::{CaptureMailer, Mail, Mailer};
 use opsagent_brain::models::_entities::{
     audit_events, connections, findings, human_review_requests,
 };
@@ -487,37 +487,101 @@ async fn webhook_marks_paid_once_then_mails() {
     .await;
 }
 
+/// Fails every mail to `.0`; the rest go to the capture.
+struct FailTo(String, Arc<CaptureMailer>);
+
+#[async_trait]
+impl Mailer for FailTo {
+    async fn send(&self, m: Mail) -> Result<(), String> {
+        match m.to == self.0 {
+            true => Err("down".into()),
+            false => self.1.send(m).await,
+        }
+    }
+}
+
+/// A retry pass 2 minutes on (the first backoff is 1), then the job drain.
+async fn retry_notices(ctx: &TestApp) {
+    use opsagent_brain::adapters::db::ledger_storage::stmt;
+    use sea_orm::ConnectionTrait;
+    let later = chrono::Utc::now() + chrono::Duration::minutes(2);
+    let tick = &actions(ctx).unwrap().runs.scheduler_tick;
+    tick.run(later).await.unwrap();
+    let due = stmt(
+        "UPDATE jobs SET run_at = now() WHERE locked_at IS NULL",
+        vec![],
+    );
+    ctx.db.execute_raw(due).await.unwrap();
+    ctx.drain_jobs().await;
+}
+
+/// A paid event for a fresh finding review, and its org slug.
+async fn paid_finding(
+    req: &mut axum_test::TestServer,
+    ctx: &TestApp,
+    api: &MockServer,
+) -> (Value, String) {
+    let (t, org, _, fid) = fixture(req, ctx, "o@example.com").await;
+    mount_checkout(api, "finding", 9900).await;
+    let body = json!({"kind":"finding","finding_id":fid});
+    assert_eq!(post(req, &t, &org, body).await.status_code(), 201);
+    let r = rows(ctx, &org).await.remove(0);
+    let done = "checkout.session.completed";
+    (
+        paid_event("evt_m1", done, "paid", r.organisation_id, r.id),
+        org,
+    )
+}
+
 #[tokio::test]
 #[serial]
-async fn webhook_with_a_failing_mailer_is_retried_not_lost() {
+async fn webhook_with_the_mailer_down_still_pays_and_the_job_mails_later() {
     let api = MockServer::start().await;
     serve_with(stripe_on(api.uri()), |mut req, ctx| async move {
-        let (t, org, _, fid) = fixture(&mut req, &ctx, "o@example.com").await;
-        mount_checkout(&api, "finding", 9900).await;
-        assert_eq!(
-            post(&req, &t, &org, json!({"kind":"finding","finding_id":fid}))
-                .await
-                .status_code(),
-            201
-        );
-        let r = rows(&ctx, &org).await.remove(0);
-        let ev = paid_event(
-            "evt_m1",
-            "checkout.session.completed",
-            "paid",
-            r.organisation_id,
-            r.id,
-        );
+        let (ev, slug) = paid_finding(&mut req, &ctx, &api).await;
         let failing: Arc<dyn Mailer> = Arc::new(Failing);
         ctx.set_mailer(failing);
-        // Mail down: Stripe sees a failure and the event is not recorded as handled.
-        assert_eq!(deliver_any(&req, &ev).await.status_code(), 500);
-        assert_eq!(rows(&ctx, &org).await[0].payment, "pending");
-        // The redelivery of the same event succeeds and sends both mails.
+        // Mail down: the webhook still commits the paid state and the notice job.
+        assert_eq!(deliver_any(&req, &ev).await.status_code(), 200);
+        assert_eq!(rows(&ctx, &slug).await[0].payment, "paid");
         let mail = prepare(&ctx);
+        // Stripe's redelivery of the event is deduped: no second notice.
         deliver(&req, &ev).await;
-        assert_eq!(rows(&ctx, &org).await[0].payment, "paid");
+        assert!(mail.sent().is_empty(), "the job waits for its backoff");
+        retry_notices(&ctx).await;
         assert_eq!(mail.sent().len(), 2);
+        // A later pass and another redelivery send nothing more.
+        retry_notices(&ctx).await;
+        deliver(&req, &ev).await;
+        assert_eq!(mail.sent().len(), 2);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn half_failed_notice_resends_only_the_missing_mail() {
+    let api = MockServer::start().await;
+    serve_with(stripe_on(api.uri()), |mut req, ctx| async move {
+        let (ev, _) = paid_finding(&mut req, &ctx, &api).await;
+        let mail = prepare(&ctx);
+        // The requester's mail fails; the founder's goes out in the same run.
+        let half: Arc<dyn Mailer> = Arc::new(FailTo("o@example.com".into(), mail.clone()));
+        ctx.set_mailer(half);
+        deliver(&req, &ev).await;
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].to, "info@opsagent.dev");
+        let both: Arc<dyn Mailer> = mail.clone();
+        ctx.set_mailer(both);
+        retry_notices(&ctx).await;
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert_eq!(
+            sent.iter().filter(|m| m.to == "info@opsagent.dev").count(),
+            1
+        );
+        assert_eq!(sent.iter().filter(|m| m.to == "o@example.com").count(), 1);
     })
     .await;
 }

@@ -77,6 +77,10 @@ contract_suite! {
         assert_eq!(paid.paid_at, Some(now));
         assert_eq!((paid.requester_email.as_str(), paid.note.as_deref()), ("owner@example.com", Some("please look")));
         assert_eq!(s.human_reviews().mark_paid(a, id, now).await.unwrap(), None);
+        // The paid-notice run finds it by org and instant only.
+        assert_eq!(s.human_reviews().paid_at(a, now).await.unwrap().map(|x| x.id), Some(id));
+        assert_eq!(s.human_reviews().paid_at(b, now).await.unwrap(), None);
+        assert_eq!(s.human_reviews().paid_at(a, now + Duration::seconds(1)).await.unwrap(), None);
         let g = s.human_reviews().list(a, 10).await.unwrap();
         let listed = g.iter().find(|x| x.id == id).unwrap();
         assert_eq!((listed.payment, listed.paid_at), (Payment::Paid, paid.paid_at));

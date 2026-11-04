@@ -4,6 +4,7 @@
 mod billing_sync;
 mod deliver_alert;
 mod deliver_briefing;
+mod deliver_review_notice;
 mod deliver_weekly;
 mod full_scan;
 mod retention;
@@ -24,6 +25,7 @@ use crate::error::AppResult;
 pub use billing_sync::BillingSyncJob;
 pub use deliver_alert::DeliverAlertJob;
 pub use deliver_briefing::DeliverBriefingJob;
+pub use deliver_review_notice::DeliverReviewNoticeJob;
 pub use deliver_weekly::DeliverWeeklyJob;
 pub use full_scan::FullScanJob;
 pub use retention::RetentionJob;

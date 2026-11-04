@@ -1,22 +1,18 @@
 //! Paid human reviews (human-review.md): an owner asks the founder to review a finding or a
-//! whole connected account. Stored and audited, then paid through Stripe Checkout (two emails
-//! once the webhook sees it paid), or without Stripe two emails at once and an invoice.
+//! whole connected account. Stored and audited, then paid through Stripe Checkout (the webhook
+//! queues a notice job that sends two emails), or without Stripe two emails at once and an
+//! invoice.
 mod list;
+mod notice;
 mod request;
 
 pub use list::ListReviews;
+pub use notice::{enqueue_notice, DeliverReviewNotice};
 pub use request::{RequestReview, ReviewInput};
 
-use opsagent_core::{
-    human_review::{ReviewKind, ReviewRequest},
-    org::Organisation,
-};
+use opsagent_core::human_review::ReviewKind;
 
-use crate::mailers::{
-    human_review::{founder_paid, paid_confirmation, Notice},
-    magic_link::mail_safe_name,
-    Mail, Mailer,
-};
+use crate::mailers::{Mail, Mailer};
 
 /// Sends each mail; a failed send is logged. True when every mail went out.
 async fn send_all(mailer: &dyn Mailer, mails: [Mail; 2]) -> bool {
@@ -30,44 +26,10 @@ async fn send_all(mailer: &dyn Mailer, mails: [Mail; 2]) -> bool {
     all
 }
 
-/// The founder and requester mails for a request the webhook just marked paid. False when a
-/// send failed: the webhook then rolls back so Stripe redelivers and the mail is retried.
-pub(crate) async fn mail_paid(
-    mailer: &dyn Mailer,
-    contact_to: &str,
-    org: &Organisation,
-    r: &ReviewRequest,
-    check_id: Option<String>,
-) -> bool {
-    let reference = match (r.finding_id, r.connection_id) {
-        (Some(id), _) => match check_id {
-            Some(c) => format!("finding {c} ({id})"),
-            None => format!("finding {id}"),
-        },
-        (_, Some(id)) => format!("connection {id}"),
-        _ => String::new(),
-    };
-    let notice = Notice {
-        org_name: &mail_safe_name(&org.name),
-        org_slug: &org.slug,
-        requester: &r.requester_email,
-        kind: r.kind,
-        price_cents: r.price_cents,
-        // Stored through `mail_safe_name` when asked.
-        label: &r.target_label,
-        reference: &reference,
-        note: r.note.as_deref(),
-    };
-    let mails = [
-        founder_paid(contact_to, &notice),
-        paid_confirmation(&notice),
-    ];
-    send_all(mailer, mails).await
-}
-
 pub struct HumanReviews {
     pub request: RequestReview,
     pub list: ListReviews,
+    pub deliver_notice: DeliverReviewNotice,
 }
 
 /// What a product costs and gives; web never hardcodes these.

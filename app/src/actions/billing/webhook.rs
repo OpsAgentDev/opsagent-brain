@@ -4,8 +4,6 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     billing::{BillingError, BillingProvider, BillingStatus as B, SubscriptionState},
-    human_review::ReviewRequest,
-    org::Organisation,
     repo::{Clock, RepoError},
 };
 use serde::Deserialize;
@@ -15,12 +13,11 @@ use uuid::Uuid;
 use super::{provider_failed, unavailable, BillingSettings};
 use crate::{
     actions::{
-        human_reviews::mail_paid,
+        human_reviews::enqueue_notice,
         uow::{Tx, UnitOfWork},
     },
     adapters::stripe::{verify_stripe_signature, HUMAN_REVIEW_PURPOSE, TOPUP_PURPOSE},
     error::{AppError, AppResult},
-    mailers::Mailer,
 };
 
 const HANDLED: [&str; 7] = [
@@ -89,12 +86,9 @@ async fn topup_completed(tx: &dyn Tx, ev: &Event) -> AppResult<()> {
 }
 
 /// A paid human review session marks its request paid, once: `mark_paid` flips only a
-/// `pending` row of the organisation named by `client_reference_id`. Returns what to mail.
-async fn review_paid(
-    tx: &dyn Tx,
-    ev: &Event,
-    now: DateTime<Utc>,
-) -> AppResult<Option<(Organisation, ReviewRequest)>> {
+/// `pending` row of the organisation named by `client_reference_id`, and queues its notice
+/// (human_reviews::enqueue_notice) in the same transaction.
+async fn review_paid(tx: &dyn Tx, ev: &Event, now: DateTime<Utc>) -> AppResult<()> {
     let o = &ev.data.object;
     let uuid = |v: &Value| v.as_str().and_then(|r| r.parse::<Uuid>().ok());
     let (org, id) = (
@@ -103,24 +97,20 @@ async fn review_paid(
     );
     let (Some(org), Some(id)) = (org, id) else {
         warn_skip(ev, "human review session without organisation or request");
-        return Ok(None);
+        return Ok(());
     };
     if o["payment_status"] != "paid" {
         warn_skip(ev, "human review session not paid");
-        return Ok(None);
+        return Ok(());
     }
     let Some(review) = tx.human_reviews().mark_paid(org, id, now).await? else {
         warn_skip(
             ev,
             "human review session for an unknown or already paid request",
         );
-        return Ok(None);
+        return Ok(());
     };
-    let Some(organisation) = tx.orgs().get(org).await? else {
-        warn_skip(ev, "human review session for an unknown organisation");
-        return Ok(None);
-    };
-    Ok(Some((organisation, review)))
+    enqueue_notice(tx, org, &review).await
 }
 
 fn ts(v: &Value) -> Option<DateTime<Utc>> {
@@ -150,32 +140,28 @@ fn status_of(stripe: &str) -> Option<B> {
 /// `POST /v1/webhooks/stripe`: verifies the signature over the raw body (400
 /// `bad_signature`), then applies each event once (`stripe_events`), in one transaction with
 /// its writes, so a failed write is retried by Stripe rather than lost. Unhandled types and
-/// unknown customers are acknowledged and ignored. A paid human review is mailed after commit.
+/// unknown customers are acknowledged and ignored. A paid human review commits with its
+/// notice job, which sends the mails (never the webhook).
 /// 503 until the webhook secret is set.
 pub struct HandleWebhook {
     uow: Arc<dyn UnitOfWork>,
     provider: Arc<dyn BillingProvider>,
-    mailer: Arc<dyn Mailer>,
     clock: Arc<dyn Clock>,
     settings: BillingSettings,
-    contact_to: String,
 }
 
 impl HandleWebhook {
     pub fn new(
         uow: Arc<dyn UnitOfWork>,
-        (provider, mailer): (Arc<dyn BillingProvider>, Arc<dyn Mailer>),
+        provider: Arc<dyn BillingProvider>,
         clock: Arc<dyn Clock>,
         settings: BillingSettings,
-        contact_to: String,
     ) -> Self {
         Self {
             uow,
             provider,
-            mailer,
             clock,
             settings,
-            contact_to,
         }
     }
 
@@ -203,17 +189,10 @@ impl HandleWebhook {
             ev.kind.as_str(),
             "checkout.session.completed" | "checkout.session.async_payment_succeeded"
         );
-        let mut paid_review = None;
-        let mut check_id = None;
         if paid_event && purpose == Some(Some(TOPUP_PURPOSE)) {
             topup_completed(tx.as_ref(), &ev).await?;
         } else if paid_event && purpose == Some(Some(HUMAN_REVIEW_PURPOSE)) {
-            paid_review = review_paid(tx.as_ref(), &ev, self.clock.now()).await?;
-            if let Some((org, r)) = &paid_review {
-                if let Some(id) = r.finding_id {
-                    check_id = tx.findings().get(org.id, id).await?.map(|f| f.key.check_id);
-                }
-            }
+            review_paid(tx.as_ref(), &ev, self.clock.now()).await?;
         } else if ev.kind == "checkout.session.completed" {
             self.checkout_completed(tx.as_ref(), &ev).await?;
         } else if paid_event {
@@ -231,13 +210,6 @@ impl HandleWebhook {
                     None => warn_skip(&ev, "stripe event for an unknown customer"),
                 },
                 None => warn_skip(&ev, "stripe event without a customer"),
-            }
-        }
-        // Mail before the commit: a failed send rolls the event back, so Stripe's redelivery
-        // is not deduped away and the paid notice is retried.
-        if let Some((org, review)) = paid_review {
-            if !mail_paid(&*self.mailer, &self.contact_to, &org, &review, check_id).await {
-                return Err(AppError::Internal("paid review mail failed".into()));
             }
         }
         tx.commit().await?;
@@ -389,7 +361,6 @@ mod tests {
             orgs::test_support::owned_org,
         },
         adapters::memory::{FixedClock, MemStore},
-        mailers::CaptureMailer,
     };
 
     #[tokio::test]
@@ -416,10 +387,9 @@ mod tests {
         let sig = format!("t={},v1={v1}", now.timestamp());
         let hook = HandleWebhook::new(
             Arc::new(store.clone()),
-            (Arc::new(NoStripe), Arc::new(CaptureMailer::default())),
+            Arc::new(NoStripe),
             Arc::new(FixedClock(now)),
             settings(),
-            "info@opsagent.dev".into(),
         );
         hook.run(Some(&sig), body.as_bytes()).await.unwrap();
         // Recorded with the transaction, so Stripe's redelivery is a no-op.

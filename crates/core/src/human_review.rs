@@ -106,6 +106,8 @@ pub trait HumanReviewsRepo: Send + Sync {
         id: Uuid,
         now: DateTime<Utc>,
     ) -> RepoResult<Option<ReviewRequest>>;
+    /// `org`'s request paid at exactly `at`: the key of its paid-notice run.
+    async fn paid_at(&self, org: Uuid, at: DateTime<Utc>) -> RepoResult<Option<ReviewRequest>>;
 }
 
 #[cfg(test)]
