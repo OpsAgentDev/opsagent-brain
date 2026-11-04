@@ -1,11 +1,12 @@
 //! Outbound identity and per-customer sessions. Every customer call goes through `assume`.
 
 use crate::{CallContext, ConnectorError, Result};
-use aws_config::{retry::RetryConfig, BehaviorVersion, Region, SdkConfig};
+use aws_config::{retry::RetryConfig, timeout::TimeoutConfig, BehaviorVersion, Region, SdkConfig};
 use aws_sdk_sts::config::{Credentials, SharedCredentialsProvider};
 use aws_sdk_sts::error::{DisplayErrorContext, ProvideErrorMetadata};
 use aws_sdk_sts::types::Tag;
 use std::collections::BTreeMap;
+use std::time::Duration;
 use uuid::Uuid;
 
 /// Binary Labs outbound role. `credentials: None` uses the default provider chain.
@@ -80,9 +81,20 @@ pub fn is_access_denied(e: &ConnectorError) -> bool {
     matches!(e, ConnectorError::Api { code: Some(c), .. } if matches!(c.as_str(), "AccessDenied" | "AccessDeniedException"))
 }
 
+/// Bounds every SDK call so a hung provider cannot hold a worker: 5 s to connect, 20 s per
+/// attempt, 45 s in total across the retries.
+fn timeouts() -> TimeoutConfig {
+    TimeoutConfig::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .operation_attempt_timeout(Duration::from_secs(20))
+        .operation_timeout(Duration::from_secs(45))
+        .build()
+}
+
 pub(crate) async fn load_base(outbound: &AwsOutbound) -> SdkConfig {
     let mut loader = aws_config::defaults(BehaviorVersion::latest())
-        .retry_config(RetryConfig::standard().with_max_attempts(5));
+        .retry_config(RetryConfig::standard().with_max_attempts(5))
+        .timeout_config(timeouts());
     if let Some(c) = &outbound.credentials {
         loader = loader.credentials_provider(c.clone());
     }
@@ -155,4 +167,17 @@ pub fn session_policy(actions: &[&str]) -> String {
         "Statement": [{"Effect": "Allow", "Action": actions, "Resource": "*"}]
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sdk_calls_carry_connect_attempt_and_operation_timeouts() {
+        let t = timeouts();
+        assert_eq!(t.connect_timeout(), Some(Duration::from_secs(5)));
+        assert_eq!(t.operation_attempt_timeout(), Some(Duration::from_secs(20)));
+        assert_eq!(t.operation_timeout(), Some(Duration::from_secs(45)));
+    }
 }
