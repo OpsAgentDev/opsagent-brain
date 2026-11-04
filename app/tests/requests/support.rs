@@ -36,6 +36,7 @@ pub fn prepare(ctx: &TestApp) -> Arc<CaptureMailer> {
         "ratelimit:magic_link:*",
         "ratelimit:verify_code:*",
         "ratelimit:recipient_confirm:*",
+        "ratelimit:invite:*",
         "recipient_confirm:*",
     ] {
         let found: Vec<String> = opsagent_ledger::redis::cmd("KEYS")
