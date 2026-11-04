@@ -337,3 +337,47 @@ async fn new_services_are_scopable() {
         );
     }
 }
+
+#[tokio::test]
+async fn insecure_inventory_has_expected_shapes() {
+    let c = FakeConnector::new("insecure").unwrap();
+    let inv = c
+        .inventory(&creds("insecure"), &Scope::default())
+        .await
+        .unwrap()
+        .resources;
+    let n = |s: &str, f: &dyn Fn(&serde_json::Value) -> bool| {
+        inv.iter()
+            .filter(|r| r.service() == s && f(&r.attributes))
+            .count()
+    };
+    assert_eq!(n("ec2", &|a| a["metadata_http_tokens"] == "optional"), 3);
+    assert_eq!(n("ec2", &|a| a["has_public_ip"] == true), 3);
+    assert_eq!(n("ebs", &|a| a["encrypted"] == false), 2);
+    assert_eq!(n("ebs_snapshot", &|a| a["encrypted"] == false), 1);
+    assert_eq!(n("rds", &|a| a["encrypted"] == false), 2);
+    assert_eq!(n("rds_cluster", &|a| a["encrypted"] == false), 1);
+    assert_eq!(n("iam", &|a| a["access_keys_active"] == 2), 1);
+    assert_eq!(n("iam", &|a| a["unused_key_age_days"] == 30), 1);
+    assert_eq!(n("iam", &|a| a["console_last_used_days"] == 120), 1);
+}
+
+#[tokio::test]
+async fn new_security_services_are_scopable() {
+    let c = FakeConnector::new("insecure").unwrap();
+    for svc in ["ebs_snapshot", "rds_cluster"] {
+        let scope = Scope {
+            regions: vec![],
+            services: vec![svc.into()],
+        };
+        let inv = c
+            .inventory(&creds("insecure"), &scope)
+            .await
+            .unwrap()
+            .resources;
+        assert!(
+            !inv.is_empty() && inv.iter().all(|r| r.service() == svc),
+            "{svc}"
+        );
+    }
+}

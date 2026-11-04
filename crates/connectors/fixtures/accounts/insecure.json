@@ -1,0 +1,484 @@
+{
+  "account": "insecure",
+  "resources": [
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "compute",
+      "identity": "i-imds-open",
+      "name": "i-imds-open",
+      "tags": {},
+      "attributes": {
+        "service": "ec2",
+        "state": "running",
+        "instance_type": "m5.large",
+        "accelerated": false,
+        "metadata_http_tokens": "optional",
+        "metadata_http_endpoint": "enabled",
+        "has_public_ip": false,
+        "cpu_avg_7d": 45.0,
+        "monthly_cost_usd": 60.0
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "compute",
+      "identity": "i-imds-public",
+      "name": "i-imds-public",
+      "tags": {},
+      "attributes": {
+        "service": "ec2",
+        "state": "running",
+        "instance_type": "m5.large",
+        "accelerated": false,
+        "metadata_http_tokens": "optional",
+        "metadata_http_endpoint": "enabled",
+        "has_public_ip": true,
+        "cpu_avg_7d": 45.0,
+        "monthly_cost_usd": 60.0
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "compute",
+      "identity": "i-imds-required",
+      "name": "i-imds-required",
+      "tags": {},
+      "attributes": {
+        "service": "ec2",
+        "state": "running",
+        "instance_type": "m5.large",
+        "accelerated": false,
+        "metadata_http_tokens": "required",
+        "metadata_http_endpoint": "enabled",
+        "has_public_ip": true,
+        "cpu_avg_7d": 45.0,
+        "monthly_cost_usd": 60.0
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "compute",
+      "identity": "i-imds-off",
+      "name": "i-imds-off",
+      "tags": {},
+      "attributes": {
+        "service": "ec2",
+        "state": "running",
+        "instance_type": "m5.large",
+        "accelerated": false,
+        "metadata_http_tokens": "optional",
+        "metadata_http_endpoint": "disabled",
+        "has_public_ip": true,
+        "cpu_avg_7d": 45.0,
+        "monthly_cost_usd": 60.0
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "storage",
+      "identity": "vol-plain-attached",
+      "name": "vol-plain-attached",
+      "tags": {},
+      "attributes": {
+        "service": "ebs",
+        "attached": true,
+        "encrypted": false,
+        "size_gb": 100,
+        "monthly_cost_usd": 10.0
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "storage",
+      "identity": "vol-plain-detached",
+      "name": "vol-plain-detached",
+      "tags": {},
+      "attributes": {
+        "service": "ebs",
+        "attached": false,
+        "encrypted": false,
+        "size_gb": 100,
+        "monthly_cost_usd": 10.0
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "storage",
+      "identity": "vol-sealed",
+      "name": "vol-sealed",
+      "tags": {},
+      "attributes": {
+        "service": "ebs",
+        "attached": true,
+        "encrypted": true,
+        "size_gb": 100,
+        "monthly_cost_usd": 10.0
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "storage",
+      "identity": "snap-ebs-plain",
+      "name": "snap-ebs-plain",
+      "tags": {},
+      "attributes": {
+        "service": "ebs_snapshot",
+        "encrypted": false
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "storage",
+      "identity": "snap-ebs-sealed",
+      "name": "snap-ebs-sealed",
+      "tags": {},
+      "attributes": {
+        "service": "ebs_snapshot",
+        "encrypted": true
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "database",
+      "identity": "db-plain",
+      "name": "db-plain",
+      "tags": {},
+      "attributes": {
+        "service": "rds",
+        "publicly_accessible": false,
+        "backup_retention_days": 7,
+        "encrypted": false
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "database",
+      "identity": "db-sealed",
+      "name": "db-sealed",
+      "tags": {},
+      "attributes": {
+        "service": "rds",
+        "publicly_accessible": false,
+        "backup_retention_days": 7,
+        "encrypted": true
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "database",
+      "identity": "cluster-plain",
+      "name": "cluster-plain",
+      "tags": {},
+      "attributes": {
+        "service": "rds_cluster",
+        "encrypted": false
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "database",
+      "identity": "snap-rds-plain",
+      "name": "snap-rds-plain",
+      "tags": {},
+      "attributes": {
+        "service": "rds",
+        "snapshot": true,
+        "public": false,
+        "encrypted": false
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "identity",
+      "identity": "user-unused-key",
+      "name": "user-unused-key",
+      "tags": {},
+      "attributes": {
+        "service": "iam",
+        "key_age_days": 30,
+        "key_last_used_days": 1,
+        "access_keys_active": 1,
+        "unused_key_age_days": 30,
+        "console_last_used_days": 1,
+        "mfa": true,
+        "console": true,
+        "admin": false
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "identity",
+      "identity": "user-two-keys",
+      "name": "user-two-keys",
+      "tags": {},
+      "attributes": {
+        "service": "iam",
+        "key_age_days": 30,
+        "key_last_used_days": 1,
+        "access_keys_active": 2,
+        "unused_key_age_days": null,
+        "console_last_used_days": 1,
+        "mfa": true,
+        "console": true,
+        "admin": false
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "identity",
+      "identity": "user-stale-pw",
+      "name": "user-stale-pw",
+      "tags": {},
+      "attributes": {
+        "service": "iam",
+        "key_age_days": 30,
+        "key_last_used_days": 1,
+        "access_keys_active": 1,
+        "unused_key_age_days": null,
+        "console_last_used_days": 120,
+        "mfa": true,
+        "console": true,
+        "admin": false
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "identity",
+      "identity": "user-fine",
+      "name": "user-fine",
+      "tags": {},
+      "attributes": {
+        "service": "iam",
+        "key_age_days": 30,
+        "key_last_used_days": 1,
+        "access_keys_active": 1,
+        "unused_key_age_days": null,
+        "console_last_used_days": 5,
+        "mfa": true,
+        "console": true,
+        "admin": false
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    }
+  ],
+  "cost_daily": [
+    {
+      "date": "2026-09-01",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-02",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-03",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-04",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-05",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-06",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-07",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-08",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-09",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-10",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-11",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-12",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-13",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-14",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-15",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-16",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-17",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-18",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-19",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-20",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-21",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-22",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-23",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-24",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-25",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-26",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-27",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-28",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-29",
+      "service": "ec2",
+      "amount_usd": 50.0
+    },
+    {
+      "date": "2026-09-30",
+      "service": "ec2",
+      "amount_usd": 50.0
+    }
+  ],
+  "metrics": {},
+  "verify": {
+    "assume_with_ok": true,
+    "assume_without_denied": true,
+    "account_matches": true,
+    "extra_grants": [],
+    "missing_grants": []
+  },
+  "simulate_restore": {
+    "allowed": [
+      "backup:StartRestoreJob",
+      "kms:CreateGrant",
+      "kms:Decrypt",
+      "rds:RestoreDBInstanceFromDBSnapshot",
+      "ec2:RunInstances"
+    ],
+    "denied": []
+  }
+}

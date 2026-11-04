@@ -14,6 +14,8 @@ pub async fn rds_instances(rds: &aws_sdk_rds::Client, t: &Target<'_>) -> Result<
             let attrs = json!({
                 "service": "rds",
                 "publicly_accessible": db.publicly_accessible(),
+                // A cluster member's storage is the cluster's: `rds_clusters` reports it once.
+                "encrypted": if db.db_cluster_identifier().is_some() { None } else { db.storage_encrypted() },
                 "backup_retention_days": db.backup_retention_period(),
             });
             let tags = db
@@ -32,6 +34,24 @@ pub async fn rds_instances(rds: &aws_sdk_rds::Client, t: &Target<'_>) -> Result<
                 db.db_instance_identifier().unwrap_or_default(),
                 tags,
                 attrs,
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// Aurora and Multi-AZ DB clusters; own service so checks 03 and 04 (instances) never see them.
+pub async fn rds_clusters(rds: &aws_sdk_rds::Client, t: &Target<'_>) -> Result<Vec<Resource>> {
+    let mut out = vec![];
+    let mut pages = rds.describe_db_clusters().into_paginator().send();
+    while let Some(page) = pages.next().await {
+        for c in page.map_err(provider_err)?.db_clusters() {
+            out.push(t.resource(
+                ResourceKind::Database,
+                c.db_cluster_arn().unwrap_or_default().to_owned(),
+                c.db_cluster_identifier().unwrap_or_default(),
+                BTreeMap::new(),
+                json!({"service": "rds_cluster", "encrypted": c.storage_encrypted()}),
             ));
         }
     }
@@ -69,7 +89,7 @@ pub async fn rds_snapshots(rds: &aws_sdk_rds::Client, t: &Target<'_>) -> Result<
                 s.db_snapshot_arn().unwrap_or_default().to_owned(),
                 id,
                 BTreeMap::new(),
-                json!({"service": "rds", "snapshot": true, "public": public}),
+                json!({"service": "rds", "snapshot": true, "public": public, "encrypted": s.encrypted()}),
             ));
         }
     }
