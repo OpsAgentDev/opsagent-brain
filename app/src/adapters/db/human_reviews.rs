@@ -106,4 +106,16 @@ impl<C: Conn> HumanReviewsRepo for Pg<C> {
             .map_err(db_err)?;
         done.into_iter().next().map(row).transpose()
     }
+
+    async fn paid_at(&self, org: Uuid, at: DateTime<Utc>) -> RepoResult<Option<ReviewRequest>> {
+        let at: sea_orm::prelude::DateTimeWithTimeZone = at.into();
+        human_review_requests::Entity::find()
+            .filter(Col::OrganisationId.eq(org))
+            .filter(Col::PaidAt.eq(at))
+            .one(self.db())
+            .await
+            .map_err(db_err)?
+            .map(row)
+            .transpose()
+    }
 }

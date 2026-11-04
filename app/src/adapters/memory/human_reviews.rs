@@ -69,4 +69,11 @@ impl HumanReviewsRepo for MemStore {
             r.clone()
         }))
     }
+
+    async fn paid_at(&self, org: Uuid, at: DateTime<Utc>) -> RepoResult<Option<ReviewRequest>> {
+        let s = self.state();
+        let mut rows = s.human_reviews.iter();
+        let found = rows.find(|(o, r)| *o == org && r.paid_at == Some(at));
+        Ok(found.map(|(_, r)| r.clone()))
+    }
 }

@@ -20,10 +20,11 @@ pub enum JobKind {
     DeliverAlert,
     Retention,
     BillingSync,
+    DeliverReviewNotice,
 }
 
 impl JobKind {
-    pub const ALL: [JobKind; 8] = [
+    pub const ALL: [JobKind; 9] = [
         Self::Verify,
         Self::FullScan,
         Self::DeliverBriefing,
@@ -32,6 +33,7 @@ impl JobKind {
         Self::DeliverAlert,
         Self::Retention,
         Self::BillingSync,
+        Self::DeliverReviewNotice,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -44,6 +46,7 @@ impl JobKind {
             Self::DeliverAlert => "deliver_alert",
             Self::Retention => "retention",
             Self::BillingSync => "billing_sync",
+            Self::DeliverReviewNotice => "deliver_review_notice",
         }
     }
 
@@ -122,6 +125,7 @@ mod tests {
             "deliver_alert",
             "retention",
             "billing_sync",
+            "deliver_review_notice",
         ];
         assert_eq!(JobKind::ALL.map(JobKind::as_str), stored);
         for (k, s) in JobKind::ALL.into_iter().zip(stored) {
