@@ -1,0 +1,28 @@
+name: backup-check
+# The nightly pg-backup cron (03:00 UTC) has no watchdog of its own. This fails, and so emails the
+# repo watchers, when the newest dump in the bucket is older than 36 hours or there is none.
+on:
+  schedule:
+    - cron: "30 9 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  newest-dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BUCKET: opsagent-db-backups-binarylabs
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_CHECK_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_CHECK_AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Newest dump is under 36 hours old
+        run: |
+          newest=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix postgres/ \
+            --query 'sort_by(Contents,&LastModified)[-1].LastModified' --output text)
+          if [ -z "$newest" ] || [ "$newest" = "None" ]; then echo "::error::no dump in the bucket"; exit 1; fi
+          age=$(( $(date +%s) - $(date -d "$newest" +%s) ))
+          echo "newest dump: $newest ($((age / 3600)) h old)"
+          if [ "$age" -gt $((36 * 3600)) ]; then echo "::error::newest dump is $((age / 3600)) h old (limit 36 h)"; exit 1; fi
