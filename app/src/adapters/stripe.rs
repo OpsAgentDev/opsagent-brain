@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use opsagent_core::billing::{
     BillingError, BillingProvider, BillingResult, CheckoutRequest, ReviewCheckout,
 };

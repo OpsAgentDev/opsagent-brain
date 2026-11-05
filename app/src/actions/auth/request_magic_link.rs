@@ -72,8 +72,8 @@ impl RequestMagicLink {
             }
         }
         let key = format!(
-            "ratelimit:magic_link:email:{:x}",
-            Sha256::digest(email.as_str())
+            "ratelimit:magic_link:email:{}",
+            crate::tokens::hex(Sha256::digest(email.as_str()))
         );
         self.limiter.hit(&key, PER_EMAIL, HOUR_SECS).await
     }

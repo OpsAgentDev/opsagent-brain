@@ -1,13 +1,13 @@
 //! Unsubscribe tokens (stable HMAC per recipient) and the suppression key of an address.
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 /// Hex SHA-256 of the lowercased address: the suppression key (no plaintext email stored).
 pub fn email_hash(email: &str) -> String {
-    format!("{:x}", Sha256::digest(email.to_lowercase()))
+    crate::tokens::hex(Sha256::digest(email.to_lowercase()))
 }
 
 /// The HMAC key for unsubscribe tokens, derived from `Config::unsubscribe_key`.

@@ -349,7 +349,7 @@ impl HandleWebhook {
 
 #[cfg(test)]
 mod tests {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use opsagent_core::billing::BillingRepo;
     use serde_json::json;
     use sha2::Sha256;

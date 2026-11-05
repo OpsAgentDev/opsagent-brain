@@ -20,9 +20,9 @@ redis = { version = "1", default-features = false, features = ["aio", "tokio-com
 migration = { path = "migration" }
 tower-sessions = "0.15"
 time = "0.3"
-hmac = "0.12"
-sha2 = "0.10"
-hkdf = "0.12"
+hmac = "0.13"
+sha2 = "0.11"
+hkdf = "0.13"
 subtle = "2"
 base64 = "0.22"
 rand = "0.8"

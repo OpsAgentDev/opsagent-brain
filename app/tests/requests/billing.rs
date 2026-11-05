@@ -1,7 +1,7 @@
 //! Billing API and the Stripe webhook (Plan 6 Task 2).
 use axum_test::{TestResponse, TestServer};
 use chrono::{DateTime, Utc};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use opsagent_brain::adapters::db::Pg;
 use opsagent_core::billing::{BillingRepo, BillingStatus as B, SubscriptionState, Tier};
 use sea_orm::{ConnectionTrait, Statement};

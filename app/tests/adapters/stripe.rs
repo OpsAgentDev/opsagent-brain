@@ -1,6 +1,6 @@
 //! `StripeBilling` against a wiremock Stripe API, and the webhook signature check.
 use chrono::{TimeZone, Utc};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use opsagent_brain::adapters::stripe::{
     verify_stripe_signature, SigError, StripeBilling, StripeSettings,
 };

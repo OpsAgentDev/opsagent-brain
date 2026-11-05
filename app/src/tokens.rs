@@ -14,12 +14,17 @@ pub fn hash_token(token: &str) -> String {
     B64.encode(Sha256::digest(token.as_bytes()))
 }
 
+/// Lowercase hex (digest 0.11 output arrays no longer implement `LowerHex`).
+pub fn hex(bytes: impl AsRef<[u8]>) -> String {
+    bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Hex HMAC-SHA256(`secret`, `token_hash` ":" `code`): what is stored for a mailed code.
 pub fn code_hash(secret: &str, token_hash: &str, code: &str) -> String {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     let mut m = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("hmac accepts any key");
     m.update(format!("{token_hash}:{code}").as_bytes());
-    format!("{:x}", m.finalize().into_bytes())
+    hex(m.finalize().into_bytes())
 }
 
 /// 6 digits, uniform over `000000`..=`999999`.
