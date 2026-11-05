@@ -18,26 +18,26 @@
 {% if w.first_week %}
 <p style="margin:0 0 16px 0;">This is the first week; baselines forming.</p>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #e5e7eb;border-radius:8px;margin:0 0 24px 0;">
-{% call row("Inventory", self.inventory(), "#1f2937") %}
+{% call row("Inventory", self.inventory(), "#1f2937") %}{% endcall %}
 </table>
 {% else %}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #e5e7eb;border-radius:8px;margin:0 0 16px 0;">
 <tr><td style="padding:12px 16px;font-size:16px;font-weight:700;color:#0b1020;">Cost and posture</td></tr>
-{% call row("Spend", self.spend(), self.spend_color()) %}
-{% if let Some(s) = w.spend %}{% for (day, amount, baseline) in s.anomalies %}{% call row("Anomaly", self.anomaly(day, amount, baseline), "#d97706") %}{% endfor %}{% endif %}
-{% call row("Recommended cost action", self.cost_action(), "#1f2937") %}
-{% call row("Posture score", self.posture(), self.posture_color()) %}
-{% call row("Untagged spend", self.untagged(), "#1f2937") %}
+{% call row("Spend", self.spend(), self.spend_color()) %}{% endcall %}
+{% if let Some(s) = w.spend %}{% for (day, amount, baseline) in s.anomalies %}{% call row("Anomaly", self.anomaly(day, amount, baseline), "#d97706") %}{% endcall %}{% endfor %}{% endif %}
+{% call row("Recommended cost action", self.cost_action(), "#1f2937") %}{% endcall %}
+{% call row("Posture score", self.posture(), self.posture_color()) %}{% endcall %}
+{% call row("Untagged spend", self.untagged(), "#1f2937") %}{% endcall %}
 </table>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #e5e7eb;border-radius:8px;margin:0 0 16px 0;">
 <tr><td style="padding:12px 16px;font-size:16px;font-weight:700;color:#0b1020;">Security and resilience</td></tr>
-{% call row("IAM", self.iam(), "#1f2937") %}
-{% call row("Backups", self.backups(), self.backups_color()) %}
-{% call items("Certificate calendar", self.item_rows(&w.certificates)) %}
+{% call row("IAM", self.iam(), "#1f2937") %}{% endcall %}
+{% call row("Backups", self.backups(), self.backups_color()) %}{% endcall %}
+{% call items("Certificate calendar", self.item_rows(&w.certificates)) %}{% endcall %}
 </table>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #e5e7eb;border-radius:8px;margin:0 0 24px 0;">
 <tr><td style="padding:12px 16px;font-size:16px;font-weight:700;color:#0b1020;">Needs you</td></tr>
-{% call items("Awaiting your decision", self.item_rows(&w.awaiting_decision)) %}
+{% call items("Awaiting your decision", self.item_rows(&w.awaiting_decision)) %}{% endcall %}
 <tr><td style="padding:10px 16px;border-top:1px solid #e5e7eb;">
 <div style="font-size:12px;line-height:16px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#6b7280;">What the agent would have done</div>
 {% for line in w.would_have_done %}<div style="font-size:15px;line-height:22px;padding-top:4px;color:#1f2937;">{{ line }}</div>{% else %}<div style="font-size:15px;line-height:22px;padding-top:4px;color:#1f2937;">Nothing</div>{% endfor %}

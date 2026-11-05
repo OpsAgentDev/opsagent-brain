@@ -61,7 +61,7 @@ impl VerifyCode {
                 false
             })
         };
-        let sha = format!("{:x}", Sha256::digest(email.as_str()));
+        let sha = crate::tokens::hex(Sha256::digest(email.as_str()));
         if ip.is_some() {
             let ok = hit_ip(
                 &*self.limiter,
