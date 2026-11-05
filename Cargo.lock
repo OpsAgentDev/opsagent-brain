@@ -677,9 +677,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-cloudwatch"
-version = "1.137.0"
+version = "1.138.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ccf0faf3869cc39da631257266adc78dbfc6aa32baecf54fb915183f988b5966"
+checksum = "422449aaa087330d433ad05efee946f75ada79ed9c5399733c2433547c0a4673"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -757,9 +757,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-ec2"
-version = "1.270.0"
+version = "1.271.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e806334ba8bac53de994731bef398aaf6542cd9118d738527093b24ffdcda98b"
+checksum = "3a635daf789da7d9b2a5d01a76e1cad4223a828195a9af0e67d668f3d7713394"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -809,9 +809,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-guardduty"
-version = "1.151.0"
+version = "1.152.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "528c8d2dee58a94e109ed517c113e1202293d9d6347e7b843779b2fc73444e7e"
+checksum = "4bdd75174a2be7abb45f8be6e0788be41b328e423bf6150d2d6a386e538559b0"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -834,9 +834,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-iam"
-version = "1.130.0"
+version = "1.131.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23b9d7eb3c9d721560a40103eb09738249289b345bd779603e848861a09573fe"
+checksum = "dc89557e7ef337287f7d30fd9dd3988d4f8cfa081cd3cfeb5e01e4ee302ee53c"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -3426,7 +3426,7 @@ dependencies = [
  "opsagent-ledger",
  "opsagent-secrets",
  "rand 0.8.8",
- "redis 1.7.1",
+ "redis",
  "regex",
  "reqwest",
  "rmcp",
@@ -3437,7 +3437,7 @@ dependencies = [
  "serial_test",
  "sha2 0.10.9",
  "subtle",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "time",
  "tokio",
  "tower",
@@ -3465,7 +3465,7 @@ dependencies = [
  "opsagent-core",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tokio",
  "uuid",
 ]
@@ -3500,7 +3500,7 @@ dependencies = [
  "serde_json",
  "serde_norway",
  "sha2 0.10.9",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "urlencoding",
@@ -3518,7 +3518,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tokio",
  "url",
  "uuid",
@@ -3548,10 +3548,10 @@ dependencies = [
  "opsagent-core",
  "opsagent-ledger",
  "rand 0.8.8",
- "redis 0.32.7",
+ "redis",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "uuid",
@@ -3567,7 +3567,7 @@ dependencies = [
  "rand 0.8.8",
  "serde",
  "sha2 0.10.9",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "uuid",
  "zeroize",
 ]
@@ -3996,11 +3996,13 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "0.32.7"
+version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "014cc767fefab6a3e798ca45112bccad9c6e0e218fbd49720042716c73cfef44"
+checksum = "ed5b98ae99461e02895c3a96a25dbe4d852a3d5e5b815d31d5d9e4b5344d99e9"
 dependencies = [
  "arc-swap",
+ "arcstr",
+ "async-lock",
  "backon",
  "bytes",
  "cfg-if",
@@ -4008,33 +4010,11 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "itoa",
- "num-bigint 0.4.8",
+ "num-bigint 0.5.1",
  "percent-encoding",
  "pin-project-lite",
  "ryu",
  "sha1_smol",
- "socket2",
- "tokio",
- "tokio-util",
- "url",
-]
-
-[[package]]
-name = "redis"
-version = "1.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed5b98ae99461e02895c3a96a25dbe4d852a3d5e5b815d31d5d9e4b5344d99e9"
-dependencies = [
- "arcstr",
- "async-lock",
- "bytes",
- "cfg-if",
- "combine",
- "futures-util",
- "itoa",
- "percent-encoding",
- "pin-project-lite",
- "ryu",
  "socket2",
  "tokio",
  "tokio-util",
@@ -4172,9 +4152,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.7.0"
+version = "3.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ece64e19631fc38758181e637c15509a2c2709ee53bfde1e1d58f9dc991f919e"
+checksum = "f8be15815186873ea063bf005011d16c356804973489e40c39116ae3a2878d1f"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
