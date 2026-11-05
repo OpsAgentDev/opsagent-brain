@@ -51,7 +51,9 @@ After a deploy (Railway deploys itself on push to `main`), run the manual step: 
 
 ## Backups
 
-PITR is on for the Railway Postgres service. A fifth service `pg-backup` runs `deploy/backup/pg_dump.sh` nightly: a Railway cron service (cron schedule `0 3 * * *`) built from `deploy/backup/Dockerfile` (build context: repo root; the image runs `pg_dump.sh`), with variables `DATABASE_URL`, `BACKUP_BUCKET`, `BACKUP_ENDPOINT_URL` (R2 endpoint; omit for S3), `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (sealed). Set a 30-day expiry lifecycle rule on the bucket's `postgres/` prefix.
+PITR is on for the Railway Postgres service. A fifth service `pg-backup` runs `deploy/backup/pg_dump.sh` nightly: a Railway cron service (cron schedule `0 3 * * *`, restart policy `NEVER`, region `us-west2` beside Postgres) built from `deploy/backup/Dockerfile` (build context: repo root; the image runs `pg_dump.sh`), with variables `DATABASE_URL` (a `${{Postgres.DATABASE_URL}}` reference, never a copy), `BACKUP_BUCKET`, `BACKUP_ENDPOINT_URL` (R2 endpoint; omit for S3), `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (sealed). Today: S3 bucket `opsagent-db-backups-binarylabs` in `us-east-1`, IAM user `opsagent-backup` allowed only `s3:PutObject` on `postgres/*`, SSE-S3, versioning on, 30-day expiry plus 7-day noncurrent expiry on `postgres/`.
+
+`pg_dump` cannot dump a server newer than itself, so the image base (`postgres:18-alpine`, the current Railway Postgres major) must be bumped with Postgres. A wrong base fails the cron run, not the product; watch for a `pg-backup` deploy failure after any Postgres upgrade.
 
 ### Monthly restore test checklist
 
