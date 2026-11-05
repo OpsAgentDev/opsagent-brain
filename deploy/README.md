@@ -55,6 +55,8 @@ PITR is on for the Railway Postgres service. A fifth service `pg-backup` runs `d
 
 `pg_dump` cannot dump a server newer than itself, so the image base (`postgres:18-alpine`, the current Railway Postgres major) must be bumped with Postgres. A wrong base fails the cron run, not the product; watch for a `pg-backup` deploy failure after any Postgres upgrade.
 
+A watchdog, `.github/workflows/backup-check.yml`, runs daily at 09:30 UTC and fails (GitHub emails the repo watchers) when the newest dump under `postgres/` is over 36 hours old or missing. It uses the list-only IAM user `opsagent-backup-check` (`s3:ListBucket` on `postgres/*`, nothing else), stored as the repo secrets `BACKUP_CHECK_AWS_ACCESS_KEY_ID` and `BACKUP_CHECK_AWS_SECRET_ACCESS_KEY`.
+
 ### Monthly restore test checklist
 
 1. Download the latest `postgres/*.dump` from the bucket.
