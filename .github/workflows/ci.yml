@@ -102,7 +102,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - run: docker build -f deploy/backup/Dockerfile .
+      - run: docker build deploy/backup
 
   # The production image: refuses to boot with no variables; serves /readyz with a complete set.
   production-boot:
