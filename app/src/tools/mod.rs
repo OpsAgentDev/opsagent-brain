@@ -28,7 +28,7 @@ use crate::{
     actions::{orgs::OrgScope, uow::UnitOfWork},
     error::AppError,
     models::enum_of,
-    views::page::{decode, Page, DEFAULT_LIMIT, MAX_LIMIT},
+    views::page::{Page, WireCursor, DEFAULT_LIMIT, MAX_LIMIT},
 };
 
 pub use get_cost_anomalies::GetCostAnomaliesTool;
@@ -152,9 +152,12 @@ pub fn to_json<T: Serialize>(v: &T) -> Result<Value, ToolError> {
 }
 
 /// The page request for `cursor` and `limit` (default 50, clamped to 1..=200 like REST).
-pub fn page_request(cursor: Option<&str>, limit: Option<u64>) -> Result<PageRequest, ToolError> {
+pub fn page_request<K: WireCursor>(
+    cursor: Option<&str>,
+    limit: Option<u64>,
+) -> Result<PageRequest<K>, ToolError> {
     let after = cursor
-        .map(decode)
+        .map(K::decode)
         .transpose()
         .map_err(|_| ToolError::Invalid("cursor is not valid".into()))?;
     Ok(PageRequest {
@@ -164,8 +167,8 @@ pub fn page_request(cursor: Option<&str>, limit: Option<u64>) -> Result<PageRequ
 }
 
 /// `{items, next_cursor}` with each row through `view`.
-pub fn page_json<T, U: Serialize>(
-    got: PageOf<T>,
+pub fn page_json<T, K: WireCursor, U: Serialize>(
+    got: PageOf<T, K>,
     view: impl FnMut(T) -> U,
 ) -> Result<Value, ToolError> {
     to_json(&Page::of(got).map(view))

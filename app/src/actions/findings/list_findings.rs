@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use opsagent_core::{
     finding::{Finding, FindingFilter},
-    repo::{PageOf, PageRequest},
+    repo::{FindingCursor, PageOf, PageRequest},
 };
 use uuid::Uuid;
 
 use crate::{actions::uow::UnitOfWork, error::AppResult};
 
-/// The organisation's findings, newest first.
+/// The organisation's findings, most severe first, then oldest.
 #[derive(Clone)]
 pub struct ListFindings {
     uow: Arc<dyn UnitOfWork>,
@@ -23,8 +23,8 @@ impl ListFindings {
         &self,
         organisation_id: Uuid,
         filter: FindingFilter,
-        page: PageRequest,
-    ) -> AppResult<PageOf<Finding>> {
+        page: PageRequest<FindingCursor>,
+    ) -> AppResult<PageOf<Finding, FindingCursor>> {
         Ok(self
             .uow
             .findings()

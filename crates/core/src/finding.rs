@@ -5,7 +5,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::repo::{PageOf, PageRequest, RepoResult};
+use crate::repo::{FindingCursor, PageOf, PageRequest, RepoResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -18,6 +18,11 @@ pub enum Severity {
 }
 
 impl Severity {
+    /// Sort position, most severe first: 0 critical to 4 info.
+    pub fn rank(self) -> u8 {
+        self as u8
+    }
+
     pub fn weight(self) -> f32 {
         match self {
             Self::Critical => 10.0,
@@ -160,12 +165,13 @@ pub struct PostureRow {
 #[async_trait]
 pub trait FindingsRepo: Send + Sync {
     async fn get(&self, organisation_id: Uuid, id: Uuid) -> RepoResult<Option<Finding>>;
+    /// Most severe first, then oldest first, then by id.
     async fn list(
         &self,
         organisation_id: Uuid,
         filter: FindingFilter,
-        page: PageRequest,
-    ) -> RepoResult<PageOf<Finding>>;
+        page: PageRequest<FindingCursor>,
+    ) -> RepoResult<PageOf<Finding, FindingCursor>>;
     /// Newest first.
     async fn events(
         &self,

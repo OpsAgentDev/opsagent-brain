@@ -7,7 +7,7 @@ use opsagent_core::{
         StatusChange,
     },
     org::NewOrganisation,
-    repo::{PageRequest, RepoError},
+    repo::{FindingCursor, PageRequest, RepoError},
     resource::{Provider, Resource, ResourceKind},
 };
 use uuid::Uuid;
@@ -51,7 +51,7 @@ fn draft(conn: Uuid, check: &str, identity: &str, severity: Severity) -> Finding
     }
 }
 
-fn all() -> PageRequest {
+fn all() -> PageRequest<FindingCursor> {
     PageRequest {
         after: None,
         limit: 50,
@@ -89,7 +89,61 @@ fn snooze(id: Uuid, from: &str) -> StatusChange {
     }
 }
 
+/// Every id of the organisation's findings, paged `limit` at a time, following the cursor.
+async fn paged(s: &dyn Repos, org: Uuid, limit: u64) -> Vec<Vec<Uuid>> {
+    let mut pages = vec![];
+    let mut after = None;
+    loop {
+        let got = s
+            .findings()
+            .list(org, FindingFilter::default(), PageRequest { after, limit })
+            .await
+            .unwrap();
+        pages.push(got.items.iter().map(|f| f.id).collect());
+        match got.next {
+            Some(next) => after = Some(next),
+            None => return pages,
+        }
+    }
+}
+
 contract_suite! {
+    async fn list_is_critical_first_then_oldest(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let run = seed.run(org, conn).await;
+        // Created low, critical, high, critical, info, medium: creation order is not severity order.
+        for (h, id, sev) in [
+            (0, "low", Severity::Low), (1, "crit-old", Severity::Critical), (2, "high", Severity::High),
+            (3, "crit-new", Severity::Critical), (4, "info", Severity::Info), (5, "medium", Severity::Medium),
+        ] {
+            s.findings().upsert_seen(org, conn, run, &[draft(conn, "c", id, sev)], t(h)).await.unwrap();
+        }
+        let items = s.findings().list(org, FindingFilter::default(), all()).await.unwrap().items;
+        let names: Vec<_> = items.iter().map(|f| f.key.resource_identity.as_str()).collect();
+        assert_eq!(names, ["crit-old", "crit-new", "high", "medium", "low", "info"]);
+    }
+
+    async fn paging_across_severity_boundaries_loses_and_repeats_nothing(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let run = seed.run(org, conn).await;
+        let sevs = [Severity::Info, Severity::Critical, Severity::Medium, Severity::High, Severity::Low];
+        // Ten rows; four share one `created_at` so the id tiebreak is exercised too.
+        for i in 0..10 {
+            let h = if i < 4 { 0 } else { i };
+            s.findings()
+                .upsert_seen(org, conn, run, &[draft(conn, "c", &format!("r{i}"), sevs[i as usize % 5])], t(h))
+                .await
+                .unwrap();
+        }
+        let whole = paged(s, org, 50).await.concat();
+        assert_eq!(whole.len(), 10);
+        for limit in [1, 2, 3, 4] {
+            let pages = paged(s, org, limit).await;
+            assert!(pages.iter().all(|p| p.len() as u64 <= limit));
+            assert_eq!(pages.concat(), whole, "limit {limit}");
+        }
+    }
+
     async fn alert_candidates_are_open_unalerted_criticals(s, seed) {
         let (org, conn) = world(s, seed).await;
         let other = seed.connection(org).await;
