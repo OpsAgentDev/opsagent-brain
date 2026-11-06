@@ -14,3 +14,4 @@ pub mod slack;
 pub mod stripe;
 #[cfg(feature = "test-support")]
 pub mod test_doubles;
+pub mod turnstile;

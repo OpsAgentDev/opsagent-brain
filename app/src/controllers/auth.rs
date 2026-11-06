@@ -35,22 +35,33 @@ pub struct MagicLinkRequest {
     /// Where sign-in lands afterwards: only `/oauth/consent?request_id=<uuid>` is kept, anything
     /// else is dropped and the user lands on the dashboard.
     pub return_to: Option<String>,
+    /// Sign-up only: 1 to 80 characters without control characters, saved when the account is
+    /// created or still has no name. An unusable name is ignored, never an error.
+    pub name: Option<String>,
+    /// The Cloudflare Turnstile token; required when the deployment checks it.
+    pub turnstile_token: Option<String>,
 }
 
-/// Always 202, so the response never reveals whether an address is valid or known, or whether
-/// it was rate limited (5 per address and 30 per client IP per hour).
+/// 202 whether the address is valid or known or was rate limited (5 per address and 30 per
+/// client IP per hour), so the response never reveals which. The security check runs first.
 #[utoipa::path(post, path = "/auth/magic-link", tag = "auth", request_body = MagicLinkRequest,
-    responses((status = 202, description = "Sent if the address is valid and under the rate limit")))]
+    responses((status = 202, description = "Sent if the address is valid and under the rate limit"),
+        (status = 400, body = Problem, description = "Security check failed (`challenge_failed`)"),
+        (status = 503, body = Problem, description = "Security check unavailable (`challenge_unavailable`)")))]
 async fn request_link(
     State(app): State<AppState>,
     ClientIp(ip): ClientIp,
     ApiJson(body): ApiJson<MagicLinkRequest>,
 ) -> Result<StatusCode, ApiError> {
+    app.challenge
+        .verify(body.turnstile_token.as_deref(), ip)
+        .await?;
     // Only a proxy-reported address is a client; without one (local runs) there is no IP cap.
     let input = MagicLinkInput {
         email: body.email,
         client_ip: ip,
         return_to: body.return_to,
+        name: body.name,
     };
     app.actions.auth.request_magic_link.run(input).await?;
     Ok(StatusCode::ACCEPTED)

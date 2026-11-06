@@ -30,6 +30,7 @@ use crate::{
         rate_limiter::RedisRateLimiter,
         slack::{HttpSlack, SlackClient},
         stripe::StripeBilling,
+        turnstile::{self, ChallengeVerifier, CloudflareTurnstile, NoChallenge},
     },
     config::{Config, ConnectorMode, ModelMode, ModelSettings},
     controllers,
@@ -66,6 +67,8 @@ pub struct Deps {
     pub slack: Arc<dyn SlackClient>,
     /// Stripe; unusable (and unused) while `STRIPE_SECRET_KEY` is empty.
     pub billing: Arc<dyn BillingProvider>,
+    /// The bot check on the anonymous mail-sending forms.
+    pub challenge: Arc<dyn ChallengeVerifier>,
     /// The chat-model adapters; both serve `FakeModels::demo` when `OPSAGENT_MODEL_PROVIDER=fake`.
     pub models: ModelProviders,
     pub clock: Arc<dyn Clock>,
@@ -138,6 +141,7 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
         .map_err(|_| internal("stripe: HTTP client could not be built"))?;
     Ok(Deps {
         billing: Arc::new(billing),
+        challenge: challenge(&config)?,
         models: models(&config.model_settings())?,
         webauthn: Arc::new(crate::webauthn::build(&config.web_base_url)?),
         mailer: mailers::from_config(&config).map_err(internal)?,
@@ -153,6 +157,16 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
         clock: Arc::new(SystemClock),
         client_metadata: Arc::new(HttpClientMetadata),
     })
+}
+
+/// Cloudflare when a secret is set, else nothing (production config requires the secret).
+fn challenge(c: &Config) -> AppResult<Arc<dyn ChallengeVerifier>> {
+    let Some(secret) = &c.turnstile_secret_key else {
+        return Ok(Arc::new(NoChallenge));
+    };
+    let cf = CloudflareTurnstile::new(&c.turnstile_api_base, secret, turnstile::TIMEOUT)
+        .map_err(|_| internal("turnstile: HTTP client could not be built"))?;
+    Ok(Arc::new(cf))
 }
 
 fn models(s: &ModelSettings) -> AppResult<ModelProviders> {

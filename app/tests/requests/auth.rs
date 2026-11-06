@@ -368,6 +368,7 @@ async fn concurrent_magic_links_for_one_address_send_exactly_the_cap() {
                         email: "race@example.com".into(),
                         client_ip: None,
                         return_to: None,
+                        name: None,
                     };
                     actions.auth.request_magic_link.run(input).await.unwrap();
                 })
@@ -582,6 +583,178 @@ async fn magic_link_return_to_cannot_reach_foreign_consent() {
         let res = req.get(&format!("/v1/oauth/consent/{id}")).await;
         assert_eq!(res.status_code(), 403);
         assert_eq!(res.json::<Value>()["code"], "consent_wrong_browser");
+    })
+    .await;
+}
+
+fn ask(req: &TestServer, email: &str, name: Value) -> axum_test::TestRequest {
+    req.post("/v1/auth/magic-link")
+        .json(&json!({"email": email, "name": name}))
+}
+
+/// Redeems the newest mailed link, then drops the new session cookie so the next anonymous
+/// POST is not subject to CSRF.
+async fn redeem_last(req: &mut TestServer, mail: &opsagent_brain::mailers::CaptureMailer) {
+    assert_eq!(
+        redeem(req, &token_of(&last_link(mail))).await.status_code(),
+        200
+    );
+    req.clear_cookies();
+}
+
+async fn name_of(ctx: &TestApp, email: &str) -> Option<String> {
+    users::Entity::find()
+        .filter(users::Column::Email.eq(email))
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .expect("user")
+        .name
+}
+
+#[tokio::test]
+#[serial]
+async fn sign_up_name_is_saved_only_after_the_link_or_code_is_redeemed() {
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        // New address: nothing is saved by the request, not even for a user that gets created.
+        assert_eq!(
+            ask(&req, "new@example.com", json!("  Ada Lovelace "))
+                .await
+                .status_code(),
+            202
+        );
+        assert_eq!(name_of(&ctx, "new@example.com").await, None);
+        // Redeeming the link proves the email: the name is saved trimmed.
+        redeem_last(&mut req, &mail).await;
+        assert_eq!(
+            name_of(&ctx, "new@example.com").await.as_deref(),
+            Some("Ada Lovelace")
+        );
+        // A later link with another name, or none, never renames the user.
+        ask(&req, "new@example.com", json!("Eve")).await;
+        redeem_last(&mut req, &mail).await;
+        req.post("/v1/auth/magic-link")
+            .json(&json!({"email": "new@example.com"}))
+            .await;
+        redeem_last(&mut req, &mail).await;
+        assert_eq!(
+            name_of(&ctx, "new@example.com").await.as_deref(),
+            Some("Ada Lovelace")
+        );
+        // An unnamed existing user cannot be named by a request alone; their own sign-in
+        // without a name leaves it unset, and a redeemed named link fills it.
+        req.post("/v1/auth/magic-link")
+            .json(&json!({"email": "old@example.com"}))
+            .await;
+        redeem_last(&mut req, &mail).await;
+        ask(&req, "old@example.com", json!("Mallory")).await;
+        assert_eq!(name_of(&ctx, "old@example.com").await, None);
+        let spent = last_link(&mail); // Mallory's link, never redeemed
+        ask(&req, "old@example.com", json!("Bob")).await;
+        redeem_last(&mut req, &mail).await;
+        assert_eq!(
+            name_of(&ctx, "old@example.com").await.as_deref(),
+            Some("Bob")
+        );
+        assert_eq!(redeem(&req, &token_of(&spent)).await.status_code(), 200);
+        assert_eq!(
+            name_of(&ctx, "old@example.com").await.as_deref(),
+            Some("Bob")
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn sign_up_name_is_saved_when_the_code_is_verified() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        req.post("/v1/auth/magic-link")
+            .json(&json!({"email": "code@example.com", "name": "Cy"}))
+            .await;
+        assert_eq!(name_of(&ctx, "code@example.com").await, None);
+        let code = mail.sent().pop().unwrap().subject;
+        let code = code.rsplit(' ').next().unwrap();
+        let res = req
+            .post("/v1/auth/magic-link/verify")
+            .add_header("Origin", WEB_ORIGIN)
+            .json(&json!({"email": "code@example.com", "code": code}))
+            .await;
+        assert_eq!(res.status_code(), 200);
+        assert_eq!(
+            name_of(&ctx, "code@example.com").await.as_deref(),
+            Some("Cy")
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn invalid_names_are_ignored_and_the_response_stays_uniform() {
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        let bad = [
+            json!(""),
+            json!("   "),
+            json!("a".repeat(81)),
+            json!("Ada\nLovelace"),
+            json!("Ada\u{7}"),
+            json!(42),
+        ];
+        for (i, name) in bad.into_iter().enumerate() {
+            let email = format!("bad{i}@example.com");
+            let res = req
+                .post("/v1/auth/magic-link")
+                .json(&json!({"email": email, "name": name}))
+                .await;
+            // A non-string name is a body error; every string is a uniform 202 and, even once
+            // the link is redeemed, no name is stored.
+            if name.is_string() || name.is_null() {
+                assert_eq!(res.status_code(), 202, "{name}");
+                redeem_last(&mut req, &mail).await;
+                assert_eq!(name_of(&ctx, &email).await, None, "{name}");
+            }
+        }
+        assert_eq!(mail.sent().len(), 5);
+        // 80 characters is allowed.
+        req.post("/v1/auth/magic-link")
+            .json(&json!({"email": "max@example.com", "name": "é".repeat(80)}))
+            .await;
+        redeem_last(&mut req, &mail).await;
+        assert_eq!(
+            name_of(&ctx, "max@example.com")
+                .await
+                .map(|n| n.chars().count()),
+            Some(80)
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn sign_up_for_an_existing_address_answers_and_mails_like_a_new_one() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let mut seen = Vec::new();
+        for email in ["fresh@example.com", "fresh@example.com"] {
+            let res = req
+                .post("/v1/auth/magic-link")
+                .json(&json!({"email": email, "name": "Ann"}))
+                .await;
+            seen.push((res.status_code(), res.text()));
+        }
+        assert_eq!(seen[0], seen[1]);
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(
+            sent[0].subject.split(':').next(),
+            sent[1].subject.split(':').next()
+        );
+        assert_eq!(users::Entity::find().count(&ctx.db).await.unwrap(), 1);
     })
     .await;
 }

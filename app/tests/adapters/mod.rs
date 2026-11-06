@@ -2,6 +2,7 @@ mod anthropic;
 mod openai;
 mod slack;
 mod stripe;
+mod turnstile;
 
 use opsagent_core::model::{ModelError, TextSink};
 use serde_json::{json, Value};

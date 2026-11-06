@@ -100,6 +100,9 @@ pub struct Config {
     pub billing_enforced: bool,
     /// Email domains that may sign up; `*` or empty is open (`SIGNUP_ALLOWED_DOMAINS`, required in production).
     pub signup_allowed_domains: opsagent_core::user::SignupAllowlist,
+    /// Cloudflare Turnstile secret; required in production. `None` outside it checks nothing.
+    pub turnstile_secret_key: Option<String>,
+    pub turnstile_api_base: String,
     /// `None`: no OpsAgent model key (`ai_unavailable`).
     pub opsagent: Option<OpsAgentConnection>,
     pub opsagent_backup: Option<OpsAgentConnection>,
@@ -112,7 +115,7 @@ pub struct Config {
 }
 
 /// Required in production (no default there); the same list as deployment.md and deploy/README.md.
-const PRODUCTION_REQUIRED: [&str; 8] = [
+const PRODUCTION_REQUIRED: [&str; 9] = [
     "DATABASE_URL",
     "REDIS_URL",
     "APP_BASE_URL",
@@ -122,6 +125,8 @@ const PRODUCTION_REQUIRED: [&str; 8] = [
     "OPSAGENT_CONNECTORS",
     // Sign-up is closed by default; an unset or misspelled variable must not open it. `*` means open.
     "SIGNUP_ALLOWED_DOMAINS",
+    // An unset secret must not silently open the anonymous mail-sending forms.
+    "TURNSTILE_SECRET_KEY",
 ];
 
 impl Config {
@@ -224,6 +229,8 @@ impl Config {
                 "SIGNUP_ALLOWED_DOMAINS",
                 "",
             )),
+            turnstile_secret_key: get("TURNSTILE_SECRET_KEY"),
+            turnstile_api_base: s("TURNSTILE_API_BASE", crate::adapters::turnstile::API_BASE),
             opsagent,
             opsagent_backup,
             allow_private,
@@ -443,6 +450,7 @@ mod tests {
             ("SESSION_SECRET", "a-production-session-secret"),
             ("OPSAGENT_KEK", "k"),
             ("SIGNUP_ALLOWED_DOMAINS", "opsagent.dev"),
+            ("TURNSTILE_SECRET_KEY", "turnstile-secret"),
             ("OPSAGENT_CONNECTORS", "aws"),
             ("OPSAGENT_AWS_OUTBOUND_ROLE_ARN", "arn:aws:iam::1:role/o"),
             (
@@ -452,6 +460,34 @@ mod tests {
         ];
         v.extend_from_slice(extra);
         v
+    }
+
+    #[test]
+    fn production_refuses_to_boot_without_the_turnstile_secret() {
+        let without: Vec<_> = production(&[])
+            .into_iter()
+            .filter(|(k, _)| *k != "TURNSTILE_SECRET_KEY")
+            .collect();
+        match vars(&without) {
+            Err(ConfigError::Missing(m)) => assert_eq!(m, ["TURNSTILE_SECRET_KEY"]),
+            _ => panic!("expected Missing"),
+        }
+        // An empty value counts as unset.
+        let empty = production(&[("TURNSTILE_SECRET_KEY", "")]);
+        assert!(matches!(vars(&empty), Err(ConfigError::Missing(_))));
+        assert_eq!(
+            cfg(&production(&[])).turnstile_secret_key.as_deref(),
+            Some("turnstile-secret")
+        );
+    }
+
+    #[test]
+    fn turnstile_is_optional_outside_production_and_its_base_is_overridable() {
+        let c = cfg(&[]);
+        assert_eq!(c.turnstile_secret_key, None);
+        assert_eq!(c.turnstile_api_base, "https://challenges.cloudflare.com");
+        let c = cfg(&[("TURNSTILE_API_BASE", "http://127.0.0.1:1")]);
+        assert_eq!(c.turnstile_api_base, "http://127.0.0.1:1");
     }
 
     #[test]

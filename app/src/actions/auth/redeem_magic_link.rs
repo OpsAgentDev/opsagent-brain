@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use opsagent_core::{audit::AuditEntry, repo::Clock};
+use opsagent_core::{
+    audit::AuditEntry,
+    repo::Clock,
+    user::{PersonName, UsersRepo},
+};
 use uuid::Uuid;
 
 use crate::{
@@ -24,15 +28,29 @@ impl RedeemMagicLink {
     /// expired or already used.
     pub async fn run(&self, token: &str) -> AppResult<(Uuid, Option<String>)> {
         let tx = self.uow.begin().await?;
-        let (user_id, return_to) = tx
+        let link = tx
             .users()
             .consume_magic_link(&hash_token(token), self.clock.now())
             .await?
             .ok_or(AppError::Gone("link_invalid"))?;
-        tx.audit().record(sign_in_entry(user_id)).await?;
+        apply_name(tx.users(), link.user_id, link.name.as_deref()).await?;
+        tx.audit().record(sign_in_entry(link.user_id)).await?;
         tx.commit().await?;
-        Ok((user_id, return_to))
+        Ok((link.user_id, link.return_to))
     }
+}
+
+/// Applies the sign-up name a link carried, now that the email is proven. Never renames: an
+/// existing name wins, and an unusable value is ignored.
+pub(super) async fn apply_name(
+    users: &dyn UsersRepo,
+    user_id: Uuid,
+    name: Option<&str>,
+) -> AppResult<()> {
+    if let Some(name) = name.and_then(PersonName::parse) {
+        users.set_name_if_missing(user_id, &name).await?;
+    }
+    Ok(())
 }
 
 pub(super) fn sign_in_entry(user_id: Uuid) -> AuditEntry {
@@ -65,6 +83,7 @@ mod tests {
             email: "once@example.com".into(),
             client_ip: None,
             return_to: None,
+            name: None,
         };
         request_link(&store, &mail).run(input).await.unwrap();
         let token = last_token(&mail);
@@ -98,6 +117,7 @@ mod tests {
             email: "late@example.com".into(),
             client_ip: None,
             return_to: None,
+            name: None,
         };
         request.run(input).await.unwrap();
         let token = last_token(&mail);
@@ -107,5 +127,40 @@ mod tests {
         // Still unused: a minute earlier it would have worked.
         let in_time = RedeemMagicLink::new(Arc::new(store.clone()), at(14));
         in_time.run(&token).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn name_is_applied_on_redeem_only_and_never_renames() {
+        use crate::actions::uow::Repos;
+        use opsagent_core::user::Email;
+        let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
+        let email = Email::parse("named@example.com").unwrap();
+        let name_of = || async {
+            store
+                .users()
+                .find_by_email(&email)
+                .await
+                .unwrap()
+                .unwrap()
+                .name
+        };
+        let ask = |name: &str| MagicLinkInput {
+            email: email.as_str().into(),
+            client_ip: None,
+            return_to: None,
+            name: Some(name.into()),
+        };
+        let request = request_link(&store, &mail);
+        let redeem = RedeemMagicLink::new(Arc::new(store.clone()), Arc::new(SystemClock));
+        request.run(ask(" Ada ")).await.unwrap();
+        assert_eq!(name_of().await, None);
+        redeem.run(&last_token(&mail)).await.unwrap();
+        assert_eq!(name_of().await.as_deref(), Some("Ada"));
+        request.run(ask("Eve")).await.unwrap();
+        redeem.run(&last_token(&mail)).await.unwrap();
+        assert_eq!(name_of().await.as_deref(), Some("Ada"));
+        request.run(ask("\u{7}")).await.unwrap();
+        redeem.run(&last_token(&mail)).await.unwrap();
+        assert_eq!(name_of().await.as_deref(), Some("Ada"));
     }
 }

@@ -94,6 +94,7 @@ struct MagicLinkRow {
     code_attempts: u32,
     token_hash: String,
     return_to: Option<String>,
+    name: Option<String>,
     expires_at: DateTime<Utc>,
     used: bool,
 }
