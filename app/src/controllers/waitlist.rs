@@ -7,7 +7,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use crate::{
     actions::waitlist::{JoinInput, JoinOutcome},
     adapters::client_ip::ClientIp,
-    api_error::{ApiError, ApiJson},
+    api_error::{ApiError, ApiJson, Problem},
     state::AppState,
 };
 
@@ -16,19 +16,26 @@ pub struct WaitlistRequest {
     pub email: String,
     /// Where the form sat, at most 64 characters (`landing-hero`, `landing-footer`).
     pub source: Option<String>,
+    /// The Cloudflare Turnstile token; required when the deployment checks it.
+    pub turnstile_token: Option<String>,
 }
 
 /// Always 202 for a valid address, new or already listed, so the response never reveals which.
 #[utoipa::path(post, path = "/waitlist", tag = "waitlist", request_body = WaitlistRequest,
     responses(
         (status = 202, description = "On the waitlist"),
+        (status = 400, body = Problem, description = "Security check failed (`challenge_failed`)"),
         (status = 422, description = "Invalid email or source"),
-        (status = 429, description = "Rate limited (10 per client IP per hour)")))]
+        (status = 429, description = "Rate limited (10 per client IP per hour)"),
+        (status = 503, body = Problem, description = "Security check unavailable (`challenge_unavailable`)")))]
 async fn join(
     State(app): State<AppState>,
     ClientIp(ip): ClientIp,
     ApiJson(body): ApiJson<WaitlistRequest>,
 ) -> Result<StatusCode, ApiError> {
+    app.challenge
+        .verify(body.turnstile_token.as_deref(), ip)
+        .await?;
     let input = JoinInput {
         email: body.email,
         source: body.source,

@@ -32,6 +32,27 @@ impl Email {
     }
 }
 
+/// A display name typed at sign-up: trimmed, 1 to 80 characters, no control characters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersonName(String);
+
+impl PersonName {
+    pub const MAX_CHARS: usize = 80;
+
+    /// `None` if `raw` is not a usable name; callers ignore it rather than fail.
+    pub fn parse(raw: &str) -> Option<Self> {
+        let n = raw.trim();
+        let ok = !n.is_empty()
+            && n.chars().count() <= Self::MAX_CHARS
+            && !n.chars().any(char::is_control);
+        ok.then(|| Self(n.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Email domains allowed to sign up; empty means open. Exact match: no subdomains.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SignupAllowlist(Vec<String>);
@@ -75,6 +96,51 @@ pub struct LiveCode {
     pub token_hash: String,
     pub code_hash: String,
     pub return_to: Option<String>,
+    /// The sign-up name carried by the link; unproven until the link is spent.
+    pub name: Option<String>,
+}
+
+/// A link to store for `user_id`, sent to `email`.
+pub struct NewMagicLink<'a> {
+    pub user_id: Uuid,
+    pub email: &'a Email,
+    pub token_hash: &'a str,
+    pub code_hash: &'a str,
+    /// Where sign-in lands afterwards; the caller has validated it.
+    pub return_to: Option<&'a str>,
+    /// The sign-up name, kept on the link only: it is applied when the link is redeemed, never
+    /// at request time.
+    pub name: Option<&'a PersonName>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl<'a> NewMagicLink<'a> {
+    /// A link with no destination and no name.
+    pub fn new(
+        user_id: Uuid,
+        email: &'a Email,
+        token_hash: &'a str,
+        code_hash: &'a str,
+        expires_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            user_id,
+            email,
+            token_hash,
+            code_hash,
+            return_to: None,
+            name: None,
+            expires_at,
+        }
+    }
+}
+
+/// A link just spent: whose it is and what it carried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpentLink {
+    pub user_id: Uuid,
+    pub return_to: Option<String>,
+    pub name: Option<String>,
 }
 
 #[async_trait]
@@ -83,6 +149,9 @@ pub trait UsersRepo: Send + Sync {
     async fn find_by_email(&self, email: &Email) -> RepoResult<Option<User>>;
     /// Safe under concurrent first use.
     async fn find_or_create_by_email(&self, email: &Email) -> RepoResult<User>;
+    /// Stores `name` only while the user's name is unset; a named user is never renamed and an
+    /// unknown id is a no-op.
+    async fn set_name_if_missing(&self, id: Uuid, name: &PersonName) -> RepoResult<()>;
     /// Match on GitHub id, else link to the user with `email`, else create. `name` fills a
     /// missing name only. Creating needs `may_create`, otherwise `RepoError::Conflict("signup_closed")`.
     async fn find_or_create_github(
@@ -105,25 +174,14 @@ pub trait UsersRepo: Send + Sync {
         authoritative: bool,
         may_create: bool,
     ) -> RepoResult<User>;
-    /// Stores a link for `user_id` (sent to `email`); only the hashes of the token and of the
-    /// mailed code are kept.
-    /// `return_to` is where sign-in lands afterwards; the caller has validated it.
-    async fn issue_magic_link(
-        &self,
-        user_id: Uuid,
-        email: &Email,
-        token_hash: &str,
-        code_hash: &str,
-        return_to: Option<&str>,
-        expires_at: DateTime<Utc>,
-    ) -> RepoResult<()>;
-    /// Marks the link used, once; its user and `return_to` if it was unused and unexpired at
-    /// `now`.
+    /// Stores a link; only the hashes of the token and of the mailed code are kept.
+    async fn issue_magic_link(&self, link: NewMagicLink<'_>) -> RepoResult<()>;
+    /// Marks the link used, once; the link if it was unused and unexpired at `now`.
     async fn consume_magic_link(
         &self,
         token_hash: &str,
         now: DateTime<Utc>,
-    ) -> RepoResult<Option<(Uuid, Option<String>)>>;
+    ) -> RepoResult<Option<SpentLink>>;
     /// Unspent, unexpired links for `email` that still have a code.
     async fn live_codes(&self, email: &Email, now: DateTime<Utc>) -> RepoResult<Vec<LiveCode>>;
     /// Marks the link used, once; `false` if it was already used or has expired at `now`.
@@ -134,7 +192,7 @@ pub trait UsersRepo: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::{Email, SignupAllowlist};
+    use super::{Email, PersonName, SignupAllowlist};
 
     #[test]
     fn signup_allowlist_is_open_when_empty_and_exact_otherwise() {
@@ -181,5 +239,16 @@ mod tests {
         }
         let long = format!("{}@example.com", "a".repeat(250));
         assert!(Email::parse(&long).is_none());
+    }
+
+    #[test]
+    fn person_name_is_trimmed_and_bounded() {
+        let ok = |s: &str| PersonName::parse(s).map(|n| n.as_str().to_owned());
+        assert_eq!(ok("  Ada Lovelace "), Some("Ada Lovelace".into()));
+        assert_eq!(ok(&"é".repeat(80)).map(|n| n.chars().count()), Some(80));
+        for bad in ["", "   ", "Ada\nLovelace", "Ada\u{7}", "\tAda\t\u{0}"] {
+            assert_eq!(ok(bad), None, "{bad:?}");
+        }
+        assert_eq!(ok(&"a".repeat(81)), None);
     }
 }

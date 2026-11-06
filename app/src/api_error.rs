@@ -111,6 +111,26 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// 400 for a missing or rejected token, 503 when Cloudflare cannot answer (fail closed).
+/// Logged without the token or the visitor's address.
+impl From<crate::adapters::turnstile::ChallengeError> for ApiError {
+    fn from(e: crate::adapters::turnstile::ChallengeError) -> Self {
+        use crate::adapters::turnstile::ChallengeError::{Failed, Unavailable};
+        tracing::warn!(error = %e, "turnstile check refused a request");
+        match e {
+            Failed => Self::new(
+                StatusCode::BAD_REQUEST,
+                "challenge_failed",
+                "The security check failed. Reload the page and try again.",
+            ),
+            Unavailable => Self::unavailable(
+                "challenge_unavailable",
+                "The security check is unavailable. Try again in a moment.",
+            ),
+        }
+    }
+}
+
 macro_rules! internal_from {
     ($($t:ty),*) => {$(impl From<$t> for ApiError {
         fn from(e: $t) -> Self { Self::internal(e) }
