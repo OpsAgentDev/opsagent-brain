@@ -65,6 +65,7 @@ mod tests {
             email: "once@example.com".into(),
             client_ip: None,
             return_to: None,
+            name: None,
         };
         request_link(&store, &mail).run(input).await.unwrap();
         let token = last_token(&mail);
@@ -98,6 +99,7 @@ mod tests {
             email: "late@example.com".into(),
             client_ip: None,
             return_to: None,
+            name: None,
         };
         request.run(input).await.unwrap();
         let token = last_token(&mail);

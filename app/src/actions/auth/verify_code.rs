@@ -164,6 +164,7 @@ mod tests {
             email: EMAIL.into(),
             client_ip: None,
             return_to: None,
+            name: None,
         };
         request_link(store, mail).run(input).await.unwrap();
     }

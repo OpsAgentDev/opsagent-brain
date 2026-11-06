@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     repo::{RepoError, RepoResult},
-    user::{Email, LiveCode, User, UsersRepo},
+    user::{Email, LiveCode, PersonName, User, UsersRepo},
 };
 use uuid::Uuid;
 
@@ -49,6 +49,13 @@ impl UsersRepo for MemStore {
             return Ok(u.clone());
         }
         Ok(s.new_user(email, None, None, None))
+    }
+
+    async fn set_name_if_missing(&self, id: Uuid, name: &PersonName) -> RepoResult<()> {
+        if let Some(u) = self.state().user_mut(|u| u.id == id && u.name.is_none()) {
+            u.name = Some(name.as_str().to_owned());
+        }
+        Ok(())
     }
 
     async fn find_or_create_github(

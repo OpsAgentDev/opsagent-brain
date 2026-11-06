@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     repo::{RepoError, RepoResult},
-    user::{Email, LiveCode, User, UsersRepo},
+    user::{Email, LiveCode, PersonName, User, UsersRepo},
 };
 use sea_orm::{
     prelude::DateTimeWithTimeZone,
@@ -94,6 +94,18 @@ impl<C: Conn> UsersRepo for Pg<C> {
             Err(e) => return Err(db_err(e)),
         }
         self.find_by_email(email).await?.ok_or(RepoError::NotFound)
+    }
+
+    async fn set_name_if_missing(&self, id: Uuid, name: &PersonName) -> RepoResult<()> {
+        users::Entity::update_many()
+            .col_expr(users::Column::Name, Expr::value(name.as_str()))
+            .col_expr(users::Column::UpdatedAt, Expr::value(now()))
+            .filter(users::Column::Id.eq(id))
+            .filter(users::Column::Name.is_null())
+            .exec(self.db())
+            .await
+            .map_err(db_err)?;
+        Ok(())
     }
 
     async fn find_or_create_github(

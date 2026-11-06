@@ -368,6 +368,7 @@ async fn concurrent_magic_links_for_one_address_send_exactly_the_cap() {
                         email: "race@example.com".into(),
                         client_ip: None,
                         return_to: None,
+                        name: None,
                     };
                     actions.auth.request_magic_link.run(input).await.unwrap();
                 })
@@ -582,6 +583,128 @@ async fn magic_link_return_to_cannot_reach_foreign_consent() {
         let res = req.get(&format!("/v1/oauth/consent/{id}")).await;
         assert_eq!(res.status_code(), 403);
         assert_eq!(res.json::<Value>()["code"], "consent_wrong_browser");
+    })
+    .await;
+}
+
+async fn name_of(ctx: &TestApp, email: &str) -> Option<String> {
+    users::Entity::find()
+        .filter(users::Column::Email.eq(email))
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .expect("user")
+        .name
+}
+
+#[tokio::test]
+#[serial]
+async fn sign_up_name_is_saved_on_create_and_never_renames_an_existing_user() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let post = |email: &str, name: Value| {
+            req.post("/v1/auth/magic-link")
+                .json(&json!({"email": email, "name": name}))
+        };
+        // New address: saved trimmed.
+        assert_eq!(
+            post("new@example.com", json!("  Ada Lovelace "))
+                .await
+                .status_code(),
+            202
+        );
+        assert_eq!(
+            name_of(&ctx, "new@example.com").await.as_deref(),
+            Some("Ada Lovelace")
+        );
+        // The same address again, and a sign-in without a name: unchanged.
+        assert_eq!(
+            post("new@example.com", json!("Eve")).await.status_code(),
+            202
+        );
+        req.post("/v1/auth/magic-link")
+            .json(&json!({"email": "new@example.com"}))
+            .await;
+        assert_eq!(
+            name_of(&ctx, "new@example.com").await.as_deref(),
+            Some("Ada Lovelace")
+        );
+        // An existing user with no name yet gets one.
+        req.post("/v1/auth/magic-link")
+            .json(&json!({"email": "old@example.com"}))
+            .await;
+        assert_eq!(name_of(&ctx, "old@example.com").await, None);
+        post("old@example.com", json!("Bob")).await;
+        assert_eq!(
+            name_of(&ctx, "old@example.com").await.as_deref(),
+            Some("Bob")
+        );
+        assert_eq!(mail.sent().len(), 5);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn invalid_names_are_ignored_and_the_response_stays_uniform() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let bad = [
+            json!(""),
+            json!("   "),
+            json!("a".repeat(81)),
+            json!("Ada\nLovelace"),
+            json!("Ada\u{7}"),
+            json!(42),
+        ];
+        for (i, name) in bad.into_iter().enumerate() {
+            let email = format!("bad{i}@example.com");
+            let res = req
+                .post("/v1/auth/magic-link")
+                .json(&json!({"email": email, "name": name}))
+                .await;
+            // A non-string name is a body error; every string is a uniform 202.
+            if name.is_string() || name.is_null() {
+                assert_eq!(res.status_code(), 202, "{name}");
+                assert_eq!(name_of(&ctx, &email).await, None, "{name}");
+            }
+        }
+        assert_eq!(mail.sent().len(), 5);
+        // 80 characters is allowed.
+        req.post("/v1/auth/magic-link")
+            .json(&json!({"email": "max@example.com", "name": "é".repeat(80)}))
+            .await;
+        assert_eq!(
+            name_of(&ctx, "max@example.com")
+                .await
+                .map(|n| n.chars().count()),
+            Some(80)
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn sign_up_for_an_existing_address_answers_and_mails_like_a_new_one() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let mut seen = Vec::new();
+        for email in ["fresh@example.com", "fresh@example.com"] {
+            let res = req
+                .post("/v1/auth/magic-link")
+                .json(&json!({"email": email, "name": "Ann"}))
+                .await;
+            seen.push((res.status_code(), res.text()));
+        }
+        assert_eq!(seen[0], seen[1]);
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(
+            sent[0].subject.split(':').next(),
+            sent[1].subject.split(':').next()
+        );
+        assert_eq!(users::Entity::find().count(&ctx.db).await.unwrap(), 1);
     })
     .await;
 }

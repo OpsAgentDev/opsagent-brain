@@ -32,6 +32,27 @@ impl Email {
     }
 }
 
+/// A display name typed at sign-up: trimmed, 1 to 80 characters, no control characters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersonName(String);
+
+impl PersonName {
+    pub const MAX_CHARS: usize = 80;
+
+    /// `None` if `raw` is not a usable name; callers ignore it rather than fail.
+    pub fn parse(raw: &str) -> Option<Self> {
+        let n = raw.trim();
+        let ok = !n.is_empty()
+            && n.chars().count() <= Self::MAX_CHARS
+            && !n.chars().any(char::is_control);
+        ok.then(|| Self(n.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Email domains allowed to sign up; empty means open. Exact match: no subdomains.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SignupAllowlist(Vec<String>);
@@ -83,6 +104,9 @@ pub trait UsersRepo: Send + Sync {
     async fn find_by_email(&self, email: &Email) -> RepoResult<Option<User>>;
     /// Safe under concurrent first use.
     async fn find_or_create_by_email(&self, email: &Email) -> RepoResult<User>;
+    /// Stores `name` only while the user's name is unset; a named user is never renamed and an
+    /// unknown id is a no-op.
+    async fn set_name_if_missing(&self, id: Uuid, name: &PersonName) -> RepoResult<()>;
     /// Match on GitHub id, else link to the user with `email`, else create. `name` fills a
     /// missing name only. Creating needs `may_create`, otherwise `RepoError::Conflict("signup_closed")`.
     async fn find_or_create_github(
@@ -134,7 +158,7 @@ pub trait UsersRepo: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::{Email, SignupAllowlist};
+    use super::{Email, PersonName, SignupAllowlist};
 
     #[test]
     fn signup_allowlist_is_open_when_empty_and_exact_otherwise() {
@@ -181,5 +205,16 @@ mod tests {
         }
         let long = format!("{}@example.com", "a".repeat(250));
         assert!(Email::parse(&long).is_none());
+    }
+
+    #[test]
+    fn person_name_is_trimmed_and_bounded() {
+        let ok = |s: &str| PersonName::parse(s).map(|n| n.as_str().to_owned());
+        assert_eq!(ok("  Ada Lovelace "), Some("Ada Lovelace".into()));
+        assert_eq!(ok(&"é".repeat(80)).map(|n| n.chars().count()), Some(80));
+        for bad in ["", "   ", "Ada\nLovelace", "Ada\u{7}", "\tAda\t\u{0}"] {
+            assert_eq!(ok(bad), None, "{bad:?}");
+        }
+        assert_eq!(ok(&"a".repeat(81)), None);
     }
 }

@@ -1,7 +1,7 @@
 use chrono::{Duration, Utc};
 use opsagent_core::{
     repo::{RepoError, RepoResult},
-    user::{Email, User},
+    user::{Email, PersonName, User},
 };
 use uuid::Uuid;
 
@@ -126,5 +126,21 @@ contract_suite! {
         assert!(s.users().spend_code(id, now).await.unwrap());
         assert!(!s.users().spend_code(id, now).await.unwrap());
         assert!(s.users().consume_magic_link("t3", now).await.unwrap().is_none());
+    }
+
+    async fn set_name_fills_a_missing_name_only(s) {
+        let e = email("ada@example.com");
+        let u = s.users().find_or_create_by_email(&e).await.unwrap();
+        assert_eq!(u.name, None);
+        let ada = PersonName::parse("Ada").unwrap();
+        s.users().set_name_if_missing(u.id, &ada).await.unwrap();
+        let got = s.users().get(u.id).await.unwrap().unwrap();
+        assert_eq!(got.name.as_deref(), Some("Ada"));
+        // Never renamed.
+        let eve = PersonName::parse("Eve").unwrap();
+        s.users().set_name_if_missing(u.id, &eve).await.unwrap();
+        assert_eq!(s.users().get(u.id).await.unwrap().unwrap().name.as_deref(), Some("Ada"));
+        // An unknown user is a no-op, not an error.
+        s.users().set_name_if_missing(Uuid::new_v4(), &eve).await.unwrap();
     }
 }

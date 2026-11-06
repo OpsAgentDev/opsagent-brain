@@ -7,7 +7,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use crate::{
     actions::contact::{ContactInput, ContactOutcome},
     adapters::client_ip::ClientIp,
-    api_error::{ApiError, ApiJson},
+    api_error::{ApiError, ApiJson, Problem},
     state::AppState,
 };
 
@@ -22,18 +22,25 @@ pub struct ContactRequest {
     pub message: String,
     /// Honeypot: real visitors leave it empty; a filled value is answered 202 and dropped.
     pub website: Option<String>,
+    /// The Cloudflare Turnstile token; required when the deployment checks it.
+    pub turnstile_token: Option<String>,
 }
 
 #[utoipa::path(post, path = "/contact", tag = "contact", request_body = ContactRequest,
     responses(
         (status = 202, description = "Received"),
+        (status = 400, body = Problem, description = "Security check failed (`challenge_failed`)"),
         (status = 422, description = "Invalid name, email, topic or message"),
-        (status = 429, description = "Rate limited (5 per client IP per hour)")))]
+        (status = 429, description = "Rate limited (5 per client IP per hour)"),
+        (status = 503, body = Problem, description = "Security check unavailable (`challenge_unavailable`)")))]
 async fn send(
     State(app): State<AppState>,
     ClientIp(ip): ClientIp,
     ApiJson(body): ApiJson<ContactRequest>,
 ) -> Result<StatusCode, ApiError> {
+    app.challenge
+        .verify(body.turnstile_token.as_deref(), ip)
+        .await?;
     let input = ContactInput {
         name: body.name,
         email: body.email,

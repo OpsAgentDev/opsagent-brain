@@ -6,7 +6,7 @@ use chrono::Duration;
 use opsagent_core::{
     oauth::rules::consent_return_to,
     repo::Clock,
-    user::{Email, SignupAllowlist},
+    user::{Email, PersonName, SignupAllowlist},
 };
 use sha2::{Digest, Sha256};
 
@@ -28,6 +28,8 @@ pub struct MagicLinkInput {
     pub client_ip: Option<IpAddr>,
     /// A requested post-sign-in destination; kept only if `consent_return_to` accepts it.
     pub return_to: Option<String>,
+    /// A sign-up name; unusable values are ignored.
+    pub name: Option<String>,
 }
 
 pub struct RequestMagicLink {
@@ -101,6 +103,12 @@ impl RequestMagicLink {
             return Ok(());
         }
         let user = users.find_or_create_by_email(&email).await?;
+        if let (None, Some(name)) = (
+            &user.name,
+            input.name.as_deref().and_then(PersonName::parse),
+        ) {
+            users.set_name_if_missing(user.id, &name).await?;
+        }
         let return_to = input.return_to.as_deref().and_then(consent_return_to);
         let token = new_token();
         let token_hash = hash_token(&token);
@@ -150,6 +158,7 @@ mod tests {
             email: email.into(),
             client_ip: None,
             return_to: None,
+            name: None,
         }
     }
 
