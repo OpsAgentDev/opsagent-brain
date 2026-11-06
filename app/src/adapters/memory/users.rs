@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     repo::{RepoError, RepoResult},
-    user::{Email, LiveCode, PersonName, User, UsersRepo},
+    user::{Email, LiveCode, NewMagicLink, PersonName, SpentLink, User, UsersRepo},
 };
 use uuid::Uuid;
 
@@ -109,24 +109,17 @@ impl UsersRepo for MemStore {
         Ok(s.new_user(email, name, None, Some(google_id.to_owned())))
     }
 
-    async fn issue_magic_link(
-        &self,
-        user_id: Uuid,
-        email: &Email,
-        token_hash: &str,
-        code_hash: &str,
-        return_to: Option<&str>,
-        expires_at: DateTime<Utc>,
-    ) -> RepoResult<()> {
+    async fn issue_magic_link(&self, link: NewMagicLink<'_>) -> RepoResult<()> {
         self.state().magic_links.push(MagicLinkRow {
             id: Uuid::new_v4(),
-            user_id,
-            email: email.clone(),
-            code_hash: Some(code_hash.into()),
+            user_id: link.user_id,
+            email: link.email.clone(),
+            code_hash: Some(link.code_hash.into()),
             code_attempts: 0,
-            token_hash: token_hash.into(),
-            return_to: return_to.map(Into::into),
-            expires_at,
+            token_hash: link.token_hash.into(),
+            return_to: link.return_to.map(Into::into),
+            name: link.name.map(|n| n.as_str().into()),
+            expires_at: link.expires_at,
             used: false,
         });
         Ok(())
@@ -136,7 +129,7 @@ impl UsersRepo for MemStore {
         &self,
         token_hash: &str,
         now: DateTime<Utc>,
-    ) -> RepoResult<Option<(Uuid, Option<String>)>> {
+    ) -> RepoResult<Option<SpentLink>> {
         let mut s = self.state();
         let link = s
             .magic_links
@@ -144,7 +137,11 @@ impl UsersRepo for MemStore {
             .find(|l| l.token_hash == token_hash && !l.used && l.expires_at > now);
         Ok(link.map(|l| {
             l.used = true;
-            (l.user_id, l.return_to.clone())
+            SpentLink {
+                user_id: l.user_id,
+                return_to: l.return_to.clone(),
+                name: l.name.clone(),
+            }
         }))
     }
 
@@ -160,6 +157,7 @@ impl UsersRepo for MemStore {
                     token_hash: l.token_hash.clone(),
                     code_hash: l.code_hash.clone()?,
                     return_to: l.return_to.clone(),
+                    name: l.name.clone(),
                 })
             })
             .collect())

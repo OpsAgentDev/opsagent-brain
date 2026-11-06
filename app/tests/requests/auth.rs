@@ -587,6 +587,21 @@ async fn magic_link_return_to_cannot_reach_foreign_consent() {
     .await;
 }
 
+fn ask(req: &TestServer, email: &str, name: Value) -> axum_test::TestRequest {
+    req.post("/v1/auth/magic-link")
+        .json(&json!({"email": email, "name": name}))
+}
+
+/// Redeems the newest mailed link, then drops the new session cookie so the next anonymous
+/// POST is not subject to CSRF.
+async fn redeem_last(req: &mut TestServer, mail: &opsagent_brain::mailers::CaptureMailer) {
+    assert_eq!(
+        redeem(req, &token_of(&last_link(mail))).await.status_code(),
+        200
+    );
+    req.clear_cookies();
+}
+
 async fn name_of(ctx: &TestApp, email: &str) -> Option<String> {
     users::Entity::find()
         .filter(users::Column::Email.eq(email))
@@ -599,47 +614,79 @@ async fn name_of(ctx: &TestApp, email: &str) -> Option<String> {
 
 #[tokio::test]
 #[serial]
-async fn sign_up_name_is_saved_on_create_and_never_renames_an_existing_user() {
-    serve(|req, ctx| async move {
+async fn sign_up_name_is_saved_only_after_the_link_or_code_is_redeemed() {
+    serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
-        let post = |email: &str, name: Value| {
-            req.post("/v1/auth/magic-link")
-                .json(&json!({"email": email, "name": name}))
-        };
-        // New address: saved trimmed.
+        // New address: nothing is saved by the request, not even for a user that gets created.
         assert_eq!(
-            post("new@example.com", json!("  Ada Lovelace "))
+            ask(&req, "new@example.com", json!("  Ada Lovelace "))
                 .await
                 .status_code(),
             202
         );
+        assert_eq!(name_of(&ctx, "new@example.com").await, None);
+        // Redeeming the link proves the email: the name is saved trimmed.
+        redeem_last(&mut req, &mail).await;
         assert_eq!(
             name_of(&ctx, "new@example.com").await.as_deref(),
             Some("Ada Lovelace")
         );
-        // The same address again, and a sign-in without a name: unchanged.
-        assert_eq!(
-            post("new@example.com", json!("Eve")).await.status_code(),
-            202
-        );
+        // A later link with another name, or none, never renames the user.
+        ask(&req, "new@example.com", json!("Eve")).await;
+        redeem_last(&mut req, &mail).await;
         req.post("/v1/auth/magic-link")
             .json(&json!({"email": "new@example.com"}))
             .await;
+        redeem_last(&mut req, &mail).await;
         assert_eq!(
             name_of(&ctx, "new@example.com").await.as_deref(),
             Some("Ada Lovelace")
         );
-        // An existing user with no name yet gets one.
+        // An unnamed existing user cannot be named by a request alone; their own sign-in
+        // without a name leaves it unset, and a redeemed named link fills it.
         req.post("/v1/auth/magic-link")
             .json(&json!({"email": "old@example.com"}))
             .await;
+        redeem_last(&mut req, &mail).await;
+        ask(&req, "old@example.com", json!("Mallory")).await;
         assert_eq!(name_of(&ctx, "old@example.com").await, None);
-        post("old@example.com", json!("Bob")).await;
+        let spent = last_link(&mail); // Mallory's link, never redeemed
+        ask(&req, "old@example.com", json!("Bob")).await;
+        redeem_last(&mut req, &mail).await;
         assert_eq!(
             name_of(&ctx, "old@example.com").await.as_deref(),
             Some("Bob")
         );
-        assert_eq!(mail.sent().len(), 5);
+        assert_eq!(redeem(&req, &token_of(&spent)).await.status_code(), 200);
+        assert_eq!(
+            name_of(&ctx, "old@example.com").await.as_deref(),
+            Some("Bob")
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn sign_up_name_is_saved_when_the_code_is_verified() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        req.post("/v1/auth/magic-link")
+            .json(&json!({"email": "code@example.com", "name": "Cy"}))
+            .await;
+        assert_eq!(name_of(&ctx, "code@example.com").await, None);
+        let code = mail.sent().pop().unwrap().subject;
+        let code = code.rsplit(' ').next().unwrap();
+        let res = req
+            .post("/v1/auth/magic-link/verify")
+            .add_header("Origin", WEB_ORIGIN)
+            .json(&json!({"email": "code@example.com", "code": code}))
+            .await;
+        assert_eq!(res.status_code(), 200);
+        assert_eq!(
+            name_of(&ctx, "code@example.com").await.as_deref(),
+            Some("Cy")
+        );
     })
     .await;
 }
@@ -647,7 +694,7 @@ async fn sign_up_name_is_saved_on_create_and_never_renames_an_existing_user() {
 #[tokio::test]
 #[serial]
 async fn invalid_names_are_ignored_and_the_response_stays_uniform() {
-    serve(|req, ctx| async move {
+    serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
         let bad = [
             json!(""),
@@ -663,9 +710,11 @@ async fn invalid_names_are_ignored_and_the_response_stays_uniform() {
                 .post("/v1/auth/magic-link")
                 .json(&json!({"email": email, "name": name}))
                 .await;
-            // A non-string name is a body error; every string is a uniform 202.
+            // A non-string name is a body error; every string is a uniform 202 and, even once
+            // the link is redeemed, no name is stored.
             if name.is_string() || name.is_null() {
                 assert_eq!(res.status_code(), 202, "{name}");
+                redeem_last(&mut req, &mail).await;
                 assert_eq!(name_of(&ctx, &email).await, None, "{name}");
             }
         }
@@ -674,6 +723,7 @@ async fn invalid_names_are_ignored_and_the_response_stays_uniform() {
         req.post("/v1/auth/magic-link")
             .json(&json!({"email": "max@example.com", "name": "é".repeat(80)}))
             .await;
+        redeem_last(&mut req, &mail).await;
         assert_eq!(
             name_of(&ctx, "max@example.com")
                 .await

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     repo::{RepoError, RepoResult},
-    user::{Email, LiveCode, PersonName, User, UsersRepo},
+    user::{Email, LiveCode, NewMagicLink, PersonName, SpentLink, User, UsersRepo},
 };
 use sea_orm::{
     prelude::DateTimeWithTimeZone,
@@ -187,25 +187,18 @@ impl<C: Conn> UsersRepo for Pg<C> {
         )
     }
 
-    async fn issue_magic_link(
-        &self,
-        user_id: Uuid,
-        email: &Email,
-        token_hash: &str,
-        code_hash: &str,
-        return_to: Option<&str>,
-        expires_at: DateTime<Utc>,
-    ) -> RepoResult<()> {
+    async fn issue_magic_link(&self, link: NewMagicLink<'_>) -> RepoResult<()> {
         magic_links::ActiveModel {
             id: Set(Uuid::new_v4()),
-            user_id: Set(Some(user_id)),
-            email: Set(Some(email.as_str().into())),
-            token_hash: Set(token_hash.into()),
-            return_to: Set(return_to.map(Into::into)),
-            expires_at: Set(expires_at.into()),
+            user_id: Set(Some(link.user_id)),
+            email: Set(Some(link.email.as_str().into())),
+            token_hash: Set(link.token_hash.into()),
+            return_to: Set(link.return_to.map(Into::into)),
+            expires_at: Set(link.expires_at.into()),
             used_at: Set(None),
-            code_hash: Set(Some(code_hash.into())),
+            code_hash: Set(Some(link.code_hash.into())),
             code_attempts: Set(0),
+            name: Set(link.name.map(|n| n.as_str().into())),
             created_at: Set(now()),
             updated_at: Set(now()),
         }
@@ -219,7 +212,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
         &self,
         token_hash: &str,
         now: DateTime<Utc>,
-    ) -> RepoResult<Option<(Uuid, Option<String>)>> {
+    ) -> RepoResult<Option<SpentLink>> {
         let at = DateTimeWithTimeZone::from(now);
         let res = magic_links::Entity::update_many()
             .col_expr(magic_links::Column::UsedAt, at.into())
@@ -237,7 +230,13 @@ impl<C: Conn> UsersRepo for Pg<C> {
             .one(self.db())
             .await
             .map_err(db_err)?
-            .and_then(|l| Some((l.user_id?, l.return_to))))
+            .and_then(|l| {
+                Some(SpentLink {
+                    user_id: l.user_id?,
+                    return_to: l.return_to,
+                    name: l.name,
+                })
+            }))
     }
 
     async fn live_codes(&self, email: &Email, now: DateTime<Utc>) -> RepoResult<Vec<LiveCode>> {
@@ -258,6 +257,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
                     token_hash: l.token_hash,
                     code_hash: l.code_hash?,
                     return_to: l.return_to,
+                    name: l.name,
                 })
             })
             .collect())

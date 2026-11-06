@@ -20,6 +20,8 @@ pub struct Model {
     #[sea_orm(column_type = "Text", nullable)]
     pub code_hash: Option<String>,
     pub code_attempts: i32,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub name: Option<String>,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }

@@ -6,7 +6,7 @@ use chrono::Duration;
 use opsagent_core::{
     oauth::rules::consent_return_to,
     repo::Clock,
-    user::{Email, PersonName, SignupAllowlist},
+    user::{Email, NewMagicLink, PersonName, SignupAllowlist},
 };
 use sha2::{Digest, Sha256};
 
@@ -103,26 +103,23 @@ impl RequestMagicLink {
             return Ok(());
         }
         let user = users.find_or_create_by_email(&email).await?;
-        if let (None, Some(name)) = (
-            &user.name,
-            input.name.as_deref().and_then(PersonName::parse),
-        ) {
-            users.set_name_if_missing(user.id, &name).await?;
-        }
+        // Unproven until redeemed, so it rides on the link instead of being saved now.
+        let name = input.name.as_deref().and_then(PersonName::parse);
         let return_to = input.return_to.as_deref().and_then(consent_return_to);
         let token = new_token();
         let token_hash = hash_token(&token);
         let code = new_code();
         let expires = self.clock.now() + Duration::minutes(15);
         users
-            .issue_magic_link(
-                user.id,
-                &email,
-                &token_hash,
-                &code_hash(&self.secret, &token_hash, &code),
-                return_to.as_deref(),
-                expires,
-            )
+            .issue_magic_link(NewMagicLink {
+                user_id: user.id,
+                email: &email,
+                token_hash: &token_hash,
+                code_hash: &code_hash(&self.secret, &token_hash, &code),
+                return_to: return_to.as_deref(),
+                name: name.as_ref(),
+                expires_at: expires,
+            })
             .await?;
         // The web page POSTs the token to `/auth/magic-link/redeem` after a click (login-CSRF safe).
         let link = format!(

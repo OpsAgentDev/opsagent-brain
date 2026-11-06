@@ -3,8 +3,12 @@
 use chrono::{DateTime, Duration, Utc};
 use opsagent_brain::actions::uow::{Repos, UnitOfWork};
 use opsagent_core::{
-    audit::AuditEntry, org::Role, passkey::StoredPasskey, retention::PurgeCounts, run::RunStatus,
-    user::Email,
+    audit::AuditEntry,
+    org::Role,
+    passkey::StoredPasskey,
+    retention::PurgeCounts,
+    run::RunStatus,
+    user::{Email, NewMagicLink},
 };
 use uuid::Uuid;
 
@@ -124,7 +128,7 @@ contract_suite! {
         }
         let email = Email::parse("solo@example.com").unwrap();
         s.users()
-            .issue_magic_link(solo, &email, "tok", "code", None, t + Duration::hours(1))
+            .issue_magic_link(NewMagicLink::new(solo, &email, "tok", "code", t + Duration::hours(1)))
             .await
             .unwrap();
 

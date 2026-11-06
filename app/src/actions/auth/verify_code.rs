@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
-use super::redeem_magic_link::sign_in_entry;
+use super::redeem_magic_link::{apply_name, sign_in_entry};
 use crate::{
     actions::{hit_ip, uow::UnitOfWork, RateLimiter, DAY_SECS},
     error::{AppError, AppResult},
@@ -124,6 +124,7 @@ impl VerifyCode {
         if !tx.users().spend_code(hit.id, now).await? {
             return Err(invalid());
         }
+        apply_name(tx.users(), hit.user_id, hit.name.as_deref()).await?;
         tx.audit().record(sign_in_entry(hit.user_id)).await?;
         tx.commit().await?;
         Ok((hit.user_id, hit.return_to.clone()))

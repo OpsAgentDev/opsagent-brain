@@ -96,6 +96,51 @@ pub struct LiveCode {
     pub token_hash: String,
     pub code_hash: String,
     pub return_to: Option<String>,
+    /// The sign-up name carried by the link; unproven until the link is spent.
+    pub name: Option<String>,
+}
+
+/// A link to store for `user_id`, sent to `email`.
+pub struct NewMagicLink<'a> {
+    pub user_id: Uuid,
+    pub email: &'a Email,
+    pub token_hash: &'a str,
+    pub code_hash: &'a str,
+    /// Where sign-in lands afterwards; the caller has validated it.
+    pub return_to: Option<&'a str>,
+    /// The sign-up name, kept on the link only: it is applied when the link is redeemed, never
+    /// at request time.
+    pub name: Option<&'a PersonName>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl<'a> NewMagicLink<'a> {
+    /// A link with no destination and no name.
+    pub fn new(
+        user_id: Uuid,
+        email: &'a Email,
+        token_hash: &'a str,
+        code_hash: &'a str,
+        expires_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            user_id,
+            email,
+            token_hash,
+            code_hash,
+            return_to: None,
+            name: None,
+            expires_at,
+        }
+    }
+}
+
+/// A link just spent: whose it is and what it carried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpentLink {
+    pub user_id: Uuid,
+    pub return_to: Option<String>,
+    pub name: Option<String>,
 }
 
 #[async_trait]
@@ -129,25 +174,14 @@ pub trait UsersRepo: Send + Sync {
         authoritative: bool,
         may_create: bool,
     ) -> RepoResult<User>;
-    /// Stores a link for `user_id` (sent to `email`); only the hashes of the token and of the
-    /// mailed code are kept.
-    /// `return_to` is where sign-in lands afterwards; the caller has validated it.
-    async fn issue_magic_link(
-        &self,
-        user_id: Uuid,
-        email: &Email,
-        token_hash: &str,
-        code_hash: &str,
-        return_to: Option<&str>,
-        expires_at: DateTime<Utc>,
-    ) -> RepoResult<()>;
-    /// Marks the link used, once; its user and `return_to` if it was unused and unexpired at
-    /// `now`.
+    /// Stores a link; only the hashes of the token and of the mailed code are kept.
+    async fn issue_magic_link(&self, link: NewMagicLink<'_>) -> RepoResult<()>;
+    /// Marks the link used, once; the link if it was unused and unexpired at `now`.
     async fn consume_magic_link(
         &self,
         token_hash: &str,
         now: DateTime<Utc>,
-    ) -> RepoResult<Option<(Uuid, Option<String>)>>;
+    ) -> RepoResult<Option<SpentLink>>;
     /// Unspent, unexpired links for `email` that still have a code.
     async fn live_codes(&self, email: &Email, now: DateTime<Utc>) -> RepoResult<Vec<LiveCode>>;
     /// Marks the link used, once; `false` if it was already used or has expired at `now`.
