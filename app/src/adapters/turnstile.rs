@@ -46,6 +46,9 @@ pub struct CloudflareTurnstile {
 #[derive(Deserialize)]
 struct Verdict {
     success: bool,
+    /// Cloudflare's reason codes (for example `invalid-input-secret`); not secret.
+    #[serde(default, rename = "error-codes")]
+    error_codes: Vec<String>,
 }
 
 impl CloudflareTurnstile {
@@ -78,8 +81,12 @@ impl ChallengeVerifier for CloudflareTurnstile {
             _ => None,
         };
         match verdict {
-            Some(Verdict { success: true }) => Ok(()),
-            Some(_) => Err(ChallengeError::Failed),
+            Some(Verdict { success: true, .. }) => Ok(()),
+            Some(v) => {
+                // A wrong secret looks like a bot rejection to visitors; the codes tell them apart in the logs.
+                tracing::warn!(codes = ?v.error_codes, "turnstile check rejected");
+                Err(ChallengeError::Failed)
+            }
             None => Err(ChallengeError::Unavailable),
         }
     }

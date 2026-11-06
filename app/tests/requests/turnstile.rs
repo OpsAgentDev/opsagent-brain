@@ -3,6 +3,7 @@ use opsagent_brain::config::Config;
 use sea_orm::ConnectionTrait;
 use serde_json::{json, Value};
 use serial_test::serial;
+use sha2::Digest;
 use wiremock::{
     matchers::{body_string_contains, method, path},
     Mock, MockServer, ResponseTemplate,
@@ -56,18 +57,27 @@ fn with_token(mut body: Value, token: Option<&str>) -> Value {
     body
 }
 
-/// Rate-limit keys any of the three endpoints would write.
+/// Rate-limit keys these requests would write. Redis is shared with tests running in parallel, so
+/// only this test's address is looked at (other tests write `ratelimit:org_create:*` and friends).
 fn limit_keys(ctx: &TestApp) -> Vec<String> {
+    let hash = opsagent_brain::tokens::hex(sha2::Sha256::digest("ann@visitor.io"));
     let mut c = redis_of(ctx).get_connection().unwrap();
-    ["ratelimit:*", "contact:*", "waitlist:*"]
-        .iter()
-        .flat_map(|p| {
-            opsagent_ledger::redis::cmd("KEYS")
-                .arg(p)
-                .query::<Vec<String>>(&mut c)
-                .unwrap()
-        })
-        .collect()
+    [
+        "ratelimit:magic_link:*",
+        "ratelimit:contact*",
+        "ratelimit:waitlist*",
+        "contact:*",
+        "waitlist:*",
+    ]
+    .iter()
+    .flat_map(|p| {
+        opsagent_ledger::redis::cmd("KEYS")
+            .arg(p)
+            .query::<Vec<String>>(&mut c)
+            .unwrap()
+    })
+    .filter(|k| !k.starts_with("ratelimit:magic_link:email:") || k.ends_with(&hash))
+    .collect()
 }
 
 async fn rows(ctx: &TestApp) -> i64 {
