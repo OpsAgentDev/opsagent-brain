@@ -80,6 +80,23 @@ fn limit_keys(ctx: &TestApp) -> Vec<String> {
     .collect()
 }
 
+/// Earlier tests leave `contact:*`, `waitlist:*` and rate-limit keys behind in the shared Redis.
+fn clear_limit_keys(ctx: &TestApp) {
+    let mut c = redis_of(ctx).get_connection().unwrap();
+    for p in ["ratelimit:*", "contact:*", "waitlist:*"] {
+        let keys: Vec<String> = opsagent_ledger::redis::cmd("KEYS")
+            .arg(p)
+            .query(&mut c)
+            .unwrap();
+        for k in keys {
+            opsagent_ledger::redis::cmd("DEL")
+                .arg(k)
+                .query::<i64>(&mut c)
+                .unwrap();
+        }
+    }
+}
+
 async fn rows(ctx: &TestApp) -> i64 {
     let mut n = 0;
     for t in ["contact_messages", "waitlist_entries"] {
@@ -108,6 +125,7 @@ async fn missing_or_bad_token_is_400_with_no_mail_row_or_rate_limit_key() {
     let api = cloudflare().await;
     serve_with(on(api.uri()), |req, ctx| async move {
         let mail = prepare(&ctx);
+        clear_limit_keys(&ctx);
         for (url, body) in bodies() {
             for token in [None, Some("bad")] {
                 let res = req.post(url).json(&with_token(body.clone(), token)).await;
@@ -139,6 +157,7 @@ async fn valid_token_is_accepted_on_all_three() {
     let api = cloudflare().await;
     serve_with(on(api.uri()), |req, ctx| async move {
         let mail = prepare(&ctx);
+        clear_limit_keys(&ctx);
         for (url, body) in bodies() {
             let res = req.post(url).json(&with_token(body, Some("good"))).await;
             assert_eq!(res.status_code(), 202, "{url}: {}", res.text());
@@ -162,6 +181,7 @@ async fn cloudflare_error_is_503_and_sends_nothing() {
         .await;
     serve_with(on(api.uri()), |req, ctx| async move {
         let mail = prepare(&ctx);
+        clear_limit_keys(&ctx);
         for (url, body) in bodies() {
             let res = req.post(url).json(&with_token(body, Some("good"))).await;
             assert_problem(res, 503, "challenge_unavailable").await;
