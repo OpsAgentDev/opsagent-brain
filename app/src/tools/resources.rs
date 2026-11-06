@@ -10,7 +10,11 @@ use serde_json::{json, Value};
 use super::{audited, page_request, to_json, Caller, ToolError};
 use crate::{
     actions::{findings::ListFindings, resources::ListResources, runs::ListRuns, uow::UnitOfWork},
-    views::{findings, page::Page, resources, runs},
+    views::{
+        findings,
+        page::{Page, WireCursor},
+        resources, runs,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -69,8 +73,8 @@ impl ResourceRegistry {
 }
 
 /// `{items, next}`: the first page, and when there is more, the tool call that fetches it.
-fn first_page<T, U: Serialize>(
-    got: PageOf<T>,
+fn first_page<T, K: WireCursor, U: Serialize>(
+    got: PageOf<T, K>,
     view: impl FnMut(T) -> U,
     tool: &str,
 ) -> Result<Value, ToolError> {

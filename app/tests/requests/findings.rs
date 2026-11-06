@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use chrono::{Duration, Utc};
 use opsagent_brain::models::_entities::{audit_events, finding_events, findings};
 use sea_orm::entity::prelude::*;
@@ -67,6 +68,34 @@ async fn list_pages_with_cursor_and_filters() {
         assert_eq!(ids(&accepted).len(), 0);
 
         let res = req.get(&format!("{base}?cursor=garbage")).await;
+        assert_eq!(res.status_code(), 422);
+        assert_eq!(res.json::<Value>()["code"], "validation");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn list_is_severity_first_and_rejects_an_old_cursor() {
+    serve(|req, ctx| async move {
+        let (_, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
+        scan(&ctx, conn, 0, &noisy()).await;
+        let base = format!("/v1/orgs/{org}/findings");
+
+        let page: Value = req.get(&format!("{base}?limit=200")).await.json();
+        let rank = |f: &Value| {
+            ["critical", "high", "medium", "low", "info"]
+                .iter()
+                .position(|s| f["severity"] == *s)
+                .unwrap()
+        };
+        let ranks: Vec<_> = page["items"].as_array().unwrap().iter().map(rank).collect();
+        assert_eq!(ranks[0], 0, "a critical finding leads");
+        assert!(ranks.windows(2).all(|w| w[0] <= w[1]), "{ranks:?}");
+
+        // The pre-change cursor, `created_at|id`, is a clean 422.
+        let old = B64.encode(format!("{}|{}", Utc::now().to_rfc3339(), Uuid::new_v4()));
+        let res = req.get(&format!("{base}?cursor={old}")).await;
         assert_eq!(res.status_code(), 422);
         assert_eq!(res.json::<Value>()["code"], "validation");
     })

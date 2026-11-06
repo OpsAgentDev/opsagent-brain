@@ -6,12 +6,12 @@ use opsagent_core::{
         dedupe, Finding, FindingDraft, FindingEvent, FindingFilter, FindingsRepo, PostureRow,
         Severity, StatusChange, StoredEvidence,
     },
-    repo::{Cursor, PageOf, PageRequest, RepoError, RepoResult},
+    repo::{FindingCursor, PageOf, PageRequest, RepoError, RepoResult},
 };
 use sea_orm::prelude::Decimal;
 use uuid::Uuid;
 
-use super::{page, MemStore};
+use super::MemStore;
 use crate::{adapters::redact::redact, models::enum_str};
 
 #[derive(Clone)]
@@ -84,8 +84,12 @@ fn stored(run_id: Uuid, d: &FindingDraft, now: DateTime<Utc>) -> Vec<StoredEvide
     evidence.collect()
 }
 
-fn key(f: &FindingRow) -> Cursor {
-    (f.finding.created_at.into(), f.finding.id)
+fn key(f: &FindingRow) -> FindingCursor {
+    (
+        f.finding.severity.rank(),
+        f.finding.created_at.into(),
+        f.finding.id,
+    )
 }
 
 impl MemStore {
@@ -109,9 +113,9 @@ impl FindingsRepo for MemStore {
         &self,
         organisation_id: Uuid,
         q: FindingFilter,
-        p: PageRequest,
-    ) -> RepoResult<PageOf<Finding>> {
-        let rows = self
+        p: PageRequest<FindingCursor>,
+    ) -> RepoResult<PageOf<Finding, FindingCursor>> {
+        let mut rows: Vec<FindingRow> = self
             .state()
             .findings
             .iter()
@@ -127,10 +131,14 @@ impl FindingsRepo for MemStore {
             })
             .cloned()
             .collect();
-        let rows = page(rows, key, p);
+        rows.sort_by_key(key);
+        rows.retain(|r| p.after.is_none_or(|a| key(r) > a));
+        let more = rows.len() as u64 > p.limit;
+        rows.truncate(p.limit as usize);
+        let next = more.then(|| rows.last().map(key)).flatten();
         Ok(PageOf {
-            items: rows.items.into_iter().map(|r| r.finding).collect(),
-            next: rows.next,
+            items: rows.into_iter().map(|r| r.finding).collect(),
+            next,
         })
     }
 

@@ -37,6 +37,7 @@ pub struct FindingFilter {
     pub check: Option<String>,
 }
 
+/// Lists findings, most severe first (critical, high, medium, low, info), then oldest first.
 #[utoipa::path(get, path = "/orgs/{org}/findings", tag = "findings",
     params(super::OrgPath, FindingFilter, PageParams),
     responses((status = 200, body = Page<FindingSummary>), (status = 404, body = Problem), (status = 422, body = Problem)))]

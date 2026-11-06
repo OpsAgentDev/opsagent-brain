@@ -1,7 +1,7 @@
-//! Keyset pagination on the wire: `ORDER BY sort_key DESC, id DESC`, with an opaque cursor
-//! holding the last row's `(sort_key, id)`. Repositories page; this maps query and response.
+//! Keyset pagination on the wire: an opaque cursor holding the last row's position (`sort_key|id`,
+//! newest first; findings carry `rank|created_at|id`). Repositories page; this maps query and response.
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
-use opsagent_core::repo::{Cursor, PageOf, PageRequest};
+use opsagent_core::repo::{Cursor, FindingCursor, PageOf, PageRequest};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -26,18 +26,51 @@ pub struct Page<T> {
     pub next_cursor: Option<String>,
 }
 
-pub fn encode(k: &Cursor) -> String {
-    B64.encode(format!("{}|{}", k.0.to_rfc3339(), k.1))
+/// A repository keyset position as an opaque wire cursor.
+pub trait WireCursor: Sized {
+    fn encode(&self) -> String;
+    fn decode(s: &str) -> Result<Self, ApiError>;
 }
 
-pub fn decode(s: &str) -> Result<Cursor, ApiError> {
-    let bad = || ApiError::invalid("cursor is not valid");
+fn bad() -> ApiError {
+    ApiError::invalid("cursor is not valid")
+}
+
+/// The decoded cursor split on `|` into exactly `N` parts.
+fn parts<const N: usize>(s: &str) -> Result<[String; N], ApiError> {
     let raw = String::from_utf8(B64.decode(s).map_err(|_| bad())?).map_err(|_| bad())?;
-    let (ts, id) = raw.split_once('|').ok_or_else(bad)?;
-    Ok((
-        chrono::DateTime::parse_from_rfc3339(ts).map_err(|_| bad())?,
-        id.parse().map_err(|_| bad())?,
-    ))
+    let v: Vec<String> = raw.split('|').map(str::to_owned).collect();
+    v.try_into().map_err(|_| bad())
+}
+
+impl WireCursor for Cursor {
+    fn encode(&self) -> String {
+        B64.encode(format!("{}|{}", self.0.to_rfc3339(), self.1))
+    }
+
+    fn decode(s: &str) -> Result<Self, ApiError> {
+        let [ts, id] = parts(s)?;
+        Ok((
+            chrono::DateTime::parse_from_rfc3339(&ts).map_err(|_| bad())?,
+            id.parse().map_err(|_| bad())?,
+        ))
+    }
+}
+
+impl WireCursor for FindingCursor {
+    fn encode(&self) -> String {
+        B64.encode(format!("{}|{}|{}", self.0, self.1.to_rfc3339(), self.2))
+    }
+
+    /// A pre-severity-order cursor (`created_at|id`) has two parts and is rejected here.
+    fn decode(s: &str) -> Result<Self, ApiError> {
+        let [rank, ts, id] = parts(s)?;
+        Ok((
+            rank.parse().map_err(|_| bad())?,
+            chrono::DateTime::parse_from_rfc3339(&ts).map_err(|_| bad())?,
+            id.parse().map_err(|_| bad())?,
+        ))
+    }
 }
 
 fn limit(p: &PageParams) -> u64 {
@@ -45,8 +78,8 @@ fn limit(p: &PageParams) -> u64 {
 }
 
 /// The repository page request for `p`; an invalid cursor is a 422.
-pub fn page_request(p: &PageParams) -> Result<PageRequest, ApiError> {
-    let after = p.cursor.as_deref().map(decode).transpose()?;
+pub fn page_request<K: WireCursor>(p: &PageParams) -> Result<PageRequest<K>, ApiError> {
+    let after = p.cursor.as_deref().map(K::decode).transpose()?;
     Ok(PageRequest {
         after,
         limit: limit(p),
@@ -54,10 +87,10 @@ pub fn page_request(p: &PageParams) -> Result<PageRequest, ApiError> {
 }
 
 impl<T> Page<T> {
-    pub fn of(got: PageOf<T>) -> Self {
+    pub fn of<K: WireCursor>(got: PageOf<T, K>) -> Self {
         Page {
             items: got.items,
-            next_cursor: got.next.as_ref().map(encode),
+            next_cursor: got.next.as_ref().map(K::encode),
         }
     }
 
@@ -78,14 +111,22 @@ mod tests {
     fn cursor_round_trips_with_microseconds() {
         let ts = chrono::DateTime::parse_from_rfc3339("2026-10-22T10:11:12.123456+00:00").unwrap();
         let k = (ts, Uuid::now_v7());
-        assert_eq!(decode(&encode(&k)).unwrap(), k);
+        assert_eq!(Cursor::decode(&k.encode()).unwrap(), k);
+        let f = (1, ts, k.1);
+        assert_eq!(FindingCursor::decode(&f.encode()).unwrap(), f);
     }
 
     #[test]
     fn bad_cursor_is_validation() {
         for c in ["", "!!", &B64.encode("no-separator"), &B64.encode("x|y")] {
-            assert!(decode(c).is_err(), "{c}");
+            assert!(Cursor::decode(c).is_err(), "{c}");
+            assert!(FindingCursor::decode(c).is_err(), "{c}");
         }
+        // Each list rejects the other's cursor.
+        let ts = chrono::DateTime::parse_from_rfc3339("2026-10-22T10:11:12+00:00").unwrap();
+        let k = (ts, Uuid::now_v7());
+        assert!(FindingCursor::decode(&k.encode()).is_err());
+        assert!(Cursor::decode(&(0, ts, k.1).encode()).is_err());
     }
 
     #[test]

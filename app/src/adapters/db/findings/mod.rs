@@ -1,5 +1,6 @@
 //! `FindingsRepo` on SeaORM. Events and evidence have no `organisation_id`; they are reached
 //! only through a finding of the organisation.
+mod order;
 mod seen;
 
 use async_trait::async_trait;
@@ -9,7 +10,7 @@ use opsagent_core::{
         Finding, FindingDraft, FindingEvent, FindingFilter, FindingKey, FindingsRepo, PostureRow,
         Severity, StatusChange, StoredEvidence,
     },
-    repo::{PageOf, PageRequest, RepoError, RepoResult},
+    repo::{FindingCursor, PageOf, PageRequest, RepoError, RepoResult},
 };
 use sea_orm::{
     sea_query::Expr, ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder,
@@ -18,7 +19,7 @@ use sea_orm::{
 use uuid::Uuid;
 
 use super::ledger_storage::stmt;
-use super::{db_err, page, utc, Conn, Pg};
+use super::{db_err, utc, Conn, Pg};
 use crate::models::{
     _entities::{evidence, finding_events, findings},
     enum_of, enum_str,
@@ -107,8 +108,8 @@ impl<C: Conn> FindingsRepo for Pg<C> {
         &self,
         organisation_id: Uuid,
         f: FindingFilter,
-        p: PageRequest,
-    ) -> RepoResult<PageOf<Finding>> {
+        p: PageRequest<FindingCursor>,
+    ) -> RepoResult<PageOf<Finding, FindingCursor>> {
         use findings::Column as F;
         let q = findings::Entity::find()
             .filter(F::OrganisationId.eq(organisation_id))
@@ -118,14 +119,7 @@ impl<C: Conn> FindingsRepo for Pg<C> {
             .apply_if(f.check_id, |q, v| q.filter(F::CheckId.eq(v)))
             .apply_if(f.variant, |q, v| q.filter(F::Variant.eq(v)))
             .apply_if(f.last_seen_since, |q, v| q.filter(F::UpdatedAt.gte(v)));
-        let rows = page(
-            self.db(),
-            q,
-            (F::CreatedAt, F::Id),
-            |m| (m.created_at, m.id),
-            p,
-        )
-        .await?;
+        let rows = order::page(self.db(), q, p).await?;
         let items = rows
             .items
             .into_iter()

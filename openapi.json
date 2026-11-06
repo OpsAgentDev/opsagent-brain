@@ -3001,6 +3001,7 @@
         "tags": [
           "findings"
         ],
+        "summary": "Lists findings, most severe first (critical, high, medium, low, info), then oldest first.",
         "operationId": "findings_list",
         "parameters": [
           {

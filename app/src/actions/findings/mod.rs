@@ -53,7 +53,7 @@ pub(crate) mod test_support {
         (id, conn)
     }
 
-    pub fn page() -> opsagent_core::repo::PageRequest {
+    pub fn page() -> opsagent_core::repo::PageRequest<opsagent_core::repo::FindingCursor> {
         opsagent_core::repo::PageRequest {
             after: None,
             limit: 50,
