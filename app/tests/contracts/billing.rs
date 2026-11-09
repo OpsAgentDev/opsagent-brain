@@ -116,8 +116,10 @@ contract_suite! {
         repo.apply_subscription(ended, &sub(B::Canceled, 1), at(10)).await.unwrap();
         repo.apply_subscription(gone, &sub(B::Active, 1), at(10)).await.unwrap();
         s.orgs().soft_delete(gone, Utc::now()).await.unwrap();
+        let trial_over = org(s).await;
+        repo.apply_subscription(trial_over, &sub(B::TrialEnded, 1), at(10)).await.unwrap();
         let ids = repo.subscribed_orgs().await.unwrap();
-        assert!(ids.contains(&live));
+        assert!(ids.contains(&live) && ids.contains(&trial_over));
         for o in [ended, none, gone] {
             assert!(!ids.contains(&o), "{o}");
         }

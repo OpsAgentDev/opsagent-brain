@@ -83,7 +83,7 @@ pub fn build_weekly(
         awaiting_decision: awaiting,
         would_have_done: extras.would_have_done.clone(),
         inventory: conn.counts_by_severity,
-        link: connection_link(link_base, conn.id),
+        link: Some(connection_link(link_base, conn.id)),
         human_review_url: Some(format!(
             "{}/settings/human-review",
             link_base.trim_end_matches('/')

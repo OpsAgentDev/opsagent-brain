@@ -75,9 +75,15 @@ pub fn render_rollup(n: usize, web_base_url: &str) -> String {
 /// The one message of a connection's first full scan, instead of an alert per critical.
 pub fn render_baseline(n: usize, web_base_url: &str) -> String {
     format!(
-        "First scan: {n} critical findings. See the dashboard: {}/findings",
+        "First scan: {}. See the dashboard: {}/findings",
+        critical_findings(n),
         base(web_base_url)
     )
+}
+
+/// "1 critical finding", "3 critical findings".
+pub fn critical_findings(n: usize) -> String {
+    format!("{n} critical finding{}", if n == 1 { "" } else { "s" })
 }
 
 fn base(url: &str) -> &str {
@@ -207,5 +213,6 @@ mod tests {
             render_baseline(3, "https://x.test/"),
             "First scan: 3 critical findings. See the dashboard: https://x.test/findings"
         );
+        assert!(render_baseline(1, "https://x.test").starts_with("First scan: 1 critical finding."));
     }
 }

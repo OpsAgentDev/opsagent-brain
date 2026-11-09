@@ -239,7 +239,7 @@ fn escaped_titles_and_long_reason_still_fit() {
         .expect("briefing");
     let t = render_text(&b);
     assert!(t.len() <= 3_900, "len {}", t.len());
-    assert!(!t.contains(&"r".repeat(201)), "reason capped");
+    assert!(!t.contains("rrrr"), "an unknown reason code is left out");
     assert!(t.contains('\u{2026}'), "ellipsis on capped text");
 }
 
@@ -290,7 +290,7 @@ fn weekly_slack_is_escaped_and_fits() {
 }
 
 #[test]
-fn untracked_spend_renders_as_not_tracked_not_zero() {
+fn untracked_data_leaves_out_its_rows_and_placeholders() {
     let w = build_weekly(
         &conn(),
         &[],
@@ -304,12 +304,86 @@ fn untracked_spend_renders_as_not_tracked_not_zero() {
         ("slack", render_slack(&w)),
         ("html", render_html(&w)),
     ] {
-        assert!(
-            out.to_lowercase().contains("not tracked yet"),
-            "{name}: {out}"
-        );
-        assert!(!out.contains("$0.00"), "{name}: {out}");
+        let low = out.to_lowercase();
+        for gone in [
+            "spend:",
+            "not tracked",
+            "untagged",
+            "unknown",
+            "not recorded",
+            "would have done",
+            "nothing",
+            "$0.00",
+        ] {
+            assert!(!low.contains(gone), "{name} has {gone:?}: {out}");
+        }
+        assert!(low.contains("0 open issues"), "{name}: {out}");
     }
+}
+
+#[test]
+fn weekly_shows_a_row_once_it_has_data() {
+    let extras = WeeklyExtras {
+        last_restore_test_on: chrono::NaiveDate::from_ymd_opt(2026, 9, 30),
+        untagged_spend_pct: Some(12.34),
+        would_have_done: vec!["Stop idle instance".into()],
+    };
+    let f = finding("04", Severity::High, FindingStatus::Open, &[], "no backups");
+    let w = build_weekly(&conn(), &[f], None, &extras, now(), LINK_BASE);
+    for out in [render_text(&w), render_html(&w)] {
+        assert!(out.contains("1 open issue;"), "singular: {out}");
+        assert!(out.contains("2026-09-30") && out.contains("12.3%"), "{out}");
+        assert!(out.contains("Stop idle instance"), "{out}");
+    }
+}
+
+#[test]
+fn no_dashboard_link_when_the_recipient_cannot_open_it() {
+    let mut w = plain_weekly();
+    w.link = None;
+    w.human_review_url = None;
+    w.unsubscribe_url = Some("https://x.test/unsub?t=1".into());
+    for out in [render_text(&w), render_html(&w), render_slack(&w)] {
+        assert!(!out.contains("/connections/"), "{out}");
+        assert!(!out.contains("dashboard"), "{out}");
+    }
+}
+
+fn health_text(reason: Option<&str>) -> String {
+    let mut c = conn();
+    c.status = ConnectionStatus::Revoked;
+    c.status_reason = reason.map(Into::into);
+    let fs = [opened(Severity::High, "open port")];
+    render_text(&build_briefing(&c, &fs, since(), now(), LINK_BASE).expect("briefing"))
+}
+
+#[test]
+fn health_reasons_are_plain_words_and_unknown_codes_are_left_out() {
+    for (code, words) in [
+        ("access_denied", "AWS refused access to the role"),
+        ("account_already_connected", "already connected to another"),
+        (
+            "external_id_not_enforced",
+            "does not require OpsAgent's ExternalId",
+        ),
+        ("account_mismatch", "different AWS account"),
+        ("verify_error:timeout", "could not finish"),
+        ("revoked_at_period_end", "end of your billing period"),
+    ] {
+        let t = health_text(Some(code));
+        assert!(t.contains("revoked; ") && t.contains(words), "{t}");
+        assert!(!t.contains(code), "raw code shown: {t}");
+    }
+    for code in [
+        "customer_disconnected",
+        "organisation_deleted",
+        "brand_new_code",
+    ] {
+        let t = health_text(Some(code));
+        assert!(t.contains("*Connection health:* revoked\n"), "{t}");
+        assert!(!t.contains(code), "{t}");
+    }
+    assert!(health_text(None).contains("• High: open port"));
 }
 
 #[test]

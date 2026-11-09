@@ -56,7 +56,8 @@ fn founder(to: &str, n: &Notice, heading: &str) -> Mail {
 pub fn confirmation(n: &Notice) -> Mail {
     confirm(
         n,
-        "Harun will reply within 1 business day with a confirmation and invoice.",
+        "Harun will reply within 1 business day with a confirmation and an invoice.",
+        "We got your human review request",
     )
 }
 
@@ -65,21 +66,57 @@ pub fn paid_confirmation(n: &Notice) -> Mail {
     confirm(
         n,
         "Payment received. Harun will reply within 1 business day.",
+        "Payment received for your human review",
     )
 }
 
-fn confirm(n: &Notice, next: &str) -> Mail {
+fn confirm(n: &Notice, next: &str, subject: &str) -> Mail {
+    let what = match n.kind {
+        ReviewKind::Finding => "a human review of a finding",
+        ReviewKind::Account => "a human review of a cloud account",
+    };
     let text = format!(
-        "You asked for a {} review of {} for {}.\n\n{next} Nothing is changed in your account.\n",
-        n.kind.as_str(),
+        "You requested {what}: {} ({}).\n\n{next} Nothing is changed in your account.\n",
         n.label,
         price(n.price_cents),
     );
     Mail {
         to: n.requester.into(),
-        subject: "We got your human review request".into(),
+        subject: subject.into(),
         html: Some(super::branded("We got your request", &text, None)),
         text,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn notice(kind: ReviewKind) -> Notice<'static> {
+        Notice {
+            org_name: "Acme",
+            org_slug: "acme",
+            requester: "o@example.com",
+            kind,
+            price_cents: 9900,
+            label: "prod",
+            reference: "connection x",
+            note: None,
+        }
+    }
+
+    #[test]
+    fn confirmations_read_well_and_the_paid_one_has_its_own_subject() {
+        let ask = confirmation(&notice(ReviewKind::Account));
+        let paid = paid_confirmation(&notice(ReviewKind::Account));
+        assert!(ask
+            .text
+            .starts_with("You requested a human review of a cloud account: prod ($99)."));
+        assert!(!ask.text.contains("a account"));
+        assert_ne!(ask.subject, paid.subject);
+        assert!(paid.text.contains("Payment received."));
+        let finding = confirmation(&notice(ReviewKind::Finding));
+        assert!(finding.text.contains("a human review of a finding"));
     }
 }

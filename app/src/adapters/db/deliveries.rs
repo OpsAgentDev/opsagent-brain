@@ -273,7 +273,15 @@ impl<C: Conn> DeliveriesRepo for Pg<C> {
             .ok_or_else(|| RepoError::Storage(format!("bad connection status: {}", c.status)))?;
         Ok(ConnectionSnapshot {
             id: c.id,
-            display_name: c.display_name.unwrap_or(c.provider),
+            display_name: c
+                .display_name
+                .filter(|n| !n.is_empty())
+                .or_else(|| {
+                    c.external_account_id
+                        .as_ref()
+                        .map(|id| format!("{} account {id}", c.provider.to_uppercase()))
+                })
+                .unwrap_or(c.provider),
             status,
             status_reason: c.status_reason,
             posture_score: Some(score),

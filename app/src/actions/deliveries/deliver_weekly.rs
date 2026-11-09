@@ -115,8 +115,8 @@ impl DeliverWeekly {
             .await
             .map_err(lerr)?;
         // shortcut: spend, restore-test dates, untagged spend and write candidates are not
-        // stored yet, so those sections read "not tracked yet"/unknown; fill them when the
-        // scan persists them.
+        // stored yet, so those rows are left out of the mail; fill them when the scan
+        // persists them.
         Ok(build_weekly(
             &conn,
             &findings,
@@ -133,6 +133,8 @@ impl DeliverWeekly {
         if to.member {
             w.unsubscribe_url = None;
         } else {
+            // Non-members cannot open the dashboard: no link to it, no human-review line.
+            w.link = None;
             w.human_review_url = None;
             w.unsubscribe_url = Some(unsubscribe_url(&k.web_base_url, &k.unsubscribe_key, to.id));
         }
@@ -169,6 +171,7 @@ impl DeliverWeekly {
         let mut parts = Vec::new();
         for c in &live {
             let mut w = self.weekly(c).await?;
+            w.link = None;
             w.human_review_url = None;
             parts.push(render_text(&w));
         }
@@ -180,11 +183,12 @@ impl DeliverWeekly {
             .map(|o| o.name)
             .unwrap_or_default();
         let subject = format!("OpsAgent weekly summary: {}", mail_safe_name(&name));
-        let text = parts.join("\n----\n\n");
+        let html_text = parts.join("\n----\n\n");
+        let text = format!("{html_text}\nDashboard: {}\n", self.kit.web_base_url);
         let html = render_notice(&NoticeEmail {
             preheader: format!("Weekly summary for {}", mail_safe_name(&name)),
             heading: format!("Weekly summary: {name}"),
-            paragraphs: text
+            paragraphs: html_text
                 .lines()
                 .filter(|l| !l.trim().is_empty() && *l != "----")
                 .map(str::to_string)

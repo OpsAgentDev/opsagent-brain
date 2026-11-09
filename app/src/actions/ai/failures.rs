@@ -300,17 +300,21 @@ impl AiAccess {
         }
         ai.update_key_models(org, k.slot, &models).await?;
         plan.conn.models = models;
+        let work = match plan.role {
+            ModelRole::Routine => "background scans",
+            ModelRole::Chat => "chat",
+        };
         let n = Notice {
             subject: "OpsAgent replaced a model on your AI key".into(),
             link: self.s.settings_url(""),
             text: format!(
                 "{} no longer offers {} on your key ending {}, so Dashboard AI now uses {} \
-                 for {} work. Pick another model: {}",
+                 for {}. Pick another model: {}",
                 provider_name(k.provider),
                 gone,
                 k.last4,
                 default,
-                plan.role.as_str(),
+                work,
                 self.s.settings_url("")
             ),
         };

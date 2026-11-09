@@ -2,7 +2,7 @@
 use askama::Template;
 
 use crate::model::{severity_label, Item, Weekly};
-use crate::render_text::{severity_counts, signed, signed_usd, usd};
+use crate::render_text::{backups_words, severity_counts, signed, signed_usd, usd};
 use opsagent_core::finding::Severity;
 
 const BAD: &str = "#dc2626";
@@ -22,16 +22,15 @@ impl WeeklyHtml<'_> {
     fn inventory(&self) -> String {
         severity_counts(&self.w.inventory)
     }
-    fn spend(&self) -> String {
-        match &self.w.spend {
-            Some(s) => format!(
+    fn spend(&self) -> Option<String> {
+        self.w.spend.as_ref().map(|s| {
+            format!(
                 "{} this week vs {} last week ({})",
                 usd(&s.this_week_usd),
                 usd(&s.last_week_usd),
                 signed_usd(&s.delta_usd)
-            ),
-            None => "Not tracked yet".into(),
-        }
+            )
+        })
     }
     fn spend_color(&self) -> &'static str {
         match &self.w.spend {
@@ -48,11 +47,10 @@ impl WeeklyHtml<'_> {
             None => "None this week".into(),
         }
     }
-    fn posture(&self) -> String {
+    fn posture(&self) -> Option<String> {
         match (self.w.posture.score, self.w.posture.delta) {
-            (Some(s), Some(d)) => format!("{s} ({})", signed(&d)),
-            (Some(s), None) => s.to_string(),
-            _ => "Not yet scored".into(),
+            (Some(s), Some(d)) => Some(format!("{s} ({})", signed(&d))),
+            (s, _) => s.map(|s| s.to_string()),
         }
     }
     fn posture_color(&self) -> &'static str {
@@ -70,14 +68,7 @@ impl WeeklyHtml<'_> {
         )
     }
     fn backups(&self) -> String {
-        let b = &self.w.backups;
-        let restore = b
-            .last_restore_test_on
-            .map_or("not recorded".into(), |d| d.to_string());
-        format!(
-            "{} open issues; last successful restore test {restore}",
-            b.open_issues
-        )
+        backups_words(&self.w.backups)
     }
     fn backups_color(&self) -> &'static str {
         if self.w.backups.open_issues > 0 {
@@ -86,10 +77,8 @@ impl WeeklyHtml<'_> {
             TEXT
         }
     }
-    fn untagged(&self) -> String {
-        self.w
-            .untagged_spend_pct
-            .map_or("Unknown".into(), |p| format!("{p:.1}%"))
+    fn untagged(&self) -> Option<String> {
+        self.w.untagged_spend_pct.map(|p| format!("{p:.1}%"))
     }
     /// (severity label, colour, title) per item.
     fn item_rows(&self, items: &[Item]) -> Vec<(&'static str, &'static str, String)> {

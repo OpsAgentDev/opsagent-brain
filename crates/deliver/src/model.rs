@@ -173,7 +173,7 @@ pub struct BackupStatus {
 pub struct Weekly {
     pub connection_name: String,
     pub first_week: bool,
-    /// `None`: spend is not collected yet (rendered "not tracked yet", never $0.00).
+    /// `None`: spend is not collected yet (the row is left out, never $0.00).
     pub spend: Option<SpendSection>,
     pub recommended_cost_action: Option<CostAction>,
     pub posture: PostureDelta,
@@ -186,11 +186,21 @@ pub struct Weekly {
     pub awaiting_decision: Vec<Item>,
     pub would_have_done: Vec<String>,
     pub inventory: SeverityCounts,
-    pub link: String,
+    /// `None` for recipients who cannot open the dashboard (non-members, the org summary).
+    pub link: Option<String>,
     /// Member recipients only; `None` hides the human-review line.
     pub human_review_url: Option<String>,
     /// Set per non-member recipient; rendered in the footer.
     pub unsubscribe_url: Option<String>,
+}
+
+impl Briefing {
+    /// The connection's dashboard page.
+    pub fn link(&self) -> &str {
+        match self {
+            Briefing::FirstScan { link, .. } | Briefing::Daily { link, .. } => link,
+        }
+    }
 }
 
 impl Item {

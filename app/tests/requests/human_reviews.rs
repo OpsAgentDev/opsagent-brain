@@ -105,7 +105,7 @@ async fn owner_requests_a_finding_review() {
         let owner = sent.iter().find(|m| m.to == "o@example.com").unwrap();
         assert_eq!(owner.subject, "We got your human review request");
         assert!(owner.text.contains(
-            "Harun will reply within 1 business day with a confirmation and invoice. Nothing is changed in your account."
+            "Harun will reply within 1 business day with a confirmation and an invoice. Nothing is changed in your account."
         ));
     })
     .await;

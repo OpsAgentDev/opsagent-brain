@@ -3,7 +3,8 @@
 use opsagent_core::connection::ConnectionStatus;
 
 use crate::model::{
-    severity_label, Briefing, DailyCounts, Health, Item, SeverityCounts, SpendSection, Weekly,
+    severity_label, BackupStatus, Briefing, DailyCounts, Health, Item, SeverityCounts,
+    SpendSection, Weekly,
 };
 
 /// Slack's limit is ~4,000; keep headroom. Measured in bytes, which is stricter than chars.
@@ -75,7 +76,7 @@ fn daily(
                 .map_or(String::new(), |t| format!(" (alerted {t})"));
             out += &format!(
                 "• {}: {}{alerted}\n",
-                severity_label(i.severity),
+                capitalised(severity_label(i.severity)),
                 slack_item(&i.title)
             );
         }
@@ -93,8 +94,8 @@ fn daily(
 
 fn health_line(h: &Health) -> String {
     let mut parts = vec![status_label(h.status)];
-    if let Some(r) = &h.reason {
-        parts.push(slack_item(r));
+    if let Some(r) = h.reason.as_deref().and_then(reason_words) {
+        parts.push(r.to_owned());
     }
     if h.partial {
         parts.push("last scan partial".into());
@@ -103,6 +104,31 @@ fn health_line(h: &Health) -> String {
         parts.push("no scan in 48 hours".into());
     }
     parts.join("; ")
+}
+
+/// A connection's `status_reason` code in plain words (the web's wording, shortened). Codes
+/// with nothing to add, and codes we do not know, give `None`: a raw code is never shown.
+pub(crate) fn reason_words(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "account_already_connected" => {
+            "this AWS account is already connected to another OpsAgent organisation"
+        }
+        "external_id_not_enforced" => {
+            "the role does not require OpsAgent's ExternalId, so it is not safe to use"
+        }
+        "account_mismatch" => "the role belongs to a different AWS account",
+        "access_denied" => "AWS refused access to the role",
+        "revoked_at_period_end" => "removed at the end of your billing period",
+        c if c.starts_with("verify_error:") => "the last check could not finish",
+        // customer_disconnected, organisation_deleted and anything unknown.
+        _ => return None,
+    })
+}
+
+pub(crate) fn capitalised(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
 }
 
 fn status_label(s: ConnectionStatus) -> String {
@@ -163,7 +189,7 @@ impl RenderText for Weekly {
     fn render_text(&self) -> String {
         let plain = |s: &str| s.to_string();
         let mut out = weekly_lines(self, &plain, &plain).concat();
-        out += &weekly_tail(self, &format!("Dashboard: {}", self.link));
+        out += &weekly_tail(self, self.link.as_ref().map(|l| format!("Dashboard: {l}")));
         if let Some(url) = &self.unsubscribe_url {
             out += &format!("\nUnsubscribe: {url}\n");
         }
@@ -176,7 +202,10 @@ impl RenderText for Weekly {
 pub fn render_slack(w: &Weekly) -> String {
     let bold = |s: &str| format!("*{s}*");
     let mut lines = weekly_lines(w, &slack_item, &bold);
-    let tail = weekly_tail(w, &format!("<{}|Open the dashboard>", w.link));
+    let tail = weekly_tail(
+        w,
+        w.link.as_ref().map(|l| format!("<{l}|Open the dashboard>")),
+    );
     let note = "(truncated; full report on the dashboard)\n";
     if lines.concat().len() + tail.len() <= SLACK_MAX {
         return lines.concat() + &tail;
@@ -187,11 +216,12 @@ pub fn render_slack(w: &Weekly) -> String {
     hard_cap(lines.concat() + note + &tail)
 }
 
-fn weekly_tail(w: &Weekly, dashboard: &str) -> String {
+fn weekly_tail(w: &Weekly, dashboard: Option<String>) -> String {
     let review = w.human_review_url.as_ref().map_or(String::new(), |u| {
         format!("Want an expert to look at this? Request a human review in your dashboard: {u}\n")
     });
-    format!("\n{dashboard}\n{review}")
+    let dashboard = dashboard.map_or(String::new(), |d| format!("{d}\n"));
+    format!("\n{dashboard}{review}")
 }
 
 type Fmt<'a> = &'a dyn Fn(&str) -> String;
@@ -223,11 +253,12 @@ fn weekly_lines(w: &Weekly, esc: Fmt, label: Fmt) -> Vec<String> {
         None => format!("{} none this week\n", label("Recommended cost action:")),
     });
     let posture = match (w.posture.score, w.posture.delta) {
-        (Some(score), Some(d)) => format!("{score} ({})", signed(&d)),
-        (Some(score), None) => score.to_string(),
-        _ => "not yet scored".into(),
+        (Some(score), Some(d)) => Some(format!("{score} ({})", signed(&d))),
+        (score, _) => score.map(|s| s.to_string()),
     };
-    out.push(format!("{} {posture}\n", label("Posture score:")));
+    if let Some(p) = posture {
+        out.push(format!("{} {p}\n", label("Posture score:")));
+    }
     out.push(format!(
         "{} {} open ({} new, {} resolved this week)\n",
         label("IAM:"),
@@ -235,14 +266,10 @@ fn weekly_lines(w: &Weekly, esc: Fmt, label: Fmt) -> Vec<String> {
         w.iam.opened,
         w.iam.resolved
     ));
-    let restore = w
-        .backups
-        .last_restore_test_on
-        .map_or("not recorded".into(), |d| d.to_string());
     out.push(format!(
-        "{} {} open issues; last successful restore test {restore}\n",
+        "{} {}\n",
         label("Backups:"),
-        w.backups.open_issues
+        backups_words(&w.backups)
     ));
     list(
         &mut out,
@@ -250,29 +277,39 @@ fn weekly_lines(w: &Weekly, esc: Fmt, label: Fmt) -> Vec<String> {
         &w.certificates,
         esc,
     );
-    out.push(match w.untagged_spend_pct {
-        Some(p) => format!("{} {p:.1}%\n", label("Untagged spend:")),
-        None => format!("{} unknown\n", label("Untagged spend:")),
-    });
+    if let Some(p) = w.untagged_spend_pct {
+        out.push(format!("{} {p:.1}%\n", label("Untagged spend:")));
+    }
     list(
         &mut out,
         label("Awaiting your decision:"),
         &w.awaiting_decision,
         esc,
     );
-    out.push(format!("{}\n", label("What the agent would have done:")));
-    out.extend(
-        w.would_have_done
-            .iter()
-            .map(|l| format!("  - {}\n", esc(l))),
-    );
+    if !w.would_have_done.is_empty() {
+        out.push(format!("{}\n", label("What the agent would have done:")));
+        out.extend(
+            w.would_have_done
+                .iter()
+                .map(|l| format!("  - {}\n", esc(l))),
+        );
+    }
     out
+}
+
+/// "1 open issue", with the last restore test only when one is recorded.
+pub(crate) fn backups_words(b: &BackupStatus) -> String {
+    let n = b.open_issues;
+    let issues = format!("{n} open issue{}", if n == 1 { "" } else { "s" });
+    match b.last_restore_test_on {
+        Some(d) => format!("{issues}; last successful restore test {d}"),
+        None => issues,
+    }
 }
 
 fn spend_lines(out: &mut Vec<String>, spend: Option<&SpendSection>, label: Fmt) {
     let Some(s) = spend else {
-        out.push(format!("{} not tracked yet\n", label("Spend:")));
-        return;
+        return; // not collected yet: no row rather than a placeholder
     };
     out.push(format!(
         "{} {} this week vs {} last week ({})\n",

@@ -274,7 +274,7 @@ mod tests {
             "code in its own paragraph"
         );
         for m in [
-            invite("a@b.io", "Acme", link),
+            invite("a@b.io", "Acme", "Ann", link),
             recipient_confirm("a@b.io", "Acme", link),
         ] {
             let h = m.html.as_deref().unwrap();

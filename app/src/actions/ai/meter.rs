@@ -97,13 +97,26 @@ impl AiAccess {
         let (k80, k100) = (format!("quota80:{start}"), format!("quota100:{start}"));
         let end = q.period.1.format("%-d %B %Y");
         let url = self.s.settings_url("");
+        // A cancelled plan stops at the period end, so its credits do not renew.
+        let ending = self
+            .uow
+            .billing()
+            .billing(org)
+            .await?
+            .subscription
+            .is_some_and(|s| s.cancel_at_period_end);
+        let then = if ending {
+            format!("Your plan ends on {end}.")
+        } else {
+            format!("They renew on {end}.")
+        };
         if used >= q.quota {
             let n = Notice {
                 subject: "Your OpsAgent AI credits are used up".into(),
                 link: url.clone(),
                 text: format!(
                     "Your organisation has used all {} Dashboard AI credits for this period. \
-                     They renew on {end}. Until then, buy a top-up or add your own key: {url}",
+                     {then} Until then, you can buy a top-up or add your own key: {url}",
                     q.quota
                 ),
             };
@@ -116,7 +129,7 @@ impl AiAccess {
                 link: url.clone(),
                 text: format!(
                     "Your organisation has used 80% of its {} Dashboard AI credits for this \
-                     period. They renew on {end}. Top-ups and your own key: {url}",
+                     period. {then} You can buy a top-up or add your own key: {url}",
                     q.quota
                 ),
             };

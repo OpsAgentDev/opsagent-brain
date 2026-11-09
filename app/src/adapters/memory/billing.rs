@@ -127,7 +127,9 @@ impl BillingRepo for MemStore {
         let mut ids: Vec<Uuid> = s
             .billing
             .iter()
-            .filter(|(id, r)| r.billing.status.is_subscribed() && live(id))
+            .filter(|(id, r)| {
+                (r.billing.status.is_subscribed() || r.billing.status == B::TrialEnded) && live(id)
+            })
             .map(|(id, _)| *id)
             .collect();
         ids.sort();

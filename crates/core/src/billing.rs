@@ -297,7 +297,8 @@ pub trait BillingRepo: Send + Sync {
     /// Records a provider event; `false` when it was already recorded.
     async fn record_event(&self, event_id: &str, event_type: &str) -> RepoResult<bool>;
 
-    /// Live organisations whose status `is_subscribed`, for the nightly `billing_sync`.
+    /// Live organisations whose status `is_subscribed`, or `trial_ended` (for its one notice),
+    /// for the nightly `billing_sync`.
     /// tenancy: the nightly pass; each organisation scopes its own work.
     async fn subscribed_orgs(&self) -> RepoResult<Vec<Uuid>>;
 

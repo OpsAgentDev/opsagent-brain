@@ -110,10 +110,15 @@ impl InviteMember {
         let entry = AuditEntry::member(Some(org.id), actor, "invite.create", target);
         tx.audit().record(entry).await?;
         tx.commit().await?;
-        let link = format!("{}/invites/{token}", self.web_base_url);
+        let link = format!(
+            "{}/invites/{token}",
+            self.web_base_url.trim_end_matches('/')
+        );
+        let inviter = scope.member.name.as_deref().filter(|n| !n.is_empty());
+        let inviter = inviter.map_or_else(|| scope.member.email.as_str().to_owned(), str::to_owned);
         let sent = self
             .mailer
-            .send(mail::invite(email.as_str(), &org.name, &link));
+            .send(mail::invite(email.as_str(), &org.name, &inviter, &link));
         if let Err(e) = sent.await {
             tracing::error!(error = %e, "invite mail failed");
         }
