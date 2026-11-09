@@ -1,0 +1,5 @@
+[advisories]
+# sqlx-sqlite puts libsqlite3-sys in Cargo.lock, but the sqlite feature is off so it is never compiled
+# (`cargo tree -i libsqlite3-sys --target all` is empty). The fix needs sqlx to move to libsqlite3-sys 0.39.
+# Remove this once sea-orm/sqlx ship it, or at once if SQLite is ever enabled.
+ignore = ["RUSTSEC-2026-0459"]
