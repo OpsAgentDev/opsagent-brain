@@ -45,8 +45,8 @@ pub struct BillingOut {
     pub over_limit: bool,
     /// Billing state gates the organisation (`BILLING_ENFORCED`).
     pub enforced: bool,
-    /// A first checkout on `team` would start the 14-day trial; false once an owner has
-    /// another organisation (deleted ones included) with a Stripe customer.
+    /// A first checkout on `team` would start the 14-day trial; false once this
+    /// organisation's creator really started one on another (deleted ones included).
     pub trial_available: bool,
 }
 

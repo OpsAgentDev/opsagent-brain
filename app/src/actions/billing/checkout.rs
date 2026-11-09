@@ -12,7 +12,7 @@ use opsagent_core::{
 
 /// A Stripe Checkout URL for the organisation (owner only; the caller checks). The Stripe
 /// customer is created on first use. An organisation that never subscribed gets the 14-day
-/// trial on `team` unless an owner already has another organisation with a customer; one
+/// trial on `team` unless its creator already started one on another organisation; one
 /// whose trial ended or subscription was canceled buys `tier` outright.
 /// 409 `already_subscribed` while a subscription is live (the Portal changes it).
 pub struct StartCheckout {
@@ -59,11 +59,14 @@ impl StartCheckout {
             Some(c) => c,
             None => create_customer(&*self.uow, &*self.provider, scope).await?,
         };
-        // Read after this organisation's customer exists: two first checkouts racing across
-        // one owner's organisations then see each other and neither gets a trial.
+        // shortcut: only the webhook records a trial, so two first checkouts open at once can both start one; reserve the trial here if that is abused.
         let trial = b.status == BillingStatus::None
             && tier == Tier::Team
-            && !self.uow.billing().owner_had_other_customer(org.id).await?;
+            && !self
+                .uow
+                .billing()
+                .creator_used_trial_elsewhere(org.id)
+                .await?;
         // One session per organisation, plan and half hour: a second tab gets the same session,
         // and Stripe completes a session once, so two tabs cannot both pay.
         let idem = format!(

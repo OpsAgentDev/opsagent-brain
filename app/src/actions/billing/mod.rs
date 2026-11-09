@@ -166,7 +166,7 @@ impl GetBilling {
             && !self
                 .uow
                 .billing()
-                .owner_had_other_customer(organisation_id)
+                .creator_used_trial_elsewhere(organisation_id)
                 .await?;
         let over_limit = match limits {
             Some(l) => gate::Usage::of(&*self.uow, organisation_id).await?.over(l),

@@ -53,31 +53,64 @@ async fn conn_in(s: &dyn Repos, o: Uuid, account: &str, status: S) -> Uuid {
     c.id
 }
 
+async fn user(s: &dyn Repos, email: &str) -> Uuid {
+    let email = Email::parse(email).unwrap();
+    s.users().find_or_create_by_email(&email).await.unwrap().id
+}
+
+/// An organisation created by `founder`, its first owner.
+async fn owned(s: &dyn Repos, founder: Uuid) -> Uuid {
+    let o = org(s).await;
+    s.orgs().add_member(o, founder, Role::Owner).await.unwrap();
+    o
+}
+
 contract_suite! {
-    async fn owner_history_counts_other_orgs_deleted_too_but_not_itself(s) {
-        let email = Email::parse("owner@example.com").unwrap();
-        let owner = s.users().find_or_create_by_email(&email).await.unwrap();
-        let (mine, past) = (org(s).await, org(s).await);
-        for o in [mine, past] {
-            s.orgs().add_member(o, owner.id, Role::Owner).await.unwrap();
-        }
+    async fn only_a_started_trial_on_an_org_the_creator_made_counts(s) {
+        let founder = user(s, "founder@example.com").await;
+        let (mine, past) = (owned(s, founder).await, owned(s, founder).await);
         let repo = s.billing();
-        // A customer on the organisation itself does not count against it.
-        repo.set_customer(mine, "cus_self").await.unwrap();
-        assert!(!repo.owner_had_other_customer(mine).await.unwrap());
-        // No customer on the other one yet; then one, then soft-deleted, still counted.
+        // Abandoned checkout, top-up or human review: a customer is not a trial.
         repo.set_customer(past, "cus_past").await.unwrap();
-        assert!(repo.owner_had_other_customer(mine).await.unwrap());
+        repo.set_customer(mine, "cus_self").await.unwrap();
+        assert!(!repo.creator_used_trial_elsewhere(mine).await.unwrap());
+        // A trial on the organisation itself is its own (re-subscribing has no trial anyway).
+        repo.apply_subscription(mine, &sub(B::Trialing, 1), at(10)).await.unwrap();
+        assert!(!repo.creator_used_trial_elsewhere(mine).await.unwrap());
+        // The real thing, on an organisation since soft-deleted.
+        repo.apply_subscription(past, &sub(B::TrialEnded, 1), at(10)).await.unwrap();
         s.orgs().soft_delete(past, Utc::now()).await.unwrap();
-        assert!(repo.owner_had_other_customer(mine).await.unwrap());
-        // Mere membership elsewhere does not count.
-        let (member_of, solo) = (org(s).await, org(s).await);
-        let e2 = Email::parse("member@example.com").unwrap();
-        let u2 = s.users().find_or_create_by_email(&e2).await.unwrap();
-        s.orgs().add_member(member_of, u2.id, Role::Member).await.unwrap();
-        s.orgs().add_member(solo, u2.id, Role::Owner).await.unwrap();
-        repo.set_customer(member_of, "cus_m").await.unwrap();
-        assert!(!repo.owner_had_other_customer(solo).await.unwrap());
+        assert!(repo.creator_used_trial_elsewhere(mine).await.unwrap());
+    }
+
+    async fn a_later_subscription_without_a_trial_keeps_the_record(s) {
+        let founder = user(s, "founder@example.com").await;
+        let (mine, past) = (owned(s, founder).await, owned(s, founder).await);
+        let repo = s.billing();
+        repo.apply_subscription(past, &sub(B::TrialEnded, 1), at(10)).await.unwrap();
+        let paid = SubscriptionState { trial_ends_at: None, ..sub(B::Active, 1) };
+        repo.apply_subscription(past, &paid, at(20)).await.unwrap();
+        assert!(repo.creator_used_trial_elsewhere(mine).await.unwrap());
+    }
+
+    async fn co_owners_are_judged_by_the_creator_of_each_org(s) {
+        let (alice, bob) = (user(s, "alice@example.com").await, user(s, "bob@example.com").await);
+        let (tried, also_alice) = (owned(s, alice).await, owned(s, alice).await);
+        let bobs = owned(s, bob).await;
+        s.orgs().add_member(tried, bob, Role::Owner).await.unwrap();
+        s.orgs().add_member(also_alice, bob, Role::Owner).await.unwrap();
+        let repo = s.billing();
+        repo.apply_subscription(tried, &sub(B::Trialing, 1), at(10)).await.unwrap();
+        // Bob, invited as co-owner of a trialing organisation, keeps his own trial.
+        assert!(!repo.creator_used_trial_elsewhere(bobs).await.unwrap());
+        // Alice's other organisation is denied whoever opens checkout, Bob included.
+        assert!(repo.creator_used_trial_elsewhere(also_alice).await.unwrap());
+        // A co-owner's own trial does not cost the organisation he was invited to.
+        let (carol, dave) = (user(s, "carol@example.com").await, user(s, "dave@example.com").await);
+        let (carols, daves) = (owned(s, carol).await, owned(s, dave).await);
+        s.orgs().add_member(carols, dave, Role::Owner).await.unwrap();
+        repo.apply_subscription(daves, &sub(B::Trialing, 1), at(10)).await.unwrap();
+        assert!(!repo.creator_used_trial_elsewhere(carols).await.unwrap());
     }
 
     async fn billing_defaults_then_customer(s) {

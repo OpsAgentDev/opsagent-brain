@@ -5054,7 +5054,7 @@
           },
           "trial_available": {
             "type": "boolean",
-            "description": "A first checkout on `team` would start the 14-day trial; false once an owner has\nanother organisation (deleted ones included) with a Stripe customer."
+            "description": "A first checkout on `team` would start the 14-day trial; false once this\norganisation's creator really started one on another (deleted ones included)."
           },
           "trial_ends_at": {
             "type": [

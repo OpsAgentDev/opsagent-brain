@@ -63,6 +63,8 @@ impl BillingRepo for MemStore {
         let payment_newer = live && row.payment_at.is_some_and(|at| at > event_created);
         let b = &mut row.billing;
         let mut sub = sub.clone();
+        let stored_trial = b.subscription.as_ref().and_then(|t| t.trial_ends_at);
+        sub.trial_ends_at = sub.trial_ends_at.or(stored_trial);
         if payment_newer || (sub.status == B::PastDue && b.status == B::Paused) {
             sub.status = b.status;
         }
@@ -135,24 +137,25 @@ impl BillingRepo for MemStore {
         Ok(ids)
     }
 
-    async fn owner_had_other_customer(&self, organisation_id: Uuid) -> RepoResult<bool> {
+    async fn creator_used_trial_elsewhere(&self, organisation_id: Uuid) -> RepoResult<bool> {
         let s = self.state();
-        let owner = Role::Owner;
-        let mine = |user: Uuid| {
-            s.members.iter().any(|m| {
-                m.organisation_id == organisation_id && m.user_id == user && m.role == owner
-            })
+        let creator = |org: Uuid| {
+            s.members
+                .iter()
+                .filter(|m| m.organisation_id == org && m.role == Role::Owner)
+                .min_by_key(|m| m.created_at)
+                .map(|m| m.user_id)
         };
-        let has_customer = |org: Uuid| {
-            s.billing
-                .get(&org)
-                .is_some_and(|r| r.billing.customer_id.is_some())
+        let Some(mine) = creator(organisation_id) else {
+            return Ok(false);
         };
-        Ok(s.members.iter().any(|m| {
-            m.organisation_id != organisation_id
-                && m.role == owner
-                && mine(m.user_id)
-                && has_customer(m.organisation_id)
+        Ok(s.billing.iter().any(|(org, r)| {
+            let trial = r
+                .billing
+                .subscription
+                .as_ref()
+                .and_then(|t| t.trial_ends_at);
+            *org != organisation_id && trial.is_some() && creator(*org) == Some(mine)
         }))
     }
 
