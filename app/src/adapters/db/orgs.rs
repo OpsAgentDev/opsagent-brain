@@ -93,6 +93,7 @@ impl<C: Conn> OrganisationsRepo for Pg<C> {
             billing_quantity: Set(None),
             paid_quantity: Set(None),
             trial_ends_at: Set(None),
+            cancel_at_period_end: Set(false),
             current_period_start: Set(None),
             current_period_end: Set(None),
             past_due_since: Set(None),

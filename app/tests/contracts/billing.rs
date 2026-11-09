@@ -23,6 +23,7 @@ fn sub(status: B, quantity: i32) -> SubscriptionState {
         trial_ends_at: Some(at(14 * 86_400)),
         current_period_start: Some(at(0)),
         current_period_end: Some(at(30 * 86_400)),
+        cancel_at_period_end: true,
     }
 }
 

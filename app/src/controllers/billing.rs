@@ -35,6 +35,8 @@ pub struct BillingOut {
     pub tier: Option<String>,
     pub trial_ends_at: Option<DateTime<FixedOffset>>,
     pub current_period_end: Option<DateTime<FixedOffset>>,
+    /// Cancelled: runs to the period or trial end, then stops.
+    pub cancel_at_period_end: bool,
     /// Connections billed: at least 1 while subscribed, 0 otherwise.
     pub quantity: i32,
     /// The tier's limits; absent without a tier.
@@ -56,6 +58,7 @@ fn view(v: BillingView) -> BillingOut {
         tier: v.tier.map(|t| Tier::as_str(t).into()),
         trial_ends_at: v.trial_ends_at.map(|t| t.fixed_offset()),
         current_period_end: v.current_period_end.map(|t| t.fixed_offset()),
+        cancel_at_period_end: v.cancel_at_period_end,
         quantity: v.quantity,
         limits: v.limits.map(limits),
         over_limit: v.over_limit,

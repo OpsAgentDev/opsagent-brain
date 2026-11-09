@@ -367,6 +367,7 @@ mod tests {
             trial_ends_at: None,
             current_period_start: None,
             current_period_end: None,
+            cancel_at_period_end: false,
         };
         let at = Utc::now();
         store.apply_subscription(org.id, &s, at).await.unwrap();

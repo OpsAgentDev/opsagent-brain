@@ -343,6 +343,9 @@ impl HandleWebhook {
             trial_ends_at: ts(&o["trial_end"]),
             current_period_start: ts(&item["current_period_start"]),
             current_period_end: ts(&item["current_period_end"]),
+            // Stripe sets one or the other depending on how the cancellation was made.
+            cancel_at_period_end: o["cancel_at_period_end"].as_bool().unwrap_or(false)
+                || !o["cancel_at"].is_null(),
         })
     }
 }

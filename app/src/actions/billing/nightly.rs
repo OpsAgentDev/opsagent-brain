@@ -90,7 +90,7 @@ impl BillingSync {
             self.sync_quantity(run_id, org).await?;
         }
         let day = sub.trial_ends_at.and_then(|t| reminder_day(t, now));
-        if let (B::Trialing, Some(day)) = (b.status, day) {
+        if let (B::Trialing, Some(day), false) = (b.status, day, sub.cancel_at_period_end) {
             night.reminders += u64::from(self.trial_reminder(org, sub, day).await?);
         }
         let cutoff = now - Duration::days(PAUSE_AFTER_DAYS);

@@ -4999,11 +4999,16 @@
         "type": "object",
         "required": [
           "status",
+          "cancel_at_period_end",
           "quantity",
           "over_limit",
           "enforced"
         ],
         "properties": {
+          "cancel_at_period_end": {
+            "type": "boolean",
+            "description": "Cancelled: runs to the period or trial end, then stops."
+          },
           "current_period_end": {
             "type": [
               "string",
