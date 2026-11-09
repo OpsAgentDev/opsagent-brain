@@ -203,7 +203,7 @@ impl<C: Conn> BillingRepo for Pg<C> {
     async fn subscribed_orgs(&self) -> RepoResult<Vec<Uuid>> {
         // tenancy: the nightly billing_sync pass; each organisation scopes its own work.
         let sql = "SELECT id FROM organisations WHERE deleted_at IS NULL \
-          AND billing_status IN ('trialing', 'active', 'past_due', 'paused') ORDER BY id";
+          AND billing_status IN ('trialing', 'active', 'past_due', 'paused', 'trial_ended') ORDER BY id";
         let rows = self.db().query_all_raw(stmt(sql, vec![]));
         rows.await
             .map_err(db_err)?

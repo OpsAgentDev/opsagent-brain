@@ -318,7 +318,7 @@ async fn fourteen_new_criticals_post_once_with_ten_items_and_the_total() {
         brief(&ctx, &w, now).await;
         let texts = posted(&slack).await;
         assert_eq!(texts.len(), 1);
-        assert_eq!(texts[0].matches("• critical:").count(), 10, "{}", texts[0]);
+        assert_eq!(texts[0].matches("• Critical:").count(), 10, "{}", texts[0]);
         assert!(texts[0].contains("(14)"), "{}", texts[0]);
     })
     .await;

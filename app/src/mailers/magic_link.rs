@@ -42,9 +42,10 @@ pub fn signup_closed(to: &str, web_base_url: &str) -> Mail {
     }
 }
 
-pub fn invite(to: &str, org_name: &str, link: &str) -> Mail {
+pub fn invite(to: &str, org_name: &str, inviter: &str, link: &str) -> Mail {
     let org_name = &mail_safe_name(org_name);
-    let text = format!("Join {org_name} on OpsAgent:\n\n{link}\n\nSign in with this email address to accept. The invite expires in 7 days.");
+    let inviter = mail_safe_name(inviter);
+    let text = format!("{inviter} invited you to join {org_name} on OpsAgent:\n\n{link}\n\nSign in with this email address to accept. The invite expires in 7 days.");
     Mail {
         to: to.into(),
         subject: format!("You are invited to {org_name} on OpsAgent"),
@@ -76,7 +77,7 @@ pub fn mail_safe_name(raw: &str) -> String {
 
 pub fn recipient_confirm(to: &str, org_name: &str, link: &str) -> Mail {
     let org_name = &mail_safe_name(org_name);
-    let text = format!("{org_name} wants to send you OpsAgent reports by email. Confirm here:\n\n{link}\n\nIgnore this mail to receive nothing. The link expires in 7 days.");
+    let text = format!("{org_name} wants to send you OpsAgent reports by email. Confirm here:\n\n{link}\n\nIf you do not want these reports, ignore this email and nothing will be sent. The link expires in 7 days.");
     Mail {
         to: to.into(),
         subject: format!("Confirm OpsAgent reports for {org_name}"),
@@ -120,8 +121,12 @@ mod tests {
         let m = invite(
             "a@example.com",
             &format!("Org\u{202E}{}", "b".repeat(100)),
+            "Ann <ann@example.com>",
             "https://x",
         );
         assert!(!m.subject.contains('\u{202E}') && !m.text.contains(&"b".repeat(60)));
+        assert!(m
+            .text
+            .starts_with("Ann <ann@example.com> invited you to join"));
     }
 }

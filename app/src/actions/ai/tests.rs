@@ -832,6 +832,33 @@ async fn quota_80_and_100_mailed_once_per_period() {
 }
 
 #[tokio::test]
+async fn quota_mails_do_not_promise_renewal_to_a_cancelled_plan() {
+    let e = env(vec![text(), text()], true).await;
+    e.enable().await;
+    let now = Utc::now();
+    let cancelled = SubscriptionState {
+        cancel_at_period_end: true,
+        ..subscription(now - Duration::days(10))
+    };
+    e.store
+        .apply_subscription(e.org(), &cancelled, now - Duration::days(10))
+        .await
+        .unwrap();
+    e.used(KeySource::OpsAgent, 790).await;
+    let a = e.access();
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    e.call(&a, &mut plan).await.unwrap(); // 80 %
+    e.used(KeySource::OpsAgent, 175).await;
+    e.call(&a, &mut plan).await.unwrap(); // 100 %
+    let sent = e.mail.sent();
+    assert_eq!(sent.len(), 2);
+    for m in &sent {
+        assert!(!m.text.contains("renew"), "{}", m.text);
+        assert!(m.text.contains("Your plan ends on"), "{}", m.text);
+    }
+}
+
+#[tokio::test]
 async fn ai_call_audit_has_no_content() {
     let e = env(vec![text()], true).await;
     e.enable().await;

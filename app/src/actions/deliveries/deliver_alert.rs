@@ -11,7 +11,10 @@ use opsagent_core::{
     run::RunStatus,
 };
 use opsagent_deliver::{
-    alert::{plan_alerts, render_alert, render_baseline, render_rollup, ConnectionInfo},
+    alert::{
+        critical_findings, plan_alerts, render_alert, render_baseline, render_rollup,
+        ConnectionInfo,
+    },
     repo::{Integration, ALERT, FALLBACK_EMAIL},
 };
 use opsagent_ledger::{
@@ -136,7 +139,7 @@ impl DeliverAlert {
             let msg = (n > 0).then(|| Msg {
                 text: render_baseline(n, base),
                 link: format!("{}/findings", base.trim_end_matches('/')),
-                subject: format!("First scan: {n} critical findings ({account})"),
+                subject: format!("First scan: {} ({account})", critical_findings(n)),
                 detail: vec![],
             });
             route.once(BASELINE, msg, &ids(&candidates)).await?;
@@ -283,13 +286,19 @@ impl Route<'_> {
             .chain([plain(&m.text).as_str()])
             .collect::<Vec<_>>()
             .join("\n");
+        // The heading is the subject, so the body's own "Urgent:" first line would repeat it.
+        let html_body = body
+            .lines()
+            .filter(|l| !l.starts_with("🔴 Urgent: "))
+            .collect::<Vec<_>>()
+            .join("\n");
         for o in owners {
             let mail = Mail {
                 to: o.email,
                 subject: m.subject.clone(),
                 html: Some(branded(
                     &m.subject,
-                    &body,
+                    &html_body,
                     Some(("View in OpsAgent", &m.link)),
                 )),
                 text: body.clone(),

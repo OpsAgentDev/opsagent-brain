@@ -102,7 +102,7 @@ impl DeliverBriefing {
         };
         let subject = format!(
             "OpsAgent morning briefing: {}",
-            mail_safe_name(c.display_name.as_deref().unwrap_or(&c.provider))
+            mail_safe_name(&connection_name(&c))
         );
         let body = format!("{notice}{}", plain(&text));
         for o in r
@@ -117,7 +117,7 @@ impl DeliverBriefing {
                 html: Some(branded(
                     &subject,
                     &body,
-                    Some(("Open the dashboard", link_base)),
+                    Some(("Open the dashboard", b.link())),
                 )),
                 text: body.clone(),
                 ..Default::default()
@@ -131,6 +131,16 @@ impl DeliverBriefing {
             .await?;
         }
         Ok(outcome("delivered", "fallback_email"))
+    }
+}
+
+/// The alias, else the account id, else the provider.
+fn connection_name(c: &opsagent_core::connection::Connection) -> String {
+    let name = c.display_name.as_deref().filter(|n| !n.is_empty());
+    match (name, c.external_account_id.as_deref()) {
+        (Some(n), _) => n.to_owned(),
+        (None, Some(id)) => format!("{} account {id}", c.provider.to_uppercase()),
+        (None, None) => c.provider.clone(),
     }
 }
 

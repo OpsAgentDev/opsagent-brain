@@ -168,11 +168,17 @@ async fn trial_reminders_day_12_and_14_once() {
             "p@example.com"
         ]
     );
+    assert_eq!(m[0].subject, "Your OpsAgent trial ends on 12 November 2026");
     assert_eq!(
         m[0].text.lines().next().unwrap(),
-        "Your trial ends on 12 November 2026. You'll be charged $299 × 1 per month unless \
-         you change plan or cancel."
+        "Your free trial ends on 12 November 2026. After that you'll be charged $299 a month \
+         unless you change plan or cancel before then."
     );
+    // Day 14 says it is the last reminder, in its own words.
+    assert_eq!(m[2].subject, "Your OpsAgent trial ends today");
+    assert!(m[2]
+        .text
+        .starts_with("Your free trial ends today (12 November 2026). This is the last reminder."));
     assert!(m[0]
         .text
         .ends_with("https://opsagent.test/settings/billing"));
@@ -257,15 +263,71 @@ async fn past_due_7_days_pauses_and_notifies_once() {
     assert!(store.apply_payment(org.id, B::PastDue, t0).await.unwrap());
     let status = || async { BillingRepo::billing(&store, org.id).await.unwrap().status };
     night(&store, &mail, t0 + Duration::days(6)).await;
-    assert_eq!((status().await, mail.sent().len()), (B::PastDue, 0));
+    // The first-failure mail, not yet the paused one.
+    assert_eq!((status().await, mail.sent().len()), (B::PastDue, 1));
     night(&store, &mail, t0 + Duration::days(7)).await;
-    assert_eq!((status().await, mail.sent().len()), (B::Paused, 1));
-    assert!(mail.sent()[0].text.contains("paused"));
+    assert_eq!((status().await, mail.sent().len()), (B::Paused, 2));
+    assert!(mail.sent()[1].text.contains("paused"));
     night(&store, &mail, t0 + Duration::days(8)).await;
-    assert_eq!((status().await, mail.sent().len()), (B::Paused, 1));
+    assert_eq!((status().await, mail.sent().len()), (B::Paused, 2));
     // Paid: active again, and no notice.
     let paid = t0 + Duration::days(9);
     assert!(store.apply_payment(org.id, B::Active, paid).await.unwrap());
     night(&store, &mail, t0 + Duration::days(10)).await;
-    assert_eq!((status().await, mail.sent().len()), (B::Active, 1));
+    assert_eq!((status().await, mail.sent().len()), (B::Active, 2));
+}
+
+#[tokio::test]
+async fn first_failed_payment_is_mailed_once_per_spell() {
+    let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
+    let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+    let t0 = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+    let s = sub(B::Active, t0 + Duration::days(20));
+    store
+        .apply_subscription(org.id, &s, t0 - Duration::days(1))
+        .await
+        .unwrap();
+    night(&store, &mail, t0).await;
+    assert!(mail.sent().is_empty());
+    assert!(store.apply_payment(org.id, B::PastDue, t0).await.unwrap());
+    for d in [0, 1, 2] {
+        night(&store, &mail, t0 + Duration::days(d)).await; // later nights find it done
+    }
+    let m = mail.sent();
+    assert_eq!(m.len(), 1);
+    assert_eq!(m[0].subject, "Your OpsAgent payment failed");
+    assert!(m[0].text.contains("7 days") && m[0].text.ends_with("/settings/billing"));
+    // Fixed, then failing again: a new spell, a new mail.
+    let fixed = t0 + Duration::days(3);
+    assert!(store.apply_payment(org.id, B::Active, fixed).await.unwrap());
+    let again = t0 + Duration::days(10);
+    assert!(store
+        .apply_payment(org.id, B::PastDue, again)
+        .await
+        .unwrap());
+    night(&store, &mail, again).await;
+    night(&store, &mail, again + Duration::days(1)).await;
+    assert_eq!(mail.sent().len(), 2);
+}
+
+#[tokio::test]
+async fn trial_ended_is_mailed_once_and_only_while_recent() {
+    let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
+    let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+    let ends = Utc.with_ymd_and_hms(2026, 11, 12, 10, 0, 0).unwrap();
+    let ended = sub(B::TrialEnded, ends);
+    store
+        .apply_subscription(org.id, &ended, ends)
+        .await
+        .unwrap();
+    // An old ending (before this mail existed) is not announced.
+    night(&store, &mail, ends + Duration::days(30)).await;
+    assert!(mail.sent().is_empty());
+    for h in [2, 26, 50] {
+        night(&store, &mail, ends + Duration::hours(h)).await;
+    }
+    let m = mail.sent();
+    assert_eq!(m.len(), 1);
+    assert_eq!(m[0].subject, "Your OpsAgent trial has ended");
+    assert!(m[0].text.ends_with("/settings/billing"));
 }

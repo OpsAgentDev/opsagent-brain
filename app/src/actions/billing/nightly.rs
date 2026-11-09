@@ -1,8 +1,8 @@
 //! The nightly `billing_sync` pass (billing.md, Build decisions 3, 8 and 17), per subscribed
 //! organisation: connections still `revoked` within `RENEWAL_WINDOW` of the period's end are
 //! disconnected and the quantity is reconciled (so the renewal does not bill them), the trial
-//! reminders go out on day 12 and day 14, and 7 days past due becomes `paused` with one
-//! notice. Each mail is sent once per owner: its ledger key (`<key>:<owner id>`) sits on a
+//! reminders go out on day 12 and day 14, a first failed payment and an ended trial each get
+//! one notice, and 7 days past due becomes `paused` with one notice. Each mail is sent once per owner: its ledger key (`<key>:<owner id>`) sits on a
 //! `billing_notice` marker run keyed by the organisation and the trial end (or period start),
 //! so later nights find it done.
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
@@ -29,6 +29,8 @@ use crate::{
 };
 
 const TRIAL_DAYS: i64 = 14;
+/// A trial that ended longer ago than this gets no "trial ended" mail (no backlog on deploy).
+const TRIAL_ENDED_NOTICE_DAYS: i64 = 3;
 /// A revoked connection is disconnected once its period ends within this many hours: two
 /// nightly runs, so one failed or missed night still lands before the renewal.
 const RENEWAL_WINDOW_HOURS: i64 = 50;
@@ -41,6 +43,8 @@ struct Night {
     reminders: u64,
     paused: u64,
     notices: u64,
+    /// Trial-ended and payment-failed notices.
+    lifecycle: u64,
     /// Organisations whose pass failed (logged; retried the next night).
     failed: u64,
 }
@@ -85,19 +89,27 @@ impl BillingSync {
         let Some(sub) = b.subscription.as_ref() else {
             return Ok(());
         };
+        if b.status == B::TrialEnded {
+            // Nothing to sync or pause: the subscription is over.
+            night.lifecycle += u64::from(self.trial_ended_notice(org, sub, now).await?);
+            return Ok(());
+        }
         night.disconnected += self.end_revoked(org, sub, now).await?;
         if self.settings.stripe_configured {
             self.sync_quantity(run_id, org).await?;
         }
         let day = sub.trial_ends_at.and_then(|t| reminder_day(t, now));
         if let (B::Trialing, Some(day), false) = (b.status, day, sub.cancel_at_period_end) {
-            night.reminders += u64::from(self.trial_reminder(org, sub, day).await?);
+            night.reminders += u64::from(self.trial_reminder(org, sub, day, now).await?);
         }
         let cutoff = now - Duration::days(PAUSE_AFTER_DAYS);
         let mut status = b.status;
         if status == B::PastDue && repo.pause(org, cutoff).await.map_err(lerr)? {
             status = B::Paused;
             night.paused += 1;
+        }
+        if status == B::PastDue {
+            night.lifecycle += u64::from(self.payment_failed_notice(org, &b).await?);
         }
         if status == B::Paused {
             night.notices += u64::from(self.paused_notice(org, &b, now).await?);
@@ -140,21 +152,89 @@ impl BillingSync {
         Ok(n)
     }
 
-    async fn trial_reminder(&self, org: Uuid, sub: &SubscriptionState, day: i64) -> LResult<bool> {
+    async fn trial_reminder(
+        &self,
+        org: Uuid,
+        sub: &SubscriptionState,
+        day: i64,
+        now: DateTime<Utc>,
+    ) -> LResult<bool> {
         let Some(ends) = sub.trial_ends_at else {
             return Ok(false);
         };
         let price = sub.tier.unwrap_or(Tier::Team).monthly_usd();
+        let n = sub.quantity.max(1).unsigned_abs();
+        let charge = if n == 1 {
+            format!("${price} a month")
+        } else {
+            format!(
+                "${price} a month for each of your {n} cloud accounts (${} in all)",
+                price * n
+            )
+        };
         let date = ends.format("%-d %B %Y");
+        let (subject, lead) = match (ends.date_naive() - now.date_naive()).num_days() {
+            0 => (
+                "Your OpsAgent trial ends today".to_owned(),
+                format!("Your free trial ends today ({date}). This is the last reminder."),
+            ),
+            1 => (
+                "Your OpsAgent trial ends tomorrow".to_owned(),
+                format!("Your free trial ends tomorrow ({date}). This is the last reminder."),
+            ),
+            _ => (
+                format!("Your OpsAgent trial ends on {date}"),
+                format!("Your free trial ends on {date}."),
+            ),
+        };
         let text = format!(
-            "Your trial ends on {date}. You'll be charged ${price} × {} per month unless you \
-             change plan or cancel.\n\nManage billing: {}",
-            sub.quantity.max(1),
+            "{lead} After that you'll be charged {charge} unless you change plan or cancel \
+             before then.\n\nManage billing: {}",
             self.billing_url(),
         );
-        let subject = format!("Your OpsAgent trial ends on {date}");
         let key = format!("billing:trial_reminder:{day}");
         self.mail_owners(org, ends, &key, &subject, &text, &self.billing_url())
+            .await
+    }
+
+    /// One mail when a trial has just ended (expired or cancelled); not for old ones.
+    async fn trial_ended_notice(
+        &self,
+        org: Uuid,
+        sub: &SubscriptionState,
+        now: DateTime<Utc>,
+    ) -> LResult<bool> {
+        let Some(ends) = sub.trial_ends_at else {
+            return Ok(false);
+        };
+        if now - ends > Duration::days(TRIAL_ENDED_NOTICE_DAYS) {
+            return Ok(false);
+        }
+        let text = format!(
+            "Your OpsAgent free trial has ended, so scans and deliveries have stopped. Choose a \
+             plan to start them again: {}",
+            self.billing_url(),
+        );
+        let subject = "Your OpsAgent trial has ended";
+        let key = "billing:trial_ended";
+        self.mail_owners(org, ends, key, subject, &text, &self.billing_url())
+            .await
+    }
+
+    /// One mail per failed-payment spell (keyed on its `past_due_since`); the paused notice
+    /// follows if it is not fixed.
+    async fn payment_failed_notice(&self, org: Uuid, b: &OrgBilling) -> LResult<bool> {
+        let Some(since) = b.past_due_since else {
+            return Ok(false);
+        };
+        let text = format!(
+            "We could not take your latest OpsAgent payment. Update your payment method within \
+             {PAUSE_AFTER_DAYS} days to keep scans and deliveries running: {}",
+            self.billing_url(),
+        );
+        let key = format!("billing:payment_failed:{}", since.timestamp());
+        let subject = "Your OpsAgent payment failed";
+        self.mail_owners(org, since, &key, subject, &text, &self.billing_url())
             .await
     }
 
