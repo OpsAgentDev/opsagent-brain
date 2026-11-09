@@ -176,7 +176,8 @@ async fn clear_channel(
     tx.commit().await
 }
 
-/// Slack mrkdwn as plain mail text: `<url|label>` becomes `label: url`, entities unescaped.
+/// Slack mrkdwn as plain mail text: `*bold*` loses its asterisks, `<url|label>` becomes `label: url`,
+/// entities are unescaped.
 pub(super) fn plain(mrkdwn: &str) -> String {
     let mut out = String::with_capacity(mrkdwn.len());
     let mut rest = mrkdwn;
@@ -195,9 +196,46 @@ pub(super) fn plain(mrkdwn: &str) -> String {
         rest = &after[close + 1..];
     }
     out += rest;
-    out.replace("&lt;", "<")
+    strip_bold(&out)
+        .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&amp;", "&")
+}
+
+/// Drops the asterisks of `*bold*` spans: an opening `*` at a line start or after a space, a closing
+/// `*` before a space, punctuation or the line end. Any other `*` (a title's own) stays.
+fn strip_bold(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut drop = vec![false; chars.len()];
+    let mut i = 0;
+    while i < chars.len() {
+        let opens = chars[i] == '*'
+            && (i == 0 || chars[i - 1].is_whitespace())
+            && chars
+                .get(i + 1)
+                .is_some_and(|c| !c.is_whitespace() && *c != '*');
+        if opens {
+            let close = (i + 2..chars.len())
+                .take_while(|&j| chars[j] != '\n')
+                .find(|&j| {
+                    chars[j] == '*'
+                        && !chars[j - 1].is_whitespace()
+                        && chars.get(j + 1).is_none_or(|c| !c.is_alphanumeric())
+                });
+            if let Some(j) = close {
+                drop[i] = true;
+                drop[j] = true;
+                i = j;
+            }
+        }
+        i += 1;
+    }
+    chars
+        .iter()
+        .zip(&drop)
+        .filter(|(_, d)| !**d)
+        .map(|(c, _)| c)
+        .collect()
 }
 
 #[cfg(test)]
@@ -208,8 +246,17 @@ mod tests {
     fn links_unwrap_and_entities_unescape() {
         assert_eq!(
             plain("*Hi* a &lt;b&gt; &amp;lt;\n<https://x.test/c/1|Open the dashboard>"),
-            "*Hi* a <b> &lt;\nOpen the dashboard: https://x.test/c/1"
+            "Hi a <b> &lt;\nOpen the dashboard: https://x.test/c/1"
         );
         assert_eq!(plain("no links"), "no links");
+    }
+
+    #[test]
+    fn bold_markers_go_but_a_titles_own_asterisks_stay() {
+        assert_eq!(
+            plain("*OpsAgent morning briefing*\n*New critical and high* (2)\n• Critical: key *-prod rotated\n*Connection health:* ok"),
+            "OpsAgent morning briefing\nNew critical and high (2)\n• Critical: key *-prod rotated\nConnection health: ok"
+        );
+        assert_eq!(plain("2 * 3 = 6 and a*b"), "2 * 3 = 6 and a*b");
     }
 }
