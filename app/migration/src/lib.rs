@@ -30,6 +30,7 @@ mod m20261103_000025_human_review_payment;
 mod m20261106_000026_magic_link_name;
 mod m20261109_000027_findings_list_order;
 mod m20261109_000028_cancel_at_period_end;
+mod m20261109_000029_waitlist_announced;
 
 pub struct Migrator;
 
@@ -65,6 +66,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261106_000026_magic_link_name::Migration),
             Box::new(m20261109_000027_findings_list_order::Migration),
             Box::new(m20261109_000028_cancel_at_period_end::Migration),
+            Box::new(m20261109_000029_waitlist_announced::Migration),
             // inject-above (do not remove this comment)
         ]
     }

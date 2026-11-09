@@ -27,9 +27,10 @@ use crate::{
             OrgScope,
         },
         recipients::test_support::guard,
+        RateLimiter,
     },
     adapters::{
-        memory::{FixedClock, FixedResolver, MemStore},
+        memory::{FixedClock, FixedResolver, MemRateLimiter, MemStore},
         model::{
             fake::{FakeModels, FakeStep},
             ModelProviders,
@@ -109,6 +110,9 @@ struct Env {
     opsagent_backup: bool,
     /// The resolver's table, read each time an `AiAccess` is built.
     hosts: Mutex<HashMap<String, Vec<IpAddr>>>,
+    tally: Arc<dyn CreditTally>,
+    limiter: Arc<MemRateLimiter>,
+    daily_limit: Mutex<i64>,
 }
 
 /// 100,000 input tokens on `claude-sonnet-5-5`: 20 credits.
@@ -153,6 +157,9 @@ async fn env_listing(
         opsagent_key,
         opsagent_backup: false,
         hosts: Mutex::default(),
+        tally: Arc::new(MemRateLimiter::default()),
+        limiter: Arc::new(MemRateLimiter::default()),
+        daily_limit: Mutex::new(10_000),
     }
 }
 
@@ -196,7 +203,15 @@ impl Env {
                 openai: models,
             },
             Arc::new(FixedResolver::new(hosts)),
-            Notices::new(uow, self.mail.clone(), guard(&self.store)),
+            (
+                Notices::new(uow, self.mail.clone(), guard(&self.store)),
+                DailyLimit::new(
+                    self.tally.clone(),
+                    self.limiter.clone(),
+                    Arc::new(FixedClock(now)),
+                    *self.daily_limit.lock().unwrap(),
+                ),
+            ),
             Arc::new(FixedClock(now)),
             s,
         ))
@@ -321,6 +336,61 @@ fn code(e: AppError) -> &'static str {
 
 async fn refused_with(a: &AiAccess, org: uuid::Uuid) -> &'static str {
     code(a.plan(org, ModelRole::Chat).await.err().expect("refused"))
+}
+
+#[tokio::test]
+async fn daily_limit_stops_opsagent_key_after_metered_spend() {
+    let e = env(vec![text()], true).await;
+    e.enable().await;
+    // One call meters 20 credits: at exactly the limit, the next is refused.
+    *e.daily_limit.lock().unwrap() = 20;
+    let a = e.access();
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    e.call(&a, &mut plan).await.unwrap();
+    assert_eq!(refused_with(&a, e.org()).await, AI_UNAVAILABLE);
+    assert_eq!(a.status(&e.scope).await.unwrap().state, AI_UNAVAILABLE);
+    let day = Utc::now().format("%Y-%m-%d");
+    // `plan` and `status` both refused, but `:logged` was taken once: a further hit is over.
+    let logged = format!("ai:opsagent_credits:{day}:logged");
+    assert!(!e.limiter.hit(&logged, 1, 60).await.unwrap());
+}
+
+#[tokio::test]
+async fn daily_limit_does_not_touch_byok() {
+    let e = env(vec![text()], true).await;
+    e.enable().await;
+    e.put_key().await;
+    *e.daily_limit.lock().unwrap() = 0;
+    let a = e.access();
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    assert_eq!(plan.source(), KeySource::Byok);
+    e.call(&a, &mut plan).await.unwrap();
+    let day = Utc::now().format("%Y-%m-%d");
+    let spent = e.tally.total(&format!("ai:opsagent_credits:{day}")).await;
+    assert_eq!(spent.unwrap(), dec(0), "BYOK credits are not counted");
+}
+
+struct BrokenTally;
+
+#[async_trait]
+impl CreditTally for BrokenTally {
+    async fn total(&self, _: &str) -> crate::error::AppResult<Decimal> {
+        Err(crate::error::AppError::Internal("redis down".into()))
+    }
+    async fn add(&self, _: &str, _: Decimal, _: i64) -> crate::error::AppResult<()> {
+        Err(crate::error::AppError::Internal("redis down".into()))
+    }
+}
+
+#[tokio::test]
+async fn daily_limit_fails_closed_for_opsagent_key_only() {
+    let mut e = env(vec![text()], true).await;
+    e.enable().await;
+    e.tally = Arc::new(BrokenTally);
+    let a = e.access();
+    assert_eq!(refused_with(&a, e.org()).await, AI_UNAVAILABLE);
+    e.put_key().await;
+    assert!(e.access().plan(e.org(), ModelRole::Chat).await.is_ok());
 }
 
 #[tokio::test]

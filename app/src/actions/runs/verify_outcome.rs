@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use super::{
     classify::{lerr, LResult},
+    revoked_notice::enqueue_revoked_notice,
     verify_connection::{Step, VerifyConnection},
     verify_verdict::{decide, Verdict},
 };
@@ -95,12 +96,13 @@ impl VerifyConnection {
                 .await
                 .map_err(lerr)?;
         }
-        // TODO(notify): email owners once on revoked.
         let (to, reason) = revoke.map_or((c.status, None), |to| (to, Some("access_denied")));
         if revoke.is_some() {
             enqueue_sync(&*tx, c.organisation_id, now)
                 .await
                 .map_err(lerr)?;
+            // On this transaction: it stands or falls with the status change below.
+            enqueue_revoked_notice(&*tx, c, now).await.map_err(lerr)?;
         }
         let repo = tx.connections();
         let cas = repo.cas_status(c.organisation_id, c.id, c.status, to, reason);

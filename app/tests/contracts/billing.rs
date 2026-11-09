@@ -3,7 +3,9 @@ use opsagent_brain::actions::uow::Repos;
 use opsagent_core::{
     billing::{BillingStatus as B, OrgBilling, SubscriptionState, Tier, REVOKED_AT_PERIOD_END},
     connection::{ConnectionStatus as S, Verified},
+    org::Role,
     repo::RepoError,
+    user::Email,
 };
 use uuid::Uuid;
 
@@ -52,6 +54,32 @@ async fn conn_in(s: &dyn Repos, o: Uuid, account: &str, status: S) -> Uuid {
 }
 
 contract_suite! {
+    async fn owner_history_counts_other_orgs_deleted_too_but_not_itself(s) {
+        let email = Email::parse("owner@example.com").unwrap();
+        let owner = s.users().find_or_create_by_email(&email).await.unwrap();
+        let (mine, past) = (org(s).await, org(s).await);
+        for o in [mine, past] {
+            s.orgs().add_member(o, owner.id, Role::Owner).await.unwrap();
+        }
+        let repo = s.billing();
+        // A customer on the organisation itself does not count against it.
+        repo.set_customer(mine, "cus_self").await.unwrap();
+        assert!(!repo.owner_had_other_customer(mine).await.unwrap());
+        // No customer on the other one yet; then one, then soft-deleted, still counted.
+        repo.set_customer(past, "cus_past").await.unwrap();
+        assert!(repo.owner_had_other_customer(mine).await.unwrap());
+        s.orgs().soft_delete(past, Utc::now()).await.unwrap();
+        assert!(repo.owner_had_other_customer(mine).await.unwrap());
+        // Mere membership elsewhere does not count.
+        let (member_of, solo) = (org(s).await, org(s).await);
+        let e2 = Email::parse("member@example.com").unwrap();
+        let u2 = s.users().find_or_create_by_email(&e2).await.unwrap();
+        s.orgs().add_member(member_of, u2.id, Role::Member).await.unwrap();
+        s.orgs().add_member(solo, u2.id, Role::Owner).await.unwrap();
+        repo.set_customer(member_of, "cus_m").await.unwrap();
+        assert!(!repo.owner_had_other_customer(solo).await.unwrap());
+    }
+
     async fn billing_defaults_then_customer(s) {
         let o = org(s).await;
         assert_eq!(s.billing().billing(o).await.unwrap(), OrgBilling::default());

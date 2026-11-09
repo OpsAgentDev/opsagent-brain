@@ -3,8 +3,8 @@ use opsagent_brain::adapters::db::ledger_storage::PgStorage;
 use opsagent_brain::models::_entities::{
     audit_events, connection_verifications, connections, runs, schedules,
 };
-use opsagent_core::run::RunKey;
-use opsagent_ledger::{JobKind, Storage};
+use opsagent_core::run::{RunKey, RunStatus};
+use opsagent_ledger::{harness, JobKind, RunChunkedOptions, Storage};
 use sea_orm::{entity::prelude::*, Set};
 use serial_test::serial;
 use uuid::Uuid;
@@ -259,6 +259,102 @@ async fn revoke(ctx: &TestApp, id: Uuid) {
     .await;
     run_worker(ctx, id, 3).await;
     assert_eq!(conn(ctx, id).await.status, "revoked");
+}
+
+fn revoked_mails(
+    mail: &opsagent_brain::mailers::CaptureMailer,
+) -> Vec<opsagent_brain::mailers::Mail> {
+    let mails = mail.sent().into_iter();
+    mails
+        .filter(|m| m.subject.contains("lost access"))
+        .collect()
+}
+
+#[tokio::test]
+#[serial]
+async fn owners_are_mailed_once_per_revocation() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "clean").await;
+        assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
+        let id: Uuid = id.parse().unwrap();
+        revoke(&ctx, id).await;
+        ctx.drain_jobs().await;
+        let sent = revoked_mails(&mail);
+        assert_eq!(sent.len(), 1, "one owner, one mail");
+        assert_eq!(sent[0].to, "o@example.com");
+        // Daily re-checks while still revoked are not a new revocation.
+        run_worker(&ctx, id, 10).await;
+        ctx.drain_jobs().await;
+        assert_eq!(revoked_mails(&mail).len(), 1);
+        assert_eq!(notice_runs(&ctx, id).await.len(), 1);
+    })
+    .await;
+}
+
+async fn notice_runs(ctx: &TestApp, id: Uuid) -> Vec<runs::Model> {
+    runs::Entity::find()
+        .filter(runs::Column::ConnectionId.eq(id))
+        .filter(runs::Column::JobType.eq("deliver_revoked_notice"))
+        .all(&ctx.db)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn killed_and_resumed_revoked_notice_mails_once() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, id) = fake_connection(&req, &mail, "k@example.com", "Org", "clean").await;
+        assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
+        let id: Uuid = id.parse().unwrap();
+        revoke(&ctx, id).await;
+        let run = notice_runs(&ctx, id).await[0].id;
+        // Performing the verify drained the queue, so replay the run with a clean ledger.
+        let sql = crate::workers::deliver_briefing::sql;
+        sql(&ctx, "DELETE FROM side_effects WHERE run_id = $1", vec![run.into()]).await;
+        sql(
+            &ctx,
+            r#"UPDATE runs SET status = 'queued', checkpoint = '{"chunks_done": [], "cursor": null, "stats": {}}' WHERE id = $1"#,
+            vec![run.into()],
+        )
+        .await;
+        let mail = prepare(&ctx);
+        // Killed after the chunk's checkpoint, which is after the mail.
+        let runs_done = harness::kill_after_each_checkpoint(|ks| {
+            let ctx = ctx.clone();
+            async move {
+                let opts = RunChunkedOptions {
+                    after_checkpoint: Some(ks),
+                    ..Default::default()
+                };
+                actions(&ctx).unwrap().runs.deliver_revoked_notice.run(run, opts).await
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(runs_done, 2);
+        // A crash after the mail but before the checkpoint: the ledger stops a second one.
+        sql(
+            &ctx,
+            r#"UPDATE runs SET status = 'queued', checkpoint = '{"chunks_done": [], "cursor": null, "stats": {}}' WHERE id = $1"#,
+            vec![run.into()],
+        )
+        .await;
+        let status = actions(&ctx)
+            .unwrap()
+            .runs
+            .deliver_revoked_notice
+            .run(run, RunChunkedOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(status, RunStatus::Done);
+        // The queued job's delivery of the finished run does not mail either.
+        ctx.drain_jobs().await;
+        assert_eq!(revoked_mails(&mail).len(), 1);
+    })
+    .await;
 }
 
 #[tokio::test]

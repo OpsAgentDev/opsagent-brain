@@ -21,8 +21,8 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::{
-    failures::AiCallError, host_of, notices::Notices, open_key, refused, AiSettings, AI_DISABLED,
-    AI_QUOTA_REACHED,
+    daily_limit::DailyLimit, failures::AiCallError, host_of, notices::Notices, open_key, refused,
+    AiSettings, AI_DISABLED, AI_QUOTA_REACHED,
 };
 use crate::{
     actions::{
@@ -113,6 +113,8 @@ struct Snapshot {
     quota: Quota,
     topup: Decimal,
     byok_month: Decimal,
+    /// OpsAgent's key is over its daily ceiling; never read for a BYOK organisation.
+    over_daily_limit: bool,
 }
 
 pub(super) struct Quota {
@@ -136,6 +138,7 @@ pub struct AiAccess {
     pub(super) models: ModelProviders,
     pub(super) resolver: Arc<dyn HostResolver>,
     pub(super) notices: Notices,
+    pub(super) daily_limit: DailyLimit,
     pub(super) clock: Arc<dyn Clock>,
     pub(super) s: AiSettings,
 }
@@ -146,7 +149,7 @@ impl AiAccess {
         kek: Arc<dyn Kek>,
         models: ModelProviders,
         resolver: Arc<dyn HostResolver>,
-        notices: Notices,
+        (notices, daily_limit): (Notices, DailyLimit),
         clock: Arc<dyn Clock>,
         s: AiSettings,
     ) -> Self {
@@ -156,14 +159,15 @@ impl AiAccess {
             models,
             resolver,
             notices,
+            daily_limit,
             clock,
             s,
         }
     }
 
-    /// Who pays for a `role` call now, after the quota (OpsAgent's key) or ceiling (BYOK)
-    /// check. 409 `ai_disabled`, 502 `ai_key_failing`, 402 `ai_quota_reached`, 503
-    /// `ai_unavailable`.
+    /// Who pays for a `role` call now, after the quota and daily ceiling (OpsAgent's key) or
+    /// ceiling (BYOK) check. 409 `ai_disabled`, 502 `ai_key_failing`, 402 `ai_quota_reached`,
+    /// 503 `ai_unavailable`.
     pub async fn plan(&self, org: Uuid, role: ModelRole) -> AppResult<CallPlan> {
         let snap = self.snapshot(org).await?;
         Ok(match self.payer(&snap)? {
@@ -249,9 +253,13 @@ impl AiAccess {
     async fn snapshot(&self, org: Uuid) -> AppResult<Snapshot> {
         let ai = self.uow.ai();
         let (since, until) = quota_period(&OrgBilling::default(), self.clock.now());
+        let (enabled, keys) = (ai.enabled(org).await?, ai.keys(org).await?);
+        let on_opsagent_key = enabled && keys.primary.is_none() && self.s.opsagent.is_some();
+        let over_daily_limit = on_opsagent_key && self.daily_limit.reached().await;
         Ok(Snapshot {
-            enabled: ai.enabled(org).await?,
-            keys: ai.keys(org).await?,
+            enabled,
+            keys,
+            over_daily_limit,
             ceiling: ai.credit_ceiling(org).await?,
             quota: self.quota(&*self.uow, org).await?,
             topup: ai.topup_balance(org).await?,
@@ -301,6 +309,9 @@ impl AiAccess {
         let q = &snap.quota;
         if (q.quota - q.used).max(Decimal::ZERO) + snap.topup <= Decimal::ZERO {
             return Err(quota_reached("This period's AI credits are used up."));
+        }
+        if snap.over_daily_limit {
+            return Err(AiCallError::Unavailable.into());
         }
         Ok(Payer::OpsAgent)
     }

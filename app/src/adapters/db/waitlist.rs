@@ -5,7 +5,10 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, FromQueryResult};
 use uuid::Uuid;
 
 use super::ledger_storage::stmt;
-use crate::{actions::waitlist::WaitlistStore, error::AppResult};
+use crate::{
+    actions::waitlist::{AnnounceStore, WaitlistStore},
+    error::AppResult,
+};
 
 pub struct PgWaitlist(pub DatabaseConnection);
 
@@ -37,6 +40,37 @@ impl WaitlistStore for PgWaitlist {
         self.0
             .execute_raw(stmt(
                 "UPDATE waitlist_entries SET confirmation_sent_at = $2 WHERE id = $1",
+                vec![id.into(), at.into()],
+            ))
+            .await
+            .map_err(super::db_err)?;
+        Ok(())
+    }
+}
+
+#[derive(FromQueryResult)]
+struct Unannounced {
+    id: Uuid,
+    email: String,
+}
+
+#[async_trait]
+impl AnnounceStore for PgWaitlist {
+    async fn unannounced(&self) -> AppResult<Vec<(Uuid, String)>> {
+        let rows = Unannounced::find_by_statement(stmt(
+            "SELECT id, email FROM waitlist_entries WHERE announced_at IS NULL ORDER BY created_at",
+            vec![],
+        ))
+        .all(&self.0)
+        .await
+        .map_err(super::db_err)?;
+        Ok(rows.into_iter().map(|r| (r.id, r.email)).collect())
+    }
+
+    async fn mark_announced(&self, id: Uuid, at: DateTime<Utc>) -> AppResult<()> {
+        self.0
+            .execute_raw(stmt(
+                "UPDATE waitlist_entries SET announced_at = $2 WHERE id = $1",
                 vec![id.into(), at.into()],
             ))
             .await

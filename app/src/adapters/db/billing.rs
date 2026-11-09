@@ -121,6 +121,20 @@ impl<C: Conn> BillingRepo for Pg<C> {
             .map_err(db_err)
     }
 
+    async fn owner_had_other_customer(&self, organisation_id: Uuid) -> RepoResult<bool> {
+        let sql = "SELECT EXISTS (SELECT 1 FROM members mine \
+             JOIN members other ON other.user_id = mine.user_id AND other.role = 'owner' \
+               AND other.organisation_id <> mine.organisation_id \
+             JOIN organisations o ON o.id = other.organisation_id \
+               AND o.stripe_customer_id IS NOT NULL \
+             WHERE mine.organisation_id = $1 AND mine.role = 'owner') AS had";
+        let row = self
+            .db()
+            .query_one_raw(stmt(sql, vec![organisation_id.into()]));
+        let row = row.await.map_err(db_err)?;
+        get(&row.ok_or_else(|| db_err("no row"))?, "had")
+    }
+
     async fn set_customer(&self, organisation_id: Uuid, customer_id: &str) -> RepoResult<()> {
         let sql =
             "UPDATE organisations SET stripe_customer_id = $2, updated_at = now() WHERE id = $1";

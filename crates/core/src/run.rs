@@ -50,7 +50,12 @@ pub struct RunFilter {
 
 /// The read side of runs.
 /// Internal billing runs, not shown in an organisation's run history.
-pub const HIDDEN_JOB_TYPES: [&str; 3] = ["billing_sync", "billing_notice", "deliver_review_notice"];
+pub const HIDDEN_JOB_TYPES: [&str; 4] = [
+    "billing_sync",
+    "billing_notice",
+    "deliver_review_notice",
+    "deliver_revoked_notice",
+];
 
 #[async_trait]
 pub trait RunsRepo: Send + Sync {

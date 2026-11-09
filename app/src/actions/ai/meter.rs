@@ -79,6 +79,7 @@ impl AiAccess {
         tx.audit().record(entry.with_meta(meta)).await?;
         tx.commit().await?;
         if let Some(q) = quota {
+            self.daily_limit.add(credits).await;
             // The call is answered and metered; a failed notice must not fail it.
             if self.quota_notices(org, &q, q.used + credits).await.is_err() {
                 tracing::warn!(error_code = "ai_notice_failed", "ai quota notice failed");

@@ -1,10 +1,11 @@
 //! `RateLimiter` on Redis fixed-window counters.
 use async_trait::async_trait;
 use opsagent_ledger::redis::{self, aio::ConnectionManager, Script};
+use sea_orm::prelude::Decimal;
 use tokio::sync::OnceCell;
 
 use crate::{
-    actions::RateLimiter,
+    actions::{ai::CreditTally, RateLimiter},
     error::{AppError, AppResult},
 };
 
@@ -14,6 +15,9 @@ const COUNT: &str = r#"local n = redis.call('INCR', KEYS[1]) if n == 1 or redis.
 
 /// `SADD` plus `SCARD`, with the window's `EXPIRE` set when the set is new, atomically.
 const DISTINCT: &str = r#"redis.call('SADD', KEYS[1], ARGV[1]) if redis.call('TTL', KEYS[1]) < 0 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end return redis.call('SCARD', KEYS[1])"#;
+
+/// `INCRBYFLOAT`, with the window's `EXPIRE` set when the counter is new, atomically.
+const ADD_CREDITS: &str = r#"local n = redis.call('INCRBYFLOAT', KEYS[1], ARGV[1]) if redis.call('TTL', KEYS[1]) < 0 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end return n"#;
 
 /// One `ConnectionManager` (multiplexed, reconnecting) shared by every call. It is opened on
 /// first use, not at boot: modes that never count (tasks) do not need Redis, and an outage
@@ -81,5 +85,32 @@ impl RateLimiter for RedisRateLimiter {
             .query_async(&mut c)
             .await
             .map_err(unavailable)
+    }
+}
+
+#[async_trait]
+impl CreditTally for RedisRateLimiter {
+    async fn total(&self, key: &str) -> AppResult<Decimal> {
+        let mut c = self.conn().await?;
+        let total: Option<String> = redis::cmd("GET")
+            .arg(key)
+            .query_async(&mut c)
+            .await
+            .map_err(unavailable)?;
+        total.map_or(Ok(Decimal::ZERO), |t| {
+            t.parse()
+                .map_err(|_| AppError::Internal(format!("credit tally at {key} is not a number")))
+        })
+    }
+
+    async fn add(&self, key: &str, credits: Decimal, window_secs: i64) -> AppResult<()> {
+        let _: String = Script::new(ADD_CREDITS)
+            .key(key)
+            .arg(credits.to_string())
+            .arg(window_secs)
+            .invoke_async(&mut self.conn().await?)
+            .await
+            .map_err(unavailable)?;
+        Ok(())
     }
 }

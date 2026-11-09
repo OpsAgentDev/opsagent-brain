@@ -32,8 +32,9 @@ pub(super) async fn reset(ctx: &TestApp) {
     ctx.db
         .execute_raw(stmt(
             "INSERT INTO schedules (id, job_type, cron_local, enabled) \
-             VALUES ($1, 'retention', '30 3 * * *', false), ($2, 'billing_sync', '0 4 * * *', false)",
-            vec![Uuid::new_v4().into(), Uuid::new_v4().into()],
+             VALUES ($1, 'retention', '30 3 * * *', false), ($2, 'billing_sync', '0 4 * * *', false), \
+             ($3, 'operator_notice', '0 5 * * *', false)",
+            vec![Uuid::new_v4().into(), Uuid::new_v4().into(), Uuid::new_v4().into()],
         ))
         .await
         .unwrap();

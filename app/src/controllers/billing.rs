@@ -45,6 +45,9 @@ pub struct BillingOut {
     pub over_limit: bool,
     /// Billing state gates the organisation (`BILLING_ENFORCED`).
     pub enforced: bool,
+    /// A first checkout on `team` would start the 14-day trial; false once an owner has
+    /// another organisation (deleted ones included) with a Stripe customer.
+    pub trial_available: bool,
 }
 
 fn view(v: BillingView) -> BillingOut {
@@ -63,6 +66,7 @@ fn view(v: BillingView) -> BillingOut {
         limits: v.limits.map(limits),
         over_limit: v.over_limit,
         enforced: v.enforced,
+        trial_available: v.trial_available,
     }
 }
 
@@ -75,7 +79,8 @@ async fn show(State(app): State<AppState>, scope: OrgScope) -> Result<Json<Billi
 
 #[derive(Deserialize, ToSchema)]
 pub struct CheckoutIn {
-    /// `starter`, `team` (default) or `scale`. Only a first subscription on `team` gets the trial.
+    /// `starter`, `team` (default) or `scale`. Only a first subscription on `team` gets the
+    /// trial, and only while `trial_available`.
     pub tier: Option<String>,
 }
 

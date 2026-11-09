@@ -7,6 +7,7 @@ use opsagent_core::{
         BillingRepo, BillingStatus as B, OrgBilling, SubscriptionState, REVOKED_AT_PERIOD_END,
     },
     connection::ConnectionStatus as S,
+    org::Role,
     repo::RepoResult,
 };
 use uuid::Uuid;
@@ -132,6 +133,27 @@ impl BillingRepo for MemStore {
             .collect();
         ids.sort();
         Ok(ids)
+    }
+
+    async fn owner_had_other_customer(&self, organisation_id: Uuid) -> RepoResult<bool> {
+        let s = self.state();
+        let owner = Role::Owner;
+        let mine = |user: Uuid| {
+            s.members.iter().any(|m| {
+                m.organisation_id == organisation_id && m.user_id == user && m.role == owner
+            })
+        };
+        let has_customer = |org: Uuid| {
+            s.billing
+                .get(&org)
+                .is_some_and(|r| r.billing.customer_id.is_some())
+        };
+        Ok(s.members.iter().any(|m| {
+            m.organisation_id != organisation_id
+                && m.role == owner
+                && mine(m.user_id)
+                && has_customer(m.organisation_id)
+        }))
     }
 
     async fn lock_seats(&self, _organisation_id: Uuid) -> RepoResult<()> {

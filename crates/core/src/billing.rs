@@ -291,6 +291,10 @@ pub trait BillingRepo: Send + Sync {
         at: DateTime<Utc>,
     ) -> RepoResult<bool>;
 
+    /// Whether a current owner of this organisation owns another organisation, soft-deleted
+    /// included, that has a provider customer: such an owner's organisations get no trial.
+    async fn owner_had_other_customer(&self, organisation_id: Uuid) -> RepoResult<bool>;
+
     /// The organisation (live or deleted) whose provider customer is `customer_id`.
     async fn org_for_customer(&self, customer_id: &str) -> RepoResult<Option<Uuid>>;
 

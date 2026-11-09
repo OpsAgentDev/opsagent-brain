@@ -6,7 +6,9 @@ mod full_scan;
 mod full_scan_chunks;
 mod get_run;
 mod list_runs;
+mod operator_notice;
 mod request_manual_scan;
+mod revoked_notice;
 mod scan_now;
 mod scheduler_tick;
 mod verify_connection;
@@ -14,14 +16,23 @@ mod verify_outcome;
 mod verify_verdict;
 mod watch_scan;
 
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
+
+use opsagent_core::run::RunStatus;
+use opsagent_ledger::{redis, run_chunked, ChunkOutcome, RunChunkedOptions, RunRow};
+use uuid::Uuid;
+
+use crate::actions::uow::UnitOfWork;
+use classify::LResult;
 
 pub use dispatch::RunDispatcher;
 pub use full_scan::FullScan;
 pub use full_scan_chunks::Chunk;
 pub use get_run::GetRun;
 pub use list_runs::ListRuns;
+pub use operator_notice::{FailureCounts, Failures, OperatorNotice};
 pub use request_manual_scan::{RequestManualScan, WINDOW as SCAN_WINDOW};
+pub use revoked_notice::{enqueue_revoked_notice, DeliverRevokedNotice};
 pub use scan_now::ScanNow;
 pub use scheduler_tick::{SchedulerTick, TickReport};
 pub use verify_connection::VerifyConnection;
@@ -39,6 +50,33 @@ pub struct Runs {
     /// `full_scan.watch()`: the 15-minute urgent-exposure subset.
     pub watch_scan: FullScan,
     pub scan_now: ScanNow,
+    pub deliver_revoked_notice: DeliverRevokedNotice,
+    pub operator_notice: OperatorNotice,
+}
+
+/// Runs `send` as the single chunk of run `run_id` under its ledger lease; a finished run
+/// (a duplicate delivery) is left as it is.
+async fn one_chunk_run<F, Fut>(
+    uow: &dyn UnitOfWork,
+    redis: &redis::Client,
+    run_id: Uuid,
+    opts: RunChunkedOptions,
+    send: F,
+) -> LResult<RunStatus>
+where
+    F: Fn(RunRow) -> Fut,
+    Fut: Future<Output = LResult<ChunkOutcome>>,
+{
+    let storage = uow.ledger();
+    let run = storage.load_run(run_id).await?;
+    if !matches!(run.status, RunStatus::Queued | RunStatus::Running) {
+        return Ok(run.status);
+    }
+    let chunks = vec!["mail".to_owned()];
+    run_chunked(storage, redis, run_id, chunks, opts, |_, _| {
+        send(run.clone())
+    })
+    .await
 }
 
 #[cfg(test)]

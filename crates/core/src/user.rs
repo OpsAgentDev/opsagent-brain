@@ -55,26 +55,40 @@ impl PersonName {
 
 /// Email domains allowed to sign up; empty means open. Exact match: no subdomains.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SignupAllowlist(Vec<String>);
+pub struct SignupAllowlist {
+    domains: Vec<String>,
+    wildcard: bool,
+}
 
 impl SignupAllowlist {
     /// From a comma-separated list; entries are trimmed and lower-cased, blanks dropped.
     /// A `*` entry means open to everyone.
     pub fn parse(raw: &str) -> Self {
         if raw.split(',').any(|d| d.trim() == "*") {
-            return Self(Vec::new());
+            return Self {
+                domains: Vec::new(),
+                wildcard: true,
+            };
         }
-        Self(
-            raw.split(',')
+        Self {
+            domains: raw
+                .split(',')
                 .map(|d| d.trim().to_lowercase())
                 .filter(|d| !d.is_empty())
                 .collect(),
-        )
+            wildcard: false,
+        }
+    }
+
+    /// Sign-ups were deliberately opened with `*`; an unset list (open only outside
+    /// production) does not count.
+    pub fn is_wildcard(&self) -> bool {
+        self.wildcard
     }
 
     pub fn allows(&self, email: &Email) -> bool {
         let domain = email.as_str().rsplit_once('@').map_or("", |(_, d)| d);
-        self.0.is_empty() || self.0.iter().any(|d| d == domain)
+        self.domains.is_empty() || self.domains.iter().any(|d| d == domain)
     }
 }
 
@@ -203,6 +217,8 @@ mod tests {
         let l = SignupAllowlist::parse(" OpsAgent.dev , example.org");
         assert!(ok(&l, "x@opsagent.dev") && ok(&l, "y@EXAMPLE.org"));
         assert!(!ok(&l, "z@gmail.com") && !ok(&l, "a@mail.opsagent.dev"));
+        assert!(!SignupAllowlist::parse("").is_wildcard() && !l.is_wildcard());
+        assert!(SignupAllowlist::parse("a.com, *").is_wildcard());
     }
 
     #[test]

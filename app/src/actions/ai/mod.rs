@@ -4,6 +4,7 @@
 mod access;
 mod byok;
 mod chat;
+mod daily_limit;
 mod explain;
 mod failures;
 mod fallback;
@@ -33,6 +34,7 @@ pub use chat::{
     wrap_tool_result, ChatEvent, ChatSessions, ChatTurn, Turn, AI_BUSY, CHAT_PROMPT_VERSION,
     CHAT_SYSTEM_PROMPT, CHAT_TOOLS,
 };
+pub use daily_limit::{CreditTally, DailyLimit};
 pub use explain::{current_hash, ExplainFinding, EXPLAIN_PROMPT_VERSION};
 pub use failures::AiCallError;
 pub use notices::Notices;

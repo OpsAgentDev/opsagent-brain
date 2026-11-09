@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use opsagent_brain::adapters::memory::RunLink;
 use opsagent_core::{retention::TtlTable, run::RunStatus};
-use opsagent_deliver::schedule::{BILLING_SYNC_CRON, RETENTION_CRON};
+use opsagent_deliver::schedule::{BILLING_SYNC_CRON, OPERATOR_NOTICE_CRON, RETENTION_CRON};
 
 use super::{contract_suite, org_id, Seed};
 
@@ -189,7 +189,7 @@ contract_suite! {
         s.schedules().backfill_defaults(at).await.unwrap();
         let later = at + Duration::days(2);
         let ids = s.schedules().due_ids(later).await.unwrap();
-        assert_eq!(ids.len(), 2);
+        assert_eq!(ids.len(), 3);
         let mut got = Vec::new();
         for id in ids {
             let (key, cron, tz) = s.schedules().lock_due(id, later).await.unwrap().unwrap();
@@ -200,6 +200,7 @@ contract_suite! {
         got.sort();
         let want = [
             ("billing_sync".to_owned(), BILLING_SYNC_CRON.to_owned(), "04:00".to_owned()),
+            ("operator_notice".to_owned(), OPERATOR_NOTICE_CRON.to_owned(), "05:00".to_owned()),
             ("retention".to_owned(), RETENTION_CRON.to_owned(), "03:30".to_owned()),
         ];
         assert_eq!(got, want);
