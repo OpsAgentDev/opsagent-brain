@@ -528,6 +528,7 @@ async fn payment_succeeded_clears_past_due_and_paused() {
                 trial_ends_at: None,
                 current_period_start: Some(at(0)),
                 current_period_end: Some(at(30)),
+                cancel_at_period_end: false,
             };
             Pg::new(&ctx.db)
                 .apply_subscription(org, &paused, at(30))
@@ -657,6 +658,7 @@ async fn subscribed_org(req: &TestServer, ctx: &TestApp, status: B) -> (String, 
         trial_ends_at: None,
         current_period_start: Some(at(0)),
         current_period_end: Some(at(30 * 86_400)),
+        cancel_at_period_end: false,
     };
     let repo = Pg::new(&ctx.db);
     assert!(repo.apply_subscription(id, &s, at(10)).await.unwrap());

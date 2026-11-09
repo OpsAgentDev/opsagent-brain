@@ -561,6 +561,7 @@ fn subscription(start: DateTime<Utc>) -> SubscriptionState {
         trial_ends_at: None,
         current_period_start: Some(start),
         current_period_end: Some(start + Duration::days(30)),
+        cancel_at_period_end: false,
     }
 }
 

@@ -164,6 +164,8 @@ pub struct SubscriptionState {
     pub trial_ends_at: Option<DateTime<Utc>>,
     pub current_period_start: Option<DateTime<Utc>>,
     pub current_period_end: Option<DateTime<Utc>>,
+    /// The customer cancelled: it ends at the period or trial end and will not renew.
+    pub cancel_at_period_end: bool,
 }
 
 /// The `status_reason` of a connection `billing_sync` disconnected because it was still

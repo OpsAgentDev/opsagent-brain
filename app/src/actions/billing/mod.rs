@@ -129,6 +129,8 @@ pub struct BillingView {
     pub tier: Option<Tier>,
     pub trial_ends_at: Option<DateTime<Utc>>,
     pub current_period_end: Option<DateTime<Utc>>,
+    /// Cancelled: runs to the period or trial end, then stops.
+    pub cancel_at_period_end: bool,
     /// Connections billed: at least 1 while subscribed, 0 otherwise.
     pub quantity: i32,
     pub limits: Option<PlanLimits>,
@@ -167,6 +169,8 @@ impl GetBilling {
             tier,
             trial_ends_at: sub.and_then(|s| s.trial_ends_at),
             current_period_end: sub.and_then(|s| s.current_period_end),
+            cancel_at_period_end: b.status.is_subscribed()
+                && sub.is_some_and(|s| s.cancel_at_period_end),
             quantity,
             limits,
             over_limit,

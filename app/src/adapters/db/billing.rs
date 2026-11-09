@@ -12,7 +12,7 @@ use super::{db_err, Conn, Pg};
 
 const BILLING: &str = "SELECT stripe_customer_id, stripe_subscription_id, billing_status, \
   billing_tier, billing_quantity, trial_ends_at, current_period_start, current_period_end, \
-  past_due_since, paid_quantity FROM organisations WHERE id = $1";
+  past_due_since, paid_quantity, cancel_at_period_end FROM organisations WHERE id = $1";
 
 /// Skips events older than the last one applied; a `past_due` event leaves `paused` (set by
 /// `billing_sync`) in place, and `past_due_since` keeps the first past-due instant.
@@ -26,7 +26,7 @@ const APPLY: &str = "UPDATE organisations SET stripe_subscription_id = $2, \
       AND $3 IN ('active', 'past_due', 'trialing')) \
     OR ($3 = 'past_due' AND billing_status = 'paused') THEN billing_status ELSE $3 END, \
   billing_tier = $4, billing_quantity = $5, trial_ends_at = $6, current_period_start = $7, \
-  current_period_end = $8, \
+  current_period_end = $8, cancel_at_period_end = $10, \
   paid_quantity = CASE WHEN paid_quantity IS NULL OR current_period_start IS DISTINCT FROM $7 \
     THEN $5 ELSE paid_quantity END, \
   past_due_since = CASE WHEN coalesce(payment_event_at > $9, false) \
@@ -71,6 +71,7 @@ fn billing_of(r: &QueryResult) -> RepoResult<OrgBilling> {
             trial_ends_at: get(r, "trial_ends_at")?,
             current_period_start: get(r, "current_period_start")?,
             current_period_end: get(r, "current_period_end")?,
+            cancel_at_period_end: get(r, "cancel_at_period_end")?,
         }),
         None => None,
     };
@@ -151,6 +152,7 @@ impl<C: Conn> BillingRepo for Pg<C> {
             s.current_period_start.into(),
             s.current_period_end.into(),
             event_created.into(),
+            s.cancel_at_period_end.into(),
         ];
         let r = self
             .db()

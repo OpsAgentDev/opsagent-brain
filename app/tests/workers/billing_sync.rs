@@ -36,6 +36,7 @@ async fn subscribe(ctx: &TestApp, org: Uuid, quantity: i32, start: DateTime<Utc>
         trial_ends_at: None,
         current_period_start: Some(start),
         current_period_end: Some(start + Duration::days(30)),
+        cancel_at_period_end: false,
     };
     let created = Utc::now() - Duration::hours(1);
     assert!(Pg::new(&ctx.db)

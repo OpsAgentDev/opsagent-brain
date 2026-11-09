@@ -31,6 +31,7 @@ pub struct Model {
     pub billing_quantity: Option<i32>,
     pub paid_quantity: Option<i32>,
     pub trial_ends_at: Option<DateTimeWithTimeZone>,
+    pub cancel_at_period_end: bool,
     pub current_period_start: Option<DateTimeWithTimeZone>,
     pub current_period_end: Option<DateTimeWithTimeZone>,
     pub past_due_since: Option<DateTimeWithTimeZone>,

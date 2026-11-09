@@ -94,6 +94,7 @@ fn sub(status: B, ends: DateTime<Utc>) -> SubscriptionState {
         trial_ends_at: Some(ends),
         current_period_start: Some(ends - Duration::days(14)),
         current_period_end: Some(ends),
+        cancel_at_period_end: false,
     }
 }
 
@@ -114,6 +115,23 @@ fn reminder_days() {
     assert_eq!(at(24 + 1), Some(12)); // day 13: a missed day-12 reminder still goes
     assert_eq!(at(1), Some(14));
     assert_eq!(at(0), None);
+}
+
+#[tokio::test]
+async fn a_cancelled_trial_gets_no_reminder() {
+    let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
+    let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+    let ends = Utc.with_ymd_and_hms(2026, 11, 12, 10, 0, 0).unwrap();
+    let s = SubscriptionState {
+        cancel_at_period_end: true,
+        ..sub(B::Trialing, ends)
+    };
+    store
+        .apply_subscription(org.id, &s, ends - Duration::days(14))
+        .await
+        .unwrap();
+    night(&store, &mail, ends - Duration::hours(6)).await;
+    assert!(mail.sent().is_empty());
 }
 
 #[tokio::test]
