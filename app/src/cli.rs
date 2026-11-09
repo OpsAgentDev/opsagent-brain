@@ -40,7 +40,7 @@ pub enum Cmd {
     /// The scheduler (exactly one instance).
     Scheduler,
     /// `openapi:dump [path:<file>]`, `scan:now connection:<id>`,
-    /// `deliver:briefing connection:<id>`, `scheduler:tick`.
+    /// `deliver:briefing connection:<id>`, `scheduler:tick`, `waitlist:announce`.
     Task { name: String, vars: Vec<String> },
     Db {
         #[command(subcommand)]
@@ -246,6 +246,16 @@ async fn task(name: &str, vars: &TaskVars) -> AppResult<()> {
                 None => tracing::info!("scheduler lock held elsewhere, skipping tick"),
             }
             Ok(())
+        }
+        "waitlist:announce" => {
+            let a = state(false).await?.actions.clone();
+            match a.waitlist.announce.run().await? {
+                r if r.failed > 0 => Err(AppError::Internal(format!(
+                    "{} announcement(s) not sent; re-run to retry them",
+                    r.failed
+                ))),
+                _ => Ok(()),
+            }
         }
         other => Err(AppError::Invalid(format!("unknown task `{other}`"))),
     }

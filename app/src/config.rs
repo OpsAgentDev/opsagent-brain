@@ -112,6 +112,10 @@ pub struct Config {
     pub anthropic_version: String,
     pub openai_api_base: String,
     pub ai_limits: crate::adapters::model::ModelLimits,
+    /// Credits per UTC day across every organisation on OpsAgent's own model key.
+    pub ai_daily_credit_limit: i64,
+    /// Sign-in mails per hour across all clients.
+    pub magic_link_hourly_cap: i64,
 }
 
 /// Required in production (no default there); the same list as deployment.md and deploy/README.md.
@@ -242,6 +246,8 @@ impl Config {
             anthropic_version: s("ANTHROPIC_VERSION", "2023-06-01"),
             openai_api_base: s("OPENAI_API_BASE", crate::adapters::model::openai::API_BASE),
             ai_limits: ai_limits(&get)?,
+            ai_daily_credit_limit: p(&get, "AI_DAILY_CREDIT_LIMIT", "10000")?,
+            magic_link_hourly_cap: p(&get, "MAGIC_LINK_HOURLY_CAP", "1000")?,
         };
         if c.session_secret.len() < 16 {
             return Err(invalid("SESSION_SECRET", "must be at least 16 bytes"));
@@ -673,6 +679,21 @@ mod tests {
             ("gpt-5-mini", "gpt-5")
         );
         assert!(c.opsagent.is_some());
+    }
+
+    #[test]
+    fn launch_caps_default_and_override() {
+        let c = cfg(&[]);
+        assert_eq!(
+            (c.ai_daily_credit_limit, c.magic_link_hourly_cap),
+            (10000, 1000)
+        );
+        let c = cfg(&[
+            ("AI_DAILY_CREDIT_LIMIT", "5"),
+            ("MAGIC_LINK_HOURLY_CAP", "7"),
+        ]);
+        assert_eq!((c.ai_daily_credit_limit, c.magic_link_hourly_cap), (5, 7));
+        assert_invalid_var(&[("MAGIC_LINK_HOURLY_CAP", "x")], "MAGIC_LINK_HOURLY_CAP");
     }
 
     #[test]

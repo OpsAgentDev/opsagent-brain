@@ -41,6 +41,13 @@ Worker variables (optional; read by `start --worker` and `start --server-and-wor
 | `JOB_LOCK_MAX_AGE_SECS` | `25200` (7 h, above the 6 h scan cap) | a job lock older than this is taken over; the ledger fence rejects the dead writer |
 | `WORKER_SHUTDOWN_GRACE_SECS` | `30` | on SIGTERM, time in-flight jobs get to finish; keep below `DRAINING_SECONDS` | Local compose values live in `.env.docker.example`.
 
+Abuse and spend caps (optional):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AI_DAILY_CREDIT_LIMIT` | `10000` (about $100) | credits per UTC day on OpsAgent's model key across all organisations; over it those calls answer `ai_unavailable` and an error is logged once. BYOK is unaffected. |
+| `MAGIC_LINK_HOURLY_CAP` | `1000` | sign-in mails per hour across all clients; over it the API still answers 202, sends nothing and logs an error |
+
 ## Slack app
 
 Create the app from the hub manifest `docs/ops/slack-app-manifest.json` and follow `docs/ops/slack-app-setup.md` (both in the architecture repo). Bot scopes: `chat:write`, `chat:write.public`, `channels:read`, `groups:read`. Production redirect URL: `https://brain.opsagent.dev/v1/integrations/slack/callback`. Copy the Client ID and Client Secret into `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET`. Customers install through the dashboard's Connect Slack button, not from the Slack admin page.

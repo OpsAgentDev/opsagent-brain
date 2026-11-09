@@ -272,7 +272,8 @@ pub trait BillingRepo: Send + Sync {
     /// past-due event and cleared by any other status; a `past_due` event leaves `paused` as it is.
     /// An event older than the last `apply_payment` keeps that payment's status (and
     /// `past_due_since`) and writes the rest, unless it ends the subscription (`canceled`,
-    /// `trial_ended`, `none`), which always wins.
+    /// `trial_ended`, `none`), which always wins. A stored trial end is kept when `s` has none:
+    /// it is the record that a trial was used.
     async fn apply_subscription(
         &self,
         organisation_id: Uuid,
@@ -290,6 +291,10 @@ pub trait BillingRepo: Send + Sync {
         status: BillingStatus,
         at: DateTime<Utc>,
     ) -> RepoResult<bool>;
+
+    /// Whether this organisation's creator (its earliest owner membership: no column records
+    /// one) created another organisation, soft-deleted included, where a trial really started.
+    async fn creator_used_trial_elsewhere(&self, organisation_id: Uuid) -> RepoResult<bool>;
 
     /// The organisation (live or deleted) whose provider customer is `customer_id`.
     async fn org_for_customer(&self, customer_id: &str) -> RepoResult<Option<Uuid>>;

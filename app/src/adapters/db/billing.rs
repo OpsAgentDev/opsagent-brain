@@ -25,7 +25,7 @@ const APPLY: &str = "UPDATE organisations SET stripe_subscription_id = $2, \
   billing_status = CASE WHEN (coalesce(payment_event_at > $9, false) \
       AND $3 IN ('active', 'past_due', 'trialing')) \
     OR ($3 = 'past_due' AND billing_status = 'paused') THEN billing_status ELSE $3 END, \
-  billing_tier = $4, billing_quantity = $5, trial_ends_at = $6, current_period_start = $7, \
+  billing_tier = $4, billing_quantity = $5, trial_ends_at = coalesce($6, trial_ends_at), current_period_start = $7, \
   current_period_end = $8, cancel_at_period_end = $10, \
   paid_quantity = CASE WHEN paid_quantity IS NULL OR current_period_start IS DISTINCT FROM $7 \
     THEN $5 ELSE paid_quantity END, \
@@ -119,6 +119,21 @@ impl<C: Conn> BillingRepo for Pg<C> {
             .await
             .map(|_| ())
             .map_err(db_err)
+    }
+
+    async fn creator_used_trial_elsewhere(&self, organisation_id: Uuid) -> RepoResult<bool> {
+        // shortcut: the purge removes an organisation 30 days after deletion, so its trial stops counting then; record purged creators if repeat trials appear.
+        let sql = "SELECT EXISTS (SELECT 1 FROM organisations o \
+             WHERE o.id <> $1 AND o.trial_ends_at IS NOT NULL \
+             AND (SELECT m.user_id FROM members m WHERE m.organisation_id = o.id \
+                  AND m.role = 'owner' ORDER BY m.created_at, m.id LIMIT 1) \
+               = (SELECT m.user_id FROM members m WHERE m.organisation_id = $1 \
+                  AND m.role = 'owner' ORDER BY m.created_at, m.id LIMIT 1)) AS used";
+        let row = self
+            .db()
+            .query_one_raw(stmt(sql, vec![organisation_id.into()]));
+        let row = row.await.map_err(db_err)?;
+        get(&row.ok_or_else(|| db_err("no row"))?, "used")
     }
 
     async fn set_customer(&self, organisation_id: Uuid, customer_id: &str) -> RepoResult<()> {

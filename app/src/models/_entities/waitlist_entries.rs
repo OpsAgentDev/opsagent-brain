@@ -14,6 +14,7 @@ pub struct Model {
     pub source: Option<String>,
     pub created_at: DateTimeWithTimeZone,
     pub confirmation_sent_at: Option<DateTimeWithTimeZone>,
+    pub announced_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -35,6 +35,8 @@ pub struct MagicLinkInput {
 pub struct RequestMagicLink {
     users: Arc<dyn UnitOfWork>,
     limiter: Arc<dyn RateLimiter>,
+    /// Sign-in mails per hour across all clients (`MAGIC_LINK_HOURLY_CAP`).
+    hourly_cap: i64,
     mailer: Arc<dyn Mailer>,
     web_base_url: String,
     clock: Arc<dyn Clock>,
@@ -46,7 +48,7 @@ pub struct RequestMagicLink {
 impl RequestMagicLink {
     pub fn new(
         users: Arc<dyn UnitOfWork>,
-        limiter: Arc<dyn RateLimiter>,
+        (limiter, hourly_cap): (Arc<dyn RateLimiter>, i64),
         mailer: Arc<dyn Mailer>,
         web_base_url: String,
         clock: Arc<dyn Clock>,
@@ -56,6 +58,7 @@ impl RequestMagicLink {
         Self {
             users,
             limiter,
+            hourly_cap,
             mailer,
             web_base_url,
             clock,
@@ -64,8 +67,9 @@ impl RequestMagicLink {
         }
     }
 
-    /// Counts this request against the IP (when known), then against the normalised address.
-    /// `false` once either hour's cap is passed.
+    /// Counts this request against the IP (when known), the normalised address, then the
+    /// global hourly cap, in that order so requests the per-client caps refuse do not use up
+    /// everyone's budget. `false` once any hour's cap is passed.
     async fn under_cap(&self, email: &Email, ip: Option<IpAddr>) -> AppResult<bool> {
         if let Some(ip) = ip {
             let key = format!("ratelimit:magic_link:ip:{}", ip_bucket(ip));
@@ -77,10 +81,21 @@ impl RequestMagicLink {
             "ratelimit:magic_link:email:{}",
             crate::tokens::hex(Sha256::digest(email.as_str()))
         );
-        self.limiter.hit(&key, PER_EMAIL, HOUR_SECS).await
+        if !self.limiter.hit(&key, PER_EMAIL, HOUR_SECS).await? {
+            return Ok(false);
+        }
+        let global = "ratelimit:magic_link:global";
+        let under = self.limiter.hit(global, self.hourly_cap, HOUR_SECS).await?;
+        if !under {
+            tracing::error!(
+                error_code = "magic_link_global_cap",
+                "magic link hourly cap reached, not sending"
+            );
+        }
+        Ok(under)
     }
 
-    /// Sends a sign-in link unless the address is invalid or either cap is passed.
+    /// Sends a sign-in link unless the address is invalid or a cap is passed.
     pub async fn run(&self, input: MagicLinkInput) -> AppResult<()> {
         let Some(email) = Email::parse(&input.email) else {
             return Ok(());
@@ -206,10 +221,39 @@ mod tests {
         assert_eq!(mail.sent().len(), PER_EMAIL as usize);
     }
 
+    #[tokio::test]
+    async fn global_hourly_cap_sends_nothing_past_it_but_succeeds() {
+        let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
+        let action = RequestMagicLink::new(
+            Arc::new(store.clone()),
+            (
+                Arc::new(crate::adapters::memory::MemRateLimiter::default()),
+                2,
+            ),
+            mail.clone(),
+            WEB.into(),
+            Arc::new(opsagent_core::repo::SystemClock),
+            SECRET.into(),
+            Default::default(),
+        );
+        for n in 0..3 {
+            action
+                .run(input(&format!("u{n}@example.com")))
+                .await
+                .unwrap();
+        }
+        assert_eq!(mail.sent().len(), 2);
+        let third = Email::parse("u2@example.com").unwrap();
+        assert!(store.users().find_by_email(&third).await.unwrap().is_none());
+    }
+
     fn closed(store: &MemStore, mail: &Arc<CaptureMailer>) -> RequestMagicLink {
         RequestMagicLink::new(
             Arc::new(store.clone()),
-            Arc::new(crate::adapters::memory::MemRateLimiter::default()),
+            (
+                Arc::new(crate::adapters::memory::MemRateLimiter::default()),
+                1000,
+            ),
             mail.clone(),
             WEB.into(),
             Arc::new(opsagent_core::repo::SystemClock),

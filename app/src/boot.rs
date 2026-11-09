@@ -22,7 +22,7 @@ use crate::{
     },
     adapters::{
         client_metadata::HttpClientMetadata,
-        db::{Pg, PgContact, PgWaitlist},
+        db::{Pg, PgContact, PgFailures, PgWaitlist},
         model::{
             anthropic::AnthropicModels, fake::FakeModels, openai::OpenAiModels, ModelProviders,
         },
@@ -37,8 +37,8 @@ use crate::{
     error::{AppError, AppResult},
     jobs::{
         BillingGated, BillingSyncJob, DeliverAlertJob, DeliverBriefingJob, DeliverReviewNoticeJob,
-        DeliverWeeklyJob, FullScanJob, JobHandler, RetentionJob, Scheduler, VerifyJob,
-        WatchScanJob, WorkerRunner,
+        DeliverRevokedNoticeJob, DeliverWeeklyJob, FullScanJob, JobHandler, OperatorNoticeJob,
+        RetentionJob, Scheduler, VerifyJob, WatchScanJob, WorkerRunner,
     },
     mailers::{self, Mailer},
     mcp, middleware,
@@ -61,6 +61,8 @@ pub struct Deps {
     /// Leases and per-connection claims (`opsagent_ledger::lease`), and the rate limiter.
     pub redis: redis::Client,
     pub limiter: Arc<dyn RateLimiter>,
+    /// Today's credits on OpsAgent's model key (`AI_DAILY_CREDIT_LIMIT`).
+    pub credit_tally: Arc<dyn ai::CreditTally>,
     pub kek: Arc<dyn Kek>,
     pub registry: Registry,
     pub mailer: Arc<dyn Mailer>,
@@ -126,6 +128,7 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
     // Lazy: only the scheduler process ever ticks.
     let scheduler = connect(&config, 0, 2, true).await?;
     let redis = redis::Client::open(config.redis_url.as_str()).map_err(internal)?;
+    let limiter = Arc::new(RedisRateLimiter::new(redis.clone()));
     let kek: Arc<dyn Kek> = Arc::new(CachingKek::new(
         EnvKek::from_env().map_err(internal)?,
         DEK_TTL,
@@ -149,7 +152,8 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
         uow: Arc::new(Pg::new(db.clone())),
         db,
         scheduler_uow: Arc::new(Pg::new(scheduler)),
-        limiter: Arc::new(RedisRateLimiter::new(redis.clone())),
+        credit_tally: limiter.clone(),
+        limiter,
         redis,
         kek,
         registry,
@@ -251,6 +255,14 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.mailer.clone(),
                 d.clock.clone(),
             ),
+            announce: waitlist::AnnounceWaitlist::new(
+                Arc::new(PgWaitlist(d.db.clone())),
+                d.mailer.clone(),
+                d.clock.clone(),
+                d.config.signup_allowed_domains.clone(),
+                d.config.web_base_url.clone(),
+                waitlist::SEND_GAP,
+            ),
         },
         contact: contact::Contact {
             send: contact::SendContact::new(
@@ -316,7 +328,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
         auth: auth::Auth {
             request_magic_link: auth::RequestMagicLink::new(
                 d.uow.clone(),
-                d.limiter.clone(),
+                (d.limiter.clone(), d.config.magic_link_hourly_cap),
                 d.mailer.clone(),
                 d.config.web_base_url.clone(),
                 d.clock.clone(),
@@ -423,6 +435,20 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 dispatcher.clone(),
                 gate.clone(),
             )),
+            deliver_revoked_notice: runs::DeliverRevokedNotice::new(
+                d.uow.clone(),
+                d.redis.clone(),
+                d.mailer.clone(),
+                guard.clone(),
+                d.config.web_base_url.clone(),
+            ),
+            operator_notice: runs::OperatorNotice::new(
+                Arc::new(PgFailures(d.db.clone())),
+                d.uow.clone(),
+                d.redis.clone(),
+                d.mailer.clone(),
+                d.config.contact_to.clone(),
+            ),
             dispatcher,
             scan_now: runs::ScanNow::new(d.uow.clone(), full_scan.clone(), d.clock.clone()),
             watch_scan: full_scan.clone().watch(),
@@ -520,7 +546,15 @@ fn build_ai(d: &Deps, guard: Arc<recipients::MailGuard>) -> ai::Ai {
         d.kek.clone(),
         d.models.clone(),
         Arc::new(crate::adapters::dns::SystemResolver),
-        ai::Notices::new(d.uow.clone(), d.mailer.clone(), guard),
+        (
+            ai::Notices::new(d.uow.clone(), d.mailer.clone(), guard),
+            ai::DailyLimit::new(
+                d.credit_tally.clone(),
+                d.limiter.clone(),
+                d.clock.clone(),
+                d.config.ai_daily_credit_limit,
+            ),
+        ),
         d.clock.clone(),
         ai::AiSettings::new(&d.config),
     ));
@@ -622,7 +656,7 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
     }
 }
 
-/// The job runner with the nine job handlers, the only registry of job kinds. The queue and
+/// The job runner with the eleven job handlers, the only registry of job kinds. The queue and
 /// the job work share the state's one pool (`pool_size` with a worker).
 pub fn worker(state: &AppState) -> WorkerRunner {
     let (runs, deliveries) = (&state.actions.runs, &state.actions.deliveries);
@@ -652,6 +686,10 @@ pub fn worker(state: &AppState) -> WorkerRunner {
         Arc::new(DeliverReviewNoticeJob(Arc::new(
             state.actions.human_reviews.deliver_notice.clone(),
         ))),
+        Arc::new(DeliverRevokedNoticeJob(Arc::new(
+            runs.deliver_revoked_notice.clone(),
+        ))),
+        Arc::new(OperatorNoticeJob(Arc::new(runs.operator_notice.clone()))),
     ];
     let source = Arc::new(PgQueue(state.db.clone()));
     WorkerRunner::new(source, handlers, &state.config, state.clock.clone())

@@ -44,7 +44,7 @@ pub(crate) mod test_support {
     pub fn request_link(store: &MemStore, mail: &Arc<CaptureMailer>) -> RequestMagicLink {
         RequestMagicLink::new(
             Arc::new(store.clone()),
-            Arc::new(MemRateLimiter::default()),
+            (Arc::new(MemRateLimiter::default()), 1000),
             mail.clone(),
             WEB.into(),
             Arc::new(SystemClock),

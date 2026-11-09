@@ -62,6 +62,39 @@ async fn reset(ctx: &TestApp) {
 
 #[tokio::test]
 #[serial]
+async fn announcement_mails_each_row_once_and_sets_announced_at() {
+    use opsagent_brain::{actions::waitlist::AnnounceWaitlist, adapters::db::PgWaitlist};
+    use opsagent_core::{repo::SystemClock, user::SignupAllowlist};
+    serve(|req, ctx| async move {
+        reset(&ctx).await;
+        for email in ["a@b.io", "c@d.io"] {
+            let res = req
+                .post("/v1/waitlist")
+                .json(&json!({ "email": email }))
+                .await;
+            assert_eq!(res.status_code(), 202);
+        }
+        let mail = Arc::new(opsagent_brain::mailers::CaptureMailer::default());
+        let announce = AnnounceWaitlist::new(
+            Arc::new(PgWaitlist(ctx.db.clone())),
+            mail.clone(),
+            Arc::new(SystemClock),
+            SignupAllowlist::parse("*"),
+            "https://opsagent.dev".into(),
+            std::time::Duration::ZERO,
+        );
+        let first = announce.run().await.unwrap();
+        assert_eq!(first.sent, 2);
+        assert_eq!(announce.run().await.unwrap().sent, 0);
+        assert_eq!(mail.sent().len(), 2);
+        let rows = waitlist_entries::Entity::find().all(&ctx.db).await.unwrap();
+        assert!(rows.iter().all(|r| r.announced_at.is_some()));
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn new_email_is_accepted() {
     serve(|req, ctx| async move {
         reset(&ctx).await;

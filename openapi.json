@@ -5002,7 +5002,8 @@
           "cancel_at_period_end",
           "quantity",
           "over_limit",
-          "enforced"
+          "enforced",
+          "trial_available"
         ],
         "properties": {
           "cancel_at_period_end": {
@@ -5050,6 +5051,10 @@
               "null"
             ],
             "description": "`starter`, `team` or `scale`."
+          },
+          "trial_available": {
+            "type": "boolean",
+            "description": "A first checkout on `team` would start the 14-day trial; false once this\norganisation's creator really started one on another (deleted ones included)."
           },
           "trial_ends_at": {
             "type": [
@@ -5176,7 +5181,7 @@
               "string",
               "null"
             ],
-            "description": "`starter`, `team` (default) or `scale`. Only a first subscription on `team` gets the trial."
+            "description": "`starter`, `team` (default) or `scale`. Only a first subscription on `team` gets the\ntrial, and only while `trial_available`."
           }
         }
       },

@@ -106,7 +106,7 @@ mod tests {
             |mins| -> Arc<dyn Clock> { Arc::new(FixedClock(issued + Duration::minutes(mins))) };
         let request = RequestMagicLink::new(
             Arc::new(store.clone()),
-            Arc::new(MemRateLimiter::default()),
+            (Arc::new(MemRateLimiter::default()), 1000),
             mail.clone(),
             WEB.into(),
             at(0),

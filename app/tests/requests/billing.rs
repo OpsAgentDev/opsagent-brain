@@ -183,6 +183,99 @@ async fn checkout_owner_only_and_returns_url() {
 
 #[tokio::test]
 #[serial]
+async fn one_trial_per_creator_even_after_deleting_the_organisation() {
+    let api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/customers"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "cus_second" })))
+        .mount(&api)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/checkout/sessions"))
+        .and(body_string_contains("trial_period_days"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "url": "https://checkout.test/t" })),
+        )
+        .expect(1)
+        .mount(&api)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/checkout/sessions"))
+        .and(|r: &wiremock::Request| !String::from_utf8_lossy(&r.body).contains("trial"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "url": "https://checkout.test/n" })),
+        )
+        .expect(1)
+        .mount(&api)
+        .await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        // The organisation's own customer id does not cost it the trial.
+        let (t, first, first_id) = org_with_customer(&req, &ctx).await;
+        assert_eq!(get_billing(&req, &first).await["trial_available"], true);
+        let res = checkout(&req, &t, &first, json!({})).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        assert_eq!(res.json::<Value>()["url"], "https://checkout.test/t");
+
+        // The trial really started, and ended; deleting the organisation does not refund it.
+        let trial = SubscriptionState {
+            subscription_id: "sub_t".into(),
+            status: B::TrialEnded,
+            tier: Some(Tier::Team),
+            quantity: 1,
+            trial_ends_at: Some(at(10)),
+            current_period_start: Some(at(0)),
+            current_period_end: Some(at(10)),
+            cancel_at_period_end: false,
+        };
+        let pg = Pg::new(&ctx.db);
+        assert!(pg
+            .apply_subscription(first_id, &trial, at(20))
+            .await
+            .unwrap());
+        assert_eq!(delete_org(&req, &t, &first).await.status_code(), 204);
+        let second = slug(&create_org(&req, &t, "Second").await);
+        assert_eq!(get_billing(&req, &second).await["trial_available"], false);
+        let res = checkout(&req, &t, &second, json!({})).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        assert_eq!(res.json::<Value>()["url"], "https://checkout.test/n");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn abandoned_checkout_on_one_org_leaves_the_trial_on_another() {
+    let api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/customers"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "cus_b" })))
+        .mount(&api)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/checkout/sessions"))
+        .and(body_string_contains("trial_period_days"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "url": "https://checkout.test/t" })),
+        )
+        .expect(2)
+        .mount(&api)
+        .await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (t, a, _) = org_with_customer(&req, &ctx).await;
+        let res = checkout(&req, &t, &a, json!({})).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        // Never completed: organisation B still has the trial, and A keeps it too.
+        let b = slug(&create_org(&req, &t, "Beta").await);
+        assert_eq!(get_billing(&req, &b).await["trial_available"], true);
+        let res = checkout(&req, &t, &b, json!({})).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        assert_eq!(get_billing(&req, &a).await["trial_available"], true);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn checkout_after_cancel_buys_the_tier_without_trial() {
     let api = MockServer::start().await;
     Mock::given(method("POST"))

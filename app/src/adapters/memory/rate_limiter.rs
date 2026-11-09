@@ -4,8 +4,12 @@ use std::{
 };
 
 use async_trait::async_trait;
+use sea_orm::prelude::Decimal;
 
-use crate::{actions::RateLimiter, error::AppResult};
+use crate::{
+    actions::{ai::CreditTally, RateLimiter},
+    error::AppResult,
+};
 
 /// In-memory `RateLimiter`.
 // shortcut: windows never expire; tests that need expiry use Redis.
@@ -13,6 +17,21 @@ use crate::{actions::RateLimiter, error::AppResult};
 pub struct MemRateLimiter {
     counts: Mutex<HashMap<String, i64>>,
     sets: Mutex<HashMap<String, HashSet<String>>>,
+    credits: Mutex<HashMap<String, Decimal>>,
+}
+
+#[async_trait]
+impl CreditTally for MemRateLimiter {
+    async fn total(&self, key: &str) -> AppResult<Decimal> {
+        let credits = self.credits.lock().unwrap_or_else(|p| p.into_inner());
+        Ok(credits.get(key).copied().unwrap_or_default())
+    }
+
+    async fn add(&self, key: &str, credits: Decimal, _window_secs: i64) -> AppResult<()> {
+        let mut all = self.credits.lock().unwrap_or_else(|p| p.into_inner());
+        *all.entry(key.into()).or_default() += credits;
+        Ok(())
+    }
 }
 
 #[async_trait]

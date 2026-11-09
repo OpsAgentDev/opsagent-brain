@@ -138,6 +138,8 @@ pub struct BillingView {
     pub over_limit: bool,
     /// `BILLING_ENFORCED`.
     pub enforced: bool,
+    /// A first checkout on `team` would start the 14-day trial.
+    pub trial_available: bool,
 }
 
 pub struct GetBilling {
@@ -160,6 +162,12 @@ impl GetBilling {
             true => sub.map_or(1, |s| s.quantity.max(1)),
             false => 0,
         };
+        let trial_available = b.status == BillingStatus::None
+            && !self
+                .uow
+                .billing()
+                .creator_used_trial_elsewhere(organisation_id)
+                .await?;
         let over_limit = match limits {
             Some(l) => gate::Usage::of(&*self.uow, organisation_id).await?.over(l),
             None => false,
@@ -175,6 +183,7 @@ impl GetBilling {
             limits,
             over_limit,
             enforced: self.settings.enforced,
+            trial_available,
         })
     }
 }

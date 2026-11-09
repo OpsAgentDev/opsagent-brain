@@ -7,6 +7,7 @@ use opsagent_core::{
         BillingRepo, BillingStatus as B, OrgBilling, SubscriptionState, REVOKED_AT_PERIOD_END,
     },
     connection::ConnectionStatus as S,
+    org::Role,
     repo::RepoResult,
 };
 use uuid::Uuid;
@@ -62,6 +63,8 @@ impl BillingRepo for MemStore {
         let payment_newer = live && row.payment_at.is_some_and(|at| at > event_created);
         let b = &mut row.billing;
         let mut sub = sub.clone();
+        let stored_trial = b.subscription.as_ref().and_then(|t| t.trial_ends_at);
+        sub.trial_ends_at = sub.trial_ends_at.or(stored_trial);
         if payment_newer || (sub.status == B::PastDue && b.status == B::Paused) {
             sub.status = b.status;
         }
@@ -134,6 +137,28 @@ impl BillingRepo for MemStore {
             .collect();
         ids.sort();
         Ok(ids)
+    }
+
+    async fn creator_used_trial_elsewhere(&self, organisation_id: Uuid) -> RepoResult<bool> {
+        let s = self.state();
+        let creator = |org: Uuid| {
+            s.members
+                .iter()
+                .filter(|m| m.organisation_id == org && m.role == Role::Owner)
+                .min_by_key(|m| m.created_at)
+                .map(|m| m.user_id)
+        };
+        let Some(mine) = creator(organisation_id) else {
+            return Ok(false);
+        };
+        Ok(s.billing.iter().any(|(org, r)| {
+            let trial = r
+                .billing
+                .subscription
+                .as_ref()
+                .and_then(|t| t.trial_ends_at);
+            *org != organisation_id && trial.is_some() && creator(*org) == Some(mine)
+        }))
     }
 
     async fn lock_seats(&self, _organisation_id: Uuid) -> RepoResult<()> {

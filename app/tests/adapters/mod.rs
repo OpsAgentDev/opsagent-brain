@@ -1,5 +1,6 @@
 mod anthropic;
 mod openai;
+mod rate_limiter;
 mod slack;
 mod stripe;
 mod turnstile;

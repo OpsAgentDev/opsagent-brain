@@ -7,6 +7,7 @@ mod chat;
 mod connections;
 mod contact;
 mod deliveries;
+mod failures;
 mod findings;
 mod human_reviews;
 mod integrations;
@@ -53,6 +54,7 @@ use sea_orm::{
 
 pub use connections::status_of;
 pub use contact::PgContact;
+pub use failures::PgFailures;
 pub use page::page;
 pub use waitlist::PgWaitlist;
 

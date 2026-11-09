@@ -22,10 +22,13 @@ pub const WEEKLY: &str = "0 9 * * 1";
 pub const RETENTION_CRON: &str = "30 3 * * *";
 /// The global nightly `billing_sync` run, 04:00 UTC (billing.md).
 pub const BILLING_SYNC_CRON: &str = "0 4 * * *";
+/// The global nightly operator notice, 05:00 UTC, after both of the above.
+pub const OPERATOR_NOTICE_CRON: &str = "0 5 * * *";
 /// The global schedules: (job type, cron in UTC).
-pub const GLOBAL: [(&str, &str); 2] = [
+pub const GLOBAL: [(&str, &str); 3] = [
     ("retention", RETENTION_CRON),
     ("billing_sync", BILLING_SYNC_CRON),
+    ("operator_notice", OPERATOR_NOTICE_CRON),
 ];
 
 /// `HH:MM` local as a daily cron (`M H * * *`).
