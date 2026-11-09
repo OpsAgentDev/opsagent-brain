@@ -8,7 +8,8 @@ use sea_orm::{
 use super::severity;
 use crate::{adapters::db::db_err, models::_entities::findings};
 
-/// `Severity::rank` in SQL; keep the two in step (the contract tests cover it).
+/// `Severity::rank` in SQL; keep the two in step (the contract tests cover it). The index
+/// `findings_list_order_idx` repeats this expression: change them together.
 const RANK: &str = "CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 \
                     WHEN 'low' THEN 3 ELSE 4 END";
 
