@@ -619,7 +619,11 @@ async fn delete_me(
     AuthUser(id): AuthUser,
     ApiJson(body): ApiJson<DeleteAccountRequest>,
 ) -> Result<StatusCode, ApiError> {
-    app.actions.auth.delete_account.run(id, &body.confirm).await?;
+    app.actions
+        .auth
+        .delete_account
+        .run(id, &body.confirm)
+        .await?;
     session.flush().await?;
     Ok(StatusCode::NO_CONTENT)
 }

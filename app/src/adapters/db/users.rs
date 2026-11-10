@@ -94,7 +94,10 @@ impl<C: Conn> UsersRepo for Pg<C> {
             .await
             .map_err(db_err)?;
         users::Entity::update_many()
-            .col_expr(users::Column::Email, Expr::value(format!("deleted+{id}@deleted.invalid")))
+            .col_expr(
+                users::Column::Email,
+                Expr::value(format!("deleted+{id}@deleted.invalid")),
+            )
             .col_expr(users::Column::Name, Expr::value(Option::<String>::None))
             .col_expr(users::Column::GithubId, Expr::value(Option::<String>::None))
             .col_expr(users::Column::GoogleId, Expr::value(Option::<String>::None))

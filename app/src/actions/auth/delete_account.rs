@@ -113,7 +113,10 @@ mod tests {
         let store = MemStore::default();
         let u = user(&store, "pat@example.com").await;
         let (status, code, _) = refused(action(&store).run(u.id, "pat@").await.unwrap_err());
-        assert_eq!((status, code), (StatusCode::UNPROCESSABLE_ENTITY, "confirm_mismatch"));
+        assert_eq!(
+            (status, code),
+            (StatusCode::UNPROCESSABLE_ENTITY, "confirm_mismatch")
+        );
         assert!(UsersRepo::get(&store, u.id).await.unwrap().is_some());
     }
 
@@ -121,8 +124,12 @@ mod tests {
     async fn the_only_owner_is_refused_and_told_which_organisation() {
         let store = MemStore::default();
         let (owner, org) = owned_org(&store, "only@example.com", "Solo").await;
-        let (status, code, detail) =
-            refused(action(&store).run(owner.id, "ONLY@example.com").await.unwrap_err());
+        let (status, code, detail) = refused(
+            action(&store)
+                .run(owner.id, "ONLY@example.com")
+                .await
+                .unwrap_err(),
+        );
         assert_eq!((status, code), (StatusCode::CONFLICT, "last_owner"));
         assert!(detail.contains("Solo"), "{detail}");
         assert_eq!(store.members(org.id).await.unwrap().len(), 1);
@@ -134,21 +141,40 @@ mod tests {
         let store = MemStore::default();
         let (owner, org) = owned_org(&store, "boss@example.com", "Acme").await;
         let pat = user(&store, "pat@example.com").await;
-        store.add_member(org.id, pat.id, Role::Member).await.unwrap();
+        store
+            .add_member(org.id, pat.id, Role::Member)
+            .await
+            .unwrap();
         // Pat co-owns a second organisation with someone else, so leaving it is allowed.
         let (other_owner, org2) = owned_org(&store, "sam@example.com", "Beta").await;
-        store.add_member(org2.id, pat.id, Role::Owner).await.unwrap();
+        store
+            .add_member(org2.id, pat.id, Role::Owner)
+            .await
+            .unwrap();
 
-        action(&store).run(pat.id, " pat@example.com ").await.unwrap();
+        action(&store)
+            .run(pat.id, " pat@example.com ")
+            .await
+            .unwrap();
 
         assert!(UsersRepo::get(&store, pat.id).await.unwrap().is_none());
         let email = opsagent_core::user::Email::parse("pat@example.com").unwrap();
         assert!(store.find_by_email(&email).await.unwrap().is_none());
         for (o, left) in [(org.id, owner.id), (org2.id, other_owner.id)] {
-            let ids: Vec<_> = store.members(o).await.unwrap().into_iter().map(|m| m.user_id).collect();
+            let ids: Vec<_> = store
+                .members(o)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|m| m.user_id)
+                .collect();
             assert_eq!(ids, [left]);
         }
-        let actions: Vec<_> = store.audit_entries().into_iter().map(|e| e.action).collect();
+        let actions: Vec<_> = store
+            .audit_entries()
+            .into_iter()
+            .map(|e| e.action)
+            .collect();
         assert_eq!(actions.iter().filter(|a| *a == "member.remove").count(), 2);
         assert!(actions.iter().any(|a| a == "user.delete"));
     }
