@@ -603,6 +603,27 @@ async fn me(State(app): State<AppState>, AuthUser(id): AuthUser) -> Result<Json<
     }))
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct DeleteAccountRequest {
+    /// The account's email address, typed to confirm.
+    pub confirm: String,
+}
+
+#[utoipa::path(delete, path = "/auth/me", tag = "auth", request_body = DeleteAccountRequest,
+    responses((status = 204), (status = 401, body = Problem),
+        (status = 409, body = Problem, description = "`last_owner`: the only owner of an organisation"),
+        (status = 422, body = Problem, description = "`confirm_mismatch`: the email was not typed exactly")))]
+async fn delete_me(
+    State(app): State<AppState>,
+    session: Session,
+    AuthUser(id): AuthUser,
+    ApiJson(body): ApiJson<DeleteAccountRequest>,
+) -> Result<StatusCode, ApiError> {
+    app.actions.auth.delete_account.run(id, &body.confirm).await?;
+    session.flush().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(request_link))
@@ -614,7 +635,7 @@ pub fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(google_callback))
         .routes(routes!(csrf_token))
         .routes(routes!(sign_out))
-        .routes(routes!(me))
+        .routes(routes!(me, delete_me))
 }
 
 #[cfg(test)]

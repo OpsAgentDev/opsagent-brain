@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::{db_err, email, utc, Conn, Pg};
 use crate::models::{
-    _entities::{magic_links, users},
+    _entities::{magic_links, passkeys, users},
     now,
 };
 
@@ -50,6 +50,7 @@ fn new_user(
         google_id: Set(google_id),
         created_at: Set(now()),
         updated_at: Set(now()),
+        deleted_at: Set(None),
     }
 }
 
@@ -60,6 +61,7 @@ impl<C: Conn> Pg<C> {
     ) -> RepoResult<Option<User>> {
         users::Entity::find()
             .filter(filter)
+            .filter(users::Column::DeletedAt.is_null())
             .one(self.db())
             .await
             .map_err(db_err)?
@@ -77,6 +79,32 @@ impl<C: Conn> UsersRepo for Pg<C> {
     async fn find_by_email(&self, email: &Email) -> RepoResult<Option<User>> {
         self.user_where(users::Column::Email.eq(email.as_str()))
             .await
+    }
+
+    async fn erase(&self, id: Uuid, at: DateTime<Utc>) -> RepoResult<()> {
+        let db = self.db();
+        passkeys::Entity::delete_many()
+            .filter(passkeys::Column::UserId.eq(id))
+            .exec(db)
+            .await
+            .map_err(db_err)?;
+        magic_links::Entity::delete_many()
+            .filter(magic_links::Column::UserId.eq(id))
+            .exec(db)
+            .await
+            .map_err(db_err)?;
+        users::Entity::update_many()
+            .col_expr(users::Column::Email, Expr::value(format!("deleted+{id}@deleted.invalid")))
+            .col_expr(users::Column::Name, Expr::value(Option::<String>::None))
+            .col_expr(users::Column::GithubId, Expr::value(Option::<String>::None))
+            .col_expr(users::Column::GoogleId, Expr::value(Option::<String>::None))
+            .col_expr(users::Column::DeletedAt, Expr::value(at.fixed_offset()))
+            .col_expr(users::Column::UpdatedAt, Expr::value(now()))
+            .filter(users::Column::Id.eq(id))
+            .exec(db)
+            .await
+            .map_err(db_err)?;
+        Ok(())
     }
 
     async fn find_or_create_by_email(&self, email: &Email) -> RepoResult<User> {

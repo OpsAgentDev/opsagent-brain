@@ -351,6 +351,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.config.signup_allowed_domains.clone(),
             ),
             current_user: auth::CurrentUser::new(d.uow.clone()),
+            delete_account: auth::DeleteAccount::new(d.uow.clone(), d.clock.clone()),
             passkeys: auth::Passkeys::new(d.uow.clone(), d.webauthn.clone(), d.clock.clone()),
         },
         orgs: orgs::Orgs {
