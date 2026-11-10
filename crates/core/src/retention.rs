@@ -92,6 +92,12 @@ pub trait RetentionRepo: Send + Sync {
     /// evidence, no finding pointing at it and no `alert:baseline` side effect.
     async fn prune_runs(&self, older_than: DateTime<Utc>, batch: u64) -> RepoResult<u64>;
 
+    /// Deletes at most `batch` users created before `cutoff` who never proved their email:
+    /// no membership, passkey, linked GitHub or Google id, redeemed or still-live magic link,
+    /// or `auth.sign_in` audit entry, and not already erased. Their magic links go with them.
+    /// Returns how many users.
+    async fn delete_unproven_users(&self, cutoff: DateTime<Utc>, batch: u64) -> RepoResult<u64>;
+
     /// Organisations soft-deleted before `deleted_before`, oldest deletion first; busy when
     /// they have a queued run or a running run started (or, unstarted, scheduled) after
     /// `busy_since`.

@@ -202,6 +202,33 @@ impl super::MemState {
 
 #[async_trait]
 impl RetentionRepo for MemStore {
+    async fn delete_unproven_users(&self, cutoff: DateTime<Utc>, batch: u64) -> RepoResult<u64> {
+        let mut s = self.state();
+        let now = Utc::now();
+        let doomed: Vec<Uuid> = s
+            .users
+            .iter()
+            .filter(|u| u.created_at < cutoff && u.github_id.is_none() && u.google_id.is_none())
+            .filter(|u| !s.members.iter().any(|m| m.user_id == u.id))
+            .filter(|u| !s.passkeys.iter().any(|p| p.user_id == u.id))
+            .filter(|u| {
+                !s.magic_links
+                    .iter()
+                    .any(|l| l.user_id == u.id && (l.used || l.expires_at > now))
+            })
+            .filter(|u| {
+                !s.audit
+                    .iter()
+                    .any(|a| a.action == "auth.sign_in" && a.actor == Actor::Member(u.id))
+            })
+            .map(|u| u.id)
+            .take(usize::try_from(batch).unwrap_or(usize::MAX))
+            .collect();
+        s.magic_links.retain(|l| !doomed.contains(&l.user_id));
+        s.users.retain(|u| !doomed.contains(&u.id));
+        Ok(doomed.len() as u64)
+    }
+
     async fn delete_expired(
         &self,
         table: TtlTable,
