@@ -37,6 +37,7 @@ Worker variables (optional; read by `start --worker` and `start --server-and-wor
 | Variable | Default | Purpose |
 |---|---|---|
 | `WORKER_CONCURRENCY` | `4` | jobs run at once per worker process |
+| `WORKER_SCAN_SLOTS` | `2` | full scans at once per worker (never every slot); an organisation runs one full scan at a time |
 | `WORKER_POLL_MS` | `1000` | idle poll interval of the `jobs` table |
 | `JOB_LOCK_MAX_AGE_SECS` | `25200` (7 h, above the 6 h scan cap) | a job lock older than this is taken over; the ledger fence rejects the dead writer |
 | `WORKER_SHUTDOWN_GRACE_SECS` | `30` | on SIGTERM, time in-flight jobs get to finish; keep below `DRAINING_SECONDS` | Local compose values live in `.env.docker.example`.

@@ -150,8 +150,9 @@ async fn enqueue_twice_for_one_run_keeps_one_job() {
 #[serial]
 async fn two_concurrent_dequeues_never_get_the_same_job() {
     let l = lane().await;
+    // Verify jobs: one organisation's full scans are deliberately handed out one at a time.
     for _ in 0..20 {
-        l.job(JobKind::FullScan).await;
+        l.job(JobKind::Verify).await;
     }
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let other = PgQueue(Database::connect(url).await.unwrap());
@@ -363,8 +364,8 @@ async fn stale_worker_cannot_complete_or_fail_after_takeover() {
 #[serial]
 async fn release_mine_unlocks_only_own_rows() {
     let l = lane().await;
-    l.job(JobKind::FullScan).await;
-    l.job(JobKind::FullScan).await;
+    l.job(JobKind::Verify).await;
+    l.job(JobKind::Verify).await;
     let mine = l.dequeue("w1").await.unwrap();
     let theirs = l.dequeue("w2").await.unwrap();
     assert_eq!(l.q.release_mine("w1").await.unwrap(), 1);
@@ -381,6 +382,34 @@ async fn release_mine_unlocks_only_own_rows() {
     assert_eq!((next.id, next.attempts), (mine.id, 1));
     assert_ne!(next.id, theirs.id);
     assert!(l.dequeue("w3").await.is_none());
+}
+
+#[tokio::test]
+#[serial]
+async fn an_organisation_runs_one_full_scan_at_a_time() {
+    let l = lane().await;
+    l.job(JobKind::FullScan).await;
+    l.job(JobKind::FullScan).await;
+    let first = l.dequeue("w1").await.unwrap();
+    assert_eq!(first.kind, JobKind::FullScan);
+    // The same organisation's second scan waits; another organisation's does not.
+    assert!(l.dequeue("w2").await.is_none());
+    let other_org = org_id(&l.store, "q2").await;
+    let other_conn = l.seed.connection(other_org).await;
+    let key = RunKey {
+        organisation_id: Some(other_org),
+        connection_id: Some(other_conn),
+        job_type: "full_scan".into(),
+        scheduled_at: Utc::now().trunc_subsecs(0),
+    };
+    let run = l.store.ledger().create_run(key).await.unwrap().run.id;
+    l.q.enqueue(new_job(JobKind::FullScan, run, Utc::now()))
+        .await
+        .unwrap();
+    assert_eq!(l.dequeue("w2").await.unwrap().run_id, run);
+    // Once the first finishes, the waiting scan is handed out.
+    assert!(l.q.complete(&first).await.unwrap());
+    assert_eq!(l.dequeue("w3").await.unwrap().kind, JobKind::FullScan);
 }
 
 #[tokio::test]

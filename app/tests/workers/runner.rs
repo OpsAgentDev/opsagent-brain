@@ -111,18 +111,29 @@ async fn runner_handles_each_kind_once() {
     assert_eq!(w.drain().await.unwrap(), 0);
 }
 
-/// Holds each job for a while, counting how many run at once.
-#[derive(Default)]
+/// Holds each job of `kind` for a while, counting how many run at once.
 struct Slow {
+    kind: JobKind,
     now: AtomicUsize,
     max: AtomicUsize,
     done: AtomicUsize,
 }
 
+impl Slow {
+    fn new(kind: JobKind) -> Self {
+        Self {
+            kind,
+            now: AtomicUsize::new(0),
+            max: AtomicUsize::new(0),
+            done: AtomicUsize::new(0),
+        }
+    }
+}
+
 #[async_trait]
 impl JobHandler for Slow {
     fn kind(&self) -> JobKind {
-        JobKind::FullScan
+        self.kind
     }
     async fn handle(&self, _: Uuid) -> AppResult<()> {
         let n = self.now.fetch_add(1, SeqCst) + 1;
@@ -139,9 +150,9 @@ impl JobHandler for Slow {
 async fn runner_respects_concurrency() {
     let ctx = TestApp::boot().await;
     for i in 0..6 {
-        enqueue(&ctx, JobKind::FullScan, new_run(&ctx, i).await).await;
+        enqueue(&ctx, JobKind::Verify, new_run(&ctx, i).await).await;
     }
-    let slow = Arc::new(Slow::default());
+    let slow = Arc::new(Slow::new(JobKind::Verify));
     let w = runner(&ctx, vec![slow.clone()], |c| {
         c.worker_concurrency = 2;
         c.worker_poll_ms = 10;
@@ -155,6 +166,41 @@ async fn runner_respects_concurrency() {
     let ran = tokio::time::timeout(Duration::from_secs(20), w.run(all_done)).await;
     ran.expect("runner stops").unwrap();
     assert_eq!(slow.max.load(SeqCst), 2, "two at once, never more");
+}
+
+#[tokio::test]
+#[serial]
+async fn full_scans_leave_slots_for_other_jobs() {
+    let ctx = TestApp::boot().await;
+    for i in 0..4 {
+        enqueue(&ctx, JobKind::FullScan, new_run(&ctx, i).await).await;
+    }
+    for i in 4..7 {
+        enqueue(&ctx, JobKind::Verify, new_run(&ctx, i).await).await;
+    }
+    let (scans, verifies) = (
+        Arc::new(Slow::new(JobKind::FullScan)),
+        Arc::new(Slow::new(JobKind::Verify)),
+    );
+    let w = runner(&ctx, vec![scans.clone(), verifies.clone()], |c| {
+        c.worker_concurrency = 3;
+        c.worker_scan_slots = 1;
+        c.worker_poll_ms = 10;
+    });
+    let (s, v) = (scans.clone(), verifies.clone());
+    let all_done = async move {
+        while s.done.load(SeqCst) < 4 || v.done.load(SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    let ran = tokio::time::timeout(Duration::from_secs(20), w.run(all_done)).await;
+    ran.expect("runner stops").unwrap();
+    assert_eq!(scans.max.load(SeqCst), 1, "one full scan at a time");
+    assert_eq!(
+        verifies.max.load(SeqCst),
+        2,
+        "the other two slots stay with short jobs"
+    );
 }
 
 struct Fails(JobKind);
