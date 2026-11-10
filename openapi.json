@@ -4938,26 +4938,39 @@
         },
         "responses": {
           "202": {
-            "description": "On the waitlist"
-          },
-          "400": {
-            "description": "Security check failed (`challenge_failed`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
+            "description": "Listed, unverified until the emailed link is used"
           },
           "422": {
             "description": "Invalid email or source"
           },
           "429": {
             "description": "Rate limited (10 per client IP per hour)"
+          }
+        }
+      }
+    },
+    "/waitlist/verify": {
+      "post": {
+        "tags": [
+          "waitlist"
+        ],
+        "operationId": "waitlist_verify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitlistVerifyRequest"
+              }
+            }
           },
-          "503": {
-            "description": "Security check unavailable (`challenge_unavailable`)",
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Email confirmed"
+          },
+          "410": {
+            "description": "`waitlist_link_invalid`: unknown, replaced or already used",
             "content": {
               "application/json": {
                 "schema": {
@@ -7638,7 +7651,19 @@
               "string",
               "null"
             ],
-            "description": "The Cloudflare Turnstile token; required when the deployment checks it."
+            "description": "Ignored: the waitlist no longer uses Turnstile. Accepted so older pages keep working."
+          }
+        }
+      },
+      "WaitlistVerifyRequest": {
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The token from the confirmation email's link."
           }
         }
       }

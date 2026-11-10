@@ -6,13 +6,17 @@ use super::WaitlistStore;
 use crate::{
     actions::{hit_ip, RateLimiter, HOUR_SECS},
     error::AppResult,
-    mailers::{waitlist::waitlist_confirmation, Mailer},
+    mailers::{waitlist::waitlist_verify, Mailer},
+    tokens::{hash_token, new_token},
 };
 
 /// Joins per client IP (IPv6: per /64) per hour; duplicates count.
 pub const PER_IP: i64 = 10;
 /// Confirmation mails per hour across all clients; over it the row is kept, the mail skipped.
 pub const GLOBAL_SENDS: i64 = 200;
+/// An unverified address is mailed again at most once per this window (a lost link can be
+/// re-requested, an address cannot be flooded).
+pub const RESEND_AFTER_SECS: i64 = HOUR_SECS;
 /// Longest accepted `source`.
 pub const SOURCE_MAX: usize = 64;
 
@@ -36,6 +40,7 @@ pub struct JoinWaitlist {
     limiter: Arc<dyn RateLimiter>,
     mailer: Arc<dyn Mailer>,
     clock: Arc<dyn Clock>,
+    web_base_url: String,
 }
 
 impl JoinWaitlist {
@@ -44,12 +49,14 @@ impl JoinWaitlist {
         limiter: Arc<dyn RateLimiter>,
         mailer: Arc<dyn Mailer>,
         clock: Arc<dyn Clock>,
+        web_base_url: String,
     ) -> Self {
         Self {
             store,
             limiter,
             mailer,
             clock,
+            web_base_url,
         }
     }
 
@@ -81,7 +88,12 @@ impl JoinWaitlist {
         {
             return Ok(JoinOutcome::Invalid);
         }
-        if let Some(id) = self.store.insert(&email, input.source.as_deref()).await? {
+        let token = new_token();
+        let token_hash = hash_token(&token);
+        let inserted = self
+            .store
+            .insert(&email, input.source.as_deref(), &token_hash);
+        if let Some(id) = inserted.await? {
             tracing::info!(entry_id = %id, "waitlist entry added");
             // Off the request path so latency does not reveal a fresh address from a duplicate.
             // A send lost on shutdown leaves confirmation_sent_at null, which is accepted.
@@ -93,6 +105,11 @@ impl JoinWaitlist {
                 self.clock.clone(),
             );
             let to = email.as_str().to_owned();
+            // The token rides in the fragment, which browsers never send to a server or a referrer.
+            let link = format!(
+                "{}/waitlist/verify#{token}",
+                self.web_base_url.trim_end_matches('/')
+            );
             tokio::spawn(async move {
                 match limiter
                     .hit("waitlist:global", GLOBAL_SENDS, HOUR_SECS)
@@ -104,7 +121,7 @@ impl JoinWaitlist {
                         return;
                     }
                 }
-                if mailer.send(waitlist_confirmation(&to)).await.is_err() {
+                if mailer.send(waitlist_verify(&to, &link)).await.is_err() {
                     tracing::warn!(entry_id = %id, "waitlist confirmation not sent");
                 } else if store.mark_confirmed(id, clock.now()).await.is_err() {
                     tracing::warn!(entry_id = %id, "waitlist confirmation not recorded");
@@ -144,8 +161,16 @@ mod tests {
 
     #[async_trait]
     impl WaitlistStore for NoStore {
-        async fn insert(&self, _: &Email, _: Option<&str>) -> AppResult<Option<uuid::Uuid>> {
+        async fn insert(
+            &self,
+            _: &Email,
+            _: Option<&str>,
+            _: &str,
+        ) -> AppResult<Option<uuid::Uuid>> {
             panic!("must not reach the store")
+        }
+        async fn verify(&self, _: &str, _: chrono::DateTime<chrono::Utc>) -> AppResult<bool> {
+            unreachable!()
         }
         async fn mark_confirmed(
             &self,
@@ -189,8 +214,16 @@ mod tests {
 
     #[async_trait]
     impl WaitlistStore for FlakyStore {
-        async fn insert(&self, _: &Email, _: Option<&str>) -> AppResult<Option<uuid::Uuid>> {
+        async fn insert(
+            &self,
+            _: &Email,
+            _: Option<&str>,
+            _: &str,
+        ) -> AppResult<Option<uuid::Uuid>> {
             Ok(Some(uuid::Uuid::new_v4()))
+        }
+        async fn verify(&self, _: &str, _: chrono::DateTime<chrono::Utc>) -> AppResult<bool> {
+            unreachable!()
         }
         async fn mark_confirmed(
             &self,
@@ -231,6 +264,7 @@ mod tests {
             Arc::new(GlobalLimiter(Ok(true))),
             mail.clone(),
             Arc::new(SystemClock),
+            "https://web.test".into(),
         );
         assert_eq!(join.run(input()).await.unwrap(), JoinOutcome::Accepted);
         until(|| store.marks.load(std::sync::atomic::Ordering::SeqCst) == 1).await;
@@ -249,6 +283,7 @@ mod tests {
                 Arc::new(GlobalLimiter(g)),
                 mail.clone(),
                 Arc::new(SystemClock),
+                "https://web.test".into(),
             );
             assert_eq!(join.run(input()).await.unwrap(), JoinOutcome::Accepted);
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -265,6 +300,7 @@ mod tests {
             Arc::new(BrokenLimiter),
             mail.clone(),
             Arc::new(SystemClock),
+            "https://web.test".into(),
         );
         let input = JoinInput {
             email: "a@b.io".into(),

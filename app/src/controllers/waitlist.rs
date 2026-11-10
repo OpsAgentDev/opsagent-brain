@@ -1,4 +1,5 @@
-//! `POST /v1/waitlist`: anonymous sign-up for the landing page.
+//! `POST /v1/waitlist`: anonymous sign-up for the landing page, confirmed by email (double
+//! opt-in) rather than a Turnstile check; `POST /v1/waitlist/verify` takes the emailed token.
 use axum::{extract::State, http::StatusCode};
 use serde::Deserialize;
 use utoipa::ToSchema;
@@ -16,26 +17,27 @@ pub struct WaitlistRequest {
     pub email: String,
     /// Where the form sat, at most 64 characters (`landing-hero`, `landing-footer`).
     pub source: Option<String>,
-    /// The Cloudflare Turnstile token; required when the deployment checks it.
+    /// Ignored: the waitlist no longer uses Turnstile. Accepted so older pages keep working.
     pub turnstile_token: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct WaitlistVerifyRequest {
+    /// The token from the confirmation email's link.
+    pub token: String,
 }
 
 /// Always 202 for a valid address, new or already listed, so the response never reveals which.
 #[utoipa::path(post, path = "/waitlist", tag = "waitlist", request_body = WaitlistRequest,
     responses(
-        (status = 202, description = "On the waitlist"),
-        (status = 400, body = Problem, description = "Security check failed (`challenge_failed`)"),
+        (status = 202, description = "Listed, unverified until the emailed link is used"),
         (status = 422, description = "Invalid email or source"),
-        (status = 429, description = "Rate limited (10 per client IP per hour)"),
-        (status = 503, body = Problem, description = "Security check unavailable (`challenge_unavailable`)")))]
+        (status = 429, description = "Rate limited (10 per client IP per hour)")))]
 async fn join(
     State(app): State<AppState>,
     ClientIp(ip): ClientIp,
     ApiJson(body): ApiJson<WaitlistRequest>,
 ) -> Result<StatusCode, ApiError> {
-    app.challenge
-        .verify(body.turnstile_token.as_deref(), ip)
-        .await?;
     let input = JoinInput {
         email: body.email,
         source: body.source,
@@ -51,6 +53,22 @@ async fn join(
     }
 }
 
+#[utoipa::path(post, path = "/waitlist/verify", tag = "waitlist", request_body = WaitlistVerifyRequest,
+    responses(
+        (status = 204, description = "Email confirmed"),
+        (status = 410, body = Problem, description = "`waitlist_link_invalid`: unknown, replaced or already used")))]
+async fn verify(
+    State(app): State<AppState>,
+    ApiJson(body): ApiJson<WaitlistVerifyRequest>,
+) -> Result<StatusCode, ApiError> {
+    if app.actions.waitlist.verify.run(&body.token).await? {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    Err(crate::error::AppError::Gone("waitlist_link_invalid").into())
+}
+
 pub fn api() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new().routes(routes!(join))
+    OpenApiRouter::new()
+        .routes(routes!(join))
+        .routes(routes!(verify))
 }
