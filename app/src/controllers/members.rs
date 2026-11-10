@@ -29,17 +29,39 @@ pub struct Member {
     responses((status = 200, body = Vec<Member>), (status = 404, body = Problem)))]
 async fn list(State(app): State<AppState>, scope: OrgScope) -> Result<Json<Vec<Member>>, ApiError> {
     let rows = app.actions.members.list_members.run(&scope).await?;
-    Ok(Json(
-        rows.into_iter()
-            .map(|m| Member {
-                id: m.id,
-                user_id: m.user_id,
-                email: m.email.as_str().into(),
-                name: m.name,
-                role: m.role.as_str().into(),
-            })
-            .collect(),
-    ))
+    Ok(Json(rows.into_iter().map(member_view).collect()))
+}
+
+fn member_view(m: opsagent_core::org::Member) -> Member {
+    Member {
+        id: m.id,
+        user_id: m.user_id,
+        email: m.email.as_str().into(),
+        name: m.name,
+        role: m.role.as_str().into(),
+    }
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct RolePatch {
+    /// `owner` or `member`.
+    pub role: String,
+}
+
+#[utoipa::path(patch, path = "/orgs/{org}/members/{id}", tag = "members", params(OrgIdPath),
+    request_body = RolePatch,
+    responses((status = 200, body = Member), (status = 403, body = Problem), (status = 404, body = Problem),
+        (status = 409, body = Problem), (status = 422, body = Problem)))]
+async fn change_role(
+    State(app): State<AppState>,
+    scope: OrgScope,
+    Path((_, member_id)): Path<(String, Uuid)>,
+    ApiJson(body): ApiJson<RolePatch>,
+) -> Result<Json<Member>, ApiError> {
+    let actor = scope.member.user_id;
+    let change = &app.actions.members.change_role;
+    let row = change.run(&scope, actor, member_id, &body.role).await?;
+    Ok(Json(member_view(row)))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -55,6 +77,40 @@ pub struct Invite {
     pub email: String,
     pub role: String,
     pub expires_at: DateTime<FixedOffset>,
+    pub created_at: DateTime<FixedOffset>,
+}
+
+fn invite_view(row: opsagent_core::org::Invite) -> Invite {
+    Invite {
+        id: row.id,
+        email: row.email.as_str().into(),
+        role: row.role.as_str().into(),
+        expires_at: row.expires_at.fixed_offset(),
+        created_at: row.created_at.fixed_offset(),
+    }
+}
+
+#[utoipa::path(get, path = "/orgs/{org}/invites", tag = "members", params(OrgPath),
+    responses((status = 200, body = Vec<Invite>), (status = 403, body = Problem), (status = 404, body = Problem)))]
+async fn list_invites(
+    State(app): State<AppState>,
+    scope: OrgScope,
+) -> Result<Json<Vec<Invite>>, ApiError> {
+    let rows = app.actions.members.list_invites.run(&scope).await?;
+    Ok(Json(rows.into_iter().map(invite_view).collect()))
+}
+
+#[utoipa::path(delete, path = "/orgs/{org}/invites/{id}", tag = "members", params(OrgIdPath),
+    responses((status = 204), (status = 403, body = Problem), (status = 404, body = Problem)))]
+async fn revoke_invite(
+    State(app): State<AppState>,
+    scope: OrgScope,
+    Path((_, invite_id)): Path<(String, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    let actor = scope.member.user_id;
+    let revoke = &app.actions.members.revoke_invite;
+    revoke.run(&scope, actor, invite_id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(post, path = "/orgs/{org}/invites", tag = "members", params(OrgPath),
@@ -69,15 +125,7 @@ async fn invite(
     let invite = &app.actions.members.invite_member;
     let actor = scope.member.user_id;
     let row = invite.run(&scope, actor, &body.email, &body.role).await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(Invite {
-            id: row.id,
-            email: row.email.as_str().into(),
-            role: row.role.as_str().into(),
-            expires_at: row.expires_at.fixed_offset(),
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(invite_view(row))))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -135,7 +183,8 @@ async fn remove(
 pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list))
-        .routes(routes!(invite))
-        .routes(routes!(remove))
+        .routes(routes!(invite, list_invites))
+        .routes(routes!(remove, change_role))
+        .routes(routes!(revoke_invite))
         .routes(routes!(accept))
 }

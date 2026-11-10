@@ -92,6 +92,7 @@ pub struct Invite {
     pub role: Role,
     pub expires_at: DateTime<Utc>,
     pub accepted_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[async_trait]
@@ -128,6 +129,13 @@ pub trait OrganisationsRepo: Send + Sync {
     /// Removes the member and cancels the user's pending invites to the organisation; false
     /// when `member_id` is not a member of `organisation_id`.
     async fn remove_member(&self, organisation_id: Uuid, member_id: Uuid) -> RepoResult<bool>;
+    /// Changes the role of a member of `organisation_id`; `None` when it is not one.
+    async fn set_member_role(
+        &self,
+        organisation_id: Uuid,
+        member_id: Uuid,
+        role: Role,
+    ) -> RepoResult<Option<Member>>;
     async fn owner_count(&self, organisation_id: Uuid) -> RepoResult<u64>;
     async fn insert_invite(
         &self,
@@ -139,6 +147,15 @@ pub trait OrganisationsRepo: Send + Sync {
     ) -> RepoResult<Invite>;
     /// Pending invites to the organisation not expired at `now`.
     async fn pending_invites(&self, organisation_id: Uuid, now: DateTime<Utc>) -> RepoResult<u64>;
+    /// Pending, unexpired invites to the organisation, newest first.
+    async fn list_invites(
+        &self,
+        organisation_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<Vec<Invite>>;
+    /// Marks a pending invite revoked (an accepted or expired one is left alone); false when
+    /// `invite_id` is not an invite of `organisation_id`.
+    async fn revoke_invite(&self, organisation_id: Uuid, invite_id: Uuid) -> RepoResult<bool>;
     /// Marks a pending, unexpired invite accepted, once.
     async fn take_invite(&self, token_hash: &str, now: DateTime<Utc>)
         -> RepoResult<Option<Invite>>;
