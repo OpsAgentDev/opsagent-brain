@@ -79,6 +79,8 @@ pub struct Config {
     /// Where the customer-facing CloudFormation templates are served.
     pub template_base_url: String,
     pub worker_concurrency: usize,
+    /// Full scans one worker runs at once; the other slots stay free for short jobs.
+    pub worker_scan_slots: usize,
     pub worker_poll_ms: u64,
     pub job_lock_max_age_secs: u64,
     pub worker_shutdown_grace_secs: u64,
@@ -214,6 +216,7 @@ impl Config {
                 "https://templates.opsagent.dev",
             ),
             worker_concurrency: p(&get, "WORKER_CONCURRENCY", "4")?,
+            worker_scan_slots: p(&get, "WORKER_SCAN_SLOTS", "2")?,
             worker_poll_ms: p(&get, "WORKER_POLL_MS", "1000")?,
             // 420 min, the old reaper age, above the 6 h scan cap.
             job_lock_max_age_secs: p(&get, "JOB_LOCK_MAX_AGE_SECS", "25200")?,

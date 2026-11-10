@@ -1,7 +1,16 @@
 //! Drains the `jobs` table: at most `concurrency` jobs in flight, one poll every `poll` when
 //! idle. A handler error or panic goes through `JobSource::fail` (retry backoff or Dead).
+//! Full scans can run for hours, so at most `scan_slots` of them run at once and the other
+//! slots always stay free for verifies, alerts and briefings.
 use std::{
-    collections::HashMap, future::Future, panic::AssertUnwindSafe, sync::Arc, time::Duration,
+    collections::HashMap,
+    future::Future,
+    panic::AssertUnwindSafe,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 
 use futures::FutureExt;
@@ -16,11 +25,19 @@ use uuid::Uuid;
 use super::JobHandler;
 use crate::{config::Config, error::AppResult};
 
+/// Full-scan slots: `requested`, but at least 1 and, with more than one slot, never all of them.
+fn scan_slots(concurrency: usize, requested: usize) -> usize {
+    let concurrency = concurrency.max(1);
+    requested.clamp(1, concurrency.saturating_sub(1).max(1))
+}
+
 pub struct WorkerRunner {
     source: Arc<dyn JobSource>,
     handlers: HashMap<JobKind, Arc<dyn JobHandler>>,
     worker_id: String,
     concurrency: usize,
+    scan_slots: usize,
+    scans: AtomicUsize,
     poll: Duration,
     lock_max_age: Duration,
     grace: Duration,
@@ -43,6 +60,8 @@ impl WorkerRunner {
             handlers: handlers.into_iter().map(|h| (h.kind(), h)).collect(),
             worker_id: format!("{host}-{}", Uuid::now_v7()),
             concurrency: c.worker_concurrency.max(1),
+            scan_slots: scan_slots(c.worker_concurrency, c.worker_scan_slots),
+            scans: AtomicUsize::new(0),
             poll: Duration::from_millis(c.worker_poll_ms),
             lock_max_age: Duration::from_secs(c.job_lock_max_age_secs),
             grace: Duration::from_secs(c.worker_shutdown_grace_secs),
@@ -55,7 +74,13 @@ impl WorkerRunner {
     }
 
     async fn dequeue(&self) -> AppResult<Option<Job>> {
-        let kinds: Vec<JobKind> = self.handlers.keys().copied().collect();
+        let scans_full = self.scans.load(Ordering::SeqCst) >= self.scan_slots;
+        let kinds: Vec<JobKind> = self
+            .handlers
+            .keys()
+            .copied()
+            .filter(|k| !(scans_full && *k == JobKind::FullScan))
+            .collect();
         let job = self
             .source
             .dequeue(&self.worker_id, &kinds, self.lock_max_age);
@@ -118,8 +143,15 @@ impl WorkerRunner {
             match this.dequeue().await {
                 Ok(Some(job)) => {
                     let r = this.clone();
+                    let scan = job.kind == JobKind::FullScan;
+                    if scan {
+                        this.scans.fetch_add(1, Ordering::SeqCst);
+                    }
                     tasks.spawn(async move {
                         r.process(job).await;
+                        if scan {
+                            r.scans.fetch_sub(1, Ordering::SeqCst);
+                        }
                         drop(slot);
                     });
                     continue;
@@ -143,5 +175,19 @@ impl WorkerRunner {
         let released = this.source.release_mine(&this.worker_id).await?;
         tracing::info!(worker = %this.worker_id, released, "worker stopped");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scan_slots;
+
+    #[test]
+    fn scans_never_take_every_slot() {
+        assert_eq!(scan_slots(4, 2), 2);
+        assert_eq!(scan_slots(4, 9), 3);
+        assert_eq!(scan_slots(4, 0), 1);
+        assert_eq!(scan_slots(2, 2), 1);
+        assert_eq!(scan_slots(1, 2), 1); // one slot: scans must still run
     }
 }

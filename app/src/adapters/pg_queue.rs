@@ -122,7 +122,10 @@ impl JobSource for PgQueue<DatabaseConnection> {
             .is_some()
         {}
         let kinds: Vec<String> = kinds.iter().map(|k| k.as_str().to_owned()).collect();
-        // A stale lock is free unless the job is dead (attempts exhausted).
+        // A stale lock is free unless the job is dead (attempts exhausted). An organisation runs one
+        // full scan at a time, so one large customer cannot hold every scan slot.
+        // shortcut: two workers dequeuing at the same instant can each start one of an
+        // organisation's scans; fine with one worker replica, add an advisory lock if it scales out.
         let row = self
             .0
             .query_one_raw(stmt(
@@ -131,6 +134,12 @@ impl JobSource for PgQueue<DatabaseConnection> {
                  WHERE id = (SELECT id FROM jobs WHERE run_at <= now() AND kind = ANY($2) \
                    AND (locked_at IS NULL OR (locked_at < now() - make_interval(secs => $3) \
                         AND attempts < max_attempts)) \
+                   AND NOT (kind = 'full_scan' AND EXISTS ( \
+                     SELECT 1 FROM jobs o JOIN runs ro ON ro.id = o.run_id \
+                       JOIN runs rj ON rj.id = jobs.run_id \
+                     WHERE o.kind = 'full_scan' AND o.id <> jobs.id \
+                       AND o.locked_at >= now() - make_interval(secs => $3) \
+                       AND ro.organisation_id = rj.organisation_id)) \
                    ORDER BY run_at FOR UPDATE SKIP LOCKED LIMIT 1) \
                  RETURNING id, kind, run_id, attempts, max_attempts",
                 vec![
