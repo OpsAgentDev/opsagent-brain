@@ -10,7 +10,7 @@ use opsagent_core::{
 };
 use sea_orm::{
     prelude::DateTimeWithTimeZone, ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait,
-    QueryFilter, QuerySelect, Set, TryInsertResult,
+    QueryFilter, QueryOrder, QuerySelect, Set, TryInsertResult,
 };
 use uuid::Uuid;
 
@@ -53,6 +53,7 @@ fn invite(m: invites::Model) -> RepoResult<Invite> {
         email: email(&m.email)?,
         role: role(&m.role)?,
         expires_at: utc(m.expires_at),
+        created_at: utc(m.created_at),
         accepted_at: (m.status == "accepted").then(|| utc(m.updated_at)),
     })
 }
@@ -155,6 +156,8 @@ impl<C: Conn> OrganisationsRepo for Pg<C> {
         // tenancy: the caller's own memberships, across organisations.
         let rows = members::Entity::find()
             .filter(members::Column::UserId.eq(user_id))
+            .order_by_asc(members::Column::CreatedAt)
+            .order_by_asc(members::Column::Id)
             .find_also_related(organisations::Entity)
             .all(self.db())
             .await
@@ -281,6 +284,32 @@ impl<C: Conn> OrganisationsRepo for Pg<C> {
         Ok(true)
     }
 
+    async fn set_member_role(
+        &self,
+        organisation_id: Uuid,
+        member_id: Uuid,
+        role: Role,
+    ) -> RepoResult<Option<Member>> {
+        let res = members::Entity::update_many()
+            .col_expr(members::Column::Role, role.as_str().into())
+            .col_expr(members::Column::UpdatedAt, now().into())
+            .filter(members::Column::OrganisationId.eq(organisation_id))
+            .filter(members::Column::Id.eq(member_id))
+            .exec(self.db())
+            .await
+            .map_err(db_err)?;
+        if res.rows_affected == 0 {
+            return Ok(None);
+        }
+        let row = members::Entity::find_by_id(member_id)
+            .filter(members::Column::OrganisationId.eq(organisation_id))
+            .find_also_related(users::Entity)
+            .one(self.db())
+            .await
+            .map_err(db_err)?;
+        row.map(member).transpose()
+    }
+
     async fn owner_count(&self, organisation_id: Uuid) -> RepoResult<u64> {
         members::Entity::find()
             .filter(members::Column::OrganisationId.eq(organisation_id))
@@ -323,6 +352,44 @@ impl<C: Conn> OrganisationsRepo for Pg<C> {
             .count(self.db())
             .await
             .map_err(db_err)
+    }
+
+    async fn list_invites(
+        &self,
+        organisation_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<Vec<Invite>> {
+        invites::Entity::find()
+            .filter(invites::Column::OrganisationId.eq(organisation_id))
+            .filter(invites::Column::Status.eq("pending"))
+            .filter(invites::Column::ExpiresAt.gt(DateTimeWithTimeZone::from(now)))
+            .order_by_desc(invites::Column::CreatedAt)
+            .order_by_desc(invites::Column::Id)
+            .all(self.db())
+            .await
+            .map_err(db_err)?
+            .into_iter()
+            .map(invite)
+            .collect()
+    }
+
+    async fn revoke_invite(&self, organisation_id: Uuid, invite_id: Uuid) -> RepoResult<bool> {
+        let db = self.db();
+        let found = invites::Entity::find_by_id(invite_id)
+            .filter(invites::Column::OrganisationId.eq(organisation_id))
+            .count(db)
+            .await
+            .map_err(db_err)?;
+        invites::Entity::update_many()
+            .col_expr(invites::Column::Status, "revoked".into())
+            .col_expr(invites::Column::UpdatedAt, now().into())
+            .filter(invites::Column::OrganisationId.eq(organisation_id))
+            .filter(invites::Column::Id.eq(invite_id))
+            .filter(invites::Column::Status.eq("pending"))
+            .exec(db)
+            .await
+            .map_err(db_err)?;
+        Ok(found > 0)
     }
 
     async fn take_invite(

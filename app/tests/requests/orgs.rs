@@ -306,3 +306,160 @@ async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn invites_list_cancel_and_role_change() {
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        let to = sign_in(&req, &mail, "owner@example.com").await;
+        let org = create_org(&req, &to, "Team").await;
+        let slug = org["slug"].as_str().unwrap().to_string();
+        let res = req
+            .post(&format!("/v1/orgs/{slug}/invites"))
+            .add_header("X-CSRF-Token", &to)
+            .json(&json!({"email": "mate@example.com", "role": "member"}))
+            .await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        let link = last_link(&mail);
+        let list = req.get(&format!("/v1/orgs/{slug}/invites")).await;
+        let list = list.json::<Vec<Value>>();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["email"], "mate@example.com");
+        assert!(list[0].get("token").is_none() && list[0]["created_at"].is_string());
+        let id = list[0]["id"].as_str().unwrap().to_string();
+
+        // Cancel twice: 204 both; the list is empty and the link is dead (410).
+        let del = format!("/v1/orgs/{slug}/invites/{id}");
+        for _ in 0..2 {
+            let res = req.delete(&del).add_header("X-CSRF-Token", &to).await;
+            assert_eq!(res.status_code(), 204);
+        }
+        assert!(req
+            .get(&format!("/v1/orgs/{slug}/invites"))
+            .await
+            .json::<Vec<Value>>()
+            .is_empty());
+        req.clear_cookies();
+        let tm = sign_in(&req, &mail, "mate@example.com").await;
+        let accept = format!("/v1/invites/{}/accept", token_of(&link));
+        let res = req.post(&accept).add_header("X-CSRF-Token", &tm).await;
+        assert_eq!(res.status_code(), 410);
+
+        // Another organisation's invite is a 404 for its owner; non-owners get 403.
+        let other = create_org(&req, &tm, "Mine").await;
+        let oslug = other["slug"].as_str().unwrap();
+        let res = req
+            .delete(&format!("/v1/orgs/{oslug}/invites/{id}"))
+            .add_header("X-CSRF-Token", &tm)
+            .await;
+        assert_eq!(res.status_code(), 404);
+        let res = req.get(&format!("/v1/orgs/{slug}/invites")).await;
+        assert_eq!(res.status_code(), 404);
+
+        // Roles: promote, same role no-op, last owner 409, non-owner 403.
+        req.clear_cookies();
+        let to = sign_in(&req, &mail, "owner@example.com").await;
+        let res = req
+            .post(&format!("/v1/orgs/{slug}/invites"))
+            .add_header("X-CSRF-Token", &to)
+            .json(&json!({"email": "mate@example.com", "role": "member"}))
+            .await;
+        assert_eq!(res.status_code(), 201);
+        let accept = format!("/v1/invites/{}/accept", token_of(&last_link(&mail)));
+        req.clear_cookies();
+        let tm = sign_in(&req, &mail, "mate@example.com").await;
+        assert_eq!(
+            req.post(&accept)
+                .add_header("X-CSRF-Token", &tm)
+                .await
+                .status_code(),
+            200
+        );
+        let members = req
+            .get(&format!("/v1/orgs/{slug}/members"))
+            .await
+            .json::<Vec<Value>>();
+        let find = |email: &str| {
+            members.iter().find(|m| m["email"] == email).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let (owner_id, mate_id) = (find("owner@example.com"), find("mate@example.com"));
+        let patch = |id: &str| format!("/v1/orgs/{slug}/members/{id}");
+        let res = req
+            .patch(&patch(&mate_id))
+            .add_header("X-CSRF-Token", &tm)
+            .json(&json!({"role": "owner"}))
+            .await;
+        assert_eq!(res.status_code(), 403);
+
+        req.clear_cookies();
+        let to = sign_in(&req, &mail, "owner@example.com").await;
+        let res = req
+            .patch(&patch(&owner_id))
+            .add_header("X-CSRF-Token", &to)
+            .json(&json!({"role": "member"}))
+            .await;
+        assert_eq!(
+            (
+                res.status_code().as_u16(),
+                res.json::<Value>()["code"].clone()
+            ),
+            (409, json!("last_owner"))
+        );
+        let res = req
+            .patch(&patch(&mate_id))
+            .add_header("X-CSRF-Token", &to)
+            .json(&json!({"role": "member"}))
+            .await;
+        assert_eq!(
+            (
+                res.status_code().as_u16(),
+                res.json::<Value>()["role"].clone()
+            ),
+            (200, json!("member"))
+        );
+        let res = req
+            .patch(&patch(&mate_id))
+            .add_header("X-CSRF-Token", &to)
+            .json(&json!({"role": "owner"}))
+            .await;
+        assert_eq!(
+            (
+                res.status_code().as_u16(),
+                res.json::<Value>()["role"].clone()
+            ),
+            (200, json!("owner"))
+        );
+        let res = req
+            .patch(&patch(&owner_id))
+            .add_header("X-CSRF-Token", &to)
+            .json(&json!({"role": "member"}))
+            .await;
+        assert_eq!(res.status_code(), 200);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn orgs_list_is_oldest_membership_first() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "o@example.com").await;
+        for name in ["Zeta", "Alpha", "Mid"] {
+            create_org(&req, &t, name).await;
+        }
+        let names: Vec<String> = req
+            .get("/v1/orgs")
+            .await
+            .json::<Vec<Value>>()
+            .iter()
+            .map(|o| o["name"].as_str().unwrap().into())
+            .collect();
+        assert_eq!(names, ["Zeta", "Alpha", "Mid"]);
+    })
+    .await;
+}

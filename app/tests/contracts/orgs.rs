@@ -142,6 +142,49 @@ contract_suite! {
         assert_eq!(s.orgs().pending_invites(other.id, now).await.unwrap(), 0);
     }
 
+    async fn invites_list_revoke_and_role(s) {
+        let (a, b) = (org(s, "inv-a").await, org(s, "inv-b").await);
+        let e = Email::parse("i@example.com").unwrap();
+        let now = Utc::now();
+        let first = s.orgs().insert_invite(a.id, &e, Role::Member, "r1", now + Duration::days(7)).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let second = s.orgs().insert_invite(a.id, &e, Role::Owner, "r2", now + Duration::days(7)).await.unwrap();
+        s.orgs().insert_invite(a.id, &e, Role::Member, "r3", now - Duration::seconds(1)).await.unwrap();
+        let ids = |v: Vec<opsagent_core::org::Invite>| v.into_iter().map(|i| i.id).collect::<Vec<_>>();
+        assert_eq!(ids(s.orgs().list_invites(a.id, now).await.unwrap()), [second.id, first.id]);
+        assert!(s.orgs().list_invites(b.id, now).await.unwrap().is_empty());
+        // Another organisation cannot revoke it; revoking twice is fine; the link is dead.
+        assert!(!s.orgs().revoke_invite(b.id, first.id).await.unwrap());
+        assert!(s.orgs().revoke_invite(a.id, first.id).await.unwrap());
+        assert!(s.orgs().revoke_invite(a.id, first.id).await.unwrap());
+        assert!(s.orgs().take_invite("r1", now).await.unwrap().is_none());
+        assert_eq!(ids(s.orgs().list_invites(a.id, now).await.unwrap()), [second.id]);
+        // Revoking an accepted invite changes nothing.
+        s.orgs().take_invite("r2", now).await.unwrap().unwrap();
+        assert!(s.orgs().revoke_invite(a.id, second.id).await.unwrap());
+        assert!(s.orgs().list_invites(a.id, now).await.unwrap().is_empty());
+
+        let u = user(s, "role@example.com").await;
+        let m = s.orgs().add_member(a.id, u.id, Role::Member).await.unwrap();
+        assert!(s.orgs().set_member_role(b.id, m.id, Role::Owner).await.unwrap().is_none());
+        let up = s.orgs().set_member_role(a.id, m.id, Role::Owner).await.unwrap().unwrap();
+        assert_eq!((up.id, up.role), (m.id, Role::Owner));
+        assert_eq!(s.orgs().owner_count(a.id).await.unwrap(), 1);
+    }
+
+    async fn list_for_user_is_oldest_membership_first(s) {
+        let u = user(s, "multi@example.com").await;
+        let mut slugs = Vec::new();
+        for i in 0..3 {
+            let o = org(s, &format!("ord-{}", 2 - i)).await;
+            s.orgs().add_member(o.id, u.id, Role::Member).await.unwrap();
+            slugs.push(o.slug);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let got: Vec<_> = s.orgs().list_for_user(u.id).await.unwrap().into_iter().map(|(o, _)| o.slug).collect();
+        assert_eq!(got, slugs);
+    }
+
     async fn rollback_discards_writes(s) {
         let tx = s.begin().await.unwrap();
         let o = tx.orgs().insert(new_org("acme")).await.unwrap();

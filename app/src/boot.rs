@@ -379,6 +379,9 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             ),
             accept_invite: members::AcceptInvite::new(d.uow.clone(), d.clock.clone(), gate.clone()),
             remove_member: members::RemoveMember::new(d.uow.clone(), d.clock.clone()),
+            list_invites: members::ListInvites::new(d.uow.clone(), d.clock.clone()),
+            revoke_invite: members::RevokeInvite::new(d.uow.clone()),
+            change_role: members::ChangeRole::new(d.uow.clone()),
         },
         findings: findings::Findings {
             list_findings: findings::ListFindings::new(d.uow.clone()),

@@ -173,6 +173,24 @@ impl OrganisationsRepo for MemStore {
         Ok(true)
     }
 
+    async fn set_member_role(
+        &self,
+        organisation_id: Uuid,
+        member_id: Uuid,
+        role: Role,
+    ) -> RepoResult<Option<Member>> {
+        let mut s = self.state();
+        let at = s
+            .members
+            .iter()
+            .position(|m| m.id == member_id && m.organisation_id == organisation_id);
+        let Some(at) = at else {
+            return Ok(None);
+        };
+        s.members[at].role = role;
+        s.member(&s.members[at]).map(Some)
+    }
+
     async fn owner_count(&self, organisation_id: Uuid) -> RepoResult<u64> {
         let s = self.state();
         let owners = s
@@ -197,6 +215,7 @@ impl OrganisationsRepo for MemStore {
             role,
             expires_at,
             accepted_at: None,
+            created_at: Utc::now(),
         };
         self.state().invites.push(InviteRow {
             invite: invite.clone(),
@@ -212,6 +231,35 @@ impl OrganisationsRepo for MemStore {
             i.pending && i.invite.organisation_id == organisation_id && i.invite.expires_at > now
         };
         Ok(s.invites.iter().filter(live).count() as u64)
+    }
+
+    async fn list_invites(
+        &self,
+        organisation_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<Vec<Invite>> {
+        let s = self.state();
+        let live = |i: &&InviteRow| {
+            i.pending && i.invite.organisation_id == organisation_id && i.invite.expires_at > now
+        };
+        let mut rows: Vec<Invite> = s
+            .invites
+            .iter()
+            .rev()
+            .filter(live)
+            .map(|i| i.invite.clone())
+            .collect();
+        rows.sort_by_key(|i| std::cmp::Reverse(i.created_at));
+        Ok(rows)
+    }
+
+    async fn revoke_invite(&self, organisation_id: Uuid, invite_id: Uuid) -> RepoResult<bool> {
+        let mut s = self.state();
+        let row = s
+            .invites
+            .iter_mut()
+            .find(|i| i.invite.id == invite_id && i.invite.organisation_id == organisation_id);
+        Ok(row.map(|i| i.pending = false).is_some())
     }
 
     async fn take_invite(
