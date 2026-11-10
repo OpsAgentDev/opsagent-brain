@@ -23,6 +23,9 @@ use crate::{
     error::AppResult,
 };
 
+/// Users whose email was never proven are deleted this long after they were created.
+const UNPROVEN_USER_DAYS: i64 = 30;
+
 /// Rows per delete statement, so locks stay short.
 pub const RETENTION_BATCH: u64 = 5000;
 /// One run's cap.
@@ -112,6 +115,13 @@ impl Retention {
         let repo = self.uow.retention();
         purge::run(self.uow.as_ref(), now, deadline, &mut stats).await?;
         ttl::run(repo, now, self.batch, deadline, &mut stats).await?;
+        if !stats.time_capped {
+            // Sign-in creates the user before the email is proven; ones never proven go.
+            let cutoff = now - chrono::Duration::days(UNPROVEN_USER_DAYS);
+            let step = || repo.delete_unproven_users(cutoff, self.batch);
+            let n = batched(self.batch, deadline, &mut stats, step).await?;
+            stats.counts.insert("unproven_users", n);
+        }
         runs::run(repo, now, self.batch, deadline, &mut stats).await?;
         Ok(stats)
     }

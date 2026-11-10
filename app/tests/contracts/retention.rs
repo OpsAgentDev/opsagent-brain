@@ -205,6 +205,43 @@ contract_suite! {
         ];
         assert_eq!(got, want);
     }
+
+    async fn deletes_only_users_who_never_proved_their_email(s, seed) {
+        use opsagent_core::{audit::AuditEntry, org::Role, user::{Email, NewMagicLink}};
+        let _ = seed;
+        let (o, _) = scope(s, seed).await;
+        let email = |e: &str| Email::parse(e).unwrap();
+        let users = s.users();
+        let lurker = users.find_or_create_by_email(&email("lurker@example.com")).await.unwrap();
+        let member = users.find_or_create_by_email(&email("member@example.com")).await.unwrap();
+        s.orgs().add_member(o, member.id, Role::Member).await.unwrap();
+        let signing_in = users.find_or_create_by_email(&email("now@example.com")).await.unwrap();
+        users
+            .issue_magic_link(NewMagicLink {
+                user_id: signing_in.id,
+                email: &email("now@example.com"),
+                token_hash: "t-live",
+                code_hash: "c-live",
+                return_to: None,
+                name: None,
+                expires_at: Utc::now() + Duration::minutes(15),
+            })
+            .await
+            .unwrap();
+        let returning = users.find_or_create_by_email(&email("back@example.com")).await.unwrap();
+        s.audit()
+            .record(AuditEntry::member(None, returning.id, "auth.sign_in", None))
+            .await
+            .unwrap();
+        // A cutoff after every creation, so age alone would delete all four.
+        let cutoff = Utc::now() + Duration::days(1);
+        assert_eq!(s.retention().delete_unproven_users(cutoff, 100).await.unwrap(), 1);
+        assert!(users.get(lurker.id).await.unwrap().is_none());
+        for kept in [member.id, signing_in.id, returning.id] {
+            assert!(users.get(kept).await.unwrap().is_some());
+        }
+        assert_eq!(s.retention().delete_unproven_users(cutoff, 100).await.unwrap(), 0);
+    }
 }
 
 /// Pg only: the partial unique index itself refuses a second global schedule for a job.

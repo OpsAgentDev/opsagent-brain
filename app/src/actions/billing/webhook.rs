@@ -36,6 +36,9 @@ struct Event {
     #[serde(rename = "type")]
     kind: String,
     created: i64,
+    /// The version Stripe rendered this event in (the endpoint's pin, else the account default).
+    #[serde(default)]
+    api_version: Option<String>,
     data: EventData,
 }
 
@@ -176,6 +179,21 @@ impl HandleWebhook {
             .map_err(|_| bad_request("bad_payload", "Not a Stripe event."))?;
         if !HANDLED.contains(&ev.kind.as_str()) {
             return Ok(());
+        }
+        // The parser reads that version's shape; a mismatch is logged rather than refused,
+        // since newer versions have kept the fields read here. Pin the endpoint to fix it.
+        if let Some(v) = ev
+            .api_version
+            .as_deref()
+            .filter(|v| *v != self.settings.api_version)
+        {
+            tracing::warn!(
+                error_code = "stripe_api_version_mismatch",
+                event_id = %ev.id,
+                got = v,
+                expected = %self.settings.api_version,
+                "stripe webhook event in an unexpected api version"
+            );
         }
         let created = DateTime::from_timestamp(ev.created, 0)
             .ok_or_else(|| bad_request("bad_payload", "Bad event timestamp."))?;

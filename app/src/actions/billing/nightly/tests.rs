@@ -61,6 +61,7 @@ pub(in crate::actions::billing) fn settings() -> BillingSettings {
         stripe_configured: true,
         webhook_configured: true,
         webhook_secret: "whsec".into(),
+        api_version: "2025-09-30.clover".into(),
         price_starter: "p_s".into(),
         price_team: "p_t".into(),
         price_scale: "p_x".into(),

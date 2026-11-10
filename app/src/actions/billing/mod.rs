@@ -48,6 +48,8 @@ pub struct BillingSettings {
     pub stripe_configured: bool,
     pub webhook_configured: bool,
     pub webhook_secret: String,
+    /// `STRIPE_API_VERSION`: the payload shape the webhook parser expects.
+    pub api_version: String,
     pub price_starter: String,
     pub price_team: String,
     pub price_scale: String,
@@ -61,6 +63,7 @@ impl BillingSettings {
             stripe_configured: c.stripe_configured(),
             webhook_configured: c.webhook_configured(),
             webhook_secret: c.stripe_webhook_secret.clone(),
+            api_version: c.stripe_api_version.clone(),
             price_starter: c.stripe_price_starter.clone(),
             price_team: c.stripe_price_team.clone(),
             price_scale: c.stripe_price_scale.clone(),
