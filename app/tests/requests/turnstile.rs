@@ -38,7 +38,8 @@ async fn cloudflare() -> MockServer {
     api
 }
 
-fn bodies() -> [(&'static str, Value); 3] {
+/// The forms Turnstile guards. The waitlist is not one: it is confirmed by email instead.
+fn bodies() -> [(&'static str, Value); 2] {
     [
         ("/v1/auth/magic-link", json!({"email": "ann@visitor.io"})),
         (
@@ -46,7 +47,6 @@ fn bodies() -> [(&'static str, Value); 3] {
             json!({"name": "Ann Visitor", "email": "ann@visitor.io", "topic": "general",
                    "message": "Hello there, a long enough message."}),
         ),
-        ("/v1/waitlist", json!({"email": "ann@visitor.io"})),
     ]
 }
 
@@ -153,7 +153,7 @@ async fn missing_or_bad_token_is_400_with_no_mail_row_or_rate_limit_key() {
 
 #[tokio::test]
 #[serial]
-async fn valid_token_is_accepted_on_all_three() {
+async fn valid_token_is_accepted_on_both() {
     let api = cloudflare().await;
     serve_with(on(api.uri()), |req, ctx| async move {
         let mail = prepare(&ctx);
@@ -166,7 +166,7 @@ async fn valid_token_is_accepted_on_all_three() {
             .sent()
             .iter()
             .any(|m| m.subject.starts_with("Your OpsAgent sign-in code")));
-        assert_eq!(rows(&ctx).await, 2);
+        assert_eq!(rows(&ctx).await, 1);
     })
     .await;
 }
@@ -199,8 +199,8 @@ async fn unreachable_cloudflare_is_503() {
     // A closed port: the connection is refused.
     serve_with(on("http://127.0.0.1:9".into()), |req, _| async move {
         let res = req
-            .post("/v1/waitlist")
-            .json(&with_token(bodies()[2].1.clone(), Some("good")))
+            .post("/v1/contact")
+            .json(&with_token(bodies()[1].1.clone(), Some("good")))
             .await;
         assert_problem(res, 503, "challenge_unavailable").await;
     })
@@ -212,8 +212,24 @@ async fn unreachable_cloudflare_is_503() {
 async fn without_a_secret_outside_production_nothing_is_checked() {
     serve(|req, ctx| async move {
         let _ = prepare(&ctx);
-        let res = req.post("/v1/waitlist").json(&bodies()[2].1).await;
+        let res = req.post("/v1/contact").json(&bodies()[1].1).await;
         assert_eq!(res.status_code(), 202);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn the_waitlist_needs_no_challenge() {
+    let api = cloudflare().await;
+    serve_with(on(api.uri()), |req, ctx| async move {
+        let _ = prepare(&ctx);
+        clear_limit_keys(&ctx);
+        let res = req
+            .post("/v1/waitlist")
+            .json(&json!({"email": "ann@visitor.io"}))
+            .await;
+        assert_eq!(res.status_code(), 202, "{}", res.text());
     })
     .await;
 }

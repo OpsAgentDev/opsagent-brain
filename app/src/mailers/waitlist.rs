@@ -1,12 +1,22 @@
 use super::Mail;
 
-pub fn waitlist_confirmation(to: &str) -> Mail {
-    let text = "Thanks for joining the OpsAgent waitlist. The alpha opens in small groups, and we'll email you once when your spot is ready. Reply to this email if you have questions.";
+/// The double opt-in mail: the link opens a page that confirms on a click (mail scanners open
+/// links on their own, so the page never confirms on load).
+pub fn waitlist_verify(to: &str, link: &str) -> Mail {
+    let text = format!(
+        "Confirm your email to join the OpsAgent waitlist: {link}\n\nWe'll email you once when \
+         sign-ups open. If you didn't ask to join, ignore this email and you won't hear from us."
+    );
+    let subject = "Confirm your email for the OpsAgent waitlist";
     Mail {
         to: to.into(),
-        subject: "You're on the OpsAgent waitlist".into(),
-        html: Some(super::branded("You're on the waitlist", text, None)),
-        text: text.into(),
+        subject: subject.into(),
+        html: Some(super::branded(
+            "Confirm your email",
+            &text,
+            Some(("Confirm my email", link)),
+        )),
+        text,
         ..Default::default()
     }
 }
@@ -31,12 +41,14 @@ pub fn signups_open(to: &str, web_base_url: &str, idempotency_key: String) -> Ma
 
 #[cfg(test)]
 mod tests {
-    use super::waitlist_confirmation;
+    use super::waitlist_verify;
 
     #[test]
-    fn confirmation_text_has_no_links() {
-        let m = waitlist_confirmation("a@b.io");
+    fn verify_mail_carries_the_link_once_in_text_and_as_the_button() {
+        let link = "https://web.test/waitlist/verify#tok";
+        let m = waitlist_verify("a@b.io", link);
         assert_eq!(m.to, "a@b.io");
-        assert!(!m.text.contains("http"));
+        assert_eq!(m.text.matches(link).count(), 1);
+        assert!(m.html.unwrap().contains("Confirm my email"));
     }
 }

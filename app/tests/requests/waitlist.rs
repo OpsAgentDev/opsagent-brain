@@ -74,6 +74,15 @@ async fn announcement_mails_each_row_once_and_sets_announced_at() {
                 .await;
             assert_eq!(res.status_code(), 202);
         }
+        // Only confirmed addresses are announced; the third never used its link.
+        let res = req.post("/v1/waitlist").json(&json!({ "email": "e@f.io" })).await;
+        assert_eq!(res.status_code(), 202);
+        ctx.db
+            .execute_unprepared(
+                "UPDATE waitlist_entries SET verified_at = now() WHERE email IN ('a@b.io', 'c@d.io')",
+            )
+            .await
+            .unwrap();
         let mail = Arc::new(opsagent_brain::mailers::CaptureMailer::default());
         let announce = AnnounceWaitlist::new(
             Arc::new(PgWaitlist(ctx.db.clone())),
@@ -88,7 +97,7 @@ async fn announcement_mails_each_row_once_and_sets_announced_at() {
         assert_eq!(announce.run().await.unwrap().sent, 0);
         assert_eq!(mail.sent().len(), 2);
         let rows = waitlist_entries::Entity::find().all(&ctx.db).await.unwrap();
-        assert!(rows.iter().all(|r| r.announced_at.is_some()));
+        assert!(rows.iter().all(|r| r.announced_at.is_some() == r.verified_at.is_some()));
     })
     .await;
 }
@@ -232,7 +241,10 @@ async fn new_email_gets_one_confirmation() {
         let sent = mail.sent();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].to, "a@b.io");
-        assert_eq!(sent[0].subject, "You're on the OpsAgent waitlist");
+        assert_eq!(
+            sent[0].subject,
+            "Confirm your email for the OpsAgent waitlist"
+        );
         for _ in 0..300 {
             let row = waitlist_entries::Entity::find().one(&ctx.db).await.unwrap();
             if row.unwrap().confirmation_sent_at.is_some() {
@@ -319,4 +331,51 @@ async fn mail_failure_still_accepts() {
     let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
     assert!(out.contains("waitlist confirmation not sent"), "{out}");
     assert!(!out.contains("a@b.io"), "{out}");
+}
+
+#[tokio::test]
+#[serial]
+async fn the_emailed_link_verifies_the_address_once() {
+    serve(|req, ctx| async move {
+        reset(&ctx).await;
+        let mail = prepare(&ctx);
+        let res = req
+            .post("/v1/waitlist")
+            .json(&json!({"email":"v@b.io"}))
+            .await;
+        assert_eq!(res.status_code(), 202);
+        until(|| !mail.sent().is_empty()).await;
+        let text = mail.sent()[0].text.clone();
+        let token = text
+            .split("/waitlist/verify#")
+            .nth(1)
+            .and_then(|t| t.split_whitespace().next())
+            .expect("link in mail")
+            .to_owned();
+        let row = waitlist_entries::Entity::find()
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(row.verified_at.is_none());
+        let verify = |t: String| req.post("/v1/waitlist/verify").json(&json!({ "token": t }));
+        assert_eq!(verify(token.clone()).await.status_code(), 204);
+        assert_eq!(verify(token).await.status_code(), 410);
+        assert_eq!(verify("nope".into()).await.status_code(), 410);
+        let row = waitlist_entries::Entity::find()
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(row.verified_at.is_some() && row.verify_token_hash.is_none());
+        // A verified address is never mailed again.
+        let res = req
+            .post("/v1/waitlist")
+            .json(&json!({"email":"v@b.io"}))
+            .await;
+        assert_eq!(res.status_code(), 202);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(mail.sent().len(), 1);
+    })
+    .await;
 }

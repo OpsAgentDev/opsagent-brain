@@ -254,6 +254,11 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.limiter.clone(),
                 d.mailer.clone(),
                 d.clock.clone(),
+                d.config.web_base_url.clone(),
+            ),
+            verify: waitlist::VerifyWaitlist::new(
+                Arc::new(PgWaitlist(d.db.clone())),
+                d.clock.clone(),
             ),
             announce: waitlist::AnnounceWaitlist::new(
                 Arc::new(PgWaitlist(d.db.clone())),

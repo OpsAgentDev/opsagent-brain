@@ -283,7 +283,7 @@ mod tests {
                 "{h}"
             );
         }
-        assert!(waitlist_confirmation("a@b.io")
+        assert!(waitlist_verify("a@b.io", "https://w.io/v#t")
             .html
             .unwrap()
             .contains("OpsAgent"));

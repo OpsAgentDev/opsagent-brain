@@ -15,6 +15,9 @@ pub struct Model {
     pub created_at: DateTimeWithTimeZone,
     pub confirmation_sent_at: Option<DateTimeWithTimeZone>,
     pub announced_at: Option<DateTimeWithTimeZone>,
+    #[sea_orm(column_type = "Text", nullable, unique)]
+    pub verify_token_hash: Option<String>,
+    pub verified_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
