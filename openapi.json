@@ -214,6 +214,54 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_delete_me",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`last_owner`: the only owner of an organisation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`confirm_mismatch`: the email was not typed exactly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/auth/passkeys": {
@@ -5700,6 +5748,18 @@
           "token": {
             "type": "string",
             "description": "Send as `X-CSRF-Token` on every mutating request."
+          }
+        }
+      },
+      "DeleteAccountRequest": {
+        "type": "object",
+        "required": [
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "The account's email address, typed to confirm."
           }
         }
       },

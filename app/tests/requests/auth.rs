@@ -182,6 +182,31 @@ async fn sign_out_requires_csrf_and_ends_session() {
 
 #[tokio::test]
 #[serial]
+async fn deleting_the_account_needs_the_email_and_signs_out() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let token = sign_in(&req, &mail, "gone@example.com").await;
+        let del = |confirm: &'static str| {
+            req.delete("/v1/auth/me")
+                .add_header("X-CSRF-Token", &token)
+                .json(&json!({ "confirm": confirm }))
+        };
+        assert_eq!(del("someone@example.com").await.status_code(), 422);
+        assert_eq!(del("Gone@Example.com").await.status_code(), 204);
+        assert_eq!(req.get("/v1/auth/me").await.status_code(), 401);
+        let row = users::Entity::find()
+            .filter(users::Column::DeletedAt.is_not_null())
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .expect("erased row kept");
+        assert!(row.email.ends_with("@deleted.invalid"), "{}", row.email);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn github_start_returns_authorize_url_with_state_and_pkce() {
     std::env::set_var("GITHUB_CLIENT_ID", "cid");
     std::env::set_var("GITHUB_CLIENT_SECRET", "secret");

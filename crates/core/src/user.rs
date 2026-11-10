@@ -161,6 +161,10 @@ pub struct SpentLink {
 pub trait UsersRepo: Send + Sync {
     async fn get(&self, id: Uuid) -> RepoResult<Option<User>>;
     async fn find_by_email(&self, email: &Email) -> RepoResult<Option<User>>;
+    /// Erases the user: passkeys and magic links deleted, email replaced, names and linked
+    /// identities cleared, marked deleted. Every lookup then treats the id as unknown, so the
+    /// address can sign up again as a new user. An unknown id is a no-op.
+    async fn erase(&self, id: Uuid, at: DateTime<Utc>) -> RepoResult<()>;
     /// Safe under concurrent first use.
     async fn find_or_create_by_email(&self, email: &Email) -> RepoResult<User>;
     /// Stores `name` only while the user's name is unset; a named user is never renamed and an

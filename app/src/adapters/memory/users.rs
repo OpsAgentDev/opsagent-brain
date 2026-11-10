@@ -43,6 +43,15 @@ impl UsersRepo for MemStore {
         Ok(self.state().user_mut(|u| u.email == *email).cloned())
     }
 
+    async fn erase(&self, id: Uuid, _at: DateTime<Utc>) -> RepoResult<()> {
+        // An erased user is unknown to every lookup, so the store simply drops it.
+        let mut s = self.state();
+        s.users.retain(|u| u.id != id);
+        s.passkeys.retain(|p| p.user_id != id);
+        s.magic_links.retain(|l| l.user_id != id);
+        Ok(())
+    }
+
     async fn find_or_create_by_email(&self, email: &Email) -> RepoResult<User> {
         let mut s = self.state();
         if let Some(u) = s.user_mut(|u| u.email == *email) {

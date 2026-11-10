@@ -22,7 +22,12 @@ impl FromRequestParts<AppState> for AuthUser {
             .await
             .map_err(|(_, m)| ApiError::internal(m))?;
         match session.get::<Uuid>(USER_KEY).await? {
-            Some(id) => Ok(Self(id)),
+            // Sessions are not indexed by user, so a deleted account is caught here, on every
+            // device: an erased user no longer resolves.
+            Some(id) => {
+                s.actions.auth.current_user.run(id).await?;
+                Ok(Self(id))
+            }
             None => Err(ApiError::unauthenticated()),
         }
     }
