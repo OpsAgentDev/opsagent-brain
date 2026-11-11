@@ -783,3 +783,26 @@ async fn sign_up_for_an_existing_address_answers_and_mails_like_a_new_one() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn a_deleted_accounts_other_session_can_sign_in_again() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        sign_in(&req, &mail, "gone@example.com").await;
+        // The account is deleted elsewhere; this browser still holds its session.
+        ctx.db
+            .execute_unprepared(
+                "UPDATE users SET deleted_at = now() WHERE email = 'gone@example.com'",
+            )
+            .await
+            .unwrap();
+        let res = req
+            .post("/v1/auth/magic-link")
+            .json(&json!({ "email": "gone@example.com" }))
+            .await;
+        assert_ne!(res.status_code(), 403, "{}", res.text());
+        assert_eq!(req.get("/v1/auth/me").await.status_code(), 401);
+    })
+    .await;
+}

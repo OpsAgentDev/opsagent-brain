@@ -79,6 +79,9 @@ impl UsersRepo for MemStore {
             return Ok(u.clone());
         }
         if let Some(u) = s.user_mut(|u| u.email == *email) {
+            if u.github_id.is_some() {
+                return Err(RepoError::Conflict("account_exists"));
+            }
             u.github_id = Some(github_id);
             u.name = u.name.take().or(name);
             return Ok(u.clone());

@@ -107,6 +107,8 @@ pub enum ToolError {
     ScanTooSoon { last_scan_at: DateTime<Utc> },
     #[error("The connection is blocked.")]
     ConnectionBlocked,
+    #[error("This organisation is read-only until billing is set up.")]
+    BillingRequired,
     /// The detail is logged, never shown to the caller.
     #[error("internal: {0}")]
     Internal(String),
@@ -121,6 +123,7 @@ impl ToolError {
             Self::Unknown(_) => "unknown_tool",
             Self::ScanTooSoon { .. } => "scan_too_soon",
             Self::ConnectionBlocked => "connection_blocked",
+            Self::BillingRequired => "billing_required",
             Self::Internal(_) => "internal",
         }
     }
@@ -131,6 +134,10 @@ impl From<AppError> for ToolError {
         match e {
             AppError::NotFound | AppError::Repo(RepoError::NotFound) => Self::NotFound,
             AppError::Invalid(detail) => Self::Invalid(detail),
+            AppError::Refused {
+                code: "billing_required",
+                ..
+            } => Self::BillingRequired,
             e => Self::Internal(e.to_string()),
         }
     }

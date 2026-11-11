@@ -157,6 +157,10 @@ impl<C: Conn> UsersRepo for Pg<C> {
             .await
             .map_err(db_err)?
         {
+            // Link by email only once, like Google: never replace another GitHub account's link.
+            if u.github_id.is_some() {
+                return Err(RepoError::Conflict("account_exists"));
+            }
             let mut a: users::ActiveModel = u.clone().into();
             a.github_id = Set(Some(gh));
             a.name = Set(u.name.or(name));

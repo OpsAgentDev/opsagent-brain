@@ -24,10 +24,16 @@ impl FromRequestParts<AppState> for AuthUser {
         match session.get::<Uuid>(USER_KEY).await? {
             // Sessions are not indexed by user, so a deleted account is caught here, on every
             // device: an erased user no longer resolves.
-            Some(id) => {
-                s.actions.auth.current_user.run(id).await?;
-                Ok(Self(id))
-            }
+            Some(id) => match s.actions.auth.current_user.run(id).await {
+                Ok(_) => Ok(Self(id)),
+                Err(e) => {
+                    if matches!(e, crate::error::AppError::Unauthenticated) {
+                        // Drop the dead session, so it stops sliding and the cookie clears.
+                        let _ = session.flush().await;
+                    }
+                    Err(e.into())
+                }
+            },
             None => Err(ApiError::unauthenticated()),
         }
     }

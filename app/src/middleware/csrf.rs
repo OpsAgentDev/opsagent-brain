@@ -41,8 +41,7 @@ pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Res
         || path.starts_with("/v1/unsubscribe/");
     if !safe && !exempt {
         if let Some(session) = req.extensions().get::<Session>() {
-            let signed_in = matches!(session.get::<Uuid>(USER_KEY).await, Ok(Some(_)));
-            if signed_in {
+            if let Ok(Some(user_id)) = session.get::<Uuid>(USER_KEY).await {
                 let secret = &app.config.session_secret;
                 let sid = session.id().map(|i| i.to_string()).unwrap_or_default();
                 let ok = req
@@ -51,7 +50,12 @@ pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Res
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| B64.decode(v).ok())
                     .is_some_and(|given| mac(secret, &sid).verify_slice(&given).is_ok());
-                if !ok {
+                // A deleted account's session elsewhere can never get a token (`/auth/csrf` needs a
+                // live user): treat it as signed out, so sign-in and sign-out work again.
+                let live = ok || app.actions.auth.current_user.run(user_id).await.is_ok();
+                if !live {
+                    let _ = session.flush().await;
+                } else if !ok {
                     return ApiError::new(
                         axum::http::StatusCode::FORBIDDEN,
                         "csrf",

@@ -101,7 +101,12 @@ mod tests {
         let tool = |t| {
             let clock = Arc::new(FixedClock(t));
             let d = Arc::new(RunDispatcher::new(Arc::new(store.clone())));
-            let scan = RequestManualScan::new(Arc::new(store.clone()), d, clock.clone());
+            let scan = RequestManualScan::new(
+                Arc::new(store.clone()),
+                d,
+                clock.clone(),
+                crate::actions::billing::BillingGate::new(false, clock.clone()),
+            );
             RunCheckTool::new(scan, clock)
         };
         let args = json!({"connection": c.id.to_string()});

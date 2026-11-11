@@ -31,7 +31,8 @@ impl WaitlistStore for PgWaitlist {
             "INSERT INTO waitlist_entries (id, email, source, verify_token_hash) VALUES ($1, $2, $3, $4) \
              ON CONFLICT (email) DO UPDATE SET verify_token_hash = EXCLUDED.verify_token_hash \
              WHERE waitlist_entries.verified_at IS NULL \
-               AND waitlist_entries.confirmation_sent_at < now() - make_interval(secs => $5) \
+               AND COALESCE(waitlist_entries.confirmation_sent_at, waitlist_entries.created_at) \
+                 < now() - make_interval(secs => $5) \
              RETURNING id",
             vec![
                 Uuid::now_v7().into(),
