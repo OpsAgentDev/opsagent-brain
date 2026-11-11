@@ -99,6 +99,9 @@ impl PgQueue<DatabaseConnection> {
     }
 }
 
+/// How long after a lost or dropped attempt its ledger lease is sure to have lapsed.
+const LEASE_LAPSE: std::time::Duration = std::time::Duration::from_secs(150);
+
 #[async_trait]
 impl JobSource for PgQueue<DatabaseConnection> {
     async fn dequeue(
@@ -137,7 +140,7 @@ impl JobSource for PgQueue<DatabaseConnection> {
                    AND NOT (kind = 'full_scan' AND EXISTS ( \
                      SELECT 1 FROM jobs o JOIN runs ro ON ro.id = o.run_id \
                        JOIN runs rj ON rj.id = jobs.run_id \
-                     WHERE o.kind = 'full_scan' AND o.id <> jobs.id \
+                     WHERE o.kind = 'full_scan' AND o.id <> jobs.id AND o.locked_by IS NOT NULL \
                        AND o.locked_at >= now() - make_interval(secs => $3) \
                        AND ro.organisation_id = rj.organisation_id)) \
                    ORDER BY run_at FOR UPDATE SKIP LOCKED LIMIT 1) \
@@ -163,7 +166,11 @@ impl JobSource for PgQueue<DatabaseConnection> {
     async fn fail(&self, job: &Job, error: &str, now: DateTime<Utc>) -> Result<JobFailure> {
         // `attempts` includes this one; backoff counts the retries before it.
         let retries = u32::try_from(job.attempts - 1).unwrap_or(0);
-        let wait = retry::backoff(retries).filter(|_| job.attempts < job.max_attempts);
+        // Never sooner than a dropped handler's ledger lease (max 120 s) lapses: taken sooner, the
+        // retry meets `LeaseHeld`, counts as settled and is deleted with its run unfinished.
+        let wait = retry::backoff(retries)
+            .map(|w| w.max(LEASE_LAPSE))
+            .filter(|_| job.attempts < job.max_attempts);
         if let Some(wait) = wait {
             let at = now + chrono::Duration::from_std(wait).map_err(db_err)?;
             let n = exec(
@@ -192,6 +199,16 @@ impl JobSource for PgQueue<DatabaseConnection> {
             Some(_) => JobFailure::Dead,
             None => JobFailure::LockLost,
         })
+    }
+
+    async fn heartbeat(&self, worker_id: &str) -> Result<u64> {
+        exec(
+            &self.0,
+            // tenancy: job queue is global
+            "UPDATE jobs SET locked_at = now() WHERE locked_by = $1",
+            vec![worker_id.into()],
+        )
+        .await
     }
 
     async fn release_mine(&self, worker_id: &str) -> Result<u64> {

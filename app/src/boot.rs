@@ -365,7 +365,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             create_org: orgs::CreateOrg::new(d.uow.clone(), d.kek.clone(), d.limiter.clone()),
             list_orgs: orgs::ListOrgs::new(d.uow.clone()),
             get_org: orgs::GetOrg,
-            update_org: orgs::UpdateOrg::new(d.uow.clone()),
+            update_org: orgs::UpdateOrg::new(d.uow.clone(), d.clock.clone()),
             delete_org: orgs::DeleteOrg::new(
                 d.uow.clone(),
                 d.clock.clone(),

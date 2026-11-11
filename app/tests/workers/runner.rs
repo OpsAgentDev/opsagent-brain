@@ -242,9 +242,9 @@ async fn handler_error_is_retried_by_job_backoff() {
                 .as_deref(),
             Some(error)
         );
-        // First retry: one minute out (`retry::backoff(0)`).
+        // First retry: after the ledger lease lapses (150 s), not `retry::backoff(0)`'s minute.
         let ahead: f64 = r.try_get("", "ahead").unwrap();
-        assert!((50.0..=61.0).contains(&ahead), "{ahead}");
+        assert!((140.0..=151.0).contains(&ahead), "{ahead}");
     }
     assert_eq!(w.drain().await.unwrap(), 0, "not due yet");
 }

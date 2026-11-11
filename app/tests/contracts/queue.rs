@@ -218,12 +218,13 @@ async fn complete_deletes_row() {
 
 #[tokio::test]
 #[serial]
-async fn fail_with_attempts_left_unlocks_and_backs_off_one_minute() {
+async fn fail_with_attempts_left_unlocks_and_waits_out_the_lease() {
     let l = lane().await;
     l.job(JobKind::Verify).await;
     let job = l.dequeue("w1").await.unwrap();
     let now = Utc::now().trunc_subsecs(0);
-    let at = now + chrono::Duration::minutes(1);
+    // The one-minute backoff, raised to the 150 s a dropped handler's ledger lease needs.
+    let at = now + chrono::Duration::seconds(150);
     assert_eq!(
         l.q.fail(&job, "boom", now).await.unwrap(),
         JobFailure::Retrying { at }
@@ -425,4 +426,45 @@ async fn mem_tx_enqueue_visible_only_after_commit() {
     tx.queue().enqueue(job.clone()).await.unwrap();
     tx.commit().await.unwrap();
     assert_eq!(s.jobs(), [job]);
+}
+
+#[tokio::test]
+#[serial]
+async fn heartbeat_keeps_a_running_workers_lock_fresh() {
+    let l = lane().await;
+    l.job(JobKind::FullScan).await;
+    l.dequeue("w1").await.unwrap();
+    l.sql("UPDATE jobs SET locked_at = now() - interval '2 hours'")
+        .await;
+    // w1 is alive and says so: its lock is fresh again, so w2 cannot take the job.
+    assert_eq!(l.q.heartbeat("w1").await.unwrap(), 1);
+    assert_eq!(l.q.heartbeat("w9").await.unwrap(), 0);
+    assert!(l.dequeue("w2").await.is_none());
+}
+
+#[tokio::test]
+#[serial]
+async fn a_dead_full_scan_does_not_block_its_organisations_next_scan() {
+    let l = lane().await;
+    l.job(JobKind::FullScan).await;
+    l.job(JobKind::FullScan).await;
+    let first = l.dequeue("w1").await.unwrap();
+    l.sql(&format!(
+        "UPDATE jobs SET attempts = max_attempts WHERE id = '{}'",
+        first.id
+    ))
+    .await;
+    let last = Job {
+        attempts: 5,
+        ..first
+    };
+    assert_eq!(
+        l.q.fail(&last, "boom", Utc::now()).await.unwrap(),
+        JobFailure::Dead
+    );
+    let next = l
+        .dequeue("w2")
+        .await
+        .expect("the dead scan no longer holds the organisation");
+    assert_ne!(next.id, last.id);
 }

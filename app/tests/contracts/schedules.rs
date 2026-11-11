@@ -39,6 +39,26 @@ contract_suite! {
         assert!(due.iter().all(|d| d.job_type == "verify"));
     }
 
+    async fn set_timezone_moves_every_schedule(s, seed) {
+        use opsagent_deliver::schedule::{next_after, BRIEFING};
+        let o = org_id(s, "acme").await;
+        let c = seed.connection(o).await;
+        let now = Utc::now();
+        s.schedules().create_defaults(o, c, (None, None), now).await.unwrap();
+        assert_eq!(s.schedules().set_timezone(o, "Australia/Sydney", now).await.unwrap(), 6);
+        // Each schedule now runs in the new zone: the briefing is next due at 08:00 Sydney.
+        let briefing = next_after(BRIEFING, "Australia/Sydney", now).unwrap();
+        let due = s.schedules().due_ids(briefing).await.unwrap();
+        let mut zones = Vec::new();
+        for id in due {
+            if let Some((key, _, tz)) = s.schedules().lock_due(id, briefing).await.unwrap() {
+                zones.push((key.job_type, tz));
+            }
+        }
+        assert!(zones.iter().any(|(j, _)| j == "deliver_briefing"), "{zones:?}");
+        assert!(zones.iter().all(|(_, tz)| tz == "Australia/Sydney"), "{zones:?}");
+    }
+
     async fn advance_none_disables(s, seed) {
         let o = org_id(s, "acme").await;
         let c = seed.connection(o).await;

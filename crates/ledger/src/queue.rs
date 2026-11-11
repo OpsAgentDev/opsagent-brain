@@ -114,6 +114,9 @@ pub trait JobSource: Send + Sync {
     /// Shutdown: unlocks this worker's jobs without counting the interrupted attempt, due once
     /// the dropped handlers' ledger leases have lapsed.
     async fn release_mine(&self, worker_id: &str) -> Result<u64>;
+    /// Keeps this worker's locks fresh while its jobs run, so a dead worker's jobs free up
+    /// within `lock_max_age` instead of hours later. Returns how many locks it touched.
+    async fn heartbeat(&self, worker_id: &str) -> Result<u64>;
 }
 
 #[cfg(test)]
