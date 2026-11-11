@@ -4887,6 +4887,26 @@
         }
       }
     },
+    "/status": {
+      "get": {
+        "tags": [
+          "status"
+        ],
+        "operationId": "status_show",
+        "responses": {
+          "200": {
+            "description": "Global counts, no organisation data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/unsubscribe/{token}": {
       "post": {
         "tags": [
@@ -5832,6 +5852,23 @@
           "status": {
             "type": "string",
             "description": "`pending`, `sent`, `failed`, `skipped`, `fallback_email` or `suppressed`."
+          }
+        }
+      },
+      "DeliveryStatus": {
+        "type": "object",
+        "required": [
+          "sent_24h",
+          "failed_24h"
+        ],
+        "properties": {
+          "failed_24h": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "sent_24h": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -7506,6 +7543,25 @@
           }
         }
       },
+      "ScanStatus": {
+        "type": "object",
+        "required": [
+          "waiting",
+          "oldest_wait_seconds"
+        ],
+        "properties": {
+          "oldest_wait_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Age of the oldest waiting scan; 0 when none wait."
+          },
+          "waiting": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Scans due now and not yet started."
+          }
+        }
+      },
       "SessionUrl": {
         "type": "object",
         "required": [
@@ -7539,6 +7595,26 @@
             "type": "string",
             "format": "date-time",
             "description": "At most 30 days ahead."
+          }
+        }
+      },
+      "StatusOut": {
+        "type": "object",
+        "required": [
+          "scans",
+          "deliveries",
+          "checked_at"
+        ],
+        "properties": {
+          "checked_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deliveries": {
+            "$ref": "#/components/schemas/DeliveryStatus"
+          },
+          "scans": {
+            "$ref": "#/components/schemas/ScanStatus"
           }
         }
       },

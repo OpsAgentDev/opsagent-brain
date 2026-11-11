@@ -26,6 +26,7 @@ mod passkeys;
 mod resources;
 mod runs;
 mod shell_parity;
+mod status;
 pub mod support;
 mod turnstile;
 mod waitlist;

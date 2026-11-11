@@ -15,6 +15,7 @@ pub mod recipients;
 pub mod resources;
 pub mod retention;
 pub mod runs;
+pub mod status;
 pub mod uow;
 pub mod waitlist;
 
@@ -40,6 +41,7 @@ pub struct Actions {
     pub oauth: oauth::OAuth,
     pub waitlist: waitlist::Waitlist,
     pub contact: contact::Contact,
+    pub status: status::GetStatus,
     pub retention: retention::Retention,
     pub billing: billing::Billing,
     pub ai: ai::Ai,
