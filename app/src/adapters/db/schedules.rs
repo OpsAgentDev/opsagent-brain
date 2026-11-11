@@ -125,6 +125,39 @@ impl<C: Conn> SchedulesRepo for Pg<C> {
             .map_err(db_err)
     }
 
+    async fn set_timezone(
+        &self,
+        organisation_id: Uuid,
+        tz: &str,
+        now: DateTime<Utc>,
+    ) -> RepoResult<u64> {
+        let rows = self
+            .db()
+            .query_all_raw(stmt(
+                "SELECT id, cron_local FROM schedules WHERE organisation_id = $1",
+                vec![organisation_id.into()],
+            ))
+            .await
+            .map_err(db_err)?;
+        for r in &rows {
+            let (id, cron): (Uuid, String) = (get(r, "id")?, get(r, "cron_local")?);
+            self.db()
+                .execute_raw(stmt(
+                    "UPDATE schedules SET timezone = $3, next_due_at = $4, updated_at = now() \
+                     WHERE organisation_id = $1 AND id = $2",
+                    vec![
+                        organisation_id.into(),
+                        id.into(),
+                        tz.into(),
+                        next_after(&cron, tz, now).into(),
+                    ],
+                ))
+                .await
+                .map_err(db_err)?;
+        }
+        Ok(rows.len() as u64)
+    }
+
     async fn disable_for_org(&self, organisation_id: Uuid) -> RepoResult<u64> {
         let done = self
             .db()

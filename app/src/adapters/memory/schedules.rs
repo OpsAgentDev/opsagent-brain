@@ -110,6 +110,25 @@ impl SchedulesRepo for MemStore {
         Ok(())
     }
 
+    async fn set_timezone(
+        &self,
+        organisation_id: Uuid,
+        tz: &str,
+        now: DateTime<Utc>,
+    ) -> RepoResult<u64> {
+        let mut s = self.state();
+        let mine = s
+            .schedules
+            .iter_mut()
+            .filter(|r| r.organisation_id == Some(organisation_id));
+        Ok(mine
+            .map(|r| {
+                r.timezone = tz.into();
+                r.next_due_at = next_after(&r.cron_local, tz, now);
+            })
+            .count() as u64)
+    }
+
     async fn disable_for_org(&self, organisation_id: Uuid) -> RepoResult<u64> {
         let mut s = self.state();
         let mine = s

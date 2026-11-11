@@ -322,6 +322,14 @@ pub trait SchedulesRepo: Send + Sync {
         from: SinceFn<'_>,
     ) -> RepoResult<()>;
     async fn disable_for_org(&self, organisation_id: Uuid) -> RepoResult<u64>;
+    /// Moves every schedule of the organisation to zone `tz`, each next due at its local
+    /// time in that zone after `now`; returns how many.
+    async fn set_timezone(
+        &self,
+        organisation_id: Uuid,
+        tz: &str,
+        now: DateTime<Utc>,
+    ) -> RepoResult<u64>;
     /// `create_defaults` for every connected connection of a live organisation that lacks
     /// the newest default (`watch_scan`); returns how many. Also creates each global
     /// schedule (`schedule::GLOBAL`) that is missing.

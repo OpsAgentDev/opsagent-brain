@@ -598,3 +598,16 @@ async fn watch_run_over_open_findings_pins_nothing_and_is_pruned() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn a_watch_scan_behind_by_an_interval_is_skipped_stale() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx).await;
+        scan(&ctx, conn, 0, &noisy()).await;
+        let late = chrono::Utc::now() - chrono::Duration::minutes(20);
+        let r = watch_run_at(&ctx, conn, late, &watch(&ctx, noisy())).await;
+        assert_eq!(outcome(&r), ("skipped", Some("stale")));
+    })
+    .await;
+}

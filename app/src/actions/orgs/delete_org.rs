@@ -145,6 +145,9 @@ mod tests {
         async fn disable_for_org(&self, _: Uuid) -> RepoResult<u64> {
             Err(broken())
         }
+        async fn set_timezone(&self, _: Uuid, _: &str, _: DateTime<Utc>) -> RepoResult<u64> {
+            Err(broken())
+        }
         async fn backfill_defaults(&self, _: DateTime<Utc>) -> RepoResult<u64> {
             Err(broken())
         }
