@@ -43,6 +43,9 @@ pub(super) enum ScanProfile {
     Watch,
 }
 
+/// A watch scan scheduled longer ago than its 15-minute interval is skipped as `stale`.
+const WATCH_STALE_AFTER: chrono::Duration = chrono::Duration::minutes(15);
+
 /// Runs (or resumes) the scan of one run. Clone it to override the connector or the checks.
 #[derive(Clone)]
 pub struct FullScan {
@@ -134,6 +137,12 @@ impl FullScan {
             return self.end(&run, &opts, skip).await;
         }
         if self.profile == ScanProfile::Watch {
+            // A watch scan behind by a whole interval is superseded by the next one: skip it
+            // before any cloud call, so a backlog never starves alerts and briefings.
+            if self.clock.now() - run.key.scheduled_at > WATCH_STALE_AFTER {
+                let skip = End::Set(RunStatus::Skipped, "stale".into());
+                return self.end(&run, &opts, skip).await;
+            }
             if let Some(skip) = self.watch_gate(&c).await? {
                 return self.end(&run, &opts, skip).await;
             }

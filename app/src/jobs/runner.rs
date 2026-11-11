@@ -31,6 +31,9 @@ fn scan_slots(concurrency: usize, requested: usize) -> usize {
     requested.clamp(1, concurrency.saturating_sub(1).max(1))
 }
 
+/// How often a running worker refreshes its job locks; well under `JOB_LOCK_MAX_AGE_SECS`.
+const HEARTBEAT: Duration = Duration::from_secs(30);
+
 pub struct WorkerRunner {
     source: Arc<dyn JobSource>,
     handlers: HashMap<JobKind, Arc<dyn JobHandler>>,
@@ -131,6 +134,16 @@ impl WorkerRunner {
     /// drops the rest and unlocks this worker's jobs without counting their attempt.
     pub async fn run(self, shutdown: impl Future<Output = ()>) -> AppResult<()> {
         let this = Arc::new(self);
+        let beat = this.clone();
+        let heartbeat = tokio::spawn(async move {
+            let mut every = tokio::time::interval(HEARTBEAT);
+            loop {
+                every.tick().await;
+                if let Err(e) = beat.source.heartbeat(&beat.worker_id).await {
+                    tracing::warn!(worker = %beat.worker_id, error = %e, "job heartbeat failed");
+                }
+            }
+        });
         let slots = Arc::new(Semaphore::new(this.concurrency));
         let mut tasks = JoinSet::new();
         tokio::pin!(shutdown);
@@ -172,6 +185,7 @@ impl WorkerRunner {
             tracing::warn!(worker = %this.worker_id, left = tasks.len(), "grace over, dropping jobs");
             tasks.shutdown().await;
         }
+        heartbeat.abort();
         let released = this.source.release_mine(&this.worker_id).await?;
         tracing::info!(worker = %this.worker_id, released, "worker stopped");
         Ok(())

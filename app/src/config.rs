@@ -219,7 +219,7 @@ impl Config {
             worker_scan_slots: p(&get, "WORKER_SCAN_SLOTS", "2")?,
             worker_poll_ms: p(&get, "WORKER_POLL_MS", "1000")?,
             // 420 min, the old reaper age, above the 6 h scan cap.
-            job_lock_max_age_secs: p(&get, "JOB_LOCK_MAX_AGE_SECS", "25200")?,
+            job_lock_max_age_secs: p(&get, "JOB_LOCK_MAX_AGE_SECS", "300")?,
             worker_shutdown_grace_secs: p(&get, "WORKER_SHUTDOWN_GRACE_SECS", "30")?,
             request_timeout_secs: p(&get, "REQUEST_TIMEOUT_SECS", "30")?,
             contact_to: s("CONTACT_TO", "info@opsagent.dev"),
