@@ -21,6 +21,7 @@ mod resources;
 mod retention;
 mod runs;
 mod schedules;
+mod status;
 mod users;
 mod waitlist;
 
@@ -56,6 +57,7 @@ pub use connections::status_of;
 pub use contact::PgContact;
 pub use failures::PgFailures;
 pub use page::page;
+pub use status::PgStatus;
 pub use waitlist::PgWaitlist;
 
 use crate::actions::uow::{Repos, Tx, UnitOfWork};

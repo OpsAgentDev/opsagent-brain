@@ -17,12 +17,12 @@ use axum::{middleware::from_fn_with_state, Router};
 use crate::{
     actions::{
         ai, auth, billing, connections, contact, deliveries, findings, human_reviews, integrations,
-        members, oauth, orgs, recipients, resources, retention, runs, uow::UnitOfWork, waitlist,
-        Actions, ClientMetadataSource, ConnectorSource, RateLimiter,
+        members, oauth, orgs, recipients, resources, retention, runs, status, uow::UnitOfWork,
+        waitlist, Actions, ClientMetadataSource, ConnectorSource, RateLimiter,
     },
     adapters::{
         client_metadata::HttpClientMetadata,
-        db::{Pg, PgContact, PgFailures, PgWaitlist},
+        db::{Pg, PgContact, PgFailures, PgStatus, PgWaitlist},
         model::{
             anthropic::AnthropicModels, fake::FakeModels, openai::OpenAiModels, ModelProviders,
         },
@@ -278,6 +278,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.config.contact_to.clone(),
             ),
         },
+        status: status::GetStatus::new(Arc::new(PgStatus(d.db.clone())), d.clock.clone()),
         ai: build_ai(d, guard.clone()),
         human_reviews: human_reviews::HumanReviews {
             request: human_reviews::RequestReview::new(

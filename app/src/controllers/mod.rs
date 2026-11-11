@@ -19,6 +19,7 @@ pub mod passkeys;
 pub mod recipients;
 pub mod resources;
 pub mod runs;
+pub mod status;
 #[cfg(feature = "test-support")]
 pub mod test_routes;
 pub mod waitlist;
