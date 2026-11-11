@@ -68,7 +68,12 @@ pub fn redirect_uri_allowed(registered: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'));
     // `javascript`, `data` and `file` have no dot and are not allow-listed, so they fall out.
-    valid && (scheme.contains('.') || matches!(scheme.as_str(), "cursor" | "vscode" | "vscode-insiders" | "windsurf"))
+    valid
+        && (scheme.contains('.')
+            || matches!(
+                scheme.as_str(),
+                "cursor" | "vscode" | "vscode-insiders" | "windsurf"
+            ))
 }
 
 /// Loopback redirects match ignoring the port; everything else is an exact string match.
