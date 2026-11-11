@@ -5700,6 +5700,13 @@
               "$ref": "#/components/schemas/ConsentOrganisation"
             }
           },
+          "publisher": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The host that publishes a metadata-document client (`chatgpt.com`); absent for clients\nthat registered themselves."
+          },
           "redirect_uri": {
             "type": "string"
           },
