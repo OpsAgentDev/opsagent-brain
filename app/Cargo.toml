@@ -65,7 +65,7 @@ opsagent-brain = { path = ".", features = ["test-support"] }
 opsagent-ledger = { path = "../crates/ledger", features = ["test-support"] }
 serial_test = "3.1.1"
 # Software authenticator for the passkey registration ceremony test.
-webauthn-authenticator-rs = { version = "0.5", features = ["softpasskey"] }
+webauthn-authenticator-rs = { version = "0.6", features = ["softpasskey"] }
 axum-test = "17"
 tower = { version = "0.5", features = ["util"] }
 wiremock = "0.6"
