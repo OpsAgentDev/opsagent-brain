@@ -35,6 +35,10 @@ contract_suite! {
         let other = s.users().find_or_create_github(43, &email("bob@example.com"), None, true).await.unwrap();
         assert_ne!(other.id, u.id);
         assert_eq!((other.github_id, other.email.as_str()), (Some(43), "bob@example.com"));
+        // A second GitHub account with the same email never takes over the linked user.
+        let takeover = s.users().find_or_create_github(44, &e, None, true).await;
+        assert!(matches!(takeover, Err(RepoError::Conflict("account_exists"))), "{takeover:?}");
+        assert_eq!(s.users().get(u.id).await.unwrap().unwrap().github_id, Some(42));
     }
 
     async fn google_links_existing_email_user_then_matches_sub(s) {

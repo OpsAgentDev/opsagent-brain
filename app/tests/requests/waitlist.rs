@@ -379,3 +379,27 @@ async fn the_emailed_link_verifies_the_address_once() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn rejoin_mails_an_entry_whose_first_mail_never_went() {
+    serve(|req, ctx| async move {
+        reset(&ctx).await;
+        ctx.set_mailer(Arc::new(FailingMailer));
+        let join = || req.post("/v1/waitlist").json(&json!({"email":"a@b.io"}));
+        assert_eq!(join().await.status_code(), 202);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // Past the resend window, with no mail ever sent: a re-join must mail.
+        ctx.db
+            .execute_unprepared(
+                "UPDATE waitlist_entries SET created_at = now() - interval '2 hours'",
+            )
+            .await
+            .unwrap();
+        let mail = prepare(&ctx);
+        assert_eq!(join().await.status_code(), 202);
+        until(|| !mail.sent().is_empty()).await;
+        assert_eq!(mail.sent().len(), 1);
+    })
+    .await;
+}

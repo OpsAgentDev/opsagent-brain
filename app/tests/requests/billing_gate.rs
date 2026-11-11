@@ -124,6 +124,21 @@ async fn read_only_exemptions_pass() {
         )
         .await;
         assert_eq!(res.status_code(), 503, "{}", res.text());
+        // Taking access away passes the gate: an unknown id answers 404, not 402.
+        let gone = uuid::Uuid::new_v4();
+        for (method, path) in [
+            ("DELETE", format!("/v1/orgs/{org}/members/{gone}")),
+            ("PATCH", format!("/v1/orgs/{org}/members/{gone}")),
+            ("DELETE", format!("/v1/orgs/{org}/agents/{gone}")),
+            ("DELETE", format!("/v1/orgs/{org}/invites/{gone}")),
+        ] {
+            let r = match method {
+                "PATCH" => req.patch(&path).json(&json!({"role": "member"})),
+                _ => req.delete(&path),
+            };
+            let res = r.add_header("X-CSRF-Token", &t).await;
+            assert_ne!(res.status_code(), 402, "{method} {path}: {}", res.text());
+        }
         let res = req
             .delete(&format!("/v1/orgs/{org}"))
             .add_header("X-CSRF-Token", &t)

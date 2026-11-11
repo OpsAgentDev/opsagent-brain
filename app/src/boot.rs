@@ -428,6 +428,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.uow.clone(),
                 dispatcher.clone(),
                 d.clock.clone(),
+                gate.clone(),
             ),
             list_runs: runs::ListRuns::new(d.uow.clone()),
             get_run: runs::GetRun::new(d.uow.clone()),

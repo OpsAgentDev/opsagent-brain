@@ -1321,16 +1321,6 @@
         ],
         "responses": {
           "204": {},
-          "402": {
-            "description": "Billing required, or a trial or plan limit reached",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
           "404": {
             "content": {
               "application/json": {
@@ -4183,16 +4173,6 @@
         ],
         "responses": {
           "204": {},
-          "402": {
-            "description": "Billing required, or a trial or plan limit reached",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
           "403": {
             "content": {
               "application/json": {
@@ -4284,16 +4264,6 @@
         ],
         "responses": {
           "204": {},
-          "402": {
-            "description": "Billing required, or a trial or plan limit reached",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
           "403": {
             "content": {
               "application/json": {
@@ -4364,16 +4334,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Member"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "Billing required, or a trial or plan limit reached",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }

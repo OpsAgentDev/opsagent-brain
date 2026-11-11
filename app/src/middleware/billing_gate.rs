@@ -10,12 +10,17 @@ use axum::{
 
 use crate::{actions::orgs::OrgScope, api_error::ApiError, state::AppState};
 
-/// What a read-only organisation may still do: pay, or leave.
-const EXEMPT: [(&str, &str); 4] = [
+/// What a read-only organisation may still do: pay, leave, or take access away (remove a
+/// member, revoke an agent, cancel an invite, change a role), since reads and `/mcp` stay open.
+const EXEMPT: [(&str, &str); 8] = [
     ("POST", "/v1/orgs/{org}/human-reviews"),
     ("POST", "/v1/orgs/{org}/billing/checkout"),
     ("POST", "/v1/orgs/{org}/billing/portal"),
     ("DELETE", "/v1/orgs/{org}"),
+    ("DELETE", "/v1/orgs/{org}/members/{id}"),
+    ("PATCH", "/v1/orgs/{org}/members/{id}"),
+    ("DELETE", "/v1/orgs/{org}/agents/{id}"),
+    ("DELETE", "/v1/orgs/{org}/invites/{id}"),
 ];
 
 /// `method` on route template `path` passes a read-only organisation.

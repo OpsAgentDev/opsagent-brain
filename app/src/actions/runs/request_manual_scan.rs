@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::RunDispatcher;
 use crate::{
-    actions::uow::UnitOfWork,
+    actions::{billing::BillingGate, uow::UnitOfWork},
     error::{AppError, AppResult},
     models::enum_str,
 };
@@ -29,6 +29,8 @@ pub struct RequestManualScan {
     uow: Arc<dyn UnitOfWork>,
     dispatcher: Arc<RunDispatcher>,
     clock: Arc<dyn Clock>,
+    /// REST meets the gate in middleware; MCP `run_check` reaches this action directly.
+    gate: BillingGate,
 }
 
 impl RequestManualScan {
@@ -36,11 +38,13 @@ impl RequestManualScan {
         uow: Arc<dyn UnitOfWork>,
         dispatcher: Arc<RunDispatcher>,
         clock: Arc<dyn Clock>,
+        gate: BillingGate,
     ) -> Self {
         Self {
             uow,
             dispatcher,
             clock,
+            gate,
         }
     }
 
@@ -56,6 +60,9 @@ impl RequestManualScan {
     ) -> AppResult<CreateRunOutcome> {
         let now = self.clock.now();
         let tx = self.uow.begin().await?;
+        self.gate
+            .require_writable(tx.as_ref(), organisation_id)
+            .await?;
         let locked = tx
             .connections()
             .lock(organisation_id, connection_id)
@@ -123,7 +130,12 @@ mod tests {
         let c = connected(&store, org).await;
         let d = Arc::new(RunDispatcher::new(Arc::new(store.clone())));
         let at = |t: DateTime<Utc>| {
-            RequestManualScan::new(Arc::new(store.clone()), d.clone(), Arc::new(FixedClock(t)))
+            RequestManualScan::new(
+                Arc::new(store.clone()),
+                d.clone(),
+                Arc::new(FixedClock(t)),
+                crate::actions::billing::BillingGate::new(false, Arc::new(FixedClock(t))),
+            )
         };
         let first: DateTime<Utc> = "2026-10-22T12:00:00Z".parse().unwrap();
         let out = at(first).run(org, actor, c.id).await.unwrap();
