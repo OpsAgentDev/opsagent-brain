@@ -210,6 +210,7 @@ async fn consent_view_flags_loopback() {
                 "client_name": "Demo client",
                 "redirect_uri": "http://127.0.0.1:60000/callback",
                 "verified": false,
+                "publisher": null,
                 "loopback": true,
                 "organisations": [{"slug": slug(&org), "name": "Acme"}],
             })

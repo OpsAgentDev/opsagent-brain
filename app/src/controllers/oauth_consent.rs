@@ -86,6 +86,9 @@ pub struct ConsentView {
     pub redirect_uri: String,
     /// Always false: dynamic and metadata-document clients are unverified.
     pub verified: bool,
+    /// The host that publishes a metadata-document client (`chatgpt.com`); absent for clients
+    /// that registered themselves.
+    pub publisher: Option<String>,
     /// The redirect goes to this computer: warn the member.
     pub loopback: bool,
     pub organisations: Vec<ConsentOrganisation>,
@@ -112,6 +115,7 @@ async fn show(
         client_name: v.client_name,
         redirect_uri: v.redirect_uri,
         verified: v.verified,
+        publisher: v.publisher,
         loopback: v.loopback,
         organisations: v
             .organisations
