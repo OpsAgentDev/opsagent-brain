@@ -37,8 +37,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build-room
-      # Runner DNS to the Ubuntu mirrors fails now and then: retry before giving up.
-      - run: for i in 1 2 3 4 5; do sudo apt-get update && sudo apt-get install -y lld && break || { [ $i = 5 ] && exit 1; sleep 30; }; done
+      # Skip when the image already has lld. Runner DNS to the Ubuntu mirrors fails now and then: bounded retries.
+      - run: command -v ld.lld || for i in 1 2 3; do sudo timeout 150 sh -c 'apt-get update && apt-get install -y lld' && break || { [ $i = 3 ] && exit 1; sleep 20; }; done
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
@@ -73,8 +73,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build-room
-      # Runner DNS to the Ubuntu mirrors fails now and then: retry before giving up.
-      - run: for i in 1 2 3 4 5; do sudo apt-get update && sudo apt-get install -y lld && break || { [ $i = 5 ] && exit 1; sleep 30; }; done
+      # Skip when the image already has lld. Runner DNS to the Ubuntu mirrors fails now and then: bounded retries.
+      - run: command -v ld.lld || for i in 1 2 3; do sudo timeout 150 sh -c 'apt-get update && apt-get install -y lld' && break || { [ $i = 3 ] && exit 1; sleep 20; }; done
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
