@@ -42,9 +42,21 @@ fn publisher(client: &OAuthClient) -> Option<String> {
     if client.kind != ClientKind::MetadataDocument {
         return None;
     }
-    let rest = client.client_id.strip_prefix("https://")?;
-    let host = rest.split(['/', '?', '#']).next()?.to_ascii_lowercase();
-    (!host.is_empty()).then_some(host)
+    // The fetch's own parser, so the page names the host that was actually fetched. Anything a
+    // parser could read two ways (userinfo, a serialization that differs from the raw id) names none.
+    let url = reqwest::Url::parse(&client.client_id).ok()?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.as_str() != client.client_id
+    {
+        return None;
+    }
+    let host = url.host_str()?;
+    Some(match url.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_owned(),
+    })
 }
 
 pub struct GetConsent {
@@ -107,16 +119,23 @@ mod tests {
 
     #[test]
     fn publisher_is_the_document_host_only_for_metadata_clients() {
-        let doc = client(
-            "https://ChatGPT.com/oauth/codex/client.json",
-            ClientKind::MetadataDocument,
+        let doc = |id: &str| publisher(&client(id, ClientKind::MetadataDocument));
+        assert_eq!(
+            doc("https://chatgpt.com/oauth/codex/client.json").as_deref(),
+            Some("chatgpt.com")
         );
-        assert_eq!(publisher(&doc).as_deref(), Some("chatgpt.com"));
-        let port = client(
-            "https://a.example:8443/c.json",
-            ClientKind::MetadataDocument,
+        assert_eq!(
+            doc("https://a.example:8443/c.json").as_deref(),
+            Some("a.example:8443")
         );
-        assert_eq!(publisher(&port).as_deref(), Some("a.example:8443"));
+        for spoof in [
+            "https://chatgpt.com@evil.example/c.json",
+            "https://chatgpt.com\\@evil.example/c.json",
+            "https://ChatGPT.com/c.json",
+            "https://a.example/x/../c.json",
+        ] {
+            assert_eq!(doc(spoof), None, "{spoof}");
+        }
         assert_eq!(publisher(&client("4f0c-dyn", ClientKind::Dynamic)), None);
     }
 }
