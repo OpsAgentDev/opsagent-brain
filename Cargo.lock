@@ -638,9 +638,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-backup"
-version = "1.129.0"
+version = "1.130.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dde353b758bc6b48219ea58214e9fd6beba150c5da1f9f787d82d7b90f403727"
+checksum = "03b7016a0a72d9ea9220ba610966654fe271674fa4ca1ab0f2ea9ba7d01f9062"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
