@@ -1,8 +1,12 @@
 name: deploy-aws
 
-# Manual until the AWS cutover; then this follows a green CI run on main.
+# Runs after a green `ci` run for a push to main, or by hand.
 # Builds the images, pushes them to ECR and rolls api, worker and scheduler (hub: aws-hosting.md).
 on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -15,15 +19,21 @@ concurrency:
 
 env:
   AWS_REGION: us-west-2
+  # The commit CI tested; on a manual run, the head of main.
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
   deploy:
     # The role trusts refs/heads/main only.
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SHA }}
       - name: Assume the deploy role
         env:
           ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
@@ -46,14 +56,14 @@ jobs:
           # Tags are immutable: a re-run of the same commit reuses the image it already pushed.
           for pair in opsagent-brain:. opsagent-backup:deploy/backup; do
             repo="${pair%%:*}"
-            if aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=$GITHUB_SHA" >/dev/null 2>&1; then
-              echo "$repo:$GITHUB_SHA is already in ECR"
+            if aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=$SHA" >/dev/null 2>&1; then
+              echo "$repo:$SHA is already in ECR"
               continue
             fi
-            docker build -t "$registry/$repo:$GITHUB_SHA" "${pair#*:}"
-            docker push "$registry/$repo:$GITHUB_SHA"
+            docker build -t "$registry/$repo:$SHA" "${pair#*:}"
+            docker push "$registry/$repo:$SHA"
           done
-          echo "IMAGE=$registry/opsagent-brain:$GITHUB_SHA" >>"$GITHUB_ENV"
+          echo "IMAGE=$registry/opsagent-brain:$SHA" >>"$GITHUB_ENV"
       - name: Migrate, then roll api
         run: deploy/aws/roll.sh api "$IMAGE" --migrate
       - name: Roll worker and scheduler
