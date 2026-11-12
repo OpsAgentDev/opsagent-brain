@@ -82,4 +82,4 @@ Consent works only on the custom domains (opsagent.dev and brain.opsagent.dev ar
 
 ## AWS (after the move; hub `docs/tech-spec/aws-hosting.md`)
 
-`deploy-aws.yml` (manual, `main` only) builds and pushes the brain and backup images to ECR, runs `db migrate` as a one-off task, then rolls `api`, `worker` and `scheduler` with `deploy/aws/roll.sh`. It assumes the role in the repo variable `AWS_DEPLOY_ROLE_ARN` through GitHub OIDC; no AWS key is stored in GitHub.
+`deploy-aws.yml` (after a green `ci` on `main`, or by hand) builds and pushes the brain and backup images to ECR, runs `db migrate` as a one-off task, then rolls `api`, `worker` and `scheduler` with `deploy/aws/roll.sh`. It assumes the role in the repo variable `AWS_DEPLOY_ROLE_ARN` through GitHub OIDC; no AWS key is stored in GitHub.
