@@ -89,17 +89,8 @@ impl VerifyCode {
                 DAY_CAP,
                 DAY_SECS,
             ),
-            // Last, so attempts the per-client caps refuse do not use it up.
-            (
-                "ratelimit:verify_code:global".to_owned(),
-                GLOBAL_HOURLY_CAP,
-                3600,
-            ),
         ] {
             if !allowed(self.limiter.hit(&key, cap, window).await) {
-                if cap == GLOBAL_HOURLY_CAP {
-                    tracing::warn!(error_code = "verify_code_global_cap", "code sign-in paused");
-                }
                 return Err(over());
             }
         }
@@ -119,6 +110,21 @@ impl VerifyCode {
         let now = self.clock.now();
         let tx = self.uow.begin().await?;
         let live = tx.users().live_codes(&email, now).await?;
+        // Counted only against addresses with a live code, so spending the budget needs
+        // Turnstile-gated mail requests, not just many IPs.
+        if !live.is_empty() {
+            let global = self
+                .limiter
+                .hit("ratelimit:verify_code:global", GLOBAL_HOURLY_CAP, 3600)
+                .await;
+            if !global.unwrap_or(false) {
+                tracing::warn!(error_code = "verify_code_global_cap", "code sign-in paused");
+                return Err(AppError::RateLimited {
+                    detail: "Too many attempts. Try again in a few minutes.".into(),
+                    retry_after_secs: WINDOW_SECS as u64,
+                });
+            }
+        }
         // Every row is compared, so timing does not reveal which one matched.
         let mut hit = None;
         for l in &live {
@@ -298,8 +304,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn global_hourly_cap_refuses_a_fresh_address() {
-        let store = MemStore::default();
+    async fn global_hourly_cap_counts_only_addresses_with_a_live_code() {
+        let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
         let limiter = Arc::new(MemRateLimiter::default());
         for _ in 0..GLOBAL_HOURLY_CAP {
             limiter
@@ -308,12 +314,15 @@ mod tests {
                 .unwrap();
         }
         let v = VerifyCode::new(
-            Arc::new(store),
+            Arc::new(store.clone()),
             limiter,
             Arc::new(SystemClock),
             SECRET.into(),
         );
-        let err = v.run(input(EMAIL, "000000")).await.unwrap_err();
+        // No live code: a plain wrong answer, the brake is not involved.
+        assert_invalid(v.run(input(EMAIL, "000000")).await);
+        request(&store, &mail).await;
+        let err = v.run(input(EMAIL, &last_code(&mail))).await.unwrap_err();
         assert!(matches!(err, AppError::RateLimited { .. }), "{err:?}");
     }
 
