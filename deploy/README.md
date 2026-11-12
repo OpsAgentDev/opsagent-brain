@@ -79,3 +79,7 @@ A watchdog, `.github/workflows/backup-check.yml`, runs daily at 09:30 UTC and fa
 No new variables. `APP_BASE_URL` must be exactly `https://brain.opsagent.dev` in production: the OAuth issuer, the MCP resource (`{APP_BASE_URL}/mcp`) and the MCP allowed host all derive from it, and boot fails if it is not an absolute URL. `SESSION_SECRET` also keys the consent browser-binding cookie. After deploy, `scripts/smoke.sh https://brain.opsagent.dev` checks MCP discovery and the 401 challenge.
 
 Consent works only on the custom domains (opsagent.dev and brain.opsagent.dev are same-site); on *.up.railway.app previews the SameSite=Lax consent cookie is not sent and consent returns 403.
+
+## AWS (after the move; hub `docs/tech-spec/aws-hosting.md`)
+
+`deploy-aws.yml` (manual, `main` only) builds and pushes the brain and backup images to ECR, runs `db migrate` as a one-off task, then rolls `api`, `worker` and `scheduler` with `deploy/aws/roll.sh`. It assumes the role in the repo variable `AWS_DEPLOY_ROLE_ARN` through GitHub OIDC; no AWS key is stored in GitHub.
