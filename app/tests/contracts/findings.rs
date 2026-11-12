@@ -127,7 +127,8 @@ contract_suite! {
         let open = FindingFilter { status: Some("open".into()), ..Default::default() };
         let listed = s.findings().list(org, open, all()).await.unwrap().items;
         let mut got: Vec<Uuid> = listed.iter().map(|f| f.connection_id).collect();
-        (got.sort(), ids.sort());
+        got.sort();
+        ids.sort();
         assert_eq!(got, ids);
         assert_eq!(paged(s, org, 2).await.concat().len(), 3);
         assert!(s.findings().list(org, only(gone), all()).await.unwrap().items.is_empty());
