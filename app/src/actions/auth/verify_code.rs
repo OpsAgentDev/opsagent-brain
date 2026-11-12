@@ -119,10 +119,8 @@ impl VerifyCode {
                 .await;
             if !global.unwrap_or(false) {
                 tracing::warn!(error_code = "verify_code_global_cap", "code sign-in paused");
-                return Err(AppError::RateLimited {
-                    detail: "Too many attempts. Try again in a few minutes.".into(),
-                    retry_after_secs: WINDOW_SECS as u64,
-                });
+                // The same answer as a wrong code, so it does not reveal that a code is live.
+                return Err(invalid());
             }
         }
         // Every row is compared, so timing does not reveal which one matched.
@@ -322,8 +320,8 @@ mod tests {
         // No live code: a plain wrong answer, the brake is not involved.
         assert_invalid(v.run(input(EMAIL, "000000")).await);
         request(&store, &mail).await;
-        let err = v.run(input(EMAIL, &last_code(&mail))).await.unwrap_err();
-        assert!(matches!(err, AppError::RateLimited { .. }), "{err:?}");
+        // Even the right code is refused, looking exactly like a wrong one.
+        assert_invalid(v.run(input(EMAIL, &last_code(&mail))).await);
     }
 
     #[tokio::test]
