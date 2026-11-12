@@ -17,6 +17,9 @@ const CAP: i64 = 10;
 const WINDOW_SECS: i64 = 900;
 /// Verify attempts per address per day.
 const DAY_CAP: i64 = 20;
+/// Verify attempts per hour across all clients: a brake on spraying guesses over many addresses.
+/// Past it codes are refused for the hour; the emailed link still signs in.
+const GLOBAL_HOURLY_CAP: i64 = 2000;
 
 pub struct VerifyCodeInput {
     pub email: String,
@@ -107,6 +110,19 @@ impl VerifyCode {
         let now = self.clock.now();
         let tx = self.uow.begin().await?;
         let live = tx.users().live_codes(&email, now).await?;
+        // Counted only against addresses with a live code, so spending the budget needs
+        // Turnstile-gated mail requests, not just many IPs.
+        if !live.is_empty() {
+            let global = self
+                .limiter
+                .hit("ratelimit:verify_code:global", GLOBAL_HOURLY_CAP, 3600)
+                .await;
+            if !global.unwrap_or(false) {
+                tracing::warn!(error_code = "verify_code_global_cap", "code sign-in paused");
+                // The same answer as a wrong code, so it does not reveal that a code is live.
+                return Err(invalid());
+            }
+        }
         // Every row is compared, so timing does not reveal which one matched.
         let mut hit = None;
         for l in &live {
@@ -283,6 +299,29 @@ mod tests {
         }
         let err = v.run(input(EMAIL, "000000")).await.unwrap_err();
         assert!(matches!(err, AppError::RateLimited { .. }), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn global_hourly_cap_counts_only_addresses_with_a_live_code() {
+        let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
+        let limiter = Arc::new(MemRateLimiter::default());
+        for _ in 0..GLOBAL_HOURLY_CAP {
+            limiter
+                .hit("ratelimit:verify_code:global", GLOBAL_HOURLY_CAP, 3600)
+                .await
+                .unwrap();
+        }
+        let v = VerifyCode::new(
+            Arc::new(store.clone()),
+            limiter,
+            Arc::new(SystemClock),
+            SECRET.into(),
+        );
+        // No live code: a plain wrong answer, the brake is not involved.
+        assert_invalid(v.run(input(EMAIL, "000000")).await);
+        request(&store, &mail).await;
+        // Even the right code is refused, looking exactly like a wrong one.
+        assert_invalid(v.run(input(EMAIL, &last_code(&mail))).await);
     }
 
     #[tokio::test]
