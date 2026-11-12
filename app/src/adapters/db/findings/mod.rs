@@ -6,6 +6,7 @@ mod seen;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
+    connection::ConnectionStatus,
     finding::{
         Finding, FindingDraft, FindingEvent, FindingFilter, FindingKey, FindingsRepo, PostureRow,
         Severity, StatusChange, StoredEvidence,
@@ -13,15 +14,16 @@ use opsagent_core::{
     repo::{FindingCursor, PageOf, PageRequest, RepoError, RepoResult},
 };
 use sea_orm::{
-    sea_query::Expr, ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder,
-    QueryTrait, Value,
+    sea_query::{Expr, Query},
+    ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, QueryTrait,
+    Value,
 };
 use uuid::Uuid;
 
 use super::ledger_storage::stmt;
 use super::{db_err, utc, Conn, Pg};
 use crate::models::{
-    _entities::{evidence, finding_events, findings},
+    _entities::{connections, evidence, finding_events, findings},
     enum_of, enum_str,
 };
 
@@ -111,8 +113,16 @@ impl<C: Conn> FindingsRepo for Pg<C> {
         p: PageRequest<FindingCursor>,
     ) -> RepoResult<PageOf<Finding, FindingCursor>> {
         use findings::Column as F;
+        // Nothing scans a disconnected connection again, so its findings would stay open for ever.
+        let disconnected = Query::select()
+            .column(connections::Column::Id)
+            .from(connections::Entity)
+            .and_where(connections::Column::OrganisationId.eq(organisation_id))
+            .and_where(connections::Column::Status.eq(enum_str(ConnectionStatus::Disconnected)))
+            .to_owned();
         let q = findings::Entity::find()
             .filter(F::OrganisationId.eq(organisation_id))
+            .filter(F::ConnectionId.not_in_subquery(disconnected))
             .apply_if(f.connection_id, |q, v| q.filter(F::ConnectionId.eq(v)))
             .apply_if(f.status, |q, v| q.filter(F::Status.eq(v)))
             .apply_if(f.severity, |q, v| q.filter(F::Severity.eq(enum_str(v))))
