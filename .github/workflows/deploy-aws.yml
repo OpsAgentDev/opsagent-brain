@@ -1,0 +1,58 @@
+name: deploy-aws
+
+# Manual until the AWS cutover; then this follows a green CI run on main.
+# Builds the images, pushes them to ECR and rolls api, worker and scheduler (hub: aws-hosting.md).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # GitHub OIDC: the deploy role is assumed with a short-lived token, no AWS keys
+
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-west-2
+
+jobs:
+  deploy:
+    # The role trusts refs/heads/main only.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Assume the deploy role
+        env:
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          test -n "$ROLE_ARN" || { echo "repo variable AWS_DEPLOY_ROLE_ARN is not set" >&2; exit 1; }
+          token="$(curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)"
+          creds="$(aws sts assume-role-with-web-identity --role-arn "$ROLE_ARN" \
+            --role-session-name "deploy-$GITHUB_RUN_ID" --web-identity-token "$token" \
+            --duration-seconds 3600 --query Credentials --output json)"
+          for pair in AWS_ACCESS_KEY_ID:AccessKeyId AWS_SECRET_ACCESS_KEY:SecretAccessKey AWS_SESSION_TOKEN:SessionToken; do
+            value="$(jq -r ".${pair#*:}" <<<"$creds")"
+            echo "::add-mask::$value"
+            echo "${pair%%:*}=$value" >>"$GITHUB_ENV"
+          done
+      - name: Build and push
+        run: |
+          registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
+          docker build -t "$registry/opsagent-brain:$GITHUB_SHA" .
+          docker build -t "$registry/opsagent-backup:$GITHUB_SHA" deploy/backup
+          docker push "$registry/opsagent-brain:$GITHUB_SHA"
+          docker push "$registry/opsagent-backup:$GITHUB_SHA"
+          echo "IMAGE=$registry/opsagent-brain:$GITHUB_SHA" >>"$GITHUB_ENV"
+      - name: Migrate, then roll api
+        run: deploy/aws/roll.sh api "$IMAGE" --migrate
+      - name: Roll worker and scheduler
+        run: |
+          deploy/aws/roll.sh worker "$IMAGE"
+          deploy/aws/roll.sh scheduler "$IMAGE"
+      - name: Wait for the services to settle
+        run: aws ecs wait services-stable --cluster opsagent --services api worker scheduler
