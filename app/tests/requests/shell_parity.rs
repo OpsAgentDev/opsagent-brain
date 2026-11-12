@@ -171,6 +171,7 @@ async fn secure_headers_present_and_hsts_only_in_production() {
     .await;
     let production = |c: &mut opsagent_brain::config::Config| {
         c.env = opsagent_brain::config::AppEnv::Production;
+        c.trusted_proxy_secret = Some("origin-secret".into());
     };
     serve_with(production, |prod, _ctx| async move {
         let res = prod.get("/healthz").await;
