@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     ai::evidence_hash,
+    connection::ConnectionStatus,
     finding::{
         dedupe, Finding, FindingDraft, FindingEvent, FindingFilter, FindingsRepo, PostureRow,
         Severity, StatusChange, StoredEvidence,
@@ -115,13 +116,18 @@ impl FindingsRepo for MemStore {
         q: FindingFilter,
         p: PageRequest<FindingCursor>,
     ) -> RepoResult<PageOf<Finding, FindingCursor>> {
-        let mut rows: Vec<FindingRow> = self
-            .state()
+        let s = self.state();
+        let disconnected = |id: Uuid| {
+            let mut all = s.connections.iter();
+            all.any(|(c, _)| c.id == id && c.status == ConnectionStatus::Disconnected)
+        };
+        let mut rows: Vec<FindingRow> = s
             .findings
             .iter()
             .filter(|r| {
                 let f = &r.finding;
                 f.organisation_id == organisation_id
+                    && !disconnected(f.connection_id)
                     && q.connection_id.is_none_or(|c| f.connection_id == c)
                     && q.status.as_ref().is_none_or(|s| &f.status == s)
                     && q.severity.is_none_or(|s| f.severity == s)
@@ -131,6 +137,7 @@ impl FindingsRepo for MemStore {
             })
             .cloned()
             .collect();
+        drop(s);
         rows.sort_by_key(key);
         rows.retain(|r| p.after.is_none_or(|a| key(r) > a));
         let more = rows.len() as u64 > p.limit;

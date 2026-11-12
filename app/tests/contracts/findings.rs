@@ -108,6 +108,34 @@ async fn paged(s: &dyn Repos, org: Uuid, limit: u64) -> Vec<Vec<Uuid>> {
 }
 
 contract_suite! {
+    async fn list_leaves_out_findings_of_a_disconnected_connection(s, seed) {
+        use opsagent_core::connection::{ConnectionStatus as S, Verified};
+        let (org, _) = world(s, seed).await;
+        let only = |c| FindingFilter { connection_id: Some(c), ..Default::default() };
+        let (mut ids, mut finding) = (vec![], Uuid::nil());
+        for to in [S::Connected, S::Degraded, S::Revoked, S::Disconnected] {
+            let conn = crate::contracts::connections::connection(s, org, "c").await.id;
+            scan(s, seed, org, conn, &[draft(conn, "c", "r", Severity::Critical)]).await;
+            finding = s.findings().list(org, only(conn), all()).await.unwrap().items[0].id;
+            let account = Verified { account: Some(Uuid::new_v4().to_string()), ..Default::default() };
+            s.connections().record_verified(org, conn, account).await.unwrap();
+            assert!(s.connections().cas_status(org, conn, S::Pending, to, None).await.unwrap());
+            ids.push(conn);
+        }
+        let gone = ids.pop().unwrap();
+        // The web counts open findings from this list.
+        let open = FindingFilter { status: Some("open".into()), ..Default::default() };
+        let listed = s.findings().list(org, open, all()).await.unwrap().items;
+        let mut got: Vec<Uuid> = listed.iter().map(|f| f.connection_id).collect();
+        got.sort();
+        ids.sort();
+        assert_eq!(got, ids);
+        assert_eq!(paged(s, org, 2).await.concat().len(), 3);
+        assert!(s.findings().list(org, only(gone), all()).await.unwrap().items.is_empty());
+        // History: still there by id.
+        assert_eq!(s.findings().get(org, finding).await.unwrap().unwrap().connection_id, gone);
+    }
+
     async fn list_is_critical_first_then_oldest(s, seed) {
         let (org, conn) = world(s, seed).await;
         let run = seed.run(org, conn).await;

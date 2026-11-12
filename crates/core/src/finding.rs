@@ -165,7 +165,8 @@ pub struct PostureRow {
 #[async_trait]
 pub trait FindingsRepo: Send + Sync {
     async fn get(&self, organisation_id: Uuid, id: Uuid) -> RepoResult<Option<Finding>>;
-    /// Most severe first, then oldest first, then by id.
+    /// Most severe first, then oldest first, then by id. Findings of a disconnected connection
+    /// are left out (`get` still returns them).
     async fn list(
         &self,
         organisation_id: Uuid,
