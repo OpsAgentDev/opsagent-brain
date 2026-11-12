@@ -136,6 +136,15 @@ const PRODUCTION_REQUIRED: [&str; 9] = [
 ];
 
 impl Config {
+    /// What only the API needs in production: without the origin secret every client shares a
+    /// Cloudflare edge IP, so the per-IP caps stop working. Workers do not read it.
+    pub fn api_ready(&self) -> Result<(), ConfigError> {
+        if self.env == AppEnv::Production && self.trusted_proxy_secret.is_none() {
+            return Err(ConfigError::Missing(vec!["TRUSTED_PROXY_SECRET"]));
+        }
+        Ok(())
+    }
+
     pub fn from_env() -> Result<Self, ConfigError> {
         Self::from_vars(|k| std::env::var(k).ok())
     }
@@ -561,10 +570,16 @@ mod tests {
     }
 
     #[test]
-    fn trusted_proxy_secret_is_optional_even_in_production() {
-        assert_eq!(cfg(&production(&[])).trusted_proxy_secret, None);
+    fn trusted_proxy_secret_is_required_only_for_the_api_in_production() {
+        let worker = cfg(&production(&[]));
+        assert_eq!(worker.trusted_proxy_secret, None);
+        assert!(
+            matches!(worker.api_ready(), Err(ConfigError::Missing(v)) if v == ["TRUSTED_PROXY_SECRET"])
+        );
         let c = cfg(&production(&[("TRUSTED_PROXY_SECRET", "origin-secret")]));
         assert_eq!(c.trusted_proxy_secret.as_deref(), Some("origin-secret"));
+        assert!(c.api_ready().is_ok());
+        assert!(cfg(&[]).api_ready().is_ok());
     }
 
     #[test]

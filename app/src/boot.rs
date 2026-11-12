@@ -718,6 +718,7 @@ pub fn scheduler(state: &AppState) -> Scheduler {
 /// merged with OAuth, discovery and `/mcp` (behind its bearer layer) on the public one
 /// (`middleware::public_stack`).
 pub fn router(state: AppState) -> AppResult<Router> {
+    state.config.api_ready().map_err(internal)?;
     let routes = controllers::health::routes().merge(controllers::openapi::routes());
     #[cfg(feature = "test-support")]
     let routes = routes.merge(controllers::test_routes::routes());

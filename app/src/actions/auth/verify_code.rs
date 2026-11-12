@@ -17,6 +17,9 @@ const CAP: i64 = 10;
 const WINDOW_SECS: i64 = 900;
 /// Verify attempts per address per day.
 const DAY_CAP: i64 = 20;
+/// Verify attempts per hour across all clients: a brake on spraying guesses over many addresses.
+/// Past it codes are refused for the hour; the emailed link still signs in.
+const GLOBAL_HOURLY_CAP: i64 = 2000;
 
 pub struct VerifyCodeInput {
     pub email: String,
@@ -86,8 +89,17 @@ impl VerifyCode {
                 DAY_CAP,
                 DAY_SECS,
             ),
+            // Last, so attempts the per-client caps refuse do not use it up.
+            (
+                "ratelimit:verify_code:global".to_owned(),
+                GLOBAL_HOURLY_CAP,
+                3600,
+            ),
         ] {
             if !allowed(self.limiter.hit(&key, cap, window).await) {
+                if cap == GLOBAL_HOURLY_CAP {
+                    tracing::warn!(error_code = "verify_code_global_cap", "code sign-in paused");
+                }
                 return Err(over());
             }
         }
@@ -281,6 +293,26 @@ mod tests {
         for _ in 0..DAY_CAP {
             assert_invalid(v.run(input(EMAIL, "000000")).await);
         }
+        let err = v.run(input(EMAIL, "000000")).await.unwrap_err();
+        assert!(matches!(err, AppError::RateLimited { .. }), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn global_hourly_cap_refuses_a_fresh_address() {
+        let store = MemStore::default();
+        let limiter = Arc::new(MemRateLimiter::default());
+        for _ in 0..GLOBAL_HOURLY_CAP {
+            limiter
+                .hit("ratelimit:verify_code:global", GLOBAL_HOURLY_CAP, 3600)
+                .await
+                .unwrap();
+        }
+        let v = VerifyCode::new(
+            Arc::new(store),
+            limiter,
+            Arc::new(SystemClock),
+            SECRET.into(),
+        );
         let err = v.run(input(EMAIL, "000000")).await.unwrap_err();
         assert!(matches!(err, AppError::RateLimited { .. }), "{err:?}");
     }

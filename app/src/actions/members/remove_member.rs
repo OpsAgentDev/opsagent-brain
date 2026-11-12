@@ -9,7 +9,8 @@ use crate::{
     error::{AppError, AppResult},
 };
 
-/// Removes a member; refused with `last_owner` if it would leave no owner. Owners only.
+/// Removes a member; refused with `last_owner` if it would leave no owner. Owners remove anyone;
+/// any member may remove their own membership (leave).
 pub struct RemoveMember {
     uow: Arc<dyn UnitOfWork>,
     clock: Arc<dyn Clock>,
@@ -21,7 +22,9 @@ impl RemoveMember {
     }
 
     pub async fn run(&self, scope: &OrgScope, actor: Uuid, member_id: Uuid) -> AppResult<()> {
-        scope.require_owner()?;
+        if member_id != scope.member.id {
+            scope.require_owner()?;
+        }
         let organisation_id = scope.organisation.id;
         let tx = self.uow.begin().await?;
         // Serialise owner removals per org so two concurrent requests cannot orphan it.
@@ -48,7 +51,12 @@ impl RemoveMember {
             .revoke_member_grants(organisation_id, member_id, now)
             .await?;
         let target = Some(("member", member_id.to_string()));
-        let entry = AuditEntry::member(Some(organisation_id), actor, "member.remove", target);
+        let action = if member_id == scope.member.id {
+            "member.leave"
+        } else {
+            "member.remove"
+        };
+        let entry = AuditEntry::member(Some(organisation_id), actor, action, target);
         tx.audit().record(entry).await?;
         tx.commit().await?;
         Ok(())
@@ -92,6 +100,38 @@ mod tests {
         assert_eq!(
             left.iter().map(|m| m.user_id).collect::<Vec<_>>(),
             [other.id]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_member_may_leave_but_not_remove_others() {
+        let store = MemStore::default();
+        let (owner, org) = owned_org(&store, "boss@example.com", "Team").await;
+        let viewer = user(&store, "member@example.com").await;
+        store
+            .add_member(org.id, viewer.id, Role::Member)
+            .await
+            .unwrap();
+        let owner_scope = scope(&store, &org, &owner).await;
+        let viewer_scope = scope(&store, &org, &viewer).await;
+        let remove = RemoveMember::new(
+            Arc::new(store.clone()),
+            Arc::new(opsagent_core::repo::SystemClock),
+        );
+        let err = remove
+            .run(&viewer_scope, viewer.id, owner_scope.member.id)
+            .await
+            .unwrap_err();
+        assert!(!matches!(err, AppError::NotFound), "{err:?}");
+        assert_eq!(store.owner_count(org.id).await.unwrap(), 1);
+        remove
+            .run(&viewer_scope, viewer.id, viewer_scope.member.id)
+            .await
+            .unwrap();
+        let left = store.members(org.id).await.unwrap();
+        assert_eq!(
+            left.iter().map(|m| m.user_id).collect::<Vec<_>>(),
+            [owner.id]
         );
     }
 }

@@ -63,6 +63,8 @@ impl AiAccess {
                 None
             }
             None => {
+                // Serialise debits per org so two calls finishing together both see the other's use.
+                tx.orgs().lock(org).await?;
                 let q = self.quota(&*tx, org).await?;
                 let left = (q.quota - q.used).max(Decimal::ZERO);
                 let debit = (credits - left).max(Decimal::ZERO);
