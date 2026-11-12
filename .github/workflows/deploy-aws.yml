@@ -43,10 +43,16 @@ jobs:
         run: |
           registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com"
           aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
-          docker build -t "$registry/opsagent-brain:$GITHUB_SHA" .
-          docker build -t "$registry/opsagent-backup:$GITHUB_SHA" deploy/backup
-          docker push "$registry/opsagent-brain:$GITHUB_SHA"
-          docker push "$registry/opsagent-backup:$GITHUB_SHA"
+          # Tags are immutable: a re-run of the same commit reuses the image it already pushed.
+          for pair in opsagent-brain:. opsagent-backup:deploy/backup; do
+            repo="${pair%%:*}"
+            if aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=$GITHUB_SHA" >/dev/null 2>&1; then
+              echo "$repo:$GITHUB_SHA is already in ECR"
+              continue
+            fi
+            docker build -t "$registry/$repo:$GITHUB_SHA" "${pair#*:}"
+            docker push "$registry/$repo:$GITHUB_SHA"
+          done
           echo "IMAGE=$registry/opsagent-brain:$GITHUB_SHA" >>"$GITHUB_ENV"
       - name: Migrate, then roll api
         run: deploy/aws/roll.sh api "$IMAGE" --migrate
