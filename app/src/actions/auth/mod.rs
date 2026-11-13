@@ -1,4 +1,5 @@
 //! Sign-in use cases. Session, CSRF and OAuth state stay in the controller (transport).
+mod accept_terms;
 mod current_user;
 mod delete_account;
 mod passkeys;
@@ -8,6 +9,7 @@ mod sign_in_github;
 mod sign_in_google;
 mod verify_code;
 
+pub use accept_terms::AcceptTerms;
 pub use current_user::CurrentUser;
 pub use delete_account::DeleteAccount;
 pub(crate) use passkeys::passkey_invalid;
@@ -25,6 +27,7 @@ pub struct Auth {
     pub sign_in_github: SignInGithub,
     pub sign_in_google: SignInGoogle,
     pub current_user: CurrentUser,
+    pub accept_terms: AcceptTerms,
     pub delete_account: DeleteAccount,
     pub passkeys: Passkeys,
 }

@@ -33,6 +33,7 @@ fn user(m: users::Model) -> RepoResult<User> {
         github_id,
         google_id: m.google_id,
         created_at: utc(m.created_at),
+        terms_accepted_at: m.terms_accepted_at.map(utc),
     })
 }
 
@@ -51,6 +52,7 @@ fn new_user(
         created_at: Set(now()),
         updated_at: Set(now()),
         deleted_at: Set(None),
+        terms_accepted_at: Set(None),
     }
 }
 
@@ -133,6 +135,21 @@ impl<C: Conn> UsersRepo for Pg<C> {
             .col_expr(users::Column::UpdatedAt, Expr::value(now()))
             .filter(users::Column::Id.eq(id))
             .filter(users::Column::Name.is_null())
+            .exec(self.db())
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    async fn accept_terms(&self, id: Uuid, at: DateTime<Utc>) -> RepoResult<()> {
+        users::Entity::update_many()
+            .col_expr(
+                users::Column::TermsAcceptedAt,
+                Expr::value(at.fixed_offset()),
+            )
+            .col_expr(users::Column::UpdatedAt, Expr::value(now()))
+            .filter(users::Column::Id.eq(id))
+            .filter(users::Column::TermsAcceptedAt.is_null())
             .exec(self.db())
             .await
             .map_err(db_err)?;

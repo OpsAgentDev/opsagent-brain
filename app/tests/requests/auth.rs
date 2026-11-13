@@ -182,6 +182,36 @@ async fn sign_out_requires_csrf_and_ends_session() {
 
 #[tokio::test]
 #[serial]
+async fn accepting_the_terms_sets_the_time_once() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        assert_eq!(req.post("/v1/auth/me/terms").await.status_code(), 401);
+
+        let token = sign_in(&req, &mail, "terms@example.com").await;
+        let accepted =
+            || async { req.get("/v1/auth/me").await.json::<Value>()["terms_accepted_at"].clone() };
+        assert_eq!(accepted().await, Value::Null);
+        assert_eq!(req.post("/v1/auth/me/terms").await.status_code(), 403);
+        assert_eq!(accepted().await, Value::Null);
+
+        let accept = || {
+            req.post("/v1/auth/me/terms")
+                .add_header("X-CSRF-Token", &token)
+        };
+        assert_eq!(accept().await.status_code(), 204);
+        let first = accepted().await;
+        let at = first.as_str().expect("a string");
+        assert!(chrono::DateTime::parse_from_rfc3339(at).is_ok(), "{at}");
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(accept().await.status_code(), 204);
+        assert_eq!(accepted().await, first);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn deleting_the_account_needs_the_email_and_signs_out() {
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);

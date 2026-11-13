@@ -4,6 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use chrono::{DateTime, Utc};
 use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
     EndpointNotSet, EndpointSet, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
@@ -588,6 +589,8 @@ pub struct Me {
     pub name: Option<String>,
     /// Whether the user has registered a passkey (the web suggests one when not).
     pub has_passkey: bool,
+    /// When the user agreed to the Terms and the Privacy Policy; null until they do.
+    pub terms_accepted_at: Option<DateTime<Utc>>,
 }
 
 #[utoipa::path(get, path = "/auth/me", tag = "auth",
@@ -600,7 +603,19 @@ async fn me(State(app): State<AppState>, AuthUser(id): AuthUser) -> Result<Json<
         email: u.email.as_str().into(),
         name: u.name,
         has_passkey,
+        terms_accepted_at: u.terms_accepted_at,
     }))
+}
+
+#[utoipa::path(post, path = "/auth/me/terms", tag = "auth",
+    responses((status = 204, description = "Accepted; a repeat call keeps the first time"),
+        (status = 401, body = Problem)))]
+async fn accept_terms(
+    State(app): State<AppState>,
+    AuthUser(id): AuthUser,
+) -> Result<StatusCode, ApiError> {
+    app.actions.auth.accept_terms.run(id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -640,6 +655,7 @@ pub fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(csrf_token))
         .routes(routes!(sign_out))
         .routes(routes!(me, delete_me))
+        .routes(routes!(accept_terms))
 }
 
 #[cfg(test)]

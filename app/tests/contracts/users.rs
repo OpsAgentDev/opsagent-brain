@@ -155,4 +155,17 @@ contract_suite! {
         // An unknown user is a no-op, not an error.
         s.users().set_name_if_missing(Uuid::new_v4(), &eve).await.unwrap();
     }
+
+    async fn accept_terms_keeps_the_first_time(s) {
+        let u = s.users().find_or_create_by_email(&email("ada@example.com")).await.unwrap();
+        assert_eq!(u.terms_accepted_at, None);
+        // Whole seconds: Postgres keeps microseconds, not nanoseconds.
+        let first = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        s.users().accept_terms(u.id, first).await.unwrap();
+        assert_eq!(s.users().get(u.id).await.unwrap().unwrap().terms_accepted_at, Some(first));
+        s.users().accept_terms(u.id, first + Duration::hours(1)).await.unwrap();
+        assert_eq!(s.users().get(u.id).await.unwrap().unwrap().terms_accepted_at, Some(first));
+        // An unknown user is a no-op, not an error.
+        s.users().accept_terms(Uuid::new_v4(), first).await.unwrap();
+    }
 }

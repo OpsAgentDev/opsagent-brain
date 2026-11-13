@@ -33,6 +33,7 @@ mod m20261109_000028_cancel_at_period_end;
 mod m20261109_000029_waitlist_announced;
 mod m20261110_000030_user_deleted_at;
 mod m20261110_000031_waitlist_verified;
+mod m20261113_000032_user_terms_accepted_at;
 
 pub struct Migrator;
 
@@ -71,6 +72,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261109_000029_waitlist_announced::Migration),
             Box::new(m20261110_000030_user_deleted_at::Migration),
             Box::new(m20261110_000031_waitlist_verified::Migration),
+            Box::new(m20261113_000032_user_terms_accepted_at::Migration),
             // inject-above (do not remove this comment)
         ]
     }
