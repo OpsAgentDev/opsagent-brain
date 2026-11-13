@@ -27,6 +27,7 @@ impl MemState {
             github_id,
             google_id,
             created_at: Utc::now(),
+            terms_accepted_at: None,
         };
         self.users.push(u.clone());
         u
@@ -63,6 +64,16 @@ impl UsersRepo for MemStore {
     async fn set_name_if_missing(&self, id: Uuid, name: &PersonName) -> RepoResult<()> {
         if let Some(u) = self.state().user_mut(|u| u.id == id && u.name.is_none()) {
             u.name = Some(name.as_str().to_owned());
+        }
+        Ok(())
+    }
+
+    async fn accept_terms(&self, id: Uuid, at: DateTime<Utc>) -> RepoResult<()> {
+        if let Some(u) = self
+            .state()
+            .user_mut(|u| u.id == id && u.terms_accepted_at.is_none())
+        {
+            u.terms_accepted_at = Some(at);
         }
         Ok(())
     }

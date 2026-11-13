@@ -100,6 +100,8 @@ pub struct User {
     pub github_id: Option<i64>,
     pub google_id: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// When the user agreed to the Terms and the Privacy Policy; `None` until they do.
+    pub terms_accepted_at: Option<DateTime<Utc>>,
 }
 
 /// An unspent, unexpired link whose mailed code can still be tried.
@@ -170,6 +172,10 @@ pub trait UsersRepo: Send + Sync {
     /// Stores `name` only while the user's name is unset; a named user is never renamed and an
     /// unknown id is a no-op.
     async fn set_name_if_missing(&self, id: Uuid, name: &PersonName) -> RepoResult<()>;
+    /// Stores `at` only while the user has not accepted the Terms; a later call keeps the first
+    /// time and an unknown id is a no-op.
+    // shortcut: no terms version stored, add terms_version when the Terms change materially
+    async fn accept_terms(&self, id: Uuid, at: DateTime<Utc>) -> RepoResult<()>;
     /// Match on GitHub id, else link to the user with `email`, else create. `name` fills a
     /// missing name only. Creating needs `may_create`, otherwise `RepoError::Conflict("signup_closed")`.
     async fn find_or_create_github(

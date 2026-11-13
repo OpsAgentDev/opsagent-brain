@@ -264,6 +264,28 @@
         }
       }
     },
+    "/auth/me/terms": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_accept_terms",
+        "responses": {
+          "204": {
+            "description": "Accepted; a repeat call keeps the first time"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/passkeys": {
       "get": {
         "tags": [
@@ -6551,6 +6573,14 @@
               "string",
               "null"
             ]
+          },
+          "terms_accepted_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the user agreed to the Terms and the Privacy Policy; null until they do."
           }
         }
       },
