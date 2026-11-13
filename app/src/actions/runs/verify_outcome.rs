@@ -32,7 +32,7 @@ use crate::{
 
 /// Access denied must repeat this often, spanning at least `DENIED_SPAN`, before `revoked`.
 const DENIED_TIMES: i32 = 3;
-const DENIED_SPAN: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+pub(super) const DENIED_SPAN: chrono::TimeDelta = chrono::TimeDelta::hours(1);
 
 impl VerifyConnection {
     /// A transaction holding the run's fence, with ledger writes on the same transaction.

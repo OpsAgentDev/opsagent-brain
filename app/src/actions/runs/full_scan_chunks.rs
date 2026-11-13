@@ -20,7 +20,10 @@ use opsagent_ledger::{ChunkOutcome, JobKind, LedgerError, Result, RunRow};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::{finding_lifecycle, full_scan::ScanProfile, watch_scan, FullScan, RunDispatcher};
+use super::{
+    denied_scan::enqueue_verify_after_denied_scan, finding_lifecycle, full_scan::ScanProfile,
+    watch_scan, FullScan, RunDispatcher,
+};
 use crate::{
     actions::runs::classify::{classify, lerr, revoked},
     actions::uow::{Repos, Tx},
@@ -324,6 +327,7 @@ impl Scan<'_> {
         stats["partial"] = json!(partial);
         if so_far["revoked"] == json!(true) {
             stats["partial_reason"] = json!("revoked");
+            enqueue_verify_after_denied_scan(&*tx, &run.key, now).await?;
         }
         self.enqueue_alert(&*tx, &run, now).await?;
         tx.commit().await.map_err(lerr)?;
