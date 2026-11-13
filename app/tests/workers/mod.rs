@@ -4,6 +4,7 @@ mod deliver_alert;
 pub mod deliver_briefing;
 mod deliver_fallback;
 mod deliver_weekly;
+mod denied_scan;
 pub mod full_scan;
 mod operator_notice;
 mod retention;

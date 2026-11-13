@@ -22,6 +22,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::{
+    denied_scan::enqueue_verify_after_denied_scan,
     full_scan_chunks::{Scan, FINALIZE, SIMULATE},
     watch_scan::WATCH_SERVICES,
 };
@@ -62,6 +63,8 @@ pub struct FullScan {
 /// How a run ends without (more) chunks.
 enum End {
     Set(RunStatus, String),
+    /// The role refused us before the first chunk: `Partial` `revoked`, and a verify run.
+    Revoked,
     /// Retried or failed by `ledger::retry::settle`.
     Failed(LedgerError),
 }
@@ -294,11 +297,27 @@ impl FullScan {
                 .set_status(run.id, l.fence, status, Some(reason))
                 .await
                 .map(|()| status),
+            End::Revoked => self.end_revoked(run, l.fence).await,
             End::Failed(e) => settle(storage, run.id, run.attempts, l.fence, &e).await,
         };
         let res = fail_on_storage_error(storage, run.id, l.fence, res).await;
         lease::release(&self.redis, &l).await;
         res
+    }
+}
+
+impl FullScan {
+    /// Ends the run `Partial` `revoked` and asks for a verification, in one transaction.
+    async fn end_revoked(&self, run: &RunRow, fence: u64) -> Result<RunStatus> {
+        let tx = self.uow.begin().await.map_err(lerr)?;
+        tx.ledger().hold_fence(run.id, fence).await?;
+        enqueue_verify_after_denied_scan(&*tx, &run.key, self.clock.now()).await?;
+        let (status, reason) = (RunStatus::Partial, Some("revoked".into()));
+        tx.ledger()
+            .set_status(run.id, fence, status, reason)
+            .await?;
+        tx.commit().await.map_err(lerr)?;
+        Ok(status)
     }
 }
 
@@ -324,7 +343,7 @@ async fn discover(
     };
     let inv = k.inventory(cr, &scope).await.map_err(|e| {
         if revoked(&e) {
-            End::Set(RunStatus::Partial, "revoked".into())
+            End::Revoked
         } else {
             End::Failed(job_err(&e))
         }

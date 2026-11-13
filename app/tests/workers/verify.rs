@@ -198,7 +198,7 @@ async fn non_retryable_connector_error_is_recorded_on_first_run() {
     .await;
 }
 
-async fn set_fixture(ctx: &TestApp, id: Uuid, account: &str) {
+pub async fn set_fixture(ctx: &TestApp, id: Uuid, account: &str) {
     use opsagent_brain::{adapters::db::Pg, creds};
     let kek = kek(ctx).unwrap();
     let (org, repo) = (conn(ctx, id).await.organisation_id, Pg::new(&ctx.db));

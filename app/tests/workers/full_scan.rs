@@ -141,7 +141,9 @@ pub fn without_snapshot() -> FakeConnector {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Fault {
+pub enum Fault {
+    /// Every inventory call is denied (the customer deleted the role).
+    Gone,
     /// `rds` comes back as a partial error.
     PartialErrors,
     /// The scoped `rds` call fails outright.
@@ -170,14 +172,14 @@ pub const SECRET_ARN: &str = "arn:aws:iam::123456789012:role/CustomerSecretRole"
 
 /// Fixture connector with a faulty `rds`, counting inventory and simulate calls.
 #[derive(Clone)]
-struct Rigged {
+pub struct Rigged {
     inner: FakeConnector,
     fault: Option<Fault>,
     calls: std::sync::Arc<AtomicUsize>,
     sims: std::sync::Arc<AtomicUsize>,
 }
 
-fn rigged(fault: Option<Fault>) -> Rigged {
+pub fn rigged(fault: Option<Fault>) -> Rigged {
     Rigged {
         inner: noisy(),
         fault,
@@ -206,6 +208,9 @@ impl Connector for Rigged {
         s: &Scope,
     ) -> opsagent_connectors::Result<InventoryResult> {
         self.calls.fetch_add(1, SeqCst);
+        if self.fault == Some(Fault::Gone) {
+            return Err(api("AccessDenied"));
+        }
         let mut inv = self.inner.inventory(c, s).await?;
         let rds = s.services.iter().any(|x| x == "rds");
         match self.fault {
