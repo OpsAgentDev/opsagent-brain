@@ -127,6 +127,9 @@ pub async fn boot(config: Config, worker: bool) -> AppResult<AppState> {
 pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
     // Lazy: only the scheduler process ever ticks.
     let scheduler = connect(&config, 0, 2, true).await?;
+    // A `rediss://` connection panics without a process-wide rustls provider (the tree enables both
+    // ring and aws-lc-rs). ring is what reqwest already falls back to. Err: one is already installed.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let redis = redis::Client::open(config.redis_url.as_str()).map_err(internal)?;
     let limiter = Arc::new(RedisRateLimiter::new(redis.clone()));
     let kek: Arc<dyn Kek> = Arc::new(CachingKek::new(
