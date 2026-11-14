@@ -2,7 +2,10 @@
 //! first-scan baseline, owner email fallback. Findings are seeded in the database or moved
 //! through the Pg lifecycle (`upsert_seen`, `resolve_unseen`); Slack is a wiremock server.
 use chrono::{Duration, Utc};
-use opsagent_brain::models::_entities::{connections, findings, runs};
+use opsagent_brain::{
+    adapters::db::ledger_storage::stmt,
+    models::_entities::{connections, findings, runs},
+};
 use opsagent_core::{
     finding::{FindingDraft, FindingKey, Severity},
     run::RunStatus,
@@ -26,13 +29,22 @@ use crate::requests::support::*;
 
 const OK: fn() -> serde_json::Value = || json!({"ok": true, "ts": "1.1"});
 
-fn base(ctx: &TestApp) -> String {
-    state(ctx)
+/// The web app's address of the world's organisation: `{WEB_BASE_URL}/o/{slug}`.
+async fn base(ctx: &TestApp, w: &World) -> String {
+    let q = stmt(
+        "SELECT slug FROM organisations WHERE id = $1",
+        vec![w.org.into()],
+    );
+    let slug: String = ctx
+        .db
+        .query_one_raw(q)
+        .await
         .unwrap()
-        .config
-        .web_base_url
-        .trim_end_matches('/')
-        .to_owned()
+        .unwrap()
+        .try_get("", "slug")
+        .unwrap();
+    let web = &state(ctx).unwrap().config.web_base_url;
+    format!("{}/o/{slug}", web.trim_end_matches('/'))
 }
 
 /// Runs a new `deliver_alert` run for the connection; returns its id.
@@ -149,7 +161,7 @@ async fn new_critical_alerts_once() {
         let text = format!(
             "🔴 Urgent: Public &lt;snapshot&gt;\nnightly-db · {acct} · eu-west-1\nMake it private.\n\
              View finding: {}/findings/{id}",
-            base(&ctx)
+            base(&ctx, &w).await
         );
         assert_eq!(posted(&s).await, vec![text]);
         assert!(by_title(&ctx, &w, "Public <snapshot>").await.alerted_at.is_some());
@@ -308,7 +320,7 @@ async fn first_full_scan_baselines_with_one_summary() {
         alert(&ctx, &w).await;
         let text = format!(
             "First scan: 2 critical findings. See the dashboard: {}/findings",
-            base(&ctx)
+            base(&ctx, &w).await
         );
         assert_eq!(posted(&s).await, vec![text]);
         assert!(by_title(&ctx, &w, "c2").await.alerted_at.is_some());
@@ -407,7 +419,9 @@ async fn no_slack_falls_back_to_owner_email() {
             sent[0].text
         );
         assert!(
-            sent[0].text.ends_with(&format!("/findings/{id}")),
+            sent[0]
+                .text
+                .ends_with(&format!("{}/findings/{id}", base(&ctx, &w).await)),
             "{}",
             sent[0].text
         );

@@ -15,6 +15,7 @@ use opsagent_core::{
         REVOKED_AT_PERIOD_END as REVOKED_REASON,
     },
     connection::ConnectionStatus as S,
+    org::org_web_base,
     run::{RunKey, RunStatus},
 };
 use opsagent_ledger::{effects::with_effect, LedgerError};
@@ -187,13 +188,14 @@ impl BillingSync {
                 format!("Your free trial ends on {date}."),
             ),
         };
+        let billing_url = self.billing_url(org).await?;
         let text = format!(
             "{lead} After that you'll be charged {charge} unless you change plan or cancel \
              before then.\n\nManage billing: {}",
-            self.billing_url(),
+            billing_url,
         );
         let key = format!("billing:trial_reminder:{day}");
-        self.mail_owners(org, ends, &key, &subject, &text, &self.billing_url())
+        self.mail_owners(org, ends, &key, &subject, &text, &billing_url)
             .await
     }
 
@@ -210,14 +212,15 @@ impl BillingSync {
         if now - ends > Duration::days(TRIAL_ENDED_NOTICE_DAYS) {
             return Ok(false);
         }
+        let billing_url = self.billing_url(org).await?;
         let text = format!(
             "Your OpsAgent free trial has ended, so scans and deliveries have stopped. Choose a \
              plan to start them again: {}",
-            self.billing_url(),
+            billing_url,
         );
         let subject = "Your OpsAgent trial has ended";
         let key = "billing:trial_ended";
-        self.mail_owners(org, ends, key, subject, &text, &self.billing_url())
+        self.mail_owners(org, ends, key, subject, &text, &billing_url)
             .await
     }
 
@@ -227,14 +230,15 @@ impl BillingSync {
         let Some(since) = b.past_due_since else {
             return Ok(false);
         };
+        let billing_url = self.billing_url(org).await?;
         let text = format!(
             "We could not take your latest OpsAgent payment. Update your payment method within \
              {PAUSE_AFTER_DAYS} days to keep scans and deliveries running: {}",
-            self.billing_url(),
+            billing_url,
         );
         let key = format!("billing:payment_failed:{}", since.timestamp());
         let subject = "Your OpsAgent payment failed";
-        self.mail_owners(org, since, &key, subject, &text, &self.billing_url())
+        self.mail_owners(org, since, &key, subject, &text, &billing_url)
             .await
     }
 
@@ -242,20 +246,25 @@ impl BillingSync {
         let sub = b.subscription.as_ref();
         let period = sub.and_then(|s| s.current_period_start);
         let period = period.or(b.past_due_since).unwrap_or(now);
+        let billing_url = self.billing_url(org).await?;
         let text = format!(
             "Your OpsAgent payment has been overdue for {PAUSE_AFTER_DAYS} days, so scans and \
              deliveries are paused. Update your payment method to resume: {}",
-            self.billing_url(),
+            billing_url,
         );
         let key = format!("billing:paused:{}", period.timestamp());
         let subject = "OpsAgent is paused: payment overdue";
-        self.mail_owners(org, period, &key, subject, &text, &self.billing_url())
+        self.mail_owners(org, period, &key, subject, &text, &billing_url)
             .await
     }
 
-    fn billing_url(&self) -> String {
-        let base = self.settings.web_base_url.trim_end_matches('/');
-        format!("{base}/settings/billing")
+    async fn billing_url(&self, org: Uuid) -> LResult<String> {
+        let o = self.uow.orgs().get(org).await.map_err(lerr)?;
+        let base = org_web_base(
+            &self.settings.web_base_url,
+            &o.ok_or(LedgerError::NotFound)?.slug,
+        );
+        Ok(format!("{base}/settings/billing"))
     }
 
     /// The organisation's `billing_notice` marker run at `anchor` (created `done`, once).

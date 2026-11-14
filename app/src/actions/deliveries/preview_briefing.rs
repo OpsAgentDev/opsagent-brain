@@ -76,7 +76,7 @@ mod tests {
 
     use super::PreviewBriefing;
     use crate::{
-        actions::{runs::test_support::connected, uow::Repos},
+        actions::{orgs::test_support::owned_org, runs::test_support::connected, uow::Repos},
         adapters::memory::MemStore,
     };
 
@@ -116,7 +116,8 @@ mod tests {
     #[tokio::test]
     async fn preview_writes_no_delivery_row() {
         let store = MemStore::default();
-        let org = Uuid::new_v4();
+        let (_, o) = owned_org(&store, "o@example.com", "Acme").await;
+        let org = o.id;
         let c = connected(&store, org).await;
         let key = RunKey {
             organisation_id: Some(org),
@@ -154,6 +155,8 @@ mod tests {
         let got = p.run(org, c.id).await.unwrap();
         assert_eq!(got.kind, "daily", "{got:?}");
         assert!(got.text.contains(TITLE), "{}", got.text);
+        let link = format!("https://web.test/o/acme/connections/{}", c.id);
+        assert!(got.text.contains(&link), "{}", got.text);
         assert_eq!(rows(&store, org).await, 1, "preview wrote a delivery row");
     }
 }

@@ -13,7 +13,8 @@ use opsagent_core::{
     billing::OrgBilling,
     endpoint::HostResolver,
     model::AiProvider,
-    repo::Clock,
+    org::org_web_base,
+    repo::{Clock, RepoError, RepoResult},
 };
 use opsagent_secrets::Kek;
 use sea_orm::prelude::Decimal;
@@ -144,6 +145,13 @@ pub struct AiAccess {
 }
 
 impl AiAccess {
+    /// `WEB_BASE_URL/o/<slug>/settings/ai`, with `query` when not empty.
+    pub(super) async fn settings_url(&self, org: Uuid, query: &str) -> RepoResult<String> {
+        let o = self.uow.orgs().get(org).await?.ok_or(RepoError::NotFound)?;
+        let base = org_web_base(&self.s.web_base_url, &o.slug);
+        Ok(format!("{base}/settings/ai{query}"))
+    }
+
     pub fn new(
         uow: Arc<dyn UnitOfWork>,
         kek: Arc<dyn Kek>,

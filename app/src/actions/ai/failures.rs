@@ -154,13 +154,13 @@ impl AiAccess {
     async fn stopped(&self, org: Uuid, k: &ModelKey) -> Result<(), AiCallError> {
         let n = Notice {
             subject: "Your OpsAgent AI key is failing".into(),
-            link: self.s.settings_url(""),
+            link: self.settings_url(org, "").await?,
             text: format!(
                 "Your {} key ending {} was refused by the provider, so Dashboard AI has \
                  stopped. Replace the key, or remove it to use OpsAgent's: {}",
                 provider_name(k.provider),
                 k.last4,
-                self.s.settings_url("")
+                self.settings_url(org, "").await?
             ),
         };
         let key = format!("failing:{}:{}", k.id, k.status_since.timestamp());
@@ -212,14 +212,14 @@ impl AiAccess {
         }
         let n = Notice {
             subject: "Your OpsAgent AI backup key is in use".into(),
-            link: self.s.settings_url(""),
+            link: self.settings_url(org, "").await?,
             text: format!(
                 "Your {} key ending {} was refused, so Dashboard AI is using your backup key \
                  ending {}. Replace the primary key: {}",
                 provider_name(p.provider),
                 p.last4,
                 b.last4,
-                self.s.settings_url("")
+                self.settings_url(org, "").await?
             ),
         };
         let key = format!("backup_in_use:{}:{}", p.id, p.status_since.timestamp());
@@ -251,14 +251,14 @@ impl AiAccess {
         }
         let n = Notice {
             subject: "Your AI provider has been down for 2 hours".into(),
-            link: self.s.settings_url(""),
+            link: self.settings_url(org, "").await?,
             text: format!(
                 "{} has not answered Dashboard AI calls on your key ending {} for over \
                  {OUTAGE_NOTICE_HOURS} hours. Check the provider's status page, or manage \
                  your key: {}",
                 provider_name(k.provider),
                 k.last4,
-                self.s.settings_url("")
+                self.settings_url(org, "").await?
             ),
         };
         let key = format!("outage:{key_id}:{}", k.status_since.timestamp());
@@ -306,7 +306,7 @@ impl AiAccess {
         };
         let n = Notice {
             subject: "OpsAgent replaced a model on your AI key".into(),
-            link: self.s.settings_url(""),
+            link: self.settings_url(org, "").await?,
             text: format!(
                 "{} no longer offers {} on your key ending {}, so Dashboard AI now uses {} \
                  for {}. Pick another model: {}",
@@ -315,7 +315,7 @@ impl AiAccess {
                 k.last4,
                 default,
                 work,
-                self.s.settings_url("")
+                self.settings_url(org, "").await?
             ),
         };
         let key = format!("model_gone:{}:{}", k.id, gone);

@@ -2,7 +2,7 @@
 //! recipients (the owners when none are set) and posts it to its Slack channel; an
 //! organisation run (no connection) emails one summary of every connection to the owners.
 //! Opt-in non-members get the unsubscribe footer; members do not.
-use opsagent_core::{connection::Connection, run::RunStatus};
+use opsagent_core::{connection::Connection, org::org_web_base, run::RunStatus};
 use opsagent_deliver::{
     model::{Weekly, WeeklyExtras},
     render_html, render_notice, render_slack, render_text,
@@ -109,6 +109,11 @@ impl DeliverWeekly {
         let now = self.kit.clock.now();
         let d = self.kit.uow.deliveries();
         let (org, id) = (c.organisation_id, c.id);
+        let slug = self.kit.uow.orgs().get(org).await.map_err(lerr)?;
+        let link_base = org_web_base(
+            &self.kit.web_base_url,
+            &slug.ok_or(LedgerError::NotFound)?.slug,
+        );
         let conn = d.connection_snapshot(org, id).await.map_err(lerr)?;
         let findings = d
             .finding_snapshots(org, id, now - chrono::Duration::days(7))
@@ -123,7 +128,7 @@ impl DeliverWeekly {
             None,
             &WeeklyExtras::default(),
             now,
-            &self.kit.web_base_url,
+            &link_base,
         ))
     }
 
@@ -175,16 +180,18 @@ impl DeliverWeekly {
             w.human_review_url = None;
             parts.push(render_text(&w));
         }
-        let name = r
-            .orgs()
-            .get(org)
-            .await
-            .map_err(lerr)?
-            .map(|o| o.name)
-            .unwrap_or_default();
+        let o = r.orgs().get(org).await.map_err(lerr)?;
+        let name = o.as_ref().map(|o| o.name.clone()).unwrap_or_default();
+        let dashboard = match &o {
+            Some(o) => format!(
+                "{}/dashboard",
+                org_web_base(&self.kit.web_base_url, &o.slug)
+            ),
+            None => return Ok(outcome("skipped", "organisation_deleted")),
+        };
         let subject = format!("OpsAgent weekly summary: {}", mail_safe_name(&name));
         let html_text = parts.join("\n----\n\n");
-        let text = format!("{html_text}\nDashboard: {}\n", self.kit.web_base_url);
+        let text = format!("{html_text}\nDashboard: {dashboard}\n");
         let html = render_notice(&NoticeEmail {
             preheader: format!("Weekly summary for {}", mail_safe_name(&name)),
             heading: format!("Weekly summary: {name}"),
@@ -193,7 +200,7 @@ impl DeliverWeekly {
                 .filter(|l| !l.trim().is_empty() && *l != "----")
                 .map(str::to_string)
                 .collect(),
-            button: Some(("Open the dashboard".into(), self.kit.web_base_url.clone())),
+            button: Some(("Open the dashboard".into(), dashboard)),
             footnote: None,
             unsubscribe_url: None,
             code: None,

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     connection::{Connection, ConnectionStatus as S},
+    org::org_web_base,
     run::{RunKey, RunStatus},
 };
 use opsagent_ledger::{
@@ -98,8 +99,10 @@ impl DeliverRevokedNotice {
             // The role came back, or the connection went, before the mail could go out.
             return Ok(stats(json!({ "skip_reason": "no_longer_revoked" })));
         };
-        let text = self.body(&c);
-        let link = self.link(&c);
+        let slug = self.uow.orgs().get(org).await.map_err(lerr)?;
+        let slug = slug.ok_or(LedgerError::NotFound)?.slug;
+        let text = self.body(&slug, &c);
+        let link = self.link(&slug, &c);
         // Every owner is tried, so one bad address cannot hold back the rest.
         let mut failed = false;
         for o in self.uow.recipients().owners(org).await.map_err(lerr)? {
@@ -145,12 +148,15 @@ impl DeliverRevokedNotice {
         Ok(stats(json!({ "mailed": true })))
     }
 
-    fn link(&self, c: &Connection) -> String {
-        let base = self.web_base_url.trim_end_matches('/');
-        format!("{base}/connections/{}", c.id)
+    fn link(&self, slug: &str, c: &Connection) -> String {
+        format!(
+            "{}/connections/{}",
+            org_web_base(&self.web_base_url, slug),
+            c.id
+        )
     }
 
-    fn body(&self, c: &Connection) -> String {
+    fn body(&self, slug: &str, c: &Connection) -> String {
         let name = c
             .display_name
             .as_deref()
@@ -164,7 +170,7 @@ impl DeliverRevokedNotice {
              within a day. On a paid plan it stays billed for the current period, and is \
              disconnected at the period's end if access has not come back.\n\nOpen the \
              connection: {}",
-            self.link(c)
+            self.link(slug, c)
         )
     }
 }

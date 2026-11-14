@@ -13,7 +13,10 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use opsagent_core::billing::{plan_limits, BillingError, BillingStatus, PlanLimits, Tier};
+use opsagent_core::{
+    billing::{plan_limits, BillingError, BillingStatus, PlanLimits, Tier},
+    org::org_web_base,
+};
 use uuid::Uuid;
 
 pub(crate) use checkout::create_customer;
@@ -87,9 +90,9 @@ impl BillingSettings {
             .find(|t| !price_id.is_empty() && self.price(*t) == price_id)
     }
 
-    /// `WEB_BASE_URL/settings/billing?status=<status>`.
-    fn return_url(&self, status: &str) -> String {
-        let base = self.web_base_url.trim_end_matches('/');
+    /// `WEB_BASE_URL/o/<slug>/settings/billing?status=<status>`.
+    fn return_url(&self, slug: &str, status: &str) -> String {
+        let base = org_web_base(&self.web_base_url, slug);
         format!("{base}/settings/billing?status={status}")
     }
 

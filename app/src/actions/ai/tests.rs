@@ -758,7 +758,9 @@ async fn auth_error_marks_failing_and_mails_owners_once() {
     assert!(sent[0].text.contains("abcd") && sent[0].text.contains("Anthropic"));
     assert!(!sent[0].text.contains(BYOK_KEY));
     let html = sent[0].html.as_deref().unwrap();
-    assert!(html.contains("OpsAgent") && html.contains("href=\"https://web.test/settings/ai\""));
+    assert!(
+        html.contains("OpsAgent") && html.contains("href=\"https://web.test/o/acme/settings/ai\"")
+    );
     assert!(e.store.ai_usage_rows().is_empty());
 }
 
@@ -894,7 +896,7 @@ async fn quota_80_and_100_mailed_once_per_period() {
     let sent = e.mail.sent();
     assert_eq!(sent.len(), 2);
     assert!(
-        sent[1].text.contains("https://web.test/settings/ai"),
+        sent[1].text.contains("https://web.test/o/acme/settings/ai"),
         "{}",
         sent[1].text
     );
@@ -1143,7 +1145,7 @@ async fn fallback_table() {
             assert_eq!(
                 sent[0].text,
                 "Your Anthropic key ending abcd was refused, so Dashboard AI is using your \
-                 backup key ending wxyz. Replace the primary key: https://web.test/settings/ai"
+                 backup key ending wxyz. Replace the primary key: https://web.test/o/acme/settings/ai"
             );
         }
     }
