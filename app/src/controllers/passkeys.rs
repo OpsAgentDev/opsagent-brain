@@ -18,11 +18,12 @@ use webauthn_rs::prelude::{
 };
 
 use super::{
-    auth::{check_origin, sign_in_json, Redirect, StartQuery},
+    auth::{check_origin, limit_start, sign_in_json, Redirect, StartQuery},
     parse_id,
 };
 use crate::{
     actions::auth::passkey_invalid,
+    adapters::client_ip::ClientIp,
     api_error::{ApiError, ApiJson, Problem},
     middleware::org_scope::AuthUser,
     state::AppState,
@@ -140,14 +141,16 @@ async fn remove(
 /// `PublicKeyCredential.parseRequestOptionsFromJSON`.
 #[utoipa::path(post, path = "/auth/passkeys/login/start", tag = "auth", params(StartQuery),
     responses((status = 200, body = Object, description = "WebAuthn request options"),
-        (status = 403, body = Problem)))]
+        (status = 403, body = Problem), (status = 429, body = Problem)))]
 async fn login_start(
     State(app): State<AppState>,
     session: Session,
+    ClientIp(ip): ClientIp,
     headers: HeaderMap,
     Query(q): Query<StartQuery>,
 ) -> Result<Json<RequestChallengeResponse>, ApiError> {
     check_origin(&headers, &app.config.web_base_url)?;
+    limit_start(&app, ip).await?;
     let (rcr, state) = app.actions.auth.passkeys.start_login()?;
     let return_to = q.return_to.as_deref().and_then(consent_return_to);
     session.insert(AUTH_KEY, (state, return_to)).await?;

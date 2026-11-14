@@ -7,8 +7,8 @@ use axum::{
 use chrono::{DateTime, Utc};
 use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
-    EndpointNotSet, EndpointSet, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
-    TokenResponse, TokenUrl,
+    EndpointNotSet, EndpointSet, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl,
+    RequestTokenError, Scope, TokenResponse, TokenUrl,
 };
 use opsagent_core::{oauth::rules::consent_return_to, user::Email};
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,10 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use crate::{
-    actions::auth::{GithubProfile, GoogleProfile, MagicLinkInput, VerifyCodeInput},
+    actions::{
+        auth::{GithubProfile, GoogleProfile, MagicLinkInput, VerifyCodeInput},
+        hit_ip, HOUR_SECS,
+    },
     adapters::client_ip::ClientIp,
     api_error::{ApiError, ApiJson, Problem},
     config::Config,
@@ -287,25 +290,52 @@ async fn oauth_start(
     }))
 }
 
+/// Sign-in starts (GitHub, Google, passkey) share this cap per client IP per hour: each one
+/// stores a session row for a caller with no cookie.
+const START_PER_IP: i64 = 60;
+
+/// 429 once the client at `ip` is over the sign-in start cap. Only a proxy-reported address is
+/// a client; without one (local runs) there is no IP cap.
+pub(super) async fn limit_start(
+    app: &AppState,
+    ip: Option<std::net::IpAddr>,
+) -> Result<(), ApiError> {
+    let limiter = app.limiter.as_ref();
+    if ip.is_some() && !hit_ip(limiter, "ratelimit:auth_start", ip, START_PER_IP, HOUR_SECS).await?
+    {
+        return Err(ApiError::rate_limited(
+            "Too many sign-in attempts. Try again later.",
+            HOUR_SECS as u64,
+        ));
+    }
+    Ok(())
+}
+
 #[utoipa::path(post, path = "/auth/sign-in/github/start", tag = "auth", params(StartQuery),
-    responses((status = 200, body = AuthorizeUrl), (status = 503, body = Problem)))]
+    responses((status = 200, body = AuthorizeUrl), (status = 429, body = Problem),
+        (status = 503, body = Problem)))]
 async fn github_start(
     State(app): State<AppState>,
     session: Session,
+    ClientIp(ip): ClientIp,
     Query(q): Query<StartQuery>,
 ) -> Result<Json<AuthorizeUrl>, ApiError> {
+    limit_start(&app, ip).await?;
     let client = github_client(&app.config)?;
     let scopes = ["read:user", "user:email"];
     oauth_start(&session, GH_KEY, &client, &scopes, q.return_to.as_deref()).await
 }
 
 #[utoipa::path(post, path = "/auth/sign-in/google/start", tag = "auth", params(StartQuery),
-    responses((status = 200, body = AuthorizeUrl), (status = 503, body = Problem)))]
+    responses((status = 200, body = AuthorizeUrl), (status = 429, body = Problem),
+        (status = 503, body = Problem)))]
 async fn google_start(
     State(app): State<AppState>,
     session: Session,
+    ClientIp(ip): ClientIp,
     Query(q): Query<StartQuery>,
 ) -> Result<Json<AuthorizeUrl>, ApiError> {
+    limit_start(&app, ip).await?;
     let client = google_client(&app.config)?;
     let scopes = ["openid", "email", "profile"];
     oauth_start(
@@ -341,8 +371,9 @@ fn provider_failure(web_base_url: &str, err: &ApiError, return_to: Option<&str>)
     (StatusCode::FOUND, [(header::LOCATION, to)]).into_response()
 }
 
-fn bad_gateway(e: impl std::fmt::Display) -> ApiError {
-    tracing::warn!(error = %e, "oauth exchange failed");
+/// 502 `oauth_exchange`, logged under a stable `code`: provider error text is never logged.
+fn bad_gateway(code: &'static str) -> ApiError {
+    tracing::warn!(error_code = code, "oauth exchange failed");
     ApiError::new(
         StatusCode::BAD_GATEWAY,
         "oauth_exchange",
@@ -362,7 +393,14 @@ async fn exchange(
         .set_pkce_verifier(PkceCodeVerifier::new(verifier))
         .request_async(http)
         .await
-        .map_err(bad_gateway)?;
+        .map_err(|e| {
+            bad_gateway(match e {
+                RequestTokenError::ServerResponse(_) => "token_rejected",
+                RequestTokenError::Request(_) => "token_request_failed",
+                RequestTokenError::Parse(..) => "token_unreadable",
+                RequestTokenError::Other(_) => "token_other",
+            })
+        })?;
     Ok(token.access_token().secret().clone())
 }
 
@@ -378,10 +416,10 @@ async fn fetch<T: serde::de::DeserializeOwned>(
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(bad_gateway)?
+        .map_err(|_| bad_gateway("profile_request_failed"))?
         .json()
         .await
-        .map_err(bad_gateway)
+        .map_err(|_| bad_gateway("profile_unreadable"))
 }
 
 /// The callback both providers share: checks the state, runs `sign_in(code, verifier)`, starts
