@@ -3,7 +3,8 @@
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     connection::{Connection, ConnectionStatus},
-    repo::RepoResult,
+    org::org_web_base,
+    repo::{RepoError, RepoResult},
 };
 use opsagent_deliver::{
     briefing::build_briefing,
@@ -35,13 +36,15 @@ pub(super) async fn briefing(
     c: &Connection,
     before: DateTime<Utc>,
     now: DateTime<Utc>,
-    link_base: &str,
+    web_base_url: &str,
 ) -> RepoResult<Option<Briefing>> {
+    let slug = r.orgs().get(c.organisation_id).await?;
+    let link_base = org_web_base(web_base_url, &slug.ok_or(RepoError::NotFound)?.slug);
     let since = since(r, c, before).await?;
     let d = r.deliveries();
     let conn = d.connection_snapshot(c.organisation_id, c.id).await?;
     let findings = d.finding_snapshots(c.organisation_id, c.id, since).await?;
-    Ok(build_briefing(&conn, &findings, since, now, link_base))
+    Ok(build_briefing(&conn, &findings, since, now, &link_base))
 }
 
 /// Where `c`'s deliveries go. The Slack channel counts only while Slack is connected (a

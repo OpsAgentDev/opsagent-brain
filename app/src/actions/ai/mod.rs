@@ -157,12 +157,6 @@ impl AiSettings {
             pin: &[],
         }
     }
-
-    /// `WEB_BASE_URL/settings/ai`, with `query` when not empty.
-    fn settings_url(&self, query: &str) -> String {
-        let base = self.web_base_url.trim_end_matches('/');
-        format!("{base}/settings/ai{query}")
-    }
 }
 
 /// The host of `url`, the only part of a base URL that is stored, shown or audited.

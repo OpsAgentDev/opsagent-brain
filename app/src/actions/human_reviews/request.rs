@@ -6,6 +6,7 @@ use opsagent_core::{
     billing::{BillingProvider, ReviewCheckout},
     connection::ConnectionStatus,
     human_review::{NewReviewRequest, Payment, ReviewKind},
+    org::org_web_base,
     repo::Clock,
 };
 use uuid::Uuid;
@@ -122,7 +123,7 @@ impl RequestReview {
             None => create_customer(uow, &*self.provider, scope).await?,
         };
         let page = |q: &str| {
-            let base = self.settings.web_base_url.trim_end_matches('/');
+            let base = org_web_base(&self.settings.web_base_url, &scope.organisation.slug);
             format!("{base}/settings/human-review?{q}")
         };
         let req = ReviewCheckout {

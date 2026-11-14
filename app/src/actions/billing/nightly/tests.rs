@@ -182,11 +182,11 @@ async fn trial_reminders_day_12_and_14_once() {
         .starts_with("Your free trial ends today (12 November 2026). This is the last reminder."));
     assert!(m[0]
         .text
-        .ends_with("https://opsagent.test/settings/billing"));
+        .ends_with("https://opsagent.test/o/acme/settings/billing"));
     let html = m[0].html.as_deref().unwrap();
     assert!(
         html.contains("OpsAgent")
-            && html.contains("href=\"https://opsagent.test/settings/billing\"")
+            && html.contains("href=\"https://opsagent.test/o/acme/settings/billing\"")
     );
     let keys: std::collections::HashSet<_> = m.iter().map(|m| &m.idempotency_key).collect();
     assert_eq!(keys.len(), 4);

@@ -353,6 +353,8 @@ async fn killed_and_resumed_revoked_notice_mails_once() {
         // The queued job's delivery of the finished run does not mail either.
         ctx.drain_jobs().await;
         assert_eq!(revoked_mails(&mail).len(), 1);
+        let link = format!("/o/{org}/connections/{id}");
+        assert!(revoked_mails(&mail)[0].text.ends_with(&link));
     })
     .await;
 }

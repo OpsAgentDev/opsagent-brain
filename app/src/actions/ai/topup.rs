@@ -37,8 +37,8 @@ impl StartTopup {
             None => create_customer(uow, &*self.provider, scope).await?,
         };
         let (ok, cancel) = (
-            s.settings_url("?topup=success"),
-            s.settings_url("?topup=canceled"),
+            self.access.settings_url(org, "?topup=success").await?,
+            self.access.settings_url(org, "?topup=canceled").await?,
         );
         // A fresh key: each click is its own session.
         let idem = format!("topup:{}", Uuid::new_v4());

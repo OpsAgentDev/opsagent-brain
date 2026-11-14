@@ -167,6 +167,10 @@ async fn checkout_owner_only_and_returns_url() {
             .collect();
         assert_eq!(keys.len(), 2);
         assert_eq!(keys[0], keys[1]);
+        // Stripe returns the buyer to the organisation's own billing page.
+        let body = String::from_utf8_lossy(&seen.last().unwrap().body).into_owned();
+        let back = format!("%2Fo%2F{org}%2Fsettings%2Fbilling%3Fstatus%3Dsuccess");
+        assert!(body.contains(&back), "{body}");
         let bad = checkout(&req, &t, &org, json!({ "tier": "gold" })).await;
         assert_eq!(bad.status_code(), 422, "{}", bad.text());
 

@@ -79,8 +79,8 @@ impl StartCheckout {
             customer_id,
             price_id,
             trial,
-            success_url: self.settings.return_url("success"),
-            cancel_url: self.settings.return_url("canceled"),
+            success_url: self.settings.return_url(&org.slug, "success"),
+            cancel_url: self.settings.return_url(&org.slug, "canceled"),
         };
         let url = self.provider.checkout_session(&req, &idem).await;
         url.map_err(provider_failed)

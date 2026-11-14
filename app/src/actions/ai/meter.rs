@@ -99,7 +99,7 @@ impl AiAccess {
         let start = q.period.0.timestamp();
         let (k80, k100) = (format!("quota80:{start}"), format!("quota100:{start}"));
         let end = q.period.1.format("%-d %B %Y");
-        let url = self.s.settings_url("");
+        let url = self.settings_url(org, "").await?;
         // A cancelled plan stops at the period end, so its credits do not renew.
         let ending = self
             .uow

@@ -181,10 +181,10 @@ mod tests {
             region: Some("eu-west-1".into()),
         };
         assert_eq!(
-            render_alert(&f, &at, "https://opsagent.dev/"),
+            render_alert(&f, &at, "https://opsagent.dev/o/acme/"),
             format!(
                 "🔴 Urgent: Public &lt;snapshot&gt; &amp; co\nsnap-1 · Prod · eu-west-1\n\
-                 Make the snapshot private.\nView finding: https://opsagent.dev/findings/{}",
+                 Make the snapshot private.\nView finding: https://opsagent.dev/o/acme/findings/{}",
                 f.id
             )
         );

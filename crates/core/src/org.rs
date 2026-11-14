@@ -161,6 +161,12 @@ pub trait OrganisationsRepo: Send + Sync {
         -> RepoResult<Option<Invite>>;
 }
 
+/// The web app's address of an organisation's in-app pages: `{web_base_url}/o/{slug}`. Slugs
+/// are `[a-z0-9-]`, so they need no escaping.
+pub fn org_web_base(web_base_url: &str, slug: &str) -> String {
+    format!("{}/o/{slug}", web_base_url.trim_end_matches('/'))
+}
+
 /// URL slug from an org name: lowercase ASCII alphanumerics and single dashes, at most 48.
 pub fn slugify(name: &str) -> String {
     let mut s = String::new();
@@ -199,7 +205,19 @@ pub fn valid_name(raw: &str) -> Result<String, &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{slugify, valid_name, Role};
+    use super::{org_web_base, slugify, valid_name, Role};
+
+    #[test]
+    fn org_web_base_prefixes_the_slug_and_drops_a_trailing_slash() {
+        assert_eq!(
+            org_web_base("https://x.test/", "acme"),
+            "https://x.test/o/acme"
+        );
+        assert_eq!(
+            org_web_base("https://x.test", "acme"),
+            "https://x.test/o/acme"
+        );
+    }
 
     #[test]
     fn names_reject_control_and_bidi_characters() {

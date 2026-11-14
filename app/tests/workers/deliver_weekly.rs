@@ -197,6 +197,7 @@ async fn non_member_mail_has_the_unsubscribe_link_and_members_do_not() {
         assert!(!sent[0].text.contains("nsubscribe"), "{}", sent[0].text);
         assert!(!sent[0].html.as_deref().unwrap().contains("nsubscribe"));
         for out in [&sent[0].text, sent[0].html.as_ref().unwrap()] {
+            assert!(out.contains("/o/"), "member: {out}");
             assert!(out.contains("/settings/human-review"), "member: {out}");
         }
         for out in [&sent[1].text, sent[1].html.as_ref().unwrap()] {

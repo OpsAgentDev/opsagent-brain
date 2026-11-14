@@ -6,6 +6,7 @@ use chrono::Duration;
 use opsagent_core::{
     connection::{Connection, ConnectionStatus},
     finding::Finding,
+    org::org_web_base,
     repo::PageRequest,
     resource::ResourceFilter,
     run::RunStatus,
@@ -130,7 +131,11 @@ impl DeliverAlert {
         let tally = r.deliveries().alert_tally(org, c.id, run.id, since);
         let tally = tally.await.map_err(lerr)?;
         let mut route = self.route(run, &c).await?;
-        let base = &self.kit.web_base_url;
+        let slug = r.orgs().get(org).await.map_err(lerr)?;
+        let base = &org_web_base(
+            &self.kit.web_base_url,
+            &slug.ok_or(LedgerError::NotFound)?.slug,
+        );
         let account = account(&c);
         // `alert:baseline` ledger entries must never be pruned: retention that drops them
         // would re-baseline the connection and swallow its next criticals into a summary.
@@ -138,7 +143,7 @@ impl DeliverAlert {
             let n = candidates.len();
             let msg = (n > 0).then(|| Msg {
                 text: render_baseline(n, base),
-                link: format!("{}/findings", base.trim_end_matches('/')),
+                link: format!("{base}/findings"),
                 subject: format!("First scan: {} ({account})", critical_findings(n)),
                 detail: vec![],
             });
@@ -158,7 +163,7 @@ impl DeliverAlert {
         {
             let msg = Msg {
                 text: render_alert(f, &self.info(&c, f).await?, base),
-                link: format!("{}/findings/{}", base.trim_end_matches('/'), f.id),
+                link: format!("{base}/findings/{}", f.id),
                 subject: format!("Urgent: {} ({account})", mail_safe_name(&f.title)),
                 detail: vec![],
             };
@@ -171,7 +176,7 @@ impl DeliverAlert {
             if plan.rollup_allowed {
                 let msg = Msg {
                     text: render_rollup(n, base),
-                    link: format!("{}/findings", base.trim_end_matches('/')),
+                    link: format!("{base}/findings"),
                     subject: format!("Urgent: {n} more urgent findings ({account})"),
                     detail: candidates
                         .iter()

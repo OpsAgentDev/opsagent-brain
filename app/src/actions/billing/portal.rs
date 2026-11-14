@@ -4,7 +4,10 @@ use opsagent_core::billing::BillingProvider;
 use uuid::Uuid;
 
 use super::{conflict, provider_failed, BillingSettings};
-use crate::{actions::uow::UnitOfWork, error::AppResult};
+use crate::{
+    actions::uow::UnitOfWork,
+    error::{AppError, AppResult},
+};
 
 /// A Stripe Customer Portal URL (owner only; the caller checks). 409 `no_customer` before the
 /// first Checkout created one.
@@ -36,7 +39,9 @@ impl OpenPortal {
                 "Start a subscription first; there is nothing to manage yet.",
             ));
         };
-        let back = self.settings.return_url("portal");
+        let org = self.uow.orgs().get(organisation_id).await?;
+        let slug = org.ok_or(AppError::NotFound)?.slug;
+        let back = self.settings.return_url(&slug, "portal");
         let url = self.provider.portal_session(&customer_id, &back).await;
         url.map_err(provider_failed)
     }
