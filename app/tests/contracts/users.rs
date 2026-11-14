@@ -115,22 +115,30 @@ contract_suite! {
         let now = Utc::now();
         let soon = now + Duration::minutes(15);
         s.users().issue_magic_link(NewMagicLink { return_to: Some("/x"), ..NewMagicLink::new(u.id, &e, "t1", "c1", soon) }).await.unwrap();
+        let live = s.users().live_codes(&e, now).await.unwrap();
+        assert_eq!(live.len(), 1);
+        let one = live[0].clone();
+        assert_eq!((one.user_id, one.token_hash.as_str(), one.code_hash.as_str(), one.return_to.as_deref()), (u.id, "t1", "c1", Some("/x")));
+        // A newer link retires the older code, for that address only: one live code per address.
+        let other = email("grace@example.com");
+        let g = s.users().find_or_create_by_email(&other).await.unwrap();
+        s.users().issue_magic_link(NewMagicLink::new(g.id, &other, "o1", "oc1", soon)).await.unwrap();
         s.users().issue_magic_link(NewMagicLink::new(u.id, &e, "t2", "c2", now + Duration::minutes(1))).await.unwrap();
         let live = s.users().live_codes(&e, now).await.unwrap();
-        assert_eq!(live.len(), 2);
-        let one = live.iter().find(|l| l.token_hash == "t1").unwrap().clone();
-        assert_eq!((one.user_id, one.code_hash.as_str(), one.return_to.as_deref()), (u.id, "c1", Some("/x")));
+        assert_eq!(live.iter().map(|l| l.token_hash.as_str()).collect::<Vec<_>>(), ["t2"]);
+        assert_eq!(s.users().live_codes(&other, now).await.unwrap().len(), 1);
         // Expired rows are not live.
-        assert_eq!(s.users().live_codes(&e, now + Duration::minutes(2)).await.unwrap().len(), 1);
-        // Four wrong guesses keep the code, the fifth disables it; the link still redeems.
+        assert!(s.users().live_codes(&e, now + Duration::minutes(2)).await.unwrap().is_empty());
+        // Four wrong guesses keep the code, the fifth disables it; the links still redeem.
         let ids: Vec<_> = live.iter().map(|l| l.id).collect();
         for _ in 0..4 {
             s.users().count_wrong_code(&ids).await.unwrap();
         }
-        assert_eq!(s.users().live_codes(&e, now).await.unwrap().len(), 2);
+        assert_eq!(s.users().live_codes(&e, now).await.unwrap().len(), 1);
         s.users().count_wrong_code(&ids).await.unwrap();
         assert!(s.users().live_codes(&e, now).await.unwrap().is_empty());
         assert!(s.users().consume_magic_link("t1", now).await.unwrap().is_some());
+        assert!(s.users().consume_magic_link("t2", now).await.unwrap().is_some());
         // Spending is once only, and not after expiry.
         s.users().issue_magic_link(NewMagicLink::new(u.id, &e, "t3", "c3", soon)).await.unwrap();
         let id = s.users().live_codes(&e, now).await.unwrap()[0].id;

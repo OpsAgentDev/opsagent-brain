@@ -198,7 +198,8 @@ pub trait UsersRepo: Send + Sync {
         authoritative: bool,
         may_create: bool,
     ) -> RepoResult<User>;
-    /// Stores a link; only the hashes of the token and of the mailed code are kept.
+    /// Stores a link; only the hashes of the token and of the mailed code are kept. The codes of
+    /// the address's other links stop working (the links stay valid): one live code per address.
     async fn issue_magic_link(&self, link: NewMagicLink<'_>) -> RepoResult<()>;
     /// Marks the link used, once; the link if it was unused and unexpired at `now`.
     async fn consume_magic_link(

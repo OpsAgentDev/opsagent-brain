@@ -123,7 +123,8 @@ impl VerifyCode {
                 return Err(invalid());
             }
         }
-        // Every row is compared, so timing does not reveal which one matched.
+        // Issuing a link retires the address's older codes, so this is the newest code (two only
+        // while requests race). Every row is compared, so timing does not reveal which one matched.
         let mut hit = None;
         for l in &live {
             let want = code_hash(&self.secret, &l.token_hash, &code);
@@ -239,12 +240,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn older_mail_code_still_works() {
+    async fn first_of_two_codes_is_refused() {
         let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
         request(&store, &mail).await;
-        let first = last_code(&mail);
-        request(&store, &mail).await;
-        verify(&store).run(input(EMAIL, &first)).await.unwrap();
+        let (first, first_token) = (last_code(&mail), last_token(&mail));
+        // A second mail whose code differs from the first, so the refusal below is not luck.
+        let second = loop {
+            request(&store, &mail).await;
+            let code = last_code(&mail);
+            if code != first {
+                break code;
+            }
+        };
+        let v = verify(&store);
+        assert_invalid(v.run(input(EMAIL, &first)).await);
+        // Only the code died: the older mail's link still signs in, and so does the newest code.
+        let redeem = RedeemMagicLink::new(Arc::new(store.clone()), Arc::new(SystemClock));
+        redeem.run(&first_token).await.unwrap();
+        v.run(input(EMAIL, &second)).await.unwrap();
     }
 
     #[tokio::test]

@@ -133,7 +133,11 @@ impl UsersRepo for MemStore {
     }
 
     async fn issue_magic_link(&self, link: NewMagicLink<'_>) -> RepoResult<()> {
-        self.state().magic_links.push(MagicLinkRow {
+        let mut s = self.state();
+        for old in s.magic_links.iter_mut().filter(|l| l.email == *link.email) {
+            old.code_hash = None;
+        }
+        s.magic_links.push(MagicLinkRow {
             id: Uuid::new_v4(),
             user_id: link.user_id,
             email: link.email.clone(),
