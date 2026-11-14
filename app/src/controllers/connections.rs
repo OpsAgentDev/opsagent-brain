@@ -196,6 +196,41 @@ async fn verify(
 }
 
 #[derive(Serialize, ToSchema)]
+pub struct ReconnectLink {
+    /// CloudFormation quick-create link with this connection's ExternalId; null for test providers.
+    pub quick_create_url: Option<String>,
+    /// The stack to delete first if it still exists: a second one of this name cannot be created.
+    pub stack_name: String,
+}
+
+/// Owner only, for a `revoked` connection (409 `connection_not_revoked` otherwise). The owner
+/// launches the stack again and calls `verify`; the connection and its findings are kept.
+#[utoipa::path(post, path = "/orgs/{org}/connections/{id}/reconnect", tag = "connections", params(OrgIdPath),
+    responses((status = 200, body = ReconnectLink), (status = 403, body = Problem), (status = 404, body = Problem),
+        (status = 409, body = Problem)))]
+async fn reconnect(
+    State(app): State<AppState>,
+    scope: OrgScope,
+    Path((_, id)): Path<(String, String)>,
+) -> Result<Json<ReconnectLink>, ApiError> {
+    scope.require_owner()?;
+    let org_id = scope.organisation.id;
+    let link = &app.actions.connections.reconnect_link;
+    let got = link
+        .run(org_id, scope.member.user_id, parse_id(&id)?)
+        .await?;
+    let url = got
+        .spec
+        .uses_template
+        .then(|| quick_create_url(&app.config, org_id, &got.creds.external_id))
+        .transpose()?;
+    Ok(Json(ReconnectLink {
+        quick_create_url: url,
+        stack_name: stack_name(org_id),
+    }))
+}
+
+#[derive(Serialize, ToSchema)]
 pub struct Disconnected {
     /// Always `disconnected`.
     pub status: String,
@@ -229,4 +264,5 @@ pub fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(create, list))
         .routes(routes!(show, update, disconnect))
         .routes(routes!(verify))
+        .routes(routes!(reconnect))
 }
