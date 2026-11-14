@@ -103,14 +103,15 @@ impl RequestVerify {
         );
         tx.audit().record(entry).await?;
         tx.commit().await?;
-        // A duplicate request in the same minute is the same run.
+        // A double-click is the same run. Only a second: a wider window could land on a run that
+        // already finished, which starts no job and leaves the connection in `verifying`.
         let now = self.clock.now();
         let key = RunKey {
             organisation_id: Some(organisation_id),
             connection_id: Some(id),
             job_type: JobKind::Verify.as_str().into(),
             scheduled_at: now
-                .duration_trunc(TimeDelta::minutes(1))
+                .duration_trunc(TimeDelta::seconds(1))
                 .map_err(|e| AppError::Internal(e.to_string()))?,
         };
         Ok(self.dispatcher.enqueue(key, now).await?.run.id)
