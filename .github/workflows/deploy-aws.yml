@@ -2,12 +2,18 @@ name: deploy-aws
 
 # Runs after a green `ci` run for a push to main, or by hand.
 # Builds the images, pushes them to ECR and rolls api, worker and scheduler (hub: aws-hosting.md).
+# By hand with `sha`: redeploys that commit of main (rollback, deploy/README.md) without migrating.
 on:
   workflow_run:
     workflows: [ci]
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      sha:
+        description: "Rollback: full 40-character SHA of a commit on main to redeploy. Empty deploys the head of main."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -19,8 +25,8 @@ concurrency:
 
 env:
   AWS_REGION: us-west-2
-  # The commit CI tested; on a manual run, the head of main.
-  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+  # The commit CI tested; on a manual run, the `sha` input or else the head of main.
+  SHA: ${{ github.event.workflow_run.head_sha || inputs.sha || github.sha }}
 
 jobs:
   deploy:
@@ -31,9 +37,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
+      - name: Check the SHA is well formed
+        run: |
+          [[ $SHA =~ ^[0-9a-f]{40}$ ]] || { echo "sha must be a full 40-character lowercase commit SHA" >&2; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.SHA }}
+          fetch-depth: 0
+      - name: Check the SHA is on main
+        # A hand-picked commit must have been merged: no deploying a branch or fork commit around review.
+        run: git merge-base --is-ancestor "$SHA" origin/main || { echo "$SHA is not a commit on main" >&2; exit 1; }
       - name: Assume the deploy role
         env:
           ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
@@ -65,7 +78,11 @@ jobs:
           done
           echo "IMAGE=$registry/opsagent-brain:$SHA" >>"$GITHUB_ENV"
       - name: Migrate, then roll api
-        run: deploy/aws/roll.sh api "$IMAGE" --migrate
+        env:
+          # A chosen SHA is a rollback: the schema is already at or ahead of it, and `db migrate` from an
+          # older binary fails on applied migrations it does not know. So that run only rolls.
+          MIGRATE: ${{ !inputs.sha && '--migrate' || '' }}
+        run: deploy/aws/roll.sh api "$IMAGE" "$MIGRATE"
       - name: Roll worker and scheduler
         run: |
           deploy/aws/roll.sh worker "$IMAGE"

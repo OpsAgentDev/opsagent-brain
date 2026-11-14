@@ -240,8 +240,9 @@ impl<C: Conn> UsersRepo for Pg<C> {
     }
 
     async fn issue_magic_link(&self, link: NewMagicLink<'_>) -> RepoResult<()> {
+        let id = Uuid::new_v4();
         magic_links::ActiveModel {
-            id: Set(Uuid::new_v4()),
+            id: Set(id),
             user_id: Set(Some(link.user_id)),
             email: Set(Some(link.email.as_str().into())),
             token_hash: Set(link.token_hash.into()),
@@ -256,8 +257,20 @@ impl<C: Conn> UsersRepo for Pg<C> {
         }
         .insert(self.db())
         .await
-        .map(|_| ())
-        .map_err(db_err)
+        .map_err(db_err)?;
+        // After the insert, so of two requests racing at least one sees and retires the other's code.
+        magic_links::Entity::update_many()
+            .col_expr(
+                magic_links::Column::CodeHash,
+                Expr::value(Option::<String>::None),
+            )
+            .filter(magic_links::Column::Email.eq(link.email.as_str()))
+            .filter(magic_links::Column::Id.ne(id))
+            .filter(magic_links::Column::CodeHash.is_not_null())
+            .exec(self.db())
+            .await
+            .map(|_| ())
+            .map_err(db_err)
     }
 
     async fn consume_magic_link(

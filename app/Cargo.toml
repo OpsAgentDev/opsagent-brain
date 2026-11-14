@@ -16,7 +16,9 @@ async-trait = "0.1"
 futures = "0.3"
 hostname = "0.4"
 axum = "0.8"
-redis = { version = "1", default-features = false, features = ["aio", "tokio-comp"] }
+redis = { version = "1", default-features = false, features = ["aio", "tokio-comp", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
+# Only to pick the process crypto provider that redis' TLS needs (boot.rs); already in the tree.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 migration = { path = "migration" }
 tower-sessions = "0.15"
 time = "0.3"
