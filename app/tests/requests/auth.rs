@@ -512,6 +512,32 @@ fn location(res: &axum_test::TestResponse) -> String {
 
 #[tokio::test]
 #[serial]
+async fn sign_in_start_61st_from_one_ip_is_429() {
+    std::env::set_var("GITHUB_CLIENT_ID", "cid");
+    std::env::set_var("GITHUB_CLIENT_SECRET", "secret");
+    serve(|req, ctx| async move {
+        prepare(&ctx);
+        let post =
+            |path: &'static str, ip: &'static str| req.post(path).add_header("x-forwarded-for", ip);
+        let github = "/v1/auth/sign-in/github/start";
+        for _ in 0..60 {
+            assert_eq!(post(github, "198.51.100.40").await.status_code(), 200);
+        }
+        let res = post(github, "198.51.100.40").await;
+        assert_eq!(res.status_code(), 429);
+        assert_eq!(res.header("retry-after"), "3600");
+        // One cap for all three starts; another client is unaffected.
+        let passkey = post("/v1/auth/passkeys/login/start", "198.51.100.40")
+            .add_header("origin", WEB_ORIGIN)
+            .await;
+        assert_eq!(passkey.status_code(), 429);
+        assert_eq!(post(github, "198.51.100.41").await.status_code(), 200);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn google_start_is_503_when_unconfigured() {
     serve(|req, _ctx| async move {
         let res = req.post("/v1/auth/sign-in/google/start").await;

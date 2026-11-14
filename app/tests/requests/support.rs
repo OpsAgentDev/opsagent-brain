@@ -35,6 +35,7 @@ pub fn prepare(ctx: &TestApp) -> Arc<CaptureMailer> {
     for pattern in [
         "ratelimit:magic_link:*",
         "ratelimit:verify_code:*",
+        "ratelimit:auth_start:*",
         "ratelimit:recipient_confirm:*",
         "ratelimit:invite:*",
         "recipient_confirm:*",
