@@ -17,6 +17,8 @@ cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --check
 scripts/check-crate-isolation.sh && scripts/check-tenancy.sh && scripts/check-logging.sh && scripts/openapi-diff.sh
 cargo run -- start --server-and-worker                 # API on :5150 (dev; APP_ENV, PORT)
 docker compose --profile brain up -d && scripts/smoke.sh http://localhost:3000
+# AWS connector against a local AWS Emulator (no AWS account): real template, verify, lost access, reconnect
+scripts/aws-emulator-test.sh
 ```
 
 ## Delivery (Plan 2)
