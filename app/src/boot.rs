@@ -419,6 +419,11 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 dispatcher.clone(),
                 d.clock.clone(),
             ),
+            reconnect_link: connections::ReconnectLink::new(
+                d.uow.clone(),
+                d.kek.clone(),
+                d.registry.clone(),
+            ),
             disconnect_connection: connections::DisconnectConnection::new(
                 d.uow.clone(),
                 d.clock.clone(),

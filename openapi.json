@@ -2779,6 +2779,83 @@
         }
       }
     },
+    "/orgs/{org}/connections/{id}/reconnect": {
+      "post": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "Owner only, for a `revoked` connection (409 `connection_not_revoked` otherwise). The owner\nlaunches the stack again and calls `verify`; the connection and its findings are kept.",
+        "operationId": "connections_reconnect",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconnectLink"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Billing required, or a trial or plan limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs/{org}/connections/{id}/scan": {
       "post": {
         "tags": [
@@ -7317,6 +7394,25 @@
               "null"
             ],
             "format": "date-time"
+          }
+        }
+      },
+      "ReconnectLink": {
+        "type": "object",
+        "required": [
+          "stack_name"
+        ],
+        "properties": {
+          "quick_create_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "CloudFormation quick-create link with this connection's ExternalId; null for test providers."
+          },
+          "stack_name": {
+            "type": "string",
+            "description": "The stack to delete first if it still exists: a second one of this name cannot be created."
           }
         }
       },

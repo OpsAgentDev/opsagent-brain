@@ -1,9 +1,10 @@
-//! Connection use cases (PRD 7.2): create, read, update, verify, disconnect.
+//! Connection use cases (PRD 7.2): create, read, update, verify, reconnect, disconnect.
 mod create_connection;
 mod disconnect_connection;
 mod end;
 mod get_connection;
 mod list_connections;
+mod reconnect_link;
 mod request_verify;
 mod update_connection;
 
@@ -14,6 +15,7 @@ pub use disconnect_connection::DisconnectConnection;
 pub use end::end_connection;
 pub use get_connection::GetConnection;
 pub use list_connections::ListConnections;
+pub use reconnect_link::ReconnectLink;
 pub use request_verify::RequestVerify;
 pub use update_connection::{PatchInput, UpdateConnection};
 
@@ -27,6 +29,7 @@ pub struct Connections {
     pub get_connection: GetConnection,
     pub update_connection: UpdateConnection,
     pub request_verify: RequestVerify,
+    pub reconnect_link: ReconnectLink,
     pub disconnect_connection: DisconnectConnection,
 }
 

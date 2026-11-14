@@ -420,3 +420,53 @@ async fn patch_urgent_alerts_round_trips() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn reconnect_returns_the_same_link_only_for_a_revoked_connection() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "owner@example.com").await;
+        let org = slug(&create_org(&req, &t, "Acme").await);
+        let c = create_connection(&req, &t, &org, "aws", "Production").await;
+        let first = c["quick_create_url"].as_str().unwrap().to_owned();
+        let id = c["id"].as_str().unwrap().to_owned();
+        let reconnect = || {
+            req.post(&format!("/v1/orgs/{org}/connections/{id}/reconnect"))
+                .add_header("X-CSRF-Token", &t)
+        };
+
+        let pending = reconnect().await;
+        assert_eq!(pending.status_code(), 409, "{}", pending.text());
+        assert_eq!(pending.json::<Value>()["code"], "connection_not_revoked");
+        assert_eq!(audits(&ctx, "connection.reconnect_link").await, 0);
+
+        let mut a: connections::ActiveModel = row(&ctx, &id).await.into();
+        a.status = Set("revoked".into());
+        a.status_reason = Set(Some("access_denied".into()));
+        a.external_account_id = Set(Some("123456789012".into()));
+        a.update(&ctx.db).await.unwrap();
+
+        let res = reconnect().await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        let body = res.json::<Value>();
+        // Same ExternalId and the current principal: the new stack repairs this connection.
+        assert_eq!(body["quick_create_url"], first);
+        assert_eq!(body["stack_name"], query_param(&first, "stackName"));
+        assert_eq!(audits(&ctx, "connection.reconnect_link").await, 1);
+
+        let ext = query_param(&first, "param_ExternalId");
+        let one = req.get(&format!("/v1/orgs/{org}/connections/{id}")).await;
+        assert!(!one.text().contains(&ext), "external id leaked on GET");
+
+        let res = verify(&req, &t, &org, &id, ROLE_ARN).await;
+        assert_eq!(res.status_code(), 202, "{}", res.text());
+        assert_ne!(row(&ctx, &id).await.status, "revoked");
+
+        let no_csrf = req
+            .post(&format!("/v1/orgs/{org}/connections/{id}/reconnect"))
+            .await;
+        assert_eq!(no_csrf.status_code(), 403);
+    })
+    .await;
+}
