@@ -11,5 +11,7 @@ RUN apk upgrade --no-cache && apk add --no-cache aws-cli bash && rm /usr/local/b
 # `?sslmode=verify-full&sslrootcert=/etc/ssl/rds/global-bundle.pem` in DATABASE_URL.
 COPY rds-global-bundle.pem /etc/ssl/rds/global-bundle.pem
 COPY pg_dump.sh /usr/local/bin/pg_dump.sh
+# The task runs with a read-only root; the dump is staged in /tmp, which gets a volume.
+VOLUME ["/tmp"]
 USER postgres
 ENTRYPOINT ["/usr/local/bin/pg_dump.sh"]
