@@ -1,0 +1,39 @@
+name: aws-emulator
+# The real AWS connector against AWS's local emulator: deploy the read-role template, verify, read a bucket,
+# lose access, reconnect. Its own workflow so a broken emulator download never blocks ci or a deploy.
+on:
+  pull_request:
+    paths:
+      - crates/connectors/**
+      - templates/aws/**
+      - scripts/aws-emulator-test.sh
+      - .github/workflows/aws-emulator.yml
+      - Cargo.lock
+  workflow_dispatch:
+
+concurrency:
+  group: aws-emulator-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  emulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/build-room
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: false
+      # docker, the AWS CLI v2 and gpg are on the runner image.
+      - run: scripts/aws-emulator-test.sh
