@@ -48,7 +48,8 @@ trap 'docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
 E="$WORK/home/.aws/emulator"
 rm -rf "$E/$PORT"
 # Published on loopback only; state is in memory and goes with the container.
-docker run -d --name "$NAME" --memory=2g --memory-swap=2g -p "127.0.0.1:$PORT:$PORT" \
+# Runs as the calling user so it can write its CA and credentials into the mounted folder on Linux.
+docker run -d --name "$NAME" --user "$(id -u):$(id -g)" --memory=2g --memory-swap=2g -p "127.0.0.1:$PORT:$PORT" \
   -e HOME="$WORK/home" -v "$E:$E" "$IMAGE" -p "$PORT" --telemetry off >/dev/null
 for _ in $(seq 1 30); do [ -f "$E/$PORT/ca.pem" ] && break; sleep 1; done
 [ -f "$E/$PORT/ca.pem" ] || { docker logs "$NAME" >&2; echo "emulator did not start" >&2; exit 1; }
