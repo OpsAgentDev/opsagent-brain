@@ -14,6 +14,10 @@ pub fn events(
 /// blank line; past either the body is an `Outage`.
 const LINE_CAP: usize = 1024 * 1024;
 const EVENT_CAP: usize = 1024 * 1024;
+/// The most one streamed body may send in all. An endpoint an owner chose (BYOK) could
+/// otherwise stream until the time limit and fill memory with the text the adapters keep.
+/// A 2,000-token answer is under 1 MB with its framing; a chat keeps up to ten such turns.
+const STREAM_CAP: usize = 2 * 1024 * 1024;
 
 struct State<S> {
     body: S,
@@ -22,6 +26,8 @@ struct State<S> {
     data: Vec<String>,
     /// Bytes in `event` and `data` so far.
     size: usize,
+    /// Bytes read from the body so far.
+    read: usize,
     done: bool,
 }
 
@@ -37,6 +43,7 @@ where
         event: String::new(),
         data: Vec::new(),
         size: 0,
+        read: 0,
         done: false,
     };
     stream::unfold(st, |mut st| async move {
@@ -54,7 +61,14 @@ where
                 return Some((Err(ModelError::Outage), st));
             }
             match st.body.next().await {
-                Some(Ok(chunk)) => st.buf.extend_from_slice(chunk.as_ref()),
+                Some(Ok(chunk)) => {
+                    st.read += chunk.as_ref().len();
+                    if st.read > STREAM_CAP {
+                        st.done = true;
+                        return Some((Err(ModelError::Outage), st));
+                    }
+                    st.buf.extend_from_slice(chunk.as_ref());
+                }
                 Some(Err(_)) => {
                     st.done = true;
                     return Some((Err(ModelError::Outage), st));
@@ -166,6 +180,20 @@ mod tests {
         let body = stream::iter((0..20).map(move |_| Ok::<_, ()>(chunk.clone())));
         let got: Vec<_> = parse(body).collect().await;
         assert_eq!(got, vec![Err(ModelError::Outage)]);
+    }
+
+    #[tokio::test]
+    async fn sse_parser_ends_a_body_past_the_stream_cap() {
+        // Small, valid events: neither the line cap nor the event cap ever trips.
+        let chunk = "data: x\n\n".repeat(1024).into_bytes();
+        let n = STREAM_CAP / chunk.len() + 2;
+        let body = stream::iter((0..n).map(move |_| Ok::<_, ()>(chunk.clone())));
+        let got: Vec<_> = parse(body).collect().await;
+        assert_eq!(got.last(), Some(&Err(ModelError::Outage)));
+        assert!(
+            got.len() * 9 <= STREAM_CAP + 9,
+            "nothing past the cap is parsed"
+        );
     }
 
     #[tokio::test]
