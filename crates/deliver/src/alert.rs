@@ -98,12 +98,14 @@ fn esc(s: &str) -> String {
 /// users. Slack and mail clients link bare domains and addresses (`evil.com/x`, `a@b.com`), so a
 /// dot between a letter or digit and a letter is shown as `[.]`. IP addresses and versions stay.
 fn no_domain(s: &str) -> String {
+    // Clients also read the ideographic and full-width full stops as a domain dot.
+    const DOTS: [char; 4] = ['.', '\u{3002}', '\u{FF0E}', '\u{FF61}'];
     let c: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len());
     for (i, &ch) in c.iter().enumerate() {
         let joins =
             i > 0 && c[i - 1].is_alphanumeric() && c.get(i + 1).is_some_and(|n| n.is_alphabetic());
-        if ch == '.' && joins {
+        if DOTS.contains(&ch) && joins {
             out.push_str("[.]");
         } else {
             out.push(ch);
@@ -245,6 +247,9 @@ mod tests {
             ("logs.example.com", "logs[.]example[.]com"),
             ("10.0.0.12 v1.2", "10.0.0.12 v1.2"),
             ("ends. Here", "ends. Here"),
+            ("evil\u{3002}com", "evil[.]com"),
+            ("evil\u{FF0E}com", "evil[.]com"),
+            ("evil\u{FF61}com", "evil[.]com"),
         ] {
             assert_eq!(no_domain(name), shown);
         }
