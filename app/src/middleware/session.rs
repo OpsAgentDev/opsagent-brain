@@ -32,6 +32,24 @@ fn to_chrono(t: time::OffsetDateTime) -> chrono::DateTime<chrono::FixedOffset> {
         .into()
 }
 
+/// The signed-in user of a session, kept in its own column so all of a person's sessions can be
+/// found and ended.
+fn user_of(record: &Record) -> Option<uuid::Uuid> {
+    serde_json::from_value(record.data.get(USER_KEY)?.clone()).ok()
+}
+
+/// Ends every session of `user`, on every device ("sign out everywhere").
+pub async fn delete_all_for(
+    db: &DatabaseConnection,
+    user: uuid::Uuid,
+) -> Result<(), sea_orm::DbErr> {
+    sessions::Entity::delete_many()
+        .filter(sessions::Column::UserId.eq(user))
+        .exec(db)
+        .await
+        .map(|_| ())
+}
+
 fn encode(
     record: &Record,
 ) -> session_store::Result<(Vec<u8>, chrono::DateTime<chrono::FixedOffset>)> {
@@ -59,6 +77,7 @@ impl SessionStore for DbStore {
             expiry_date: Set(expiry),
             created_at: Set(now()),
             updated_at: Set(now()),
+            user_id: Set(user_of(record)),
         })
         .exec(&self.0)
         .await
@@ -74,6 +93,7 @@ impl SessionStore for DbStore {
             .col_expr(sessions::Column::Data, data.into())
             .col_expr(sessions::Column::ExpiryDate, expiry.into())
             .col_expr(sessions::Column::UpdatedAt, now().into())
+            .col_expr(sessions::Column::UserId, user_of(record).into())
             .filter(sessions::Column::Id.eq(record.id.to_string()))
             .filter(sessions::Column::ExpiryDate.gt(now()))
             .exec(&self.0)

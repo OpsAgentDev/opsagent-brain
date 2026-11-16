@@ -769,6 +769,27 @@
         }
       }
     },
+    "/auth/sign-out/everywhere": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Ends every session of the signed-in user, this one included.",
+        "operationId": "auth_sign_out_everywhere",
+        "responses": {
+          "204": {},
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/contact": {
       "post": {
         "tags": [

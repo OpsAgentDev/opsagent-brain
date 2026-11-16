@@ -643,6 +643,21 @@ async fn sign_out(session: Session) -> Result<StatusCode, ApiError> {
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Ends every session of the signed-in user, this one included.
+#[utoipa::path(post, path = "/auth/sign-out/everywhere", tag = "auth",
+    responses((status = 204), (status = 401, body = Problem)))]
+async fn sign_out_everywhere(
+    State(app): State<AppState>,
+    session: Session,
+    AuthUser(id): AuthUser,
+) -> Result<StatusCode, ApiError> {
+    crate::middleware::session::delete_all_for(&app.db, id)
+        .await
+        .map_err(ApiError::internal)?;
+    session.flush().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct Me {
     pub id: Uuid,
@@ -717,6 +732,7 @@ pub fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(google_callback))
         .routes(routes!(csrf_token))
         .routes(routes!(sign_out))
+        .routes(routes!(sign_out_everywhere))
         .routes(routes!(me, delete_me))
         .routes(routes!(accept_terms))
 }

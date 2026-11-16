@@ -304,6 +304,36 @@ async fn deleting_the_account_needs_a_fresh_sign_in() {
 
 #[tokio::test]
 #[serial]
+async fn sign_out_everywhere_ends_the_users_other_sessions_only() {
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        // Two sessions of one person, and one of somebody else.
+        sign_in(&req, &mail, "two@example.com").await;
+        req.clear_cookies();
+        sign_in(&req, &mail, "other@example.com").await;
+        req.clear_cookies();
+        let token = sign_in(&req, &mail, "two@example.com").await;
+        let owned = || async {
+            sessions::Entity::find()
+                .filter(sessions::Column::UserId.is_not_null())
+                .count(&ctx.db)
+                .await
+                .unwrap()
+        };
+        assert_eq!(owned().await, 3);
+        let res = req
+            .post("/v1/auth/sign-out/everywhere")
+            .add_header("X-CSRF-Token", &token)
+            .await;
+        assert_eq!(res.status_code(), 204);
+        assert_eq!(owned().await, 1);
+        assert_eq!(req.get("/v1/auth/me").await.status_code(), 401);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn signed_out_session_is_not_resurrected() {
     serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
