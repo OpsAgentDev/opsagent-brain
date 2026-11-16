@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use super::{
     classify::{lerr, LResult},
-    revoked_notice::enqueue_revoked_notice,
+    revoked_notice::{enqueue_claimed_notice, enqueue_revoked_notice},
     verify_connection::{Step, VerifyConnection},
     verify_verdict::{decide, Verdict},
 };
@@ -257,6 +257,7 @@ impl VerifyConnection {
     /// is already claimed by another connection. `None`: the connection changed since it was read.
     async fn claim(&self, tx: &dyn Tx, c: &Connection, to: S, v: Verified) -> LResult<Option<S>> {
         let (org, id) = (c.organisation_id, c.id);
+        let account = v.account.clone();
         // Savepoint, so a refused account does not abort the outcome transaction.
         let sp = tx.savepoint().await.map_err(lerr)?;
         let claimed = match sp.connections().record_verified(org, id, v).await {
@@ -274,15 +275,39 @@ impl VerifyConnection {
             }
             Ok(false) => Ok(None),
             Err(RepoError::Conflict("account")) => {
-                // TODO(notify): email the owners of the organisation that holds the account.
                 drop(sp); // back to the savepoint
                 let reason = Some("account_already_connected");
                 let cas = tx
                     .connections()
                     .cas_status(org, id, c.status, S::Blocked, reason);
-                Ok(cas.await.map_err(lerr)?.then_some(S::Blocked))
+                if !cas.await.map_err(lerr)? {
+                    return Ok(None);
+                }
+                self.notify_holder(tx, c, account.as_deref()).await?;
+                Ok(Some(S::Blocked))
             }
             Err(e) => Err(lerr(e)),
+        }
+    }
+
+    /// The claimed-account notice to the owners of the organisation holding `account`, on
+    /// the blocking transaction. Nothing when the holder is gone or in `c`'s own organisation.
+    async fn notify_holder(
+        &self,
+        tx: &dyn Tx,
+        c: &Connection,
+        account: Option<&str>,
+    ) -> LResult<()> {
+        let Some(account) = account else {
+            return Ok(());
+        };
+        let holder = tx.connections().claimed_by(&c.provider, account);
+        match holder.await.map_err(lerr)? {
+            Some(h) if h.organisation_id != c.organisation_id => {
+                let now = self.clock.now();
+                enqueue_claimed_notice(tx, &h, c, now).await.map_err(lerr)
+            }
+            _ => Ok(()),
         }
     }
 

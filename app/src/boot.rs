@@ -8,7 +8,7 @@ use opsagent_core::{
     model::ModelProvider,
     repo::{Clock, SystemClock},
 };
-use opsagent_ledger::redis;
+use opsagent_ledger::{redis, JobKind};
 use opsagent_secrets::{CachingKek, EnvKek, Kek};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 
@@ -707,9 +707,14 @@ pub fn worker(state: &AppState) -> WorkerRunner {
         Arc::new(DeliverReviewNoticeJob(Arc::new(
             state.actions.human_reviews.deliver_notice.clone(),
         ))),
-        Arc::new(DeliverRevokedNoticeJob(Arc::new(
-            runs.deliver_revoked_notice.clone(),
-        ))),
+        Arc::new(DeliverRevokedNoticeJob(
+            Arc::new(runs.deliver_revoked_notice.clone()),
+            JobKind::DeliverRevokedNotice,
+        )),
+        Arc::new(DeliverRevokedNoticeJob(
+            Arc::new(runs.deliver_revoked_notice.clone()),
+            JobKind::DeliverClaimedNotice,
+        )),
         Arc::new(OperatorNoticeJob(Arc::new(runs.operator_notice.clone()))),
     ];
     let source = Arc::new(PgQueue(state.db.clone()));

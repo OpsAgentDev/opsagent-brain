@@ -366,4 +366,17 @@ impl<C: Conn> ConnectionsRepo for Pg<C> {
             .map_err(db_err)?;
         row.map(connection).transpose()
     }
+
+    async fn claimed_by(&self, provider: &str, account: &str) -> RepoResult<Option<Connection>> {
+        use connections::Column as Col;
+        // tenancy: the holder of a claimed account is in another organisation by definition.
+        let row = connections::Entity::find()
+            .filter(Col::Provider.eq(provider))
+            .filter(Col::ExternalAccountId.eq(account))
+            .filter(Col::Status.is_in(["connected", "degraded", "revoked"]))
+            .one(self.db())
+            .await
+            .map_err(db_err)?;
+        row.map(connection).transpose()
+    }
 }

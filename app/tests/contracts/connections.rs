@@ -147,6 +147,20 @@ contract_suite! {
         assert!(repo.cas_status(ob, b.id, S::Pending, S::Blocked, None).await.unwrap());
     }
 
+    async fn claimed_by_finds_the_holder_in_any_org(s) {
+        let (oa, ob) = (org(s).await, org(s).await);
+        let (a, b) = (connection(s, oa, "A").await, connection(s, ob, "B").await);
+        let repo = s.connections();
+        // Carrying the account unclaimed is not holding it.
+        repo.record_verified(ob, b.id, verified("333333333333")).await.unwrap();
+        assert!(repo.claimed_by("aws", "333333333333").await.unwrap().is_none());
+        repo.record_verified(oa, a.id, verified("333333333333")).await.unwrap();
+        assert!(repo.cas_status(oa, a.id, S::Pending, S::Connected, None).await.unwrap());
+        let held = repo.claimed_by("aws", "333333333333").await.unwrap().unwrap();
+        assert_eq!((held.id, held.organisation_id), (a.id, oa));
+        assert!(repo.claimed_by("gcp", "333333333333").await.unwrap().is_none());
+    }
+
     async fn get_in_other_org_is_none(s) {
         let (o, other) = (org(s).await, org(s).await);
         let c = connection(s, o, "Prod").await;

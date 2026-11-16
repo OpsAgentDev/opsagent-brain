@@ -1,5 +1,6 @@
-//! The revoked-connection mail (PRD: "owners are emailed once"). An outbox run committed with
-//! the status change, so a revocation that commits always mails and one that rolls back
+//! The owners' connection notices: the revoked-connection mail (PRD: "owners are emailed
+//! once") and the account-already-claimed mail (launch readiness H, 17b). An outbox run
+//! committed with the outcome, so an outcome that commits always mails and one that rolls back
 //! never does; each owner's mail is one ledger effect, so a resumed run does not resend.
 use std::sync::Arc;
 
@@ -29,7 +30,47 @@ use crate::{
     mailers::{branded, magic_link::mail_safe_name, Mail, Mailer},
 };
 
-const SUBJECT: &str = "OpsAgent has lost access to a connected account";
+/// The notice a run sends, from its job type.
+#[derive(Clone, Copy, PartialEq)]
+enum Notice {
+    Revoked,
+    Claimed,
+}
+
+impl Notice {
+    fn of(run: &RunRow) -> LResult<Self> {
+        match JobKind::parse(&run.key.job_type) {
+            Some(JobKind::DeliverRevokedNotice) => Ok(Self::Revoked),
+            Some(JobKind::DeliverClaimedNotice) => Ok(Self::Claimed),
+            _ => Err(LedgerError::NotFound),
+        }
+    }
+
+    fn subject(self) -> &'static str {
+        match self {
+            Self::Revoked => "OpsAgent has lost access to a connected account",
+            Self::Claimed => "Another organisation tried to connect your cloud account",
+        }
+    }
+
+    /// The owner's effect key prefix (unique per run, so per notice).
+    fn effect(self) -> &'static str {
+        match self {
+            Self::Revoked => "connection_revoked",
+            Self::Claimed => "account_claimed",
+        }
+    }
+
+    /// `Err(skip_reason)` when the connection no longer is what the notice is about.
+    fn applies(self, c: &Connection) -> Result<(), &'static str> {
+        match self {
+            Self::Revoked if c.status == S::Revoked => Ok(()),
+            Self::Revoked => Err("no_longer_revoked"),
+            Self::Claimed if matches!(c.status, S::Connected | S::Degraded | S::Revoked) => Ok(()),
+            Self::Claimed => Err("no_longer_claimed"),
+        }
+    }
+}
 
 /// Creates the notice run and job for `c`, on the transaction that revokes it. `at` is the
 /// revocation instant, so each revocation has its own run.
@@ -57,7 +98,39 @@ pub async fn enqueue_revoked_notice(
     Ok(())
 }
 
-/// `deliver_revoked_notice`: mails each owner once under the run's ledger lease.
+/// Creates the notice run and job for `holder`, whose account `attempting` (another
+/// organisation's connection) was just refused, on the transaction that blocks `attempting`.
+/// Keyed to the holder and the attempting connection's creation instant, so repeated verifies
+/// of `attempting` find the run and queue nothing. The run (and mail) never name `attempting`.
+/// shortcut: two attempting connections created in the same microsecond share one notice;
+/// key on the attempting id if `RunKey` ever gains a subject column.
+pub async fn enqueue_claimed_notice(
+    tx: &dyn Tx,
+    holder: &Connection,
+    attempting: &Connection,
+    now: DateTime<Utc>,
+) -> AppResult<()> {
+    let kind = JobKind::DeliverClaimedNotice;
+    let key = RunKey {
+        organisation_id: Some(holder.organisation_id),
+        connection_id: Some(holder.id),
+        job_type: kind.as_str().into(),
+        scheduled_at: attempting.created_at,
+    };
+    let out = tx.ledger().create_run(key).await?;
+    if out.created {
+        let job = NewJob {
+            kind,
+            run_id: out.run.id,
+            run_at: now,
+        };
+        tx.queue().enqueue(job).await?;
+    }
+    Ok(())
+}
+
+/// `deliver_revoked_notice` and `deliver_claimed_notice`: mails each owner once under the
+/// run's ledger lease.
 #[derive(Clone)]
 pub struct DeliverRevokedNotice {
     uow: Arc<dyn UnitOfWork>,
@@ -92,16 +165,21 @@ impl DeliverRevokedNotice {
     }
 
     async fn send(&self, run: &RunRow) -> LResult<ChunkOutcome> {
+        let notice = Notice::of(run)?;
         let org = run.key.organisation_id.ok_or(LedgerError::NotFound)?;
         let id = run.key.connection_id.ok_or(LedgerError::NotFound)?;
         let c = self.uow.connections().get(org, id).await.map_err(lerr)?;
-        let Some(c) = c.filter(|c| c.status == S::Revoked) else {
-            // The role came back, or the connection went, before the mail could go out.
-            return Ok(stats(json!({ "skip_reason": "no_longer_revoked" })));
+        // The role came back, or the connection went, before the mail could go out.
+        let Some(c) = c else {
+            return Ok(stats(json!({ "skip_reason": "connection_gone" })));
         };
+        if let Err(skip) = notice.applies(&c) {
+            return Ok(stats(json!({ "skip_reason": skip })));
+        }
         let slug = self.uow.orgs().get(org).await.map_err(lerr)?;
         let slug = slug.ok_or(LedgerError::NotFound)?.slug;
-        let text = self.body(&slug, &c);
+        let text = self.body(notice, &slug, &c);
+        let subject = notice.subject();
         let link = self.link(&slug, &c);
         // Every owner is tried, so one bad address cannot hold back the rest.
         let mut failed = false;
@@ -114,18 +192,18 @@ impl DeliverRevokedNotice {
             {
                 continue;
             }
-            let key = format!("connection_revoked:{}", o.id);
+            let key = format!("{}:{}", notice.effect(), o.id);
             let mail = Mail {
                 to: o.email,
-                subject: SUBJECT.into(),
-                html: Some(branded(SUBJECT, &text, Some(("Open connection", &link)))),
+                subject: subject.into(),
+                html: Some(branded(subject, &text, Some(("Open connection", &link)))),
                 text: text.clone(),
                 idempotency_key: Some(format!("{}:{key}", run.id)),
                 ..Default::default()
             };
             let sent = with_effect(self.uow.ledger(), run.id, &key, true, || async {
                 self.mailer.send(mail).await.map_err(|_| {
-                    tracing::warn!(error_code = "mail_failed", "revoked notice mail failed");
+                    tracing::warn!(error_code = "mail_failed", "connection notice mail failed");
                     LedgerError::Job {
                         code: "mail_failed".into(),
                         retry: true,
@@ -156,13 +234,26 @@ impl DeliverRevokedNotice {
         )
     }
 
-    fn body(&self, slug: &str, c: &Connection) -> String {
+    fn body(&self, notice: Notice, slug: &str, c: &Connection) -> String {
         let name = c
             .display_name
             .as_deref()
             .map(mail_safe_name)
-            .filter(|n| !n.is_empty())
-            .or_else(|| c.external_account_id.clone())
+            .filter(|n| !n.is_empty());
+        let account = c.external_account_id.as_deref().map(mail_safe_name);
+        if notice == Notice::Claimed {
+            return format!(
+                "Another OpsAgent organisation tried to connect cloud account {} and was \
+                 refused: it is already connected to your organisation as {}.\n\nNothing \
+                 changed for your connection. If you did not expect this, check who can use \
+                 the account's OpsAgent role.\n\nOpen the connection: {}",
+                account.as_deref().unwrap_or("(unknown)"),
+                name.as_deref().unwrap_or("your connection"),
+                self.link(slug, c)
+            );
+        }
+        let name = name
+            .or(account)
             .unwrap_or_else(|| "your connected account".into());
         format!(
             "OpsAgent can no longer reach {name}: its role denied access on repeated checks, so \

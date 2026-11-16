@@ -10,17 +10,18 @@ use crate::{
     error::AppResult,
 };
 
-/// `deliver_revoked_notice`: the owners' mail when a connection becomes revoked.
-pub struct DeliverRevokedNoticeJob(pub Arc<DeliverRevokedNotice>);
+/// `deliver_revoked_notice` or `deliver_claimed_notice` (the `JobKind`): the owners' mail when
+/// a connection becomes revoked, or when another organisation tried to claim its account.
+pub struct DeliverRevokedNoticeJob(pub Arc<DeliverRevokedNotice>, pub JobKind);
 
 #[async_trait]
 impl JobHandler for DeliverRevokedNoticeJob {
     fn kind(&self) -> JobKind {
-        JobKind::DeliverRevokedNotice
+        self.1
     }
 
     async fn handle(&self, run_id: Uuid) -> AppResult<()> {
-        let opts = options(JobKind::DeliverRevokedNotice.as_str());
+        let opts = options(self.1.as_str());
         settled(self.0.run(run_id, opts).await)
     }
 }

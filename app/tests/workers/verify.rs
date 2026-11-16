@@ -497,3 +497,72 @@ async fn killed_verify_resumes_to_the_uninterrupted_outcome() {
     })
     .await;
 }
+
+fn claimed_mails(
+    mail: &opsagent_brain::mailers::CaptureMailer,
+) -> Vec<opsagent_brain::mailers::Mail> {
+    let mails = mail.sent().into_iter();
+    mails
+        .filter(|m| m.subject.contains("tried to connect"))
+        .collect()
+}
+
+#[tokio::test]
+#[serial]
+async fn holder_owners_are_mailed_once_when_another_org_tries_their_account() {
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (ta, oa, ida) =
+            fake_connection(&req, &mail, "a@example.com", "Alpha Org", "clean").await;
+        assert_eq!(verify(&req, &ta, &oa, &ida, "").await.status_code(), 202);
+        req.clear_cookies();
+        let (tb, ob, idb) =
+            fake_connection(&req, &mail, "b@example.com", "Beta Org", "clean").await;
+        assert_eq!(verify(&req, &tb, &ob, &idb, "").await.status_code(), 202);
+        ctx.drain_jobs().await;
+        let (ida, idb): (Uuid, Uuid) = (ida.parse().unwrap(), idb.parse().unwrap());
+        assert_eq!(conn(&ctx, idb).await.status, "blocked");
+
+        let sent = claimed_mails(&mail);
+        assert_eq!(sent.len(), 1, "the holder's one owner, one mail");
+        assert_eq!(sent[0].to, "a@example.com");
+        let a = conn(&ctx, ida).await;
+        let (text, html) = (&sent[0].text, sent[0].html.clone().unwrap());
+        assert!(text.contains(&a.external_account_id.unwrap()), "{text}");
+        assert!(text.contains(&a.display_name.unwrap()), "{text}");
+        assert!(
+            text.ends_with(&format!("/o/{oa}/connections/{ida}")),
+            "{text}"
+        );
+        // Nothing about who tried: no organisation, user, email or connection of theirs.
+        let b = conn(&ctx, idb).await;
+        for leak in [
+            "Beta",
+            "b@example.com",
+            &ob,
+            &idb.to_string(),
+            &b.organisation_id.to_string(),
+        ] {
+            assert!(
+                !text.contains(leak) && !html.contains(leak),
+                "{leak}: {text}"
+            );
+        }
+
+        // Repeated verifies of the blocked connection send nothing new.
+        run_worker(&ctx, idb, 0).await;
+        run_worker(&ctx, idb, 1).await;
+        ctx.drain_jobs().await;
+        assert_eq!(conn(&ctx, idb).await.status, "blocked");
+        assert_eq!(claimed_mails(&mail).len(), 1);
+        let n = runs::Entity::find()
+            .filter(runs::Column::JobType.eq("deliver_claimed_notice"))
+            .count(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+        // Blocked by the other organisation, not mailed to: B's owner got no such mail.
+        assert!(claimed_mails(&mail).iter().all(|m| m.to != "b@example.com"));
+    })
+    .await;
+}

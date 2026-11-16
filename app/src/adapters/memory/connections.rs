@@ -250,4 +250,16 @@ impl ConnectionsRepo for MemStore {
             .find(|(c, _)| c.id == id)
             .map(|(c, _)| c.clone()))
     }
+
+    async fn claimed_by(&self, provider: &str, account: &str) -> RepoResult<Option<Connection>> {
+        let s = self.state();
+        Ok(s.connections
+            .iter()
+            .find(|(c, _)| {
+                c.provider == provider
+                    && CLAIMED.contains(&c.status)
+                    && c.external_account_id.as_deref() == Some(account)
+            })
+            .map(|(c, _)| c.clone()))
+    }
 }
