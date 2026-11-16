@@ -38,7 +38,10 @@ impl Check for Backups {
                     let Some(covered) = a["in_backup_plan"].as_bool() else {
                         continue;
                     };
-                    if !covered {
+                    // RDS automated backups (retention of a day or more) restore the database without a plan.
+                    let automated = r.service() == "rds"
+                        && a["backup_retention_days"].as_i64().unwrap_or(0) > 0;
+                    if !covered && !automated {
                         push(
                             "not_in_plan",
                             Severity::Medium,
