@@ -613,9 +613,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-acm"
-version = "1.122.0"
+version = "1.123.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5611904fdc504c57e7c1d6001fd53da8b47f05f844c1ce527c4c9c5ec9071d31"
+checksum = "d2075907c5fcd875e7258e371c10112f8eff2c940384dca83615e1c2b73ab049"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
