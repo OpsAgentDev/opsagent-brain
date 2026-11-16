@@ -31,7 +31,8 @@ async fn post_message_sends_token_and_client_msg_id_and_returns_ts() {
         .and(path("/chat.postMessage"))
         .and(header("authorization", "Bearer xoxb-t"))
         .and(body_partial_json(
-            json!({"channel": "C1", "text": "hi", "client_msg_id": "run:key"}),
+            json!({"channel": "C1", "text": "hi", "client_msg_id": "run:key",
+                "unfurl_links": false, "unfurl_media": false}),
         ))
         .respond_with(ok(json!({"ok": true, "ts": "1700000000.000100"})))
         .expect(1)

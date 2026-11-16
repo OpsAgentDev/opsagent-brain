@@ -11,8 +11,8 @@ pub const ALERTS_PER_DAY: usize = 20;
 /// At most one roll-up per connection in this long.
 pub const ROLLUP_EVERY: Duration = Duration::hours(1);
 
-/// What one delivery run does with its candidates. Every id in either list gets `alerted_at`,
-/// whether or not the roll-up is sent.
+/// What one delivery run does with its candidates. `individual` ids get `alerted_at`; `rollup`
+/// ids only when the roll-up is sent, else they stay candidates for the next run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlertPlan {
     pub individual: Vec<Uuid>,
@@ -163,11 +163,11 @@ mod tests {
     }
 
     #[test]
-    fn rollup_half_an_hour_ago_holds_the_rollup_but_keeps_its_findings() {
+    fn rollup_half_an_hour_ago_holds_the_rollup() {
         let c = many(6);
         let p = plan_alerts(&c, 0, 0, Some(now() - Duration::minutes(30)), now());
         assert!(!p.rollup_allowed);
-        assert_eq!(p.rollup, ids(&c[5..]), "still marked alerted");
+        assert_eq!(p.rollup, ids(&c[5..]), "held back, left unalerted");
         let later = plan_alerts(&c, 0, 0, Some(now() - Duration::minutes(60)), now());
         assert!(later.rollup_allowed);
     }
@@ -201,6 +201,21 @@ mod tests {
                 f.id
             )
         );
+    }
+
+    #[test]
+    fn a_url_in_customer_text_is_not_a_link() {
+        let f = crit("Public snapshot");
+        let at = ConnectionInfo {
+            account: "Prod".into(),
+            resource: "Rotate keys now at https://evil.test/aws".into(),
+            region: None,
+        };
+        let got = render_alert(&f, &at, "https://opsagent.dev/o/acme");
+        assert!(!got.contains("https://evil.test"), "{got}");
+        assert!(got.contains("https[://]evil.test/aws"), "{got}");
+        // Our own link stays one.
+        assert!(got.ends_with(&format!("https://opsagent.dev/o/acme/findings/{}", f.id)));
     }
 
     #[test]

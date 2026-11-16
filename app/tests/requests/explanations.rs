@@ -220,6 +220,12 @@ async fn explain_prompt_redacted_and_never_names_resource() {
                 user.contains("<untrusted source=\\\"evidence\\\">"),
                 "{user}"
             );
+            for wrapped in [
+                "Title: <untrusted source=\\\"title\\\">",
+                "Next step: <untrusted source=\\\"next_step\\\">",
+            ] {
+                assert!(user.contains(wrapped), "{user}");
+            }
             assert!(user.contains("[redacted:aws_key_id]"));
             assert!(!r.system.contains("redacted"));
             assert!(r.system.contains("What it means"));

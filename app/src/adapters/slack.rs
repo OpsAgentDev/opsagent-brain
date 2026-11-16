@@ -238,7 +238,8 @@ impl SlackClient for HttpSlack {
         client_msg_id: &str,
     ) -> Result<String, SlackError> {
         let body = serde_json::json!({
-            "channel": channel, "text": text, "client_msg_id": client_msg_id
+            "channel": channel, "text": text, "client_msg_id": client_msg_id,
+            "unfurl_links": false, "unfurl_media": false
         });
         let req = self
             .http
