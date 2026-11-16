@@ -59,3 +59,14 @@ fn root_used_critical_only_when_used() {
     );
     assert!(run(&IamHygiene, &[quiet], &[]).is_empty());
 }
+
+#[test]
+fn root_without_mfa_is_high() {
+    let no_mfa = root(
+        serde_json::json!({"service":"iam","root":true,"mfa":false,"access_keys_active":0,"console_last_used_days":400}),
+    );
+    assert_eq!(
+        set(&run(&IamHygiene, &[no_mfa], &[])),
+        vec![t("root", "root_no_mfa", High)]
+    );
+}

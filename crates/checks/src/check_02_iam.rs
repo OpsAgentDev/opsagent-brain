@@ -37,6 +37,15 @@ impl Check for IamHygiene {
                         format!("console_last_used_days={days:?} access_keys_active={keys}"),
                     );
                 }
+                if a["mfa"] == false {
+                    add(
+                        "root_no_mfa",
+                        Severity::High,
+                        "Root account has no MFA".into(),
+                        "Add an MFA device to the root user, or remove root access centrally.",
+                        "root=true mfa=false".into(),
+                    );
+                }
                 continue;
             }
             if a["key_age_days"].as_u64().is_some_and(|d| d > 90) {
@@ -57,6 +66,8 @@ impl Check for IamHygiene {
                     "console=true mfa=false".into(),
                 );
             }
+            // shortcut: `admin` covers AdministratorAccess attached to the user only (the read role
+            // has no group or inline policy reads); widen with role template v2.
             if a["admin"] == true {
                 add(
                     "admin_user",

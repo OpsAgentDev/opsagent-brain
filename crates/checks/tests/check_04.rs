@@ -122,6 +122,26 @@ fn missing_in_backup_plan_key_is_skipped() {
 }
 
 #[test]
+fn covered_but_never_backed_up_is_flagged() {
+    let r = |id: &str, svc: &str, status: serde_json::Value, days: i64| {
+        res(
+            id,
+            serde_json::json!({"service": svc, "in_backup_plan": true, "backup_last_job_status": status, "backup_retention_days": days}),
+        )
+    };
+    let rs = [
+        r("vol-never", "ebs", serde_json::Value::Null, 0),
+        r("vol-ok", "ebs", "COMPLETED".into(), 0),
+        // RDS automated backups restore it whatever the plan does.
+        r("db-auto", "rds", serde_json::Value::Null, 7),
+    ];
+    assert_eq!(
+        set(&go(&rs, &HashMap::new())),
+        vec![t("vol-never", "no_recent_backup", Medium)]
+    );
+}
+
+#[test]
 fn rds_with_automated_backups_needs_no_plan() {
     let db = |days: i64| {
         res(
