@@ -643,8 +643,7 @@ async fn sign_out(session: Session) -> Result<StatusCode, ApiError> {
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Ends every session of the signed-in user, this one included. A session that has not been used
-/// since this route shipped has no owner recorded yet and lasts until its own expiry.
+/// Ends every session of the signed-in user, this one included.
 #[utoipa::path(post, path = "/auth/sign-out/everywhere", tag = "auth",
     responses((status = 204), (status = 401, body = Problem)))]
 async fn sign_out_everywhere(

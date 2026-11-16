@@ -774,7 +774,7 @@
         "tags": [
           "auth"
         ],
-        "summary": "Ends every session of the signed-in user, this one included. A session that has not been used\nsince this route shipped has no owner recorded yet and lasts until its own expiry.",
+        "summary": "Ends every session of the signed-in user, this one included.",
         "operationId": "auth_sign_out_everywhere",
         "responses": {
           "204": {},
