@@ -106,6 +106,30 @@ async fn checkout(
     Ok(Json(SessionUrl { url }))
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct PlanIn {
+    /// `starter`, `team` or `scale`; higher than the current tier.
+    pub tier: String,
+}
+
+#[utoipa::path(post, path = "/orgs/{org}/billing/plan", tag = "billing", params(OrgPath),
+    request_body = PlanIn,
+    responses((status = 200, body = BillingOut, description = "The billing view on the new tier"),
+        (status = 403, body = Problem), (status = 404, body = Problem),
+        (status = 409, body = Problem, description = "`no_subscription` or `not_an_upgrade`"),
+        (status = 422, body = Problem), (status = 502, body = Problem), (status = 503, body = Problem)))]
+async fn plan(
+    State(app): State<AppState>,
+    scope: OrgScope,
+    ApiJson(body): ApiJson<PlanIn>,
+) -> Result<Json<BillingOut>, ApiError> {
+    scope.require_owner()?;
+    let billing = &app.actions.billing;
+    billing.change_plan.run(&scope, &body.tier).await?;
+    let b = billing.get_billing.run(scope.organisation.id);
+    Ok(Json(view(b.await?)))
+}
+
 #[utoipa::path(post, path = "/orgs/{org}/billing/portal", tag = "billing", params(OrgPath),
     responses((status = 200, body = SessionUrl), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 409, body = Problem, description = "`no_customer`"), (status = 502, body = Problem),
@@ -145,6 +169,7 @@ pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(show))
         .routes(routes!(checkout))
+        .routes(routes!(plan))
         .routes(routes!(portal))
         .routes(routes!(stripe_webhook))
 }

@@ -4,11 +4,11 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     billing::{
-        BillingRepo, BillingStatus as B, OrgBilling, SubscriptionState, REVOKED_AT_PERIOD_END,
+        BillingRepo, BillingStatus as B, OrgBilling, SubscriptionState, Tier, REVOKED_AT_PERIOD_END,
     },
     connection::ConnectionStatus as S,
     org::Role,
-    repo::RepoResult,
+    repo::{RepoError, RepoResult},
 };
 use uuid::Uuid;
 
@@ -39,6 +39,17 @@ impl BillingRepo for MemStore {
     async fn set_customer(&self, organisation_id: Uuid, customer_id: &str) -> RepoResult<()> {
         let mut s = self.state();
         s.billing_mut(organisation_id)?.billing.customer_id = Some(customer_id.into());
+        Ok(())
+    }
+
+    async fn set_tier(&self, organisation_id: Uuid, tier: Tier) -> RepoResult<()> {
+        let mut s = self.state();
+        let sub = s
+            .billing_mut(organisation_id)?
+            .billing
+            .subscription
+            .as_mut();
+        sub.ok_or(RepoError::NotFound)?.tier = Some(tier);
         Ok(())
     }
 

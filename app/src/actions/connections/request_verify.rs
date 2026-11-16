@@ -72,13 +72,14 @@ impl RequestVerify {
         let c = self.uow.connections().get(organisation_id, id).await?;
         let c = c.ok_or(AppError::NotFound)?;
         let from = c.status;
-        if from == S::Disconnected {
+        if from == S::Disconnected && !c.reconnectable() {
             return Err(disconnected());
         }
         let creds = self.with_reported_role(&c, role_arn).await?;
         let to = match from {
             S::Pending => transition(from, E::StackReported),
-            S::Revoked => transition(from, E::RoleReturned),
+            // One billing turned off for lost access resumes as a revoked one does.
+            S::Revoked | S::Disconnected => transition(S::Revoked, E::RoleReturned),
             s => Ok(s),
         }
         .map_err(|e| AppError::Internal(e.to_string()))?;

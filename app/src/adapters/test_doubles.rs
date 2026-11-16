@@ -125,6 +125,16 @@ impl BillingProvider for Swappable<dyn BillingProvider> {
             .await
     }
 
+    async fn change_price(
+        &self,
+        subscription_id: &str,
+        price_id: &str,
+        idem: &str,
+    ) -> BillingResult<()> {
+        let b = self.get();
+        b.change_price(subscription_id, price_id, idem).await
+    }
+
     async fn cancel_subscription(&self, subscription_id: &str, idem: &str) -> BillingResult<()> {
         self.get().cancel_subscription(subscription_id, idem).await
     }

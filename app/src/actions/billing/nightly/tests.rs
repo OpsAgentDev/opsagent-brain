@@ -51,6 +51,9 @@ impl BillingProvider for NoStripe {
     async fn set_quantity(&self, _: &str, _: i32, _: bool, _: &str) -> BillingResult<()> {
         unreachable!()
     }
+    async fn change_price(&self, _: &str, _: &str, _: &str) -> BillingResult<()> {
+        unreachable!()
+    }
     async fn cancel_subscription(&self, _: &str, _: &str) -> BillingResult<()> {
         unreachable!()
     }

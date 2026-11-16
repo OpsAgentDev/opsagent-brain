@@ -1,6 +1,7 @@
 //! Billing use cases (billing.md, Build decisions 11 and 5): the organisation's billing view,
 //! Stripe Checkout and Portal sessions, and the Stripe webhook, which is the only writer of
 //! billing state.
+mod change_plan;
 mod checkout;
 mod gate;
 mod nightly;
@@ -19,6 +20,7 @@ use opsagent_core::{
 };
 use uuid::Uuid;
 
+pub use change_plan::ChangePlan;
 pub(crate) use checkout::create_customer;
 pub use checkout::StartCheckout;
 pub use gate::{trial_limit, BillingGate, Seat, BILLING_REQUIRED, PLAN_LIMIT, TRIAL_LIMIT};
@@ -38,6 +40,7 @@ pub const BILLING_UNAVAILABLE: &str = "billing_unavailable";
 pub struct Billing {
     pub get_billing: GetBilling,
     pub checkout: StartCheckout,
+    pub change_plan: ChangePlan,
     pub portal: OpenPortal,
     pub webhook: HandleWebhook,
     pub sync: BillingSync,
