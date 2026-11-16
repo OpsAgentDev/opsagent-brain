@@ -663,9 +663,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-cloudtrail"
-version = "1.127.0"
+version = "1.128.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a28327a0572037b16bf193d16ced327e372448e616c3e66c87f42812cd60a87"
+checksum = "7c4397404f53f98fa89c7bbe421ab2c583d704af631004a21b1bbb84bfc7c86c"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
