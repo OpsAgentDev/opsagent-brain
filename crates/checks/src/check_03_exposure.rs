@@ -40,6 +40,15 @@ impl Check for PublicExposure {
                     "Disable public access and reach it through a private network.",
                     "publicly_accessible=true".into(),
                 ),
+                // AWS reports the policy as public, and the role cannot read the policy to see
+                // how much of the bucket: "" is "a prefix or all of it".
+                "s3" if a["block_public_access"] == false && a["public_policy_prefix"] == "" => (
+                    "public_bucket",
+                    Severity::High,
+                    format!("Bucket {id} is public"),
+                    "Make the bucket private, or confirm that only a public prefix is exposed and nothing sensitive is stored in it.",
+                    "block_public_access=false policy_status=public".into(),
+                ),
                 "s3" if a["block_public_access"] == false => {
                     let prefix = a["public_policy_prefix"].as_str().filter(|p| !p.is_empty());
                     (

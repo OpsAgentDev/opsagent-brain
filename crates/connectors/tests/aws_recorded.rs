@@ -370,6 +370,17 @@ mod inventory {
                         .groups(g("sg-web"))
                         .build(),
                 )
+                // A Fargate task's interface: attached, with no instance.
+                .network_interfaces(
+                    NetworkInterface::builder()
+                        .description("arn:aws:ecs:eu-west-1:123456789012:attachment/1")
+                        .attachment(NetworkInterfaceAttachment::builder().build())
+                        .groups(g("sg-task"))
+                        .groups(g("sg-ssh"))
+                        .build(),
+                )
+                // Detached: carries a group, exposes nothing.
+                .network_interfaces(NetworkInterface::builder().groups(g("sg-db")).build())
                 .build()
         });
         let world = |from: i32, to: i32| {
@@ -408,6 +419,7 @@ mod inventory {
                     ],
                 ))
                 .security_groups(sg("sg-db", vec![world(3000, 3400)]))
+                .security_groups(sg("sg-task", vec![world(6379, 6379)]))
                 .build()
         });
         let ec2 = mock_client!(aws_sdk_ec2, RuleMode::MatchAny, [&enis, &sgs]);
@@ -426,6 +438,10 @@ mod inventory {
         assert_eq!(
             a[2],
             json!({"service": "sg", "open_world_ports": [3000, 3306, 3389, 3400], "attached_to": "none"})
+        );
+        assert_eq!(
+            a[3],
+            json!({"service": "sg", "open_world_ports": [6379], "attached_to": "other"})
         );
         assert_eq!(
             r[0].identity,
