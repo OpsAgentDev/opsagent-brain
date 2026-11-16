@@ -289,24 +289,7 @@ async fn deleting_the_account_needs_a_fresh_sign_in() {
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let token = sign_in(&req, &mail, "stale@example.com").await;
-        // Age the sign-in recorded in the session by 16 minutes.
-        let row = sessions::Entity::find()
-            .order_by_desc(sessions::Column::ExpiryDate)
-            .one(&ctx.db)
-            .await
-            .unwrap()
-            .unwrap();
-        let mut data: Value = serde_json::from_slice(&row.data).unwrap();
-        data["signed_in_at"] = json!(chrono::Utc::now().timestamp() - 16 * 60);
-        sessions::Entity::update_many()
-            .col_expr(
-                sessions::Column::Data,
-                serde_json::to_vec(&data).unwrap().into(),
-            )
-            .filter(sessions::Column::Id.eq(row.id))
-            .exec(&ctx.db)
-            .await
-            .unwrap();
+        age_sign_in(&ctx.db).await;
         let res = req
             .delete("/v1/auth/me")
             .add_header("X-CSRF-Token", &token)

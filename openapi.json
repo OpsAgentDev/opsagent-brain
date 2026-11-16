@@ -527,6 +527,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "`fresh_sign_in_required`: the sign-in is older than 15 minutes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }

@@ -85,8 +85,21 @@ pub(crate) async fn start_session(session: &Session, user_id: Uuid) -> Result<()
     Ok(())
 }
 
-/// Deleting an account needs a sign-in this recent, so a stolen session cannot erase it.
+/// Deleting the account or adding a passkey needs a sign-in this recent, so a stolen session can
+/// neither erase the account nor give itself a credential to make a fresh sign-in with.
 const FRESH_SIGN_IN_SECS: i64 = 15 * 60;
+
+pub(crate) async fn require_fresh_sign_in(session: &Session) -> Result<(), ApiError> {
+    let signed_in_at: Option<i64> = session.get(SIGNED_IN_KEY).await?;
+    if signed_in_at.is_none_or(|t| chrono::Utc::now().timestamp() - t > FRESH_SIGN_IN_SECS) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "fresh_sign_in_required",
+            "Sign out and sign in again, then retry within 15 minutes.",
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Deserialize, ToSchema)]
 pub struct RedeemRequest {
@@ -683,14 +696,7 @@ async fn delete_me(
     AuthUser(id): AuthUser,
     ApiJson(body): ApiJson<DeleteAccountRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let signed_in_at: Option<i64> = session.get(SIGNED_IN_KEY).await?;
-    if signed_in_at.is_none_or(|t| chrono::Utc::now().timestamp() - t > FRESH_SIGN_IN_SECS) {
-        return Err(ApiError::new(
-            StatusCode::FORBIDDEN,
-            "fresh_sign_in_required",
-            "Sign out, sign in again, then delete your account within 15 minutes.",
-        ));
-    }
+    require_fresh_sign_in(&session).await?;
     app.actions
         .auth
         .delete_account

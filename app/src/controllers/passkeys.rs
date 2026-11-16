@@ -18,7 +18,7 @@ use webauthn_rs::prelude::{
 };
 
 use super::{
-    auth::{check_origin, limit_start, sign_in_json, Redirect, StartQuery},
+    auth::{check_origin, limit_start, require_fresh_sign_in, sign_in_json, Redirect, StartQuery},
     parse_id,
 };
 use crate::{
@@ -58,12 +58,15 @@ impl From<StoredPasskey> for PasskeyView {
 /// `PublicKeyCredential.parseCreationOptionsFromJSON`; a discoverable credential is required.
 #[utoipa::path(post, path = "/auth/passkeys/register/start", tag = "auth",
     responses((status = 200, body = Object, description = "WebAuthn creation options"),
-        (status = 401, body = Problem)))]
+        (status = 401, body = Problem),
+        (status = 403, body = Problem, description = "`fresh_sign_in_required`: the sign-in is older than 15 minutes")))]
 async fn register_start(
     State(app): State<AppState>,
     session: Session,
     AuthUser(id): AuthUser,
 ) -> Result<Json<CreationChallengeResponse>, ApiError> {
+    // Otherwise a stolen session could add its own passkey and sign in freshly with it.
+    require_fresh_sign_in(&session).await?;
     let (ccr, state) = app.actions.auth.passkeys.start_register(id).await?;
     session.insert(REG_KEY, (id, state)).await?;
     Ok(Json(ccr))

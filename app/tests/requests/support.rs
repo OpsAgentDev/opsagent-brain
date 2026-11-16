@@ -283,3 +283,26 @@ pub async fn as_member(
         .unwrap();
     t
 }
+
+/// Ages the sign-in recorded in the newest session by 16 minutes (past the fresh sign-in window).
+pub async fn age_sign_in(db: &sea_orm::DatabaseConnection) {
+    use opsagent_brain::models::_entities::sessions;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+    let row = sessions::Entity::find()
+        .order_by_desc(sessions::Column::ExpiryDate)
+        .one(db)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut data: serde_json::Value = serde_json::from_slice(&row.data).unwrap();
+    data["signed_in_at"] = serde_json::json!(chrono::Utc::now().timestamp() - 16 * 60);
+    sessions::Entity::update_many()
+        .col_expr(
+            sessions::Column::Data,
+            serde_json::to_vec(&data).unwrap().into(),
+        )
+        .filter(sessions::Column::Id.eq(row.id))
+        .exec(db)
+        .await
+        .unwrap();
+}
