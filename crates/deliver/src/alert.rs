@@ -11,8 +11,8 @@ pub const ALERTS_PER_DAY: usize = 20;
 /// At most one roll-up per connection in this long.
 pub const ROLLUP_EVERY: Duration = Duration::hours(1);
 
-/// What one delivery run does with its candidates. Every id in either list gets `alerted_at`,
-/// whether or not the roll-up is sent.
+/// What one delivery run does with its candidates. `individual` ids get `alerted_at`; `rollup`
+/// ids only when the roll-up is sent, else they stay candidates for the next run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlertPlan {
     pub individual: Vec<Uuid>,
@@ -53,7 +53,7 @@ pub fn plan_alerts(
 
 /// Slack mrkdwn for one urgent finding (the email body is its plain form).
 pub fn render_alert(f: &Finding, at: &ConnectionInfo, web_base_url: &str) -> String {
-    let mut place = vec![esc(&at.resource), esc(&at.account)];
+    let mut place = vec![esc(&no_domain(&at.resource)), esc(&at.account)];
     place.extend(at.region.as_deref().map(esc));
     let mut lines = vec![format!("🔴 Urgent: {}", esc(&f.title)), place.join(" · ")];
     lines.extend(f.next_step.as_deref().map(esc));
@@ -92,6 +92,26 @@ fn base(url: &str) -> &str {
 
 fn esc(s: &str) -> String {
     crate::render_text::slack_item(s)
+}
+
+/// A resource name is set in the customer's cloud account, by people who may not be OpsAgent
+/// users. Slack and mail clients link bare domains and addresses (`evil.com/x`, `a@b.com`), so a
+/// dot between a letter or digit and a letter is shown as `[.]`. IP addresses and versions stay.
+fn no_domain(s: &str) -> String {
+    // Clients also read the ideographic and full-width full stops as a domain dot.
+    const DOTS: [char; 4] = ['.', '\u{3002}', '\u{FF0E}', '\u{FF61}'];
+    let c: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    for (i, &ch) in c.iter().enumerate() {
+        let joins =
+            i > 0 && c[i - 1].is_alphanumeric() && c.get(i + 1).is_some_and(|n| n.is_alphabetic());
+        if DOTS.contains(&ch) && joins {
+            out.push_str("[.]");
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -163,11 +183,11 @@ mod tests {
     }
 
     #[test]
-    fn rollup_half_an_hour_ago_holds_the_rollup_but_keeps_its_findings() {
+    fn rollup_half_an_hour_ago_holds_the_rollup() {
         let c = many(6);
         let p = plan_alerts(&c, 0, 0, Some(now() - Duration::minutes(30)), now());
         assert!(!p.rollup_allowed);
-        assert_eq!(p.rollup, ids(&c[5..]), "still marked alerted");
+        assert_eq!(p.rollup, ids(&c[5..]), "held back, left unalerted");
         let later = plan_alerts(&c, 0, 0, Some(now() - Duration::minutes(60)), now());
         assert!(later.rollup_allowed);
     }
@@ -201,6 +221,38 @@ mod tests {
                 f.id
             )
         );
+    }
+
+    #[test]
+    fn a_url_in_customer_text_is_not_a_link() {
+        let f = crit("Public snapshot");
+        let at = ConnectionInfo {
+            account: "Prod".into(),
+            resource: "Rotate keys now at https://evil.test/aws".into(),
+            region: None,
+        };
+        let got = render_alert(&f, &at, "https://opsagent.dev/o/acme");
+        assert!(!got.contains("https://evil.test"), "{got}");
+        assert!(got.contains("https[://]evil[.]test/aws"), "{got}");
+        // Our own link stays one.
+        assert!(got.ends_with(&format!("https://opsagent.dev/o/acme/findings/{}", f.id)));
+    }
+
+    #[test]
+    fn bare_domains_and_addresses_in_a_resource_name_are_not_links() {
+        for (name, shown) in [
+            ("evil.com/aws", "evil[.]com/aws"),
+            ("www.evil.com", "www[.]evil[.]com"),
+            ("mailto:a@evil.io", "mailto:a@evil[.]io"),
+            ("logs.example.com", "logs[.]example[.]com"),
+            ("10.0.0.12 v1.2", "10.0.0.12 v1.2"),
+            ("ends. Here", "ends. Here"),
+            ("evil\u{3002}com", "evil[.]com"),
+            ("evil\u{FF0E}com", "evil[.]com"),
+            ("evil\u{FF61}com", "evil[.]com"),
+        ] {
+            assert_eq!(no_domain(name), shown);
+        }
     }
 
     #[test]

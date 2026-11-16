@@ -171,28 +171,22 @@ impl DeliverAlert {
                 .once(&format!("alert:{}", f.id), Some(msg), &[f.id])
                 .await?;
         }
-        if !plan.rollup.is_empty() {
+        // Over the caps with a roll-up within the hour: nothing is sent and the findings stay
+        // unalerted, so a later run alerts them or counts them in its roll-up.
+        if !plan.rollup.is_empty() && plan.rollup_allowed {
             let n = plan.rollup.len();
-            if plan.rollup_allowed {
-                let msg = Msg {
-                    text: render_rollup(n, base),
-                    link: format!("{base}/findings"),
-                    subject: format!("Urgent: {n} more urgent findings ({account})"),
-                    detail: candidates
-                        .iter()
-                        .filter(|f| plan.rollup.contains(&f.id))
-                        .map(|f| mail_safe_name(&f.title))
-                        .collect(),
-                };
-                let key = format!("alert:rollup:{}", run.id);
-                route.once(&key, Some(msg), &plan.rollup).await?;
-            } else {
-                // Over the caps and a roll-up went out within the hour: marked, never sent.
-                r.findings()
-                    .mark_alerted(org, &plan.rollup, now)
-                    .await
-                    .map_err(lerr)?;
-            }
+            let msg = Msg {
+                text: render_rollup(n, base),
+                link: format!("{base}/findings"),
+                subject: format!("Urgent: {n} more urgent findings ({account})"),
+                detail: candidates
+                    .iter()
+                    .filter(|f| plan.rollup.contains(&f.id))
+                    .map(|f| mail_safe_name(&f.title))
+                    .collect(),
+            };
+            let key = format!("alert:rollup:{}", run.id);
+            route.once(&key, Some(msg), &plan.rollup).await?;
         }
         Ok(outcome("alerted", &plan.individual.len().to_string()))
     }

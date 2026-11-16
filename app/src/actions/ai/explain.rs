@@ -191,14 +191,16 @@ impl ExplainFinding {
         let (kind, region) = row.map_or((String::new(), String::new()), |r| {
             (r.kind.to_string(), r.region.unwrap_or_default())
         });
+        // Fixed check text today; wrapped so a check that puts a name in it cannot open the prompt.
+        let wrap = |source, t: &str| untrusted(source, &strip(t), EXCERPT_MAX);
         let mut out = format!(
             "Title: {}\nSeverity: {}\nCheck: {}\nResource kind: {}\nRegion: {}\nNext step: {}\n",
-            strip(&f.title),
+            wrap("title", &f.title),
             enum_str(f.severity),
             f.key.check_id,
             kind,
             region,
-            strip(f.next_step.as_deref().unwrap_or_default()),
+            wrap("next_step", f.next_step.as_deref().unwrap_or_default()),
         );
         for e in latest_run(evidence) {
             out.push_str(&untrusted("evidence", &excerpt(&e.excerpt), EXCERPT_MAX));

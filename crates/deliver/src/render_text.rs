@@ -135,9 +135,12 @@ fn status_label(s: ConnectionStatus) -> String {
     format!("{s:?}").to_lowercase()
 }
 
-/// Escapes Slack's control characters (`&`, `<`, `>`), then caps at ITEM_MAX with an ellipsis.
+/// Escapes Slack's control characters (`&`, `<`, `>`) and breaks URL schemes, then caps at
+/// ITEM_MAX with an ellipsis.
 pub(crate) fn slack_item(s: &str) -> String {
     let e = s
+        // Customer text never becomes a link: no client links a broken scheme.
+        .replace("://", "[://]")
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;");

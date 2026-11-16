@@ -507,6 +507,33 @@ async fn slack_revoked_mid_run_falls_back_and_keeps_caps() {
 
 #[tokio::test]
 #[serial]
+async fn critical_held_back_by_the_caps_stays_unalerted() {
+    serve(|req, ctx| async move {
+        let w = world(&req, &ctx, "heldback@example.com").await;
+        let s = slack(&ctx, &w).await;
+        mock_post(&s, OK(), 11).await;
+        baselined(&ctx, &w).await;
+        for i in 0..6 {
+            crit(&ctx, &w, &format!("a{i}")).await;
+        }
+        alert(&ctx, &w).await;
+        assert_eq!(posted(&s).await.len(), 6, "five alerts and a roll-up");
+        for i in 0..6 {
+            crit(&ctx, &w, &format!("b{i}")).await;
+        }
+        // Five more alerts; the sixth is over the cap and the roll-up was minutes ago.
+        alert(&ctx, &w).await;
+        assert_eq!(posted(&s).await.len(), 11);
+        let left = ctx.state.uow.findings().alert_candidates(w.org, w.conn);
+        let left = left.await.unwrap();
+        assert_eq!(left.len(), 1, "not marked alerted without a message");
+        assert_eq!(left[0].title, "b5");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn backlog_from_crashed_delivery_sent_by_next_run() {
     serve(|req, ctx| async move {
         let w = world(&req, &ctx, "backlog@example.com").await;
