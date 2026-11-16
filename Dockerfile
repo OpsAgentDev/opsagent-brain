@@ -8,11 +8,13 @@ COPY . .
 RUN cargo build --release -p opsagent-brain --bin opsagent-brain \
     && cp target/release/opsagent-brain /opsagent-brain
 
-FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+# Debian 13: the registry scan's High findings (util-linux, pam, zlib, glibc) have no fix in
+# Debian 12. The binary is built on 12 and runs on the newer glibc and OpenSSL 3 here.
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 # A shell is needed: Railway runs the pre-deploy command through one.
 # `upgrade`: take the security fixes Debian has shipped since the pinned base was built.
 RUN apt-get update && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends ca-certificates tzdata libssl3 \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata libssl3t64 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --no-create-home opsagent
 COPY --from=builder /opsagent-brain /usr/local/bin/opsagent-brain
