@@ -151,6 +151,17 @@ impl<C: Conn> BillingRepo for Pg<C> {
         }
     }
 
+    async fn set_tier(&self, organisation_id: Uuid, tier: Tier) -> RepoResult<()> {
+        let sql = "UPDATE organisations SET billing_tier = $2, updated_at = now() \
+          WHERE id = $1 AND stripe_subscription_id IS NOT NULL";
+        let values = vec![organisation_id.into(), tier.as_str().into()];
+        let r = self.db().execute_raw(stmt(sql, values)).await;
+        match r.map_err(db_err)?.rows_affected() {
+            0 => Err(RepoError::NotFound),
+            _ => Ok(()),
+        }
+    }
+
     async fn apply_subscription(
         &self,
         organisation_id: Uuid,

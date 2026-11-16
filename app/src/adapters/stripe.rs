@@ -88,6 +88,23 @@ impl StripeBilling {
         self.call(Method::POST, path, Some(form), Some(idem)).await
     }
 
+    /// Sets `set` on the subscription's one item, with `proration_behavior` `behaviour`.
+    async fn update_item(
+        &self,
+        subscription_id: &str,
+        set: [(&'static str, String); 1],
+        behaviour: &str,
+        idem: &str,
+    ) -> BillingResult<()> {
+        let path = format!("subscriptions/{}", urlencoding::encode(subscription_id));
+        let sub = self.call(Method::GET, &path, None, None).await?;
+        let item = field(&sub["items"]["data"][0], "id")?;
+        let mut form = vec![("items[0][id]", item)];
+        form.extend(set);
+        form.push(("proration_behavior", behaviour.into()));
+        self.post(&path, form, idem).await.map(|_| ())
+    }
+
     /// A one-time `mode=payment` Checkout form: one USD `price_data` line, SaaS tax code.
     fn payment_form(
         &self,
@@ -246,16 +263,21 @@ impl BillingProvider for StripeBilling {
         prorate: bool,
         idem: &str,
     ) -> BillingResult<()> {
-        let path = format!("subscriptions/{}", urlencoding::encode(subscription_id));
-        let sub = self.call(Method::GET, &path, None, None).await?;
-        let item = field(&sub["items"]["data"][0], "id")?;
         let behaviour = if prorate { "create_prorations" } else { "none" };
-        let form = vec![
-            ("items[0][id]", item),
-            ("items[0][quantity]", quantity.to_string()),
-            ("proration_behavior", behaviour.into()),
-        ];
-        self.post(&path, form, idem).await.map(|_| ())
+        let set = [("items[0][quantity]", quantity.to_string())];
+        self.update_item(subscription_id, set, behaviour, idem)
+            .await
+    }
+
+    async fn change_price(
+        &self,
+        subscription_id: &str,
+        price_id: &str,
+        idem: &str,
+    ) -> BillingResult<()> {
+        let set = [("items[0][price]", price_id.to_owned())];
+        self.update_item(subscription_id, set, "create_prorations", idem)
+            .await
     }
 
     async fn cancel_subscription(&self, subscription_id: &str, idem: &str) -> BillingResult<()> {

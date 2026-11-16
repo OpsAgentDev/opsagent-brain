@@ -307,6 +307,49 @@ async fn revoked_through_period_end_disconnected_before_renewal() {
     api.verify().await;
 }
 
+/// B2: a connection billing turned off for lost access is reconnected, verified and billed
+/// again (back up to the quantity this period already paid for, so not charged again).
+#[tokio::test]
+#[serial]
+async fn revoked_at_period_end_reconnects_and_is_billed_again() {
+    let api = MockServer::start().await;
+    subscription_mock(&api).await;
+    expect_no_proration(&api).await;
+    // Each twice: the two connects step 1 then 2, then the nightly drop and the reconnect.
+    expect_update(&api, 1, "none", 2).await;
+    expect_update(&api, 2, "none", 2).await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (t, org, id) = org_with_customer(&req, &ctx).await;
+        let start = Utc::now() - Duration::days(30) + Duration::hours(12);
+        subscribe(&ctx, id, 2, start).await;
+        let gone = connect(&req, &t, &org, "clean").await;
+        connect(&req, &t, &org, "degraded").await;
+        let row = connections::Entity::find_by_id(gone).one(&ctx.db).await;
+        let mut a: connections::ActiveModel = row.unwrap().unwrap().into();
+        a.status = Set("revoked".into());
+        a.verify_denied_streak = Set(3);
+        a.verify_denied_first_at = Set(Some((start + Duration::days(10)).into()));
+        a.update(&ctx.db).await.unwrap();
+        nightly(&ctx).await;
+        assert_eq!(status(&ctx, gone).await, "disconnected");
+        assert_eq!(quantities(&ctx, id).await, (1, Some(2)));
+
+        let res = req
+            .post(&format!("/v1/orgs/{org}/connections/{gone}/reconnect"))
+            .add_header("X-CSRF-Token", &t)
+            .await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        // Verify runs are keyed per second: the connect's run would swallow this one.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let res = verify(&req, &t, &org, &gone.to_string(), "").await;
+        assert_eq!(res.status_code(), 202, "{}", res.text());
+        assert_eq!(status(&ctx, gone).await, "connected");
+        assert_eq!(quantities(&ctx, id).await, (2, Some(2)));
+    })
+    .await;
+    api.verify().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn nightly_reconciles_a_drifted_quantity() {

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use opsagent_connectors::Registry;
-use opsagent_core::{audit::AuditEntry, connection::ConnectionStatus as S};
+use opsagent_core::audit::AuditEntry;
 use opsagent_secrets::Kek;
 use uuid::Uuid;
 
@@ -13,9 +13,9 @@ use crate::{
     error::{AppError, AppResult},
 };
 
-/// The stored credentials of a `revoked` connection, for owner `actor`, so the caller can show
-/// the launch link again and access is repaired without a new connection. Audited; 409
-/// `connection_not_revoked` in any other state.
+/// The stored credentials of a `reconnectable` connection (`revoked`, or turned off by billing
+/// for it), for owner `actor`, so the caller can show the launch link again and access is
+/// repaired without a new connection. Audited; 409 `connection_not_revoked` in any other state.
 pub struct ReconnectLink {
     uow: Arc<dyn UnitOfWork>,
     kek: Arc<dyn Kek>,
@@ -30,7 +30,7 @@ impl ReconnectLink {
     pub async fn run(&self, organisation_id: Uuid, actor: Uuid, id: Uuid) -> AppResult<Created> {
         let c = self.uow.connections().get(organisation_id, id).await?;
         let c = c.ok_or(AppError::NotFound)?;
-        if c.status != S::Revoked {
+        if !c.reconnectable() {
             return Err(AppError::Refused {
                 status: StatusCode::CONFLICT,
                 code: "connection_not_revoked",

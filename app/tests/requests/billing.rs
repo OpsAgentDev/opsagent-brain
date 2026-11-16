@@ -933,3 +933,151 @@ async fn second_live_subscription_is_cancelled_and_the_stored_one_kept() {
     .await;
     api.verify().await;
 }
+
+/// Stores subscription `sub_1` on `tier` with `status`, as an event created at `at(created)`.
+async fn subscribed(ctx: &TestApp, org: Uuid, status: B, tier: Tier, created: i64) {
+    let s = SubscriptionState {
+        subscription_id: "sub_1".into(),
+        status,
+        tier: Some(tier),
+        quantity: 1,
+        trial_ends_at: (status == B::Trialing).then(|| at(14 * 86_400)),
+        current_period_start: Some(at(0)),
+        current_period_end: Some(at(30 * 86_400)),
+        cancel_at_period_end: false,
+    };
+    let repo = Pg::new(&ctx.db);
+    assert!(repo.apply_subscription(org, &s, at(created)).await.unwrap());
+}
+
+/// Stripe's `sub_1` item `si_1`, and `n` price swaps to `price`, prorated now.
+async fn expect_price_swap(api: &MockServer, price: &str, n: u64) {
+    let sub = json!({ "id": "sub_1", "items": { "data": [{ "id": "si_1" }] } });
+    Mock::given(method("GET"))
+        .and(path("/v1/subscriptions/sub_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(sub))
+        .mount(api)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/subscriptions/sub_1"))
+        .and(body_string_contains("items%5B0%5D%5Bid%5D=si_1"))
+        .and(body_string_contains(format!(
+            "items%5B0%5D%5Bprice%5D={price}"
+        )))
+        .and(body_string_contains("proration_behavior=create_prorations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "sub_1" })))
+        .expect(n)
+        .mount(api)
+        .await;
+}
+
+async fn change_plan(req: &TestServer, csrf: &str, org: &str, tier: &str) -> TestResponse {
+    req.post(&format!("/v1/orgs/{org}/billing/plan"))
+        .add_header("X-CSRF-Token", csrf)
+        .json(&json!({ "tier": tier }))
+        .await
+}
+
+async fn plan_audits(ctx: &TestApp) -> Vec<Value> {
+    let sql = "SELECT metadata FROM audit_events WHERE action = 'billing.plan' ORDER BY created_at";
+    let rows = ctx
+        .db
+        .query_all_raw(Statement::from_string(sea_orm::DbBackend::Postgres, sql))
+        .await
+        .unwrap();
+    rows.iter()
+        .map(|r| r.try_get("", "metadata").unwrap())
+        .collect()
+}
+
+#[tokio::test]
+#[serial]
+async fn plan_upgrades_a_trial_and_keeps_it_trialing() {
+    let api = MockServer::start().await;
+    expect_price_swap(&api, "price_scale", 1).await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (t, org, id) = org_with_customer(&req, &ctx).await;
+        subscribed(&ctx, id, B::Trialing, Tier::Team, 10).await;
+        let res = change_plan(&req, &t, &org, "scale").await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        let b: Value = res.json();
+        assert_eq!(
+            (b["status"].as_str(), b["tier"].as_str()),
+            (Some("trialing"), Some("scale"))
+        );
+        assert_eq!(b["limits"]["ai_credits"], 15000);
+        assert_eq!(get_billing(&req, &org).await, b);
+        assert_eq!(
+            plan_audits(&ctx).await,
+            [json!({ "from": "team", "to": "scale" })]
+        );
+        // Stored at once: asking again is no longer an upgrade.
+        let again = change_plan(&req, &t, &org, "scale").await;
+        assert_eq!(again.status_code(), 409, "{}", again.text());
+        assert_eq!(again.json::<Value>()["code"], "not_an_upgrade");
+    })
+    .await;
+    api.verify().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn plan_upgrades_an_active_subscription() {
+    let api = MockServer::start().await;
+    expect_price_swap(&api, "price_team", 1).await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (t, org, id) = org_with_customer(&req, &ctx).await;
+        subscribed(&ctx, id, B::Active, Tier::Starter, 10).await;
+        let res = change_plan(&req, &t, &org, "team").await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        let b: Value = res.json();
+        assert_eq!(
+            (b["status"].as_str(), b["tier"].as_str()),
+            (Some("active"), Some("team"))
+        );
+    })
+    .await;
+    api.verify().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn plan_refuses_non_upgrades_unknown_tiers_and_non_owners() {
+    let api = MockServer::start().await;
+    expect_price_swap(&api, "", 0).await;
+    serve_with(stripe_on(api.uri()), |mut req, ctx| async move {
+        let (t, org, id) = org_with_customer(&req, &ctx).await;
+        let code = |res: &TestResponse| {
+            (
+                res.status_code().as_u16(),
+                res.json::<Value>()["code"].clone(),
+            )
+        };
+        let res = change_plan(&req, &t, &org, "team").await;
+        assert_eq!(code(&res), (409, json!("no_subscription")));
+        let mut created = 10;
+        for status in [B::PastDue, B::Paused, B::Canceled] {
+            subscribed(&ctx, id, status, Tier::Starter, created).await;
+            created += 10;
+            let res = change_plan(&req, &t, &org, "scale").await;
+            assert_eq!(code(&res), (409, json!("no_subscription")), "{status:?}");
+        }
+        subscribed(&ctx, id, B::Active, Tier::Team, created).await;
+        for tier in ["team", "starter"] {
+            let res = change_plan(&req, &t, &org, tier).await;
+            assert_eq!(code(&res), (409, json!("not_an_upgrade")), "{tier}");
+        }
+        let res = change_plan(&req, &t, &org, "gold").await;
+        assert_eq!(res.status_code(), 422, "{}", res.text());
+        assert!(plan_audits(&ctx).await.is_empty());
+
+        let mail = prepare(&ctx);
+        let tm = as_member(&mut req, &ctx, &mail, &org, "member@example.com").await;
+        assert_eq!(
+            change_plan(&req, &tm, &org, "scale").await.status_code(),
+            403
+        );
+    })
+    .await;
+    api.verify().await;
+}

@@ -6,6 +6,7 @@ use uuid::Uuid;
 use std::collections::BTreeMap;
 
 use crate::{
+    billing::REVOKED_AT_PERIOD_END,
     finding::{PostureRow, Severity},
     repo::RepoResult,
 };
@@ -19,7 +20,8 @@ pub enum ConnectionStatus {
     Degraded,
     Revoked,
     Blocked,
-    /// Terminal: customer disconnected. A new connect flow creates a new row.
+    /// Terminal: customer disconnected. A new connect flow creates a new row. Only one billing
+    /// turned off for lost access resumes, through Reconnect (`Connection::reconnectable`).
     Disconnected,
 }
 
@@ -90,6 +92,20 @@ pub struct Connection {
     pub disconnected_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl Connection {
+    /// Reconnect can repair it: it lost access (`revoked`), or billing turned it off at a period
+    /// end for that (`disconnected` with `REVOKED_AT_PERIOD_END`), which resumes as `revoked` would.
+    pub fn reconnectable(&self) -> bool {
+        match self.status {
+            ConnectionStatus::Revoked => true,
+            ConnectionStatus::Disconnected => {
+                self.status_reason.as_deref() == Some(REVOKED_AT_PERIOD_END)
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A `pending` connection; its sealed credentials are stored with it.

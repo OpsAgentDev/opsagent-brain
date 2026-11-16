@@ -470,3 +470,49 @@ async fn reconnect_returns_the_same_link_only_for_a_revoked_connection() {
     })
     .await;
 }
+
+/// Only `disconnected` with `revoked_at_period_end` reconnects; every other disconnected
+/// reason (and verify on it) stays refused.
+#[tokio::test]
+#[serial]
+async fn reconnect_accepts_only_the_billing_disconnect_for_lost_access() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "owner@example.com").await;
+        let org = slug(&create_org(&req, &t, "Acme").await);
+        let c = create_connection(&req, &t, &org, "aws", "Production").await;
+        let id = c["id"].as_str().unwrap().to_owned();
+        let reconnect = || {
+            req.post(&format!("/v1/orgs/{org}/connections/{id}/reconnect"))
+                .add_header("X-CSRF-Token", &t)
+        };
+        for (status, reason) in [
+            ("connected", Some("revoked_at_period_end")),
+            ("disconnected", None),
+            ("disconnected", Some("customer_disconnected")),
+        ] {
+            let mut a: connections::ActiveModel = row(&ctx, &id).await.into();
+            a.status = Set(status.into());
+            a.status_reason = Set(reason.map(Into::into));
+            a.external_account_id = Set(Some("123456789012".into()));
+            a.update(&ctx.db).await.unwrap();
+            let res = reconnect().await;
+            assert_eq!(res.status_code(), 409, "{status} {reason:?}");
+            assert_eq!(res.json::<Value>()["code"], "connection_not_revoked");
+        }
+        let res = verify(&req, &t, &org, &id, ROLE_ARN).await;
+        assert_eq!(res.json::<Value>()["code"], "connection_disconnected");
+
+        let mut a: connections::ActiveModel = row(&ctx, &id).await.into();
+        a.status = Set("disconnected".into());
+        a.status_reason = Set(Some("revoked_at_period_end".into()));
+        a.update(&ctx.db).await.unwrap();
+        let res = reconnect().await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        assert_eq!(audits(&ctx, "connection.reconnect_link").await, 1);
+        let res = verify(&req, &t, &org, &id, ROLE_ARN).await;
+        assert_eq!(res.status_code(), 202, "{}", res.text());
+        assert_ne!(row(&ctx, &id).await.status, "disconnected");
+    })
+    .await;
+}

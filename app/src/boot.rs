@@ -311,6 +311,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                     d.clock.clone(),
                     s.clone(),
                 ),
+                change_plan: billing::ChangePlan::new(d.uow.clone(), d.billing.clone(), s.clone()),
                 portal: billing::OpenPortal::new(d.uow.clone(), d.billing.clone(), s.clone()),
                 webhook: billing::HandleWebhook::new(
                     d.uow.clone(),

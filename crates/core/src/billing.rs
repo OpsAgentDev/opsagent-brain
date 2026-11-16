@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use crate::{human_review::ReviewKind, repo::RepoResult};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Ordered by price: `starter < team < scale`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
     Starter,
@@ -254,6 +255,15 @@ pub trait BillingProvider: Send + Sync {
         idem: &str,
     ) -> BillingResult<()>;
 
+    /// Moves the subscription's one item to `price_id`, prorated now (`create_prorations`);
+    /// the quantity and any trial are kept.
+    async fn change_price(
+        &self,
+        subscription_id: &str,
+        price_id: &str,
+        idem: &str,
+    ) -> BillingResult<()>;
+
     /// Cancels immediately; `NotFound` when the provider has no such subscription.
     async fn cancel_subscription(&self, subscription_id: &str, idem: &str) -> BillingResult<()>;
 }
@@ -264,6 +274,10 @@ pub trait BillingRepo: Send + Sync {
     async fn billing(&self, organisation_id: Uuid) -> RepoResult<OrgBilling>;
 
     async fn set_customer(&self, organisation_id: Uuid, customer_id: &str) -> RepoResult<()>;
+
+    /// Records the tier a plan change asked the provider for, ahead of its webhook (which still
+    /// writes the tier it reports). `NotFound` without a stored subscription.
+    async fn set_tier(&self, organisation_id: Uuid, tier: Tier) -> RepoResult<()>;
 
     /// Writes `s` unless an event created after `event_created` was already applied, or one
     /// from the same second with a later `current_period_end` (Stripe stamps whole seconds);
@@ -356,6 +370,11 @@ mod tests {
         assert_eq!(row(Tier::Starter), (Some(2), Some(1), 1000));
         assert_eq!(row(Tier::Team), (Some(5), None, 5000));
         assert_eq!(row(Tier::Scale), (None, None, 15000));
+    }
+
+    #[test]
+    fn tiers_order_by_price() {
+        assert!(Tier::Starter < Tier::Team && Tier::Team < Tier::Scale);
     }
 
     #[test]
