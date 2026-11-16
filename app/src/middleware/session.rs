@@ -11,6 +11,11 @@ use crate::{config::Config, models::_entities::sessions, models::now};
 
 pub const COOKIE_NAME: &str = "opsagent_session";
 pub const USER_KEY: &str = "user_id";
+/// Unix seconds of the sign-in that started this session (set in `start_session`).
+pub const SIGNED_IN_KEY: &str = "signed_in_at";
+/// A session ends this long after it was created, however often it is used. Sign-in rotates
+/// the id, which makes a new row, so this counts from the sign-in.
+const MAX_AGE_DAYS: i64 = 30;
 
 /// Postgres store on the existing `sessions` table via SeaORM. (tower-sessions-sqlx-store
 /// pins sqlx 0.8; this app's sea-orm uses 0.9, so the pools are not interchangeable.)
@@ -80,6 +85,7 @@ impl SessionStore for DbStore {
     async fn load(&self, id: &Id) -> session_store::Result<Option<Record>> {
         let Some(row) = sessions::Entity::find_by_id(id.to_string())
             .filter(sessions::Column::ExpiryDate.gt(now()))
+            .filter(sessions::Column::CreatedAt.gt(now() - chrono::Duration::days(MAX_AGE_DAYS)))
             .one(&self.0)
             .await
             .map_err(backend)?

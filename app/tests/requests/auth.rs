@@ -265,6 +265,62 @@ async fn github_start_returns_authorize_url_with_state_and_pkce() {
 
 #[tokio::test]
 #[serial]
+async fn a_session_ends_30_days_after_sign_in_even_when_used() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        sign_in(&req, &mail, "old@example.com").await;
+        assert_eq!(req.get("/v1/auth/me").await.status_code(), 200);
+        sessions::Entity::update_many()
+            .col_expr(
+                sessions::Column::CreatedAt,
+                (chrono::Utc::now() - chrono::Duration::days(31)).into(),
+            )
+            .exec(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(req.get("/v1/auth/me").await.status_code(), 401);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn deleting_the_account_needs_a_fresh_sign_in() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let token = sign_in(&req, &mail, "stale@example.com").await;
+        // Age the sign-in recorded in the session by 16 minutes.
+        let row = sessions::Entity::find()
+            .order_by_desc(sessions::Column::ExpiryDate)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut data: Value = serde_json::from_slice(&row.data).unwrap();
+        data["signed_in_at"] = json!(chrono::Utc::now().timestamp() - 16 * 60);
+        sessions::Entity::update_many()
+            .col_expr(
+                sessions::Column::Data,
+                serde_json::to_vec(&data).unwrap().into(),
+            )
+            .filter(sessions::Column::Id.eq(row.id))
+            .exec(&ctx.db)
+            .await
+            .unwrap();
+        let res = req
+            .delete("/v1/auth/me")
+            .add_header("X-CSRF-Token", &token)
+            .json(&json!({ "confirm": "stale@example.com" }))
+            .await;
+        assert_eq!(res.status_code(), 403);
+        assert_eq!(res.json::<Value>()["code"], "fresh_sign_in_required");
+        assert_eq!(req.get("/v1/auth/me").await.status_code(), 200);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn signed_out_session_is_not_resurrected() {
     serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);
