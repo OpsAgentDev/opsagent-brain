@@ -171,7 +171,8 @@ fn open_world_ports(perms: &[aws_sdk_ec2::types::IpPermission]) -> Vec<u16> {
 }
 
 pub async fn security_groups(ec2: &aws_sdk_ec2::Client, t: &Target<'_>) -> Result<Vec<Resource>> {
-    // Group id -> "lb" | "instance", from the ENIs that carry it.
+    // Group id -> "lb" | "instance" | "other" (a Fargate task, a function, a database: any
+    // attached interface that is neither), from the ENIs that carry it.
     let mut attached: HashMap<String, &str> = HashMap::new();
     let mut enis = ec2.describe_network_interfaces().into_paginator().send();
     while let Some(page) = enis.next().await {
@@ -180,13 +181,16 @@ pub async fn security_groups(ec2: &aws_sdk_ec2::Client, t: &Target<'_>) -> Resul
                 "lb"
             } else if n.attachment().and_then(|a| a.instance_id()).is_some() {
                 "instance"
+            } else if n.attachment().is_some() {
+                "other"
             } else {
-                continue;
+                continue; // a detached interface exposes nothing
             };
             for g in n.groups().iter().filter_map(|g| g.group_id()) {
                 let e = attached.entry(g.to_owned()).or_insert(to);
-                if to == "lb" {
-                    *e = "lb";
+                // "lb" wins over "instance", which wins over "other".
+                if to == "lb" || (to == "instance" && *e == "other") {
+                    *e = to;
                 }
             }
         }

@@ -67,3 +67,25 @@ fn public_db_and_prefix_bucket() {
         .excerpt
         .contains("logs/"));
 }
+
+#[test]
+fn public_bucket_and_group_on_a_task() {
+    let sg = |to: &str, ports: &[u16]| serde_json::json!({"service":"sg","open_world_ports":ports,"attached_to":to});
+    let s3 = |bpa: bool, prefix: Option<&str>| serde_json::json!({"service":"s3","block_public_access":bpa,"public_policy_prefix":prefix});
+    let rs = [
+        res("b-public", s3(false, Some(""))),
+        res("b-private", s3(false, None)),
+        // Public by policy, but block-public-access overrides it.
+        res("b-blocked", s3(true, Some(""))),
+        res("sg-task-db", sg("other", &[6379])),
+        res("sg-task-web", sg("other", &[443])),
+    ];
+    assert_eq!(
+        set(&run(&PublicExposure, &rs, &[])),
+        vec![
+            t("b-private", "bucket_no_bpa", Medium),
+            t("b-public", "public_bucket", High),
+            t("sg-task-db", "sg_open_admin_port", Critical),
+        ]
+    );
+}
