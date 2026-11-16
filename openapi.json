@@ -769,6 +769,27 @@
         }
       }
     },
+    "/auth/sign-out/everywhere": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Ends every session of the signed-in user, this one included. A session that has not been used\nsince this route shipped has no owner recorded yet and lasts until its own expiry.",
+        "operationId": "auth_sign_out_everywhere",
+        "responses": {
+          "204": {},
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/contact": {
       "post": {
         "tags": [
