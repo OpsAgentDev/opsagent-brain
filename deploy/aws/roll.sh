@@ -9,7 +9,7 @@ cluster="opsagent" family="opsagent-$service"
 # Only the fields RegisterTaskDefinition accepts; the rest of the description is read-only.
 aws ecs describe-task-definition --task-definition "$family" --query taskDefinition |
   jq --arg image "$image" '{family, taskRoleArn, executionRoleArn, networkMode, containerDefinitions,
-    requiresCompatibilities, cpu, memory, runtimePlatform} | .containerDefinitions[0].image = $image' >taskdef.json
+    requiresCompatibilities, cpu, memory, runtimePlatform, volumes} | .containerDefinitions[0].image = $image' >taskdef.json
 arn="$(aws ecs register-task-definition --cli-input-json file://taskdef.json \
   --query taskDefinition.taskDefinitionArn --output text)"
 echo "registered $arn"
