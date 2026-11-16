@@ -53,7 +53,7 @@ pub fn plan_alerts(
 
 /// Slack mrkdwn for one urgent finding (the email body is its plain form).
 pub fn render_alert(f: &Finding, at: &ConnectionInfo, web_base_url: &str) -> String {
-    let mut place = vec![esc(&at.resource), esc(&at.account)];
+    let mut place = vec![esc(&no_domain(&at.resource)), esc(&at.account)];
     place.extend(at.region.as_deref().map(esc));
     let mut lines = vec![format!("🔴 Urgent: {}", esc(&f.title)), place.join(" · ")];
     lines.extend(f.next_step.as_deref().map(esc));
@@ -92,6 +92,24 @@ fn base(url: &str) -> &str {
 
 fn esc(s: &str) -> String {
     crate::render_text::slack_item(s)
+}
+
+/// A resource name is set in the customer's cloud account, by people who may not be OpsAgent
+/// users. Slack and mail clients link bare domains and addresses (`evil.com/x`, `a@b.com`), so a
+/// dot between a letter or digit and a letter is shown as `[.]`. IP addresses and versions stay.
+fn no_domain(s: &str) -> String {
+    let c: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    for (i, &ch) in c.iter().enumerate() {
+        let joins =
+            i > 0 && c[i - 1].is_alphanumeric() && c.get(i + 1).is_some_and(|n| n.is_alphabetic());
+        if ch == '.' && joins {
+            out.push_str("[.]");
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -213,9 +231,23 @@ mod tests {
         };
         let got = render_alert(&f, &at, "https://opsagent.dev/o/acme");
         assert!(!got.contains("https://evil.test"), "{got}");
-        assert!(got.contains("https[://]evil.test/aws"), "{got}");
+        assert!(got.contains("https[://]evil[.]test/aws"), "{got}");
         // Our own link stays one.
         assert!(got.ends_with(&format!("https://opsagent.dev/o/acme/findings/{}", f.id)));
+    }
+
+    #[test]
+    fn bare_domains_and_addresses_in_a_resource_name_are_not_links() {
+        for (name, shown) in [
+            ("evil.com/aws", "evil[.]com/aws"),
+            ("www.evil.com", "www[.]evil[.]com"),
+            ("mailto:a@evil.io", "mailto:a@evil[.]io"),
+            ("logs.example.com", "logs[.]example[.]com"),
+            ("10.0.0.12 v1.2", "10.0.0.12 v1.2"),
+            ("ends. Here", "ends. Here"),
+        ] {
+            assert_eq!(no_domain(name), shown);
+        }
     }
 
     #[test]
