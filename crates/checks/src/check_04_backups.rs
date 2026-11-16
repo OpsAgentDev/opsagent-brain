@@ -50,6 +50,17 @@ impl Check for Backups {
                             "Add the resource to a backup plan.",
                             "in_backup_plan=false".into(),
                         );
+                    } else if covered && a["backup_last_job_status"].is_null() && !automated {
+                        // A plan selects it, but no job finished in the window: a plan with no
+                        // rules, a paused schedule, or a backup that never started.
+                        push(
+                            "no_recent_backup",
+                            Severity::Medium,
+                            format!("{id} has no finished backup in the last 35 days"),
+                            format!("A backup plan selects {id}, but no backup job for it finished in the last 35 days."),
+                            "Check the plan's rules and schedule, then run a backup on demand.",
+                            "in_backup_plan=true backup_last_job_status=null".into(),
+                        );
                     } else if a["backup_last_job_status"] == "FAILED" {
                         let at = a["backup_last_job_at"].as_str().unwrap_or("unknown");
                         push(
