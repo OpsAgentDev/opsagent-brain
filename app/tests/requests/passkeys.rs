@@ -51,6 +51,23 @@ async fn register_start_needs_session() {
 
 #[tokio::test]
 #[serial]
+async fn register_start_needs_a_fresh_sign_in() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let csrf = sign_in(&req, &mail, "stale-pk@example.com").await;
+        age_sign_in(&ctx.db).await;
+        let res = req
+            .post("/v1/auth/passkeys/register/start")
+            .add_header("X-CSRF-Token", &csrf)
+            .await;
+        assert_eq!(res.status_code(), 403);
+        assert_eq!(res.json::<Value>()["code"], "fresh_sign_in_required");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn register_start_returns_options_for_signed_in_user() {
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);

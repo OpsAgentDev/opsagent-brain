@@ -25,7 +25,11 @@ use crate::{
     adapters::client_ip::ClientIp,
     api_error::{ApiError, ApiJson, Problem},
     config::Config,
-    middleware::{csrf, org_scope::AuthUser, session::USER_KEY},
+    middleware::{
+        csrf,
+        org_scope::AuthUser,
+        session::{SIGNED_IN_KEY, USER_KEY},
+    },
     state::AppState,
 };
 
@@ -75,6 +79,25 @@ async fn request_link(
 pub(crate) async fn start_session(session: &Session, user_id: Uuid) -> Result<(), ApiError> {
     session.cycle_id().await?;
     session.insert(USER_KEY, user_id).await?;
+    session
+        .insert(SIGNED_IN_KEY, chrono::Utc::now().timestamp())
+        .await?;
+    Ok(())
+}
+
+/// Deleting the account or adding a passkey needs a sign-in this recent, so a stolen session can
+/// neither erase the account nor give itself a credential to make a fresh sign-in with.
+const FRESH_SIGN_IN_SECS: i64 = 15 * 60;
+
+pub(crate) async fn require_fresh_sign_in(session: &Session) -> Result<(), ApiError> {
+    let signed_in_at: Option<i64> = session.get(SIGNED_IN_KEY).await?;
+    if signed_in_at.is_none_or(|t| chrono::Utc::now().timestamp() - t > FRESH_SIGN_IN_SECS) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "fresh_sign_in_required",
+            "Sign out and sign in again, then retry within 15 minutes.",
+        ));
+    }
     Ok(())
 }
 
@@ -664,6 +687,7 @@ pub struct DeleteAccountRequest {
 
 #[utoipa::path(delete, path = "/auth/me", tag = "auth", request_body = DeleteAccountRequest,
     responses((status = 204), (status = 401, body = Problem),
+        (status = 403, body = Problem, description = "`fresh_sign_in_required`: the sign-in is older than 15 minutes"),
         (status = 409, body = Problem, description = "`last_owner`: the only owner of an organisation"),
         (status = 422, body = Problem, description = "`confirm_mismatch`: the email was not typed exactly")))]
 async fn delete_me(
@@ -672,6 +696,7 @@ async fn delete_me(
     AuthUser(id): AuthUser,
     ApiJson(body): ApiJson<DeleteAccountRequest>,
 ) -> Result<StatusCode, ApiError> {
+    require_fresh_sign_in(&session).await?;
     app.actions
         .auth
         .delete_account

@@ -241,6 +241,16 @@
               }
             }
           },
+          "403": {
+            "description": "`fresh_sign_in_required`: the sign-in is older than 15 minutes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "409": {
             "description": "`last_owner`: the only owner of an organisation",
             "content": {
@@ -510,6 +520,16 @@
             }
           },
           "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`fresh_sign_in_required`: the sign-in is older than 15 minutes",
             "content": {
               "application/json": {
                 "schema": {
