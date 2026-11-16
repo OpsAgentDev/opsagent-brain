@@ -227,6 +227,9 @@ pub trait ConnectionsRepo: Send + Sync {
     ) -> RepoResult<()>;
     /// tenancy: operator tasks name a connection by id alone; the row names its organisation.
     async fn by_id_unscoped(&self, id: Uuid) -> RepoResult<Option<Connection>>;
+    /// tenancy: the claimed-account notice must find the holder in whichever organisation it
+    /// is. The connection of `provider` that claims `account` (connected, degraded or revoked).
+    async fn claimed_by(&self, provider: &str, account: &str) -> RepoResult<Option<Connection>>;
 }
 
 /// Posture score of a connection (checks.md): `max(0, 100 - sum of weight(open))`, with the

@@ -22,11 +22,12 @@ pub enum JobKind {
     BillingSync,
     DeliverReviewNotice,
     DeliverRevokedNotice,
+    DeliverClaimedNotice,
     OperatorNotice,
 }
 
 impl JobKind {
-    pub const ALL: [JobKind; 11] = [
+    pub const ALL: [JobKind; 12] = [
         Self::Verify,
         Self::FullScan,
         Self::DeliverBriefing,
@@ -37,6 +38,7 @@ impl JobKind {
         Self::BillingSync,
         Self::DeliverReviewNotice,
         Self::DeliverRevokedNotice,
+        Self::DeliverClaimedNotice,
         Self::OperatorNotice,
     ];
 
@@ -52,6 +54,7 @@ impl JobKind {
             Self::BillingSync => "billing_sync",
             Self::DeliverReviewNotice => "deliver_review_notice",
             Self::DeliverRevokedNotice => "deliver_revoked_notice",
+            Self::DeliverClaimedNotice => "deliver_claimed_notice",
             Self::OperatorNotice => "operator_notice",
         }
     }
@@ -136,6 +139,7 @@ mod tests {
             "billing_sync",
             "deliver_review_notice",
             "deliver_revoked_notice",
+            "deliver_claimed_notice",
             "operator_notice",
         ];
         assert_eq!(JobKind::ALL.map(JobKind::as_str), stored);
