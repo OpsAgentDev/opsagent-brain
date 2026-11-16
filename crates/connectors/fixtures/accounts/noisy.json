@@ -330,7 +330,7 @@
       "attributes": {
         "service": "rds",
         "publicly_accessible": false,
-        "backup_retention_days": 7,
+        "backup_retention_days": 0,
         "in_backup_plan": false,
         "backup_last_job_status": null,
         "backup_last_job_at": null

@@ -120,3 +120,18 @@ fn missing_in_backup_plan_key_is_skipped() {
     let e = res("i-1", serde_json::json!({"service":"ec2"}));
     assert!(go(&[e], &HashMap::new()).is_empty());
 }
+
+#[test]
+fn rds_with_automated_backups_needs_no_plan() {
+    let db = |days: i64| {
+        res(
+            "db",
+            serde_json::json!({"service": "rds", "in_backup_plan": false, "backup_retention_days": days}),
+        )
+    };
+    assert!(go(&[db(7)], &HashMap::new()).is_empty());
+    assert_eq!(
+        set(&go(&[db(0)], &HashMap::new())),
+        vec![t("db", "not_in_plan", Medium)]
+    );
+}
