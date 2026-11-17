@@ -416,3 +416,33 @@ fn briefing_marks_alerted_items() {
     assert!(t.contains("public snapshot (alerted 13:12)\n"), "{t}");
     assert!(t.contains("open port\n"), "{t}");
 }
+
+#[test]
+fn notice_links_list_lines_only_on_the_button_origin() {
+    use opsagent_deliver::{render_notice, NoticeEmail};
+    let n = |button: Option<&str>| NoticeEmail {
+        preheader: "p".into(),
+        heading: "h".into(),
+        paragraphs: vec![
+            "• Bucket logs is public: https://opsagent.dev/o/acme/findings/1".into(),
+            "• Reset your password: https://evil.test/reset".into(),
+            "• Lookalike: https://opsagent.dev.evil.test/x".into(),
+        ],
+        button: button.map(|u| ("Open".into(), u.into())),
+        footnote: None,
+        unsubscribe_url: None,
+        code: None,
+    };
+    let h = render_notice(&n(Some("https://opsagent.dev/o/acme/connections/2")));
+    assert!(
+        h.contains(r#"href="https://opsagent.dev/o/acme/findings/1""#),
+        "{h}"
+    );
+    assert!(
+        !h.contains(r#"href="https://evil.test"#)
+            && !h.contains(r#"href="https://opsagent.dev.evil"#),
+        "{h}"
+    );
+    // Without a trusted button nothing in the text links.
+    assert!(!render_notice(&n(None)).contains("findings/1\""));
+}
