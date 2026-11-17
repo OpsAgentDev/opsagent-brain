@@ -69,12 +69,22 @@ pub async fn rds_snapshots(rds: &aws_sdk_rds::Client, t: &Target<'_>) -> Result<
     while let Some(page) = pages.next().await {
         for s in page.map_err(provider_err)?.db_snapshots() {
             let id = s.db_snapshot_identifier().unwrap_or_default();
-            let attrs = rds
+            let attrs = match rds
                 .describe_db_snapshot_attributes()
                 .db_snapshot_identifier(id)
                 .send()
                 .await
-                .map_err(provider_err)?;
+            {
+                Ok(a) => a,
+                // Deleted between the listing and this call: it no longer exists to expose.
+                Err(e)
+                    if e.as_service_error()
+                        .is_some_and(|se| se.is_db_snapshot_not_found_fault()) =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(provider_err(e)),
+            };
             let public = attrs
                 .db_snapshot_attributes_result()
                 .map(|r| r.db_snapshot_attributes())

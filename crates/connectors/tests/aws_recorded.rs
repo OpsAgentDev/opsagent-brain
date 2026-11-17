@@ -551,6 +551,72 @@ admin,arn:aws:iam::123456789012:user/admin,2020-01-01T00:00:00+00:00,true,N/A,N/
     }
 }
 
+mod rds_snapshots {
+    use aws_sdk_rds::operation::{
+        describe_db_snapshot_attributes::{
+            DescribeDBSnapshotAttributesError, DescribeDbSnapshotAttributesOutput,
+        },
+        describe_db_snapshots::DescribeDbSnapshotsOutput,
+    };
+    use aws_sdk_rds::types::{
+        error::DbSnapshotNotFoundFault, DbSnapshot, DbSnapshotAttribute, DbSnapshotAttributesResult,
+    };
+    use aws_smithy_mocks::{mock, mock_client, RuleMode};
+    use opsagent_connectors::aws::inventory::{rds_snapshots, Target};
+
+    const T: Target = Target {
+        partition: "aws",
+        account: "123456789012",
+        region: "eu-west-1",
+    };
+
+    #[tokio::test]
+    async fn a_snapshot_deleted_mid_scan_is_skipped_not_fatal() {
+        let list = mock!(aws_sdk_rds::Client::describe_db_snapshots).then_output(|| {
+            let snap = |id: &str| {
+                DbSnapshot::builder()
+                    .db_snapshot_identifier(id)
+                    .db_snapshot_arn(format!("arn:aws:rds:eu-west-1:123456789012:snapshot:{id}"))
+                    .build()
+            };
+            DescribeDbSnapshotsOutput::builder()
+                .db_snapshots(snap("gone"))
+                .db_snapshots(snap("open"))
+                .build()
+        });
+        let gone = mock!(aws_sdk_rds::Client::describe_db_snapshot_attributes)
+            .match_requests(|r| r.db_snapshot_identifier() == Some("gone"))
+            .then_error(|| {
+                DescribeDBSnapshotAttributesError::DbSnapshotNotFoundFault(
+                    DbSnapshotNotFoundFault::builder().build(),
+                )
+            });
+        let open = mock!(aws_sdk_rds::Client::describe_db_snapshot_attributes)
+            .match_requests(|r| r.db_snapshot_identifier() == Some("open"))
+            .then_output(|| {
+                DescribeDbSnapshotAttributesOutput::builder()
+                    .db_snapshot_attributes_result(
+                        DbSnapshotAttributesResult::builder()
+                            .db_snapshot_attributes(
+                                DbSnapshotAttribute::builder()
+                                    .attribute_name("restore")
+                                    .attribute_values("all")
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                    .build()
+            });
+        let rds = mock_client!(aws_sdk_rds, RuleMode::MatchAny, [&list, &gone, &open]);
+        let r = rds_snapshots(&rds, &T)
+            .await
+            .expect("one missing snapshot is not fatal");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].name, "open");
+        assert_eq!(r[0].attributes["public"], true);
+    }
+}
+
 mod cost {
     use aws_sdk_costexplorer::operation::get_cost_and_usage::GetCostAndUsageOutput;
     use aws_sdk_costexplorer::types::{
