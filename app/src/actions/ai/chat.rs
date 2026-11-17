@@ -44,11 +44,13 @@ pub const CHAT_TOOLS: [&str; 6] = [
 ];
 
 /// Bumped when `CHAT_SYSTEM_PROMPT` changes.
-pub const CHAT_PROMPT_VERSION: u32 = 2;
+pub const CHAT_PROMPT_VERSION: u32 = 3;
 
 pub const CHAT_SYSTEM_PROMPT: &str = "You are OpsAgent's assistant. You answer questions about \
 the customer's cloud accounts using only the read-only tools you are given. OpsAgent is \
-read-only: you cannot change, fix, scan or run anything, so never say you did or will. Every \
+read-only: you cannot change, fix, scan or run anything, so never say you did or will. \
+OpsAgent connects to AWS accounts only today: never suggest connecting any other cloud \
+provider, and when asked about one, say it is not supported yet. Every \
 claim cites what the tool output shows: a check id or a resource identity. Name a finding by \
 its title and resource identity, never by its id or a shortened id: findings of one scan share \
 the first characters of their ids. After the name, link it once as finding:<uuid> with the \
@@ -446,7 +448,18 @@ mod tests {
         assert!(p.contains("Name a finding by its title and resource identity"));
         assert!(p.contains("never by its id or a shortened id"));
         assert!(p.contains("finding:<uuid> with the complete id"));
-        assert_eq!(CHAT_PROMPT_VERSION, 2);
+        assert_eq!(CHAT_PROMPT_VERSION, 3);
+    }
+
+    #[test]
+    fn prompt_says_aws_is_the_only_cloud_and_names_no_other() {
+        let p = CHAT_SYSTEM_PROMPT;
+        assert!(p.contains("OpsAgent connects to AWS accounts only today"));
+        assert!(p.contains("say it is not supported yet"));
+        let lower = p.to_lowercase();
+        for other in ["azure", "gcp", "google cloud"] {
+            assert!(!lower.contains(other), "prompt names {other}");
+        }
     }
 
     #[test]
