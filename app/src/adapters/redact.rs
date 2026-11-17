@@ -46,9 +46,99 @@ pub fn redact(text: &str) -> (String, bool) {
     (out, changed)
 }
 
+/// A resource as stored: its tag values and name redacted, as evidence is. Tags and names are
+/// written by anyone with tagging rights in the customer's account and shown to every member.
+pub fn redact_resource(r: &opsagent_core::resource::Resource) -> opsagent_core::resource::Resource {
+    let mut out = r.clone();
+    out.name = redact(&r.name).0;
+    out.tags.clear();
+    for (k, v) in &r.tags {
+        let key = redact(k).0;
+        // Decided on the key: the evidence rule misses `db_password`, spaces and short values.
+        let value = if sensitive_key(k) {
+            "[redacted:secret]".to_owned()
+        } else {
+            redact(v).0
+        };
+        // Two keys can redact to the same text; keep both values.
+        let mut slot = key.clone();
+        let mut n = 2;
+        while out.tags.contains_key(&slot) {
+            slot = format!("{key} #{n}");
+            n += 1;
+        }
+        out.tags.insert(slot, value);
+    }
+    out
+}
+
+/// A tag key whose value is a credential by name, whatever the value looks like.
+fn sensitive_key(k: &str) -> bool {
+    let k: String = k
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect();
+    [
+        "secret",
+        "password",
+        "passwd",
+        "pwd",
+        "token",
+        "apikey",
+        "privatekey",
+        "credential",
+        "auth",
+    ]
+    .iter()
+    .any(|w| k.contains(w))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::redact;
+    use super::{redact, redact_resource};
+
+    #[test]
+    fn redacts_tags_with_their_keys_and_the_name() {
+        let r = opsagent_core::resource::Resource {
+            provider: opsagent_core::resource::Provider::Fake,
+            account: "1".into(),
+            region: "r".into(),
+            kind: opsagent_core::resource::ResourceKind::Compute,
+            identity: "i-1".into(),
+            name: "db password=hunter2hunter2".into(),
+            tags: [
+                ("env".into(), "prod".into()),
+                ("deploy_key".into(), "AKIAIOSFODNN7EXAMPLE".into()),
+                ("password".into(), "hunter2hunter2".into()),
+                ("db_password".into(), "short".into()),
+                ("API-Key".into(), "two words".into()),
+                ("team".into(), "payments".into()),
+                ("AKIAIOSFODNN7EXAMPLE".into(), "a".into()),
+                ("AKIAIOSFODNN8EXAMPLE".into(), "b".into()),
+            ]
+            .into(),
+            attributes: serde_json::json!({}),
+            observed_at: "2026-11-17T00:00:00Z".parse().unwrap(),
+        };
+        let s = redact_resource(&r);
+        assert_eq!(s.tags["env"], "prod");
+        assert_eq!(s.tags["deploy_key"], "[redacted:aws_key_id]");
+        assert_eq!(s.tags["password"], "[redacted:secret]");
+        assert_eq!(s.tags["db_password"], "[redacted:secret]");
+        assert_eq!(s.tags["API-Key"], "[redacted:secret]");
+        assert_eq!(s.tags["team"], "payments");
+        // A key that is itself a secret is redacted, and a clash keeps both values.
+        let mut clashed = [
+            &s.tags["[redacted:aws_key_id]"],
+            &s.tags["[redacted:aws_key_id] #2"],
+        ];
+        clashed.sort();
+        assert_eq!(clashed, [&"a".to_string(), &"b".to_string()]);
+        assert_eq!(s.tags.len(), 8);
+        assert_eq!(s.name, "db password=[redacted:secret]");
+        assert_eq!((s.identity, s.attributes), (r.identity, r.attributes));
+    }
 
     #[test]
     fn redacts_secret_shapes() {
