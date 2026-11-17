@@ -89,7 +89,7 @@ impl DeliverWeekly {
             };
             for rc in &to {
                 let mail = self.weekly_mail(&w, rc);
-                out.email(&format!("weekly:{}", rc.id), mail, rc.member, SENT)
+                out.email(&format!("weekly:{}", rc.id), mail, rc.member, SENT, None)
                     .await?;
             }
             return Ok(outcome(EMAIL, "done"));
@@ -213,7 +213,7 @@ impl DeliverWeekly {
                 html: Some(html.clone()),
                 ..Default::default()
             };
-            out.email(&format!("summary:{}", o.id), mail, o.member, SENT)
+            out.email(&format!("summary:{}", o.id), mail, o.member, SENT, None)
                 .await?;
         }
         Ok(outcome(SUMMARY, "done"))

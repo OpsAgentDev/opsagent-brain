@@ -95,6 +95,7 @@ fn row<'a>(
         target: "a@example.com",
         status,
         external_ref: None,
+        fallback_reason: None,
     }
 }
 

@@ -16,7 +16,7 @@ use opsagent_deliver::{
         critical_findings, plan_alerts, render_alert, render_baseline, render_rollup,
         ConnectionInfo,
     },
-    repo::{Integration, ALERT, FALLBACK_EMAIL},
+    repo::{Integration, ALERT, FALLBACK_EMAIL, NO_CHANNEL, SLACK_FAILED, SLACK_NOT_CONNECTED},
 };
 use opsagent_ledger::{
     lease::{self, claim, unclaim},
@@ -64,6 +64,8 @@ struct Route<'a> {
     out: Out<'a>,
     c: &'a Connection,
     slack: Option<(Integration, String)>,
+    /// Why mail goes instead of Slack: the `fallback_reason` of the email rows.
+    fallback: &'static str,
 }
 
 impl DeliverAlert {
@@ -198,6 +200,11 @@ impl DeliverAlert {
             .active_slack(c.organisation_id)
             .await
             .map_err(lerr)?;
+        let fallback = match (&integration, &c.slack_channel_id) {
+            (None, _) => SLACK_NOT_CONNECTED,
+            (Some(_), None) => NO_CHANNEL,
+            (Some(_), Some(_)) => SLACK_FAILED,
+        };
         let slack = integration.zip(c.slack_channel_id.clone());
         let out = Out {
             kit: &self.kit,
@@ -206,7 +213,12 @@ impl DeliverAlert {
             connection_id: Some(c.id),
             kind: ALERT,
         };
-        Ok(Route { out, c, slack })
+        Ok(Route {
+            out,
+            c,
+            slack,
+            fallback,
+        })
     }
 
     /// Where `f` lives, as the message names it.
@@ -304,7 +316,9 @@ impl Route<'_> {
                 ..Default::default()
             };
             let k = format!("{key}:{}", o.id);
-            self.out.email(&k, mail, o.member, FALLBACK_EMAIL).await?;
+            self.out
+                .email(&k, mail, o.member, FALLBACK_EMAIL, Some(self.fallback))
+                .await?;
         }
         Ok(())
     }

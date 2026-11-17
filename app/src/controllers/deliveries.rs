@@ -34,6 +34,9 @@ pub struct Delivery {
     pub recipient_id: Option<Uuid>,
     /// `pending`, `sent`, `failed`, `skipped`, `fallback_email` or `suppressed`.
     pub status: String,
+    /// Why a `fallback_email` row went by email: `slack_not_connected`, `no_channel` or
+    /// `slack_failed`. Null on other rows and on rows from before reasons were kept.
+    pub fallback_reason: Option<String>,
     pub attempts: i32,
     pub sent_at: Option<DateTime<FixedOffset>>,
     pub created_at: DateTime<FixedOffset>,
@@ -65,6 +68,7 @@ fn view(
         kind: d.kind,
         channel: d.channel,
         status: d.status,
+        fallback_reason: d.fallback_reason,
         attempts: d.attempts,
         sent_at: d.sent_at.map(|t| t.fixed_offset()),
         created_at: d.created_at.fixed_offset(),

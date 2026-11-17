@@ -141,6 +141,7 @@ mod tests {
             target: "C0",
             status: SENT,
             external_ref: None,
+            fallback_reason: None,
         };
         store.deliveries().record(org, sent).await.unwrap();
         let f = store.findings();

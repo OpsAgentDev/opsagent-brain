@@ -381,6 +381,8 @@ async fn revoked_token_falls_back_once_and_slack_is_not_retried_next_day() {
             .map(|d| (d.channel.as_str(), d.status.as_str()))
             .collect();
         assert_eq!(st, [("email", "fallback_email"), ("slack", "failed")]);
+        let why: Vec<_> = r.iter().map(|d| d.fallback_reason.as_deref()).collect();
+        assert_eq!(why, [Some("slack_failed"), None]);
 
         // The next day: something new, Slack still revoked, so email only and no notice.
         let run = scan(&ctx, &w, Utc::now()).await;
@@ -394,6 +396,38 @@ async fn revoked_token_falls_back_once_and_slack_is_not_retried_next_day() {
             "{}",
             sent[1].text
         );
+        let why: Vec<_> = rows(&ctx, &w)
+            .await
+            .into_iter()
+            .map(|d| d.fallback_reason)
+            .collect();
+        assert!(why.contains(&Some("slack_not_connected".into())), "{why:?}");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn slack_without_a_channel_falls_back_with_reason_no_channel() {
+    serve(|req, ctx| async move {
+        let w = world(&req, &ctx, "nochannel@example.com").await;
+        let mail = prepare(&ctx);
+        let slack = MockServer::start().await;
+        slack_on(&ctx, &w, &slack).await;
+        sql(
+            &ctx,
+            "UPDATE connections SET slack_channel_id = NULL WHERE id = $1",
+            vec![w.conn.into()],
+        )
+        .await;
+        first_scan(&ctx, &w).await;
+        brief(&ctx, &w, Utc::now()).await;
+        assert!(slack.received_requests().await.unwrap().is_empty());
+        assert_eq!(mail.sent().len(), 1);
+        let r = rows(&ctx, &w).await;
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].status, "fallback_email");
+        assert_eq!(r[0].fallback_reason.as_deref(), Some("no_channel"));
     })
     .await;
 }
@@ -409,6 +443,7 @@ async fn no_slack_route_is_an_email_fallback_and_only_unsubscribe_spares_the_own
         let r = rows(&ctx, &w).await;
         assert_eq!(r.len(), 1);
         assert_eq!((r[0].channel.as_str(), r[0].status.as_str()), ("email", "fallback_email"));
+        assert_eq!(r[0].fallback_reason.as_deref(), Some("slack_not_connected"));
         assert_eq!(mail.sent().len(), 1);
 
         // An owner address unsubscribed from another organisation's footer is still mailed.

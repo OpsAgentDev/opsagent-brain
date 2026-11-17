@@ -433,6 +433,7 @@ async fn no_slack_falls_back_to_owner_email() {
             (r[0].kind.as_str(), r[0].status.as_str()),
             ("alert", "fallback_email")
         );
+        assert_eq!(r[0].fallback_reason.as_deref(), Some("slack_not_connected"));
 
         // Through `may_deliver`: a suppressed owner gets nothing; the finding is still marked.
         let hash = opsagent_brain::actions::recipients::tokens::email_hash("fallback@example.com");
@@ -501,6 +502,42 @@ async fn slack_revoked_mid_run_falls_back_and_keeps_caps() {
             Utc::now() - Duration::hours(24),
         );
         assert_eq!(t.await.unwrap().since, 5);
+        let why: Vec<_> = rows(&ctx, &w)
+            .await
+            .into_iter()
+            .filter(|d| d.status == "fallback_email")
+            .map(|d| d.fallback_reason)
+            .collect();
+        assert_eq!(why.len(), 5, "{why:?}");
+        assert!(
+            why.iter().all(|r| r.as_deref() == Some("slack_failed")),
+            "{why:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn slack_without_a_channel_falls_back_with_reason_no_channel() {
+    serve(|req, ctx| async move {
+        let w = world(&req, &ctx, "nochannel@example.com").await;
+        let mail = prepare(&ctx);
+        let s = slack(&ctx, &w).await;
+        sql(
+            &ctx,
+            "UPDATE connections SET slack_channel_id = NULL WHERE id = $1",
+            vec![w.conn.into()],
+        )
+        .await;
+        baselined(&ctx, &w).await;
+        crit(&ctx, &w, "Root keys").await;
+        alert(&ctx, &w).await;
+        assert!(posted(&s).await.is_empty());
+        assert_eq!(mail.sent().len(), 1);
+        let r = rows(&ctx, &w).await;
+        assert_eq!(r[0].status, "fallback_email");
+        assert_eq!(r[0].fallback_reason.as_deref(), Some("no_channel"));
     })
     .await;
 }

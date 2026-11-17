@@ -6066,6 +6066,13 @@
             "type": "string",
             "format": "date-time"
           },
+          "fallback_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a `fallback_email` row went by email: `slack_not_connected`, `no_channel` or\n`slack_failed`. Null on other rows and on rows from before reasons were kept."
+          },
           "id": {
             "type": "string",
             "format": "uuid"
@@ -7125,6 +7132,13 @@
                 "created_at": {
                   "type": "string",
                   "format": "date-time"
+                },
+                "fallback_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why a `fallback_email` row went by email: `slack_not_connected`, `no_channel` or\n`slack_failed`. Null on other rows and on rows from before reasons were kept."
                 },
                 "id": {
                   "type": "string",

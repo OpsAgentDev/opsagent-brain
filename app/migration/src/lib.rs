@@ -35,6 +35,7 @@ mod m20261110_000030_user_deleted_at;
 mod m20261110_000031_waitlist_verified;
 mod m20261113_000032_user_terms_accepted_at;
 mod m20261116_000033_session_user_id;
+mod m20261117_000034_delivery_fallback_reason;
 
 pub struct Migrator;
 
@@ -75,6 +76,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261110_000031_waitlist_verified::Migration),
             Box::new(m20261113_000032_user_terms_accepted_at::Migration),
             Box::new(m20261116_000033_session_user_id::Migration),
+            Box::new(m20261117_000034_delivery_fallback_reason::Migration),
             // inject-above (do not remove this comment)
         ]
     }
