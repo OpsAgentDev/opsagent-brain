@@ -27,6 +27,7 @@ use super::{
 use crate::{
     actions::runs::classify::{classify, lerr, revoked},
     actions::uow::{Repos, Tx},
+    adapters::redact::redact_resource,
 };
 
 pub(super) const SIMULATE: &str = "simulate";
@@ -82,8 +83,9 @@ impl FullScan {
         let partial = match inv {
             Ok(inv) => {
                 let (org, conn, now) = (c.organisation_id, c.connection_id, self.clock.now());
+                let stored: Vec<Resource> = inv.resources.iter().map(redact_resource).collect();
                 tx.resources()
-                    .upsert_chunk(org, conn, c.run_id, &inv.resources, now)
+                    .upsert_chunk(org, conn, c.run_id, &stored, now)
                     .await
                     .map_err(lerr)?;
                 calls.insert((c.service.into(), c.region.into(), "ok"), 1);
