@@ -53,13 +53,13 @@ pub fn redact_resource(r: &opsagent_core::resource::Resource) -> opsagent_core::
     out.name = redact(&r.name).0;
     out.tags.clear();
     for (k, v) in &r.tags {
-        // Judged as `key=value` on the already redacted key, so a value under a key such as
-        // `password` is caught; if the prefix still changed, the whole value is withheld.
         let key = redact(k).0;
-        let joined = redact(&format!("{key}={v}")).0;
-        let value = joined
-            .strip_prefix(&format!("{key}="))
-            .map_or_else(|| "[redacted]".to_owned(), str::to_owned);
+        // Decided on the key: the evidence rule misses `db_password`, spaces and short values.
+        let value = if sensitive_key(k) {
+            "[redacted:secret]".to_owned()
+        } else {
+            redact(v).0
+        };
         // Two keys can redact to the same text; keep both values.
         let mut slot = key.clone();
         let mut n = 2;
@@ -70,6 +70,28 @@ pub fn redact_resource(r: &opsagent_core::resource::Resource) -> opsagent_core::
         out.tags.insert(slot, value);
     }
     out
+}
+
+/// A tag key whose value is a credential by name, whatever the value looks like.
+fn sensitive_key(k: &str) -> bool {
+    let k: String = k
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect();
+    [
+        "secret",
+        "password",
+        "passwd",
+        "pwd",
+        "token",
+        "apikey",
+        "privatekey",
+        "credential",
+        "auth",
+    ]
+    .iter()
+    .any(|w| k.contains(w))
 }
 
 #[cfg(test)]
@@ -89,6 +111,9 @@ mod tests {
                 ("env".into(), "prod".into()),
                 ("deploy_key".into(), "AKIAIOSFODNN7EXAMPLE".into()),
                 ("password".into(), "hunter2hunter2".into()),
+                ("db_password".into(), "short".into()),
+                ("API-Key".into(), "two words".into()),
+                ("team".into(), "payments".into()),
                 ("AKIAIOSFODNN7EXAMPLE".into(), "a".into()),
                 ("AKIAIOSFODNN8EXAMPLE".into(), "b".into()),
             ]
@@ -100,6 +125,9 @@ mod tests {
         assert_eq!(s.tags["env"], "prod");
         assert_eq!(s.tags["deploy_key"], "[redacted:aws_key_id]");
         assert_eq!(s.tags["password"], "[redacted:secret]");
+        assert_eq!(s.tags["db_password"], "[redacted:secret]");
+        assert_eq!(s.tags["API-Key"], "[redacted:secret]");
+        assert_eq!(s.tags["team"], "payments");
         // A key that is itself a secret is redacted, and a clash keeps both values.
         let mut clashed = [
             &s.tags["[redacted:aws_key_id]"],
@@ -107,7 +135,7 @@ mod tests {
         ];
         clashed.sort();
         assert_eq!(clashed, [&"a".to_string(), &"b".to_string()]);
-        assert_eq!(s.tags.len(), 5);
+        assert_eq!(s.tags.len(), 8);
         assert_eq!(s.name, "db password=[redacted:secret]");
         assert_eq!((s.identity, s.attributes), (r.identity, r.attributes));
     }
