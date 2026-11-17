@@ -13,7 +13,7 @@ pub(super) const WATCH_SERVICES: [&str; 3] = ["sg", "rds", "cloudtrail"];
 const WATCH_CHECKS: [(&str, &[&str]); 2] = [("03", &["sg", "rds"]), ("06", &["cloudtrail"])];
 
 /// (check, variant) a watch scan keeps; every other draft is dropped. Check 06's are the two
-/// built only from `cloudtrail` resources (`detection_off:<region>` needs guardduty and
+/// built only from `cloudtrail` resources (`detection_off` needs guardduty and
 /// `no_retention` needs logs).
 pub(super) const WATCH_VARIANTS: [(&str, &str); 7] = [
     ("03", "public_snapshot"),
@@ -81,7 +81,7 @@ mod tests {
         assert!(allowed(&draft("06", "trail_effectively_off")));
         for (c, v) in [
             ("03", "bucket_no_bpa"),
-            ("06", "detection_off:us-east-1"),
+            ("06", "detection_off"),
             ("06", "no_retention"),
             ("02", "public_snapshot"),
         ] {

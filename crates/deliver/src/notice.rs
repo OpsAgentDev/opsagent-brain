@@ -26,6 +26,14 @@ struct NoticeHtml<'a> {
     code: &'a Option<String>,
 }
 
+impl NoticeHtml<'_> {
+    /// A list line ending in `: <url>` (a briefing's finding) as (text, url), so the text links.
+    fn linked<'p>(&self, p: &'p str) -> Option<(&'p str, &'p str)> {
+        let (text, url) = p.strip_prefix("• ").and(p.rsplit_once(": "))?;
+        (url.starts_with("http") && !url.contains(' ')).then_some((text, url))
+    }
+}
+
 pub fn render_notice(n: &NoticeEmail) -> String {
     // shortcut: render only fails on a template Display error, which our types never raise.
     NoticeHtml {

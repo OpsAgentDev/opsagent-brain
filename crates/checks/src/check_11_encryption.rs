@@ -1,12 +1,11 @@
-use crate::ctx::{draft, Check, CheckCtx};
+use crate::ctx::{draft, short, Check, CheckCtx};
 use opsagent_connectors::Capability;
 use opsagent_core::finding::{FindingDraft, Severity};
 use opsagent_core::resource::Provider;
 
 pub struct EncryptionAtRest;
 
-const STEP: &str =
-    "Encryption cannot be switched on in place: snapshot, copy encrypted, restore, then cut over.";
+const STEP: &str = "Anyone who gets the disk or a copy of its snapshot can read the data. Encryption cannot be switched on in place: snapshot it, copy the snapshot with encryption on (EC2 console > Snapshots > Copy snapshot > Encrypt, or RDS console > Snapshots > Copy snapshot > Enable encryption), restore from the copy, then cut over.";
 
 impl Check for EncryptionAtRest {
     fn id(&self) -> &'static str {
@@ -45,8 +44,8 @@ impl Check for EncryptionAtRest {
                 }
                 _ => continue,
             };
-            let title = format!("{what} {} is not encrypted at rest", r.name);
-            let s = format!("{title}.");
+            let title = format!("{what} {} is not encrypted at rest", short(r));
+            let s = format!("{} stores its data unencrypted.", r.identity);
             let ex = match r.service() {
                 "ebs" => format!("encrypted=false attached={}", a["attached"]),
                 _ => "encrypted=false".into(),

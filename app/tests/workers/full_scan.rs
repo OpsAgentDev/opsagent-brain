@@ -18,8 +18,9 @@ use opsagent_connectors::{
     VerifyOutcome,
 };
 use opsagent_core::{
+    connection::Posture,
     finding::{
-        Evidence, FindingDraft, FindingKey,
+        Evidence, FindingDraft, FindingKey, PostureRow,
         Severity::{self, *},
     },
     resource::Provider,
@@ -81,15 +82,19 @@ pub async fn expected() -> BTreeSet<(String, String, String, String)> {
         .collect()
 }
 
-/// Posture score of `expected()` when findings weighing `excluded` are not open.
-async fn score(excluded: f32) -> f64 {
-    let w = |s: &str| {
-        serde_json::from_value::<Severity>(json!(s))
-            .unwrap()
-            .weight()
-    };
-    let sum: f32 = expected().await.iter().map(|e| w(&e.3)).sum();
-    f64::from((100.0 - sum + excluded).max(0.0))
+/// Posture score of `expected()` with the findings on `excluded` identities not open.
+async fn score(excluded: &[&str]) -> f64 {
+    let rows: Vec<PostureRow> = expected()
+        .await
+        .into_iter()
+        .filter(|e| !excluded.contains(&e.1.as_str()))
+        .map(|(check_id, _, _, s)| PostureRow {
+            check_id,
+            severity: serde_json::from_value(json!(s)).unwrap(),
+            open: 1,
+        })
+        .collect();
+    Posture::from_rows(&rows).score
 }
 
 /// Checks 04-07 on `noisy` as (check, identity, variant), from their `noisy_exact_set` /
@@ -106,7 +111,7 @@ const NEW_CHECKS: &[(&str, &str, &str)] = &[
     ("05", "endpoint:api.noisy.example:443", "certificate"),
     ("06", "/app/noisy", "no_retention"),
     ("06", "cloudtrail:noisy", "trail_effectively_off"),
-    ("06", "guardduty-2", "detection_off:local-2"),
+    ("06", "guardduty:noisy", "detection_off"),
     ("07", "i-gpu", "idle_gpu"),
     ("07", "job-new", "stuck_training_job"),
     ("07", "job-stuck", "stuck_training_job"),
@@ -478,7 +483,7 @@ async fn first_scan_opens_expected_findings_and_scores() {
         let r = run_row(&ctx, run).await;
         assert_eq!((r.status.as_str(), r.partial_reason), ("done", None));
         let stats = &r.checkpoint["stats"];
-        assert_eq!(stats["score"].as_f64().unwrap(), score(0.0).await);
+        assert_eq!(stats["score"].as_f64().unwrap(), score(&[]).await);
         assert_eq!(stats["partial"], json!(false));
         for s in [Critical, High, Medium, Low, Info] {
             let n = want.iter().filter(|e| e.3 == sev(s)).count();
@@ -556,7 +561,10 @@ async fn resolve_reopen_and_flap() {
         assert_eq!(events(&ctx, r15, snap.id).await, ["reopened"]);
         // Flapping was excluded from the score.
         let stats = run_row(&ctx, r9).await.checkpoint["stats"].clone();
-        assert_eq!(stats["score"].as_f64().unwrap(), score(10.0).await);
+        assert_eq!(
+            stats["score"].as_f64().unwrap(),
+            score(&["snap-public"]).await
+        );
     })
     .await;
 }
@@ -603,7 +611,10 @@ async fn accepted_and_snoozed_skip_events_until_expiry() {
         }
         // Accepted and snoozed are excluded from the score.
         let stats = run_row(&ctx, r2).await.checkpoint["stats"].clone();
-        assert_eq!(stats["score"].as_f64().unwrap(), score(10.0 + 2.0).await);
+        assert_eq!(
+            stats["score"].as_f64().unwrap(),
+            score(&["sg-ssh", "bucket-open"]).await
+        );
 
         let past = chrono::Utc::now() - chrono::Duration::days(1);
         set(
@@ -1210,7 +1221,9 @@ async fn cloudtrail_partial_error_suppresses_trail_findings() {
             .iter()
             .all(|f| !f.resource_identity.starts_with("cloudtrail:")));
         // Other logging findings still stand.
-        assert!(fs.iter().any(|f| f.resource_identity == "guardduty-2"));
+        assert!(fs
+            .iter()
+            .any(|f| f.resource_identity.starts_with("guardduty:")));
     })
     .await;
 }

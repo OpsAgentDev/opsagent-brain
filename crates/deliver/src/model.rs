@@ -121,6 +121,8 @@ pub struct DailyCounts {
 pub enum Briefing {
     FirstScan {
         counts: SeverityCounts,
+        /// Top open findings with their links, under the counts.
+        top: Vec<(Item, String)>,
         link: String,
     },
     Daily {
@@ -129,6 +131,8 @@ pub enum Briefing {
         resolved_critical: Vec<Item>,
         health: Option<Health>,
         counts: DailyCounts,
+        /// Top open findings with their links, under the counts.
+        top: Vec<(Item, String)>,
         link: String,
     },
 }
@@ -231,4 +235,9 @@ pub fn by_severity(items: &mut [Item]) {
 
 pub fn connection_link(link_base: &str, id: Uuid) -> String {
     format!("{}/connections/{id}", link_base.trim_end_matches('/'))
+}
+
+/// A finding's page.
+pub fn finding_link(link_base: &str, id: Uuid) -> String {
+    format!("{}/findings/{id}", link_base.trim_end_matches('/'))
 }

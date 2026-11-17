@@ -65,10 +65,13 @@ pub fn credential_report_users(
             .collect();
         let mfa = col(&row, "mfa_active") == "true";
         if user == "<root_account>" {
+            // Older reports say `not_supported` for root: unknown (null), never "no password".
+            let pw = col(&row, "password_enabled");
             let attrs = json!({
                 "service": "iam",
                 "root": true,
                 "mfa": mfa,
+                "password": (pw != "not_supported").then(|| pw == "true"),
                 "access_keys_active": active.len() as u8,
                 "console_last_used_days": days_since(&col(&row, "password_last_used"), now),
             });

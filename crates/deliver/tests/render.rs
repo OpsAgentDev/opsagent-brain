@@ -56,21 +56,40 @@ fn briefing_text_escapes_slack_control_chars() {
 }
 
 #[test]
-fn first_scan_text_is_counts_and_link() {
+fn first_scan_text_is_counts_top_findings_and_link() {
     let mut c = conn();
     c.first_scan_at = Some(now());
-    let b = build_briefing(
-        &c,
-        &[opened(Severity::Critical, "secret title")],
-        since(),
-        now(),
-        LINK_BASE,
-    )
-    .expect("briefing");
+    c.last_scan_at = c.first_scan_at;
+    let f = opened(Severity::Critical, "secret title");
+    let b =
+        build_briefing(&c, std::slice::from_ref(&f), since(), now(), LINK_BASE).expect("briefing");
     let t = render_text(&b);
     assert!(t.to_lowercase().contains("first scan"));
     assert!(t.contains("2 critical"));
-    assert!(!t.contains("secret title"));
+    assert!(
+        t.contains(&format!(
+            "• Critical: <{LINK_BASE}/findings/{}|secret title>",
+            f.id
+        )),
+        "{t}"
+    );
+}
+
+#[test]
+fn daily_text_names_top_findings_under_the_counts() {
+    let f = opened(Severity::High, "admin | user");
+    let t = render_text(
+        &build_briefing(&conn(), std::slice::from_ref(&f), since(), now(), LINK_BASE).unwrap(),
+    );
+    let (counts, rest) = t.split_once("Open now:").unwrap();
+    assert!(counts.contains("New critical and high"));
+    assert!(
+        rest.contains(&format!(
+            "*Top open findings*\n• High: <{LINK_BASE}/findings/{}|admin / user>",
+            f.id
+        )),
+        "{t}"
+    );
 }
 
 fn weekly_with_title(title: &str) -> String {

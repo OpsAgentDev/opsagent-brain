@@ -70,3 +70,31 @@ fn root_without_mfa_is_high() {
         vec![t("root", "root_no_mfa", High)]
     );
 }
+
+#[test]
+fn root_without_password_or_keys_needs_no_mfa() {
+    let attrs = |pw: serde_json::Value, keys: u8| serde_json::json!({"service":"iam","root":true,"mfa":false,"password":pw,"access_keys_active":keys,"console_last_used_days":null});
+    // Centralised root access: nothing to sign in with.
+    assert!(run(&IamHygiene, &[root(attrs(false.into(), 0))], &[]).is_empty());
+    // A password, a key, or an unknown password state still raise it.
+    for (pw, keys) in [(true.into(), 0), (serde_json::Value::Null, 0)] {
+        assert_eq!(
+            set(&run(&IamHygiene, &[root(attrs(pw, keys))], &[])),
+            vec![t("root", "root_no_mfa", High)]
+        );
+    }
+    let keyed = set(&run(&IamHygiene, &[root(attrs(false.into(), 1))], &[]));
+    assert!(keyed.contains(&t("root", "root_no_mfa", High)), "{keyed:?}");
+}
+
+#[test]
+fn titles_use_the_short_name_and_keep_the_arn_elsewhere() {
+    let arn = "arn:aws:iam::123456789012:user/IAMAdmin";
+    let mut u = root(serde_json::json!({"service":"iam","admin":true}));
+    u.identity = arn.into();
+    u.name = "IAMAdmin".into();
+    let d = run(&IamHygiene, &[u], &[]);
+    assert_eq!(d[0].title, "IAMAdmin has administrator access");
+    assert_eq!(d[0].key.resource_identity, arn);
+    assert!(d[0].summary.contains(arn));
+}

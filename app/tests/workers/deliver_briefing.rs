@@ -264,7 +264,7 @@ async fn nothing_changed_writes_no_row_and_ends_done_skipped() {
 
 #[tokio::test]
 #[serial]
-async fn first_scan_posts_counts_and_no_titles() {
+async fn first_scan_posts_counts_and_top_findings_with_links() {
     serve(|req, ctx| async move {
         let w = world(&req, &ctx, "first@example.com").await;
         let slack = MockServer::start().await;
@@ -277,7 +277,8 @@ async fn first_scan_posts_counts_and_no_titles() {
         let text = posted(&slack).await.pop().unwrap();
         assert!(text.contains("first scan"), "{text}");
         assert!(text.contains("2 critical"), "{text}");
-        assert!(!text.contains("TITLE-SECRET"), "{text}");
+        assert_eq!(text.matches("• Critical: <").count(), 2, "{text}");
+        assert!(text.contains("/findings/"), "{text}");
         let req = &slack.received_requests().await.unwrap()[0];
         let body: Value = serde_json::from_slice(&req.body).unwrap();
         assert_eq!(body["client_msg_id"], format!("{id}:briefing"));
@@ -318,7 +319,17 @@ async fn fourteen_new_criticals_post_once_with_ten_items_and_the_total() {
         brief(&ctx, &w, now).await;
         let texts = posted(&slack).await;
         assert_eq!(texts.len(), 1);
-        assert_eq!(texts[0].matches("• Critical:").count(), 10, "{}", texts[0]);
+        assert_eq!(
+            texts[0].matches("• Critical: crit").count(),
+            10,
+            "{}",
+            texts[0]
+        );
+        assert_eq!(
+            texts[0].matches("• Critical: <").count(),
+            5,
+            "top five named"
+        );
         assert!(texts[0].contains("(14)"), "{}", texts[0]);
     })
     .await;
@@ -355,7 +366,15 @@ async fn revoked_token_falls_back_once_and_slack_is_not_retried_next_day() {
         assert!(sent[0].text.contains("first scan"), "{}", sent[0].text);
         let html = sent[0].html.as_deref().unwrap();
         assert!(html.contains("OpsAgent") && html.contains("Open the dashboard"));
-        assert_eq!(html.matches("href=\"").count(), 1, "{html}");
+        // The button plus one link per named finding; no split wordmark ("OpsAgent .").
+        assert_eq!(html.matches("href=\"").count(), 3, "{html}");
+        assert_eq!(html.matches("/findings/").count(), 2, "{html}");
+        assert!(!html.contains("OpsAgent<span"), "{html}");
+        assert!(
+            sent[0].text.contains("TITLE-SECRET-1: http"),
+            "{}",
+            sent[0].text
+        );
         let r = rows(&ctx, &w).await;
         let st: Vec<_> = r
             .iter()

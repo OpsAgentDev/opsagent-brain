@@ -23,33 +23,59 @@ pub fn render_text<T: RenderText>(doc: &T) -> String {
 impl RenderText for Briefing {
     fn render_text(&self) -> String {
         match self {
-            Briefing::FirstScan { counts, link } => hard_cap(format!(
-                "*OpsAgent first scan complete.* Open findings: {}.\n<{link}|See every finding on the dashboard>",
-                severity_counts(counts)
-            )),
+            Briefing::FirstScan { counts, top, link } => {
+                let text = |top: &[(Item, String)]| {
+                    format!(
+                        "*OpsAgent first scan complete.* Open findings: {}.\n{}<{link}|See every finding on the dashboard>",
+                        severity_counts(counts),
+                        top_lines(top)
+                    )
+                };
+                // Over the limit: name fewer findings.
+                let n = (0..=top.len())
+                    .rev()
+                    .find(|n| text(&top[..*n]).len() <= SLACK_MAX)
+                    .unwrap_or(0);
+                hard_cap(text(&top[..n]))
+            }
             Briefing::Daily {
                 new_critical_high,
                 escalated,
                 resolved_critical,
                 health,
                 counts,
+                top,
                 link,
             } => {
                 let mut sections = [
-                    ("New critical and high", new_critical_high.iter().collect(), counts.new_critical_high),
+                    (
+                        "New critical and high",
+                        new_critical_high.iter().collect(),
+                        counts.new_critical_high,
+                    ),
                     ("Escalated", escalated.iter().collect(), counts.escalated),
-                    ("Resolved critical", resolved_critical.iter().collect(), counts.resolved_critical),
+                    (
+                        "Resolved critical",
+                        resolved_critical.iter().collect(),
+                        counts.resolved_critical,
+                    ),
                 ];
                 let health = health.as_ref().map(health_line);
+                let mut top = &top[..];
                 loop {
-                    let t = daily(&sections, health.as_deref(), counts, link);
-                    // Over the limit: drop from the end of the last non-empty list.
-                    let Some(last) = sections.iter_mut().rev().find(|s| !s.1.is_empty()) else {
-                        return hard_cap(t);
-                    };
+                    let t = daily(&sections, health.as_deref(), counts, top, link);
                     if t.len() <= SLACK_MAX {
                         return t;
                     }
+                    // Over the limit: name fewer top findings, then drop from the end of the
+                    // last non-empty list.
+                    if let Some((_, rest)) = top.split_last() {
+                        top = rest;
+                        continue;
+                    }
+                    let Some(last) = sections.iter_mut().rev().find(|s| !s.1.is_empty()) else {
+                        return hard_cap(t);
+                    };
                     last.1.pop();
                 }
             }
@@ -59,10 +85,27 @@ impl RenderText for Briefing {
 
 type Section<'a> = (&'static str, Vec<&'a Item>, usize);
 
+/// One line per top finding, its title linking to the finding.
+fn top_lines(top: &[(Item, String)]) -> String {
+    if top.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("*Top open findings*\n");
+    for (i, url) in top {
+        out += &format!(
+            "• {}: <{url}|{}>\n",
+            capitalised(severity_label(i.severity)),
+            slack_item(&i.title).replace('|', "/")
+        );
+    }
+    out
+}
+
 fn daily(
     sections: &[Section; 3],
     health: Option<&str>,
     counts: &DailyCounts,
+    top: &[(Item, String)],
     link: &str,
 ) -> String {
     let mut out = String::from("*OpsAgent morning briefing*\n");
@@ -86,6 +129,7 @@ fn daily(
         out += &format!("*Connection health:* {h}\n");
     }
     out += &format!("Open now: {}\n", severity_counts(&counts.open));
+    out += &top_lines(top);
     if hidden > 0 {
         out += &format!("{hidden} more on the dashboard. ");
     }

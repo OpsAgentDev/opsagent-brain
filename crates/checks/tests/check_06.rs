@@ -33,15 +33,12 @@ async fn noisy_findings() {
     let d = run(&LoggingGaps, &r, &c);
     let got = set(&d);
     assert!(got.contains(&t("cloudtrail:noisy", "trail_effectively_off", Critical)));
-    assert!(got.contains(&t("guardduty-2", "detection_off:local-2", High)));
+    assert!(got.contains(&t("guardduty:noisy", "detection_off", High)));
     assert!(got.contains(&t("/app/noisy", "no_retention", Low)));
     let lg = d.iter().find(|d| d.key.variant == "no_retention").unwrap();
     assert!((lg.cost_monthly_usd.unwrap() - 1.5).abs() < 1e-9);
     assert!(lg.evidence[0].excerpt.contains("1.50"));
-    let dd = d
-        .iter()
-        .find(|d| d.key.variant.starts_with("detection_off"))
-        .unwrap();
+    let dd = d.iter().find(|d| d.key.variant == "detection_off").unwrap();
     assert!(dd.evidence[0].excerpt.contains("local-2"));
 }
 
@@ -58,6 +55,37 @@ fn not_logging_is_critical() {
         set(&d),
         vec![t("cloudtrail:1", "trail_effectively_off", Critical)]
     );
+}
+
+#[test]
+fn guardduty_off_is_one_finding_per_account_listing_off_regions() {
+    let gd = |region: &str, on: bool| {
+        res(
+            &format!("gd-{region}"),
+            region,
+            json!({"service":"guardduty","enabled":on}),
+        )
+    };
+    let rs = [
+        trail("ok", true, true),
+        gd("us-west-2", false),
+        gd("eu-west-1", true),
+        gd("ap-south-1", false),
+    ];
+    let d = run(&LoggingGaps, &rs, &[]);
+    assert_eq!(set(&d), vec![t("guardduty:1", "detection_off", High)]);
+    assert_eq!(d[0].title, "Threat detection is off in 2 regions");
+    assert_eq!(d[0].summary, "GuardDuty is off in ap-south-1, us-west-2.");
+    assert!(!d[0].evidence[0].excerpt.contains("eu-west-1"));
+    let one = run(
+        &LoggingGaps,
+        &[trail("ok", true, true), gd("us-west-2", false)],
+        &[],
+    );
+    assert_eq!(one[0].title, "Threat detection is off in 1 region");
+    // Every region on: nothing to say, so the open finding resolves.
+    let on = [trail("ok", true, true), gd("us-west-2", true)];
+    assert!(run(&LoggingGaps, &on, &[]).is_empty());
 }
 
 #[test]

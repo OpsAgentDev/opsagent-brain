@@ -64,7 +64,9 @@ pub fn run_with(
     let out = check.run(&parts.ctx(resources, cost));
     for d in &out {
         assert!(!d.evidence.is_empty(), "{:?}", d.key);
-        assert!(!d.next_step.is_empty(), "{:?}", d.key);
+        // The description adds to the title; the next step says why, then how.
+        assert_ne!(d.summary.trim_end_matches('.'), d.title, "{:?}", d.key);
+        assert!(d.next_step.contains(". "), "why and how: {:?}", d.key);
         assert_eq!(d.key.check_id, check.id());
     }
     out

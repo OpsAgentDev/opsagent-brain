@@ -1,4 +1,4 @@
-use crate::ctx::{draft, Check, CheckCtx};
+use crate::ctx::{draft, short, Check, CheckCtx};
 use opsagent_connectors::Capability;
 use opsagent_core::finding::{Evidence, FindingDraft, FindingKey, Severity};
 use opsagent_core::resource::Provider;
@@ -23,6 +23,8 @@ impl Check for LoggingGaps {
         let mut out = vec![];
         // account -> trails as (identity, Some(broken)); None = own-account status unknown.
         let mut trails: BTreeMap<&str, Vec<(&str, Option<bool>)>> = BTreeMap::new();
+        // account -> regions with GuardDuty off: one finding per account, not per region.
+        let mut off: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for r in ctx.resources {
             let a = &r.attributes;
             let acct = trails.entry(r.account.as_str()).or_default();
@@ -45,20 +47,7 @@ impl Check for LoggingGaps {
                 }
                 // A missing key means the read failed: skip, never treat as off.
                 "guardduty" if a["enabled"] == false && !ctx.unavailable.contains("guardduty") => {
-                    let title = format!("Threat detection is off in {}", r.region);
-                    let s = format!("{title}.");
-                    let step = "Enable GuardDuty in this region.";
-                    let ex = format!("region={} enabled=false", r.region);
-                    let variant = format!("detection_off:{}", r.region);
-                    out.push(draft(
-                        ctx,
-                        "06",
-                        r,
-                        &variant,
-                        Severity::High,
-                        (title, s, step),
-                        ex,
-                    ));
+                    off.entry(r.account.as_str()).or_default().push(&r.region);
                 }
                 "logs"
                     if a["retention_days"].is_null()
@@ -67,15 +56,15 @@ impl Check for LoggingGaps {
                 {
                     let gb = a["stored_bytes"].as_f64().map(|b| b / 1e9);
                     let cost = gb.map(|g| g * USD_PER_GB_MONTH);
-                    let title = format!("Log group {} never expires", r.identity);
-                    let s = format!("{title}.");
+                    let title = format!("Log group {} never expires", short(r));
+                    let s = format!("{} keeps every event forever.", r.identity);
                     let ex = match (gb, cost) {
                         (Some(g), Some(c)) => {
                             format!("retention_days=null stored_gb={g:.1} est_monthly_usd={c:.2}")
                         }
                         _ => "retention_days=null".into(),
                     };
-                    let step = "Set a retention period.";
+                    let step = "Logs kept forever cost more every month. CloudWatch console > Log groups > the group > Actions > Edit retention setting, or `aws logs put-retention-policy --log-group-name <name> --retention-in-days 90`.";
                     let mut d = draft(
                         ctx,
                         "06",
@@ -91,6 +80,22 @@ impl Check for LoggingGaps {
                 _ => {}
             }
         }
+        for (acct, mut regions) in off {
+            regions.sort_unstable();
+            let n = regions.len();
+            let list = regions.join(", ");
+            out.push(account_finding(
+                ctx,
+                ("guardduty", acct),
+                ("detection_off", Severity::High),
+                (
+                    &format!("Threat detection is off in {n} region{}", if n == 1 { "" } else { "s" }),
+                    &format!("GuardDuty is off in {list}."),
+                    "Without GuardDuty, stolen credentials, crypto-mining and calls from known bad addresses go unseen in those regions. Enable it in each listed region: GuardDuty console > Get started > Enable GuardDuty, or `aws guardduty create-detector --enable --region <region>`; an organisation can enable it for every account and region from its delegated administrator.",
+                ),
+                format!("regions with GuardDuty off: {list}"),
+            ));
+        }
         for (acct, ts) in trails {
             if ctx.unavailable.contains("cloudtrail") || ts.iter().any(|(_, b)| *b == Some(false)) {
                 continue;
@@ -102,14 +107,14 @@ impl Check for LoggingGaps {
                 .map(|(i, _)| *i)
                 .collect();
             if !unknown.is_empty() {
-                out.push(trail_finding(
+                out.push(account_finding(
                     ctx,
-                    acct,
+                    ("cloudtrail", acct),
                     ("trail_status_unknown", Severity::Medium),
                     (
                         "Audit trail status could not be read",
                         "Could not confirm any trail is logging and able to write to its bucket.",
-                        "Grant cloudtrail:GetTrailStatus and re-run the scan.",
+                        "Without the status, OpsAgent cannot tell whether account activity is being recorded. Grant cloudtrail:GetTrailStatus to the OpsAgent read role (IAM console > Roles > OpsAgentReadRole > Add permissions), then run a scan.",
                     ),
                     format!("trails with unreadable status: {}", unknown.join(", ")),
                 ));
@@ -124,14 +129,14 @@ impl Check for LoggingGaps {
                     list.join(", ")
                 )
             };
-            out.push(trail_finding(
+            out.push(account_finding(
                 ctx,
-                acct,
+                ("cloudtrail", acct),
                 ("trail_effectively_off", Severity::Critical),
                 (
                     "Audit trail is effectively off",
                     "No trail is both logging and able to write to its bucket.",
-                    "Start logging on a trail and fix its bucket policy.",
+                    "Without a working trail there is no record of who changed what, which incident response and audits depend on. CloudTrail console > Trails > the trail > Start logging (`aws cloudtrail start-logging --name <trail>`), and make sure its bucket policy lets cloudtrail.amazonaws.com write.",
                 ),
                 ex,
             ));
@@ -140,9 +145,10 @@ impl Check for LoggingGaps {
     }
 }
 
-fn trail_finding(
+/// An account-wide finding, keyed `<service>:<account>`.
+fn account_finding(
     ctx: &CheckCtx,
-    acct: &str,
+    (service, acct): (&str, &str),
     (variant, severity): (&str, Severity),
     (title, summary, step): (&str, &str, &str),
     excerpt: String,
@@ -151,7 +157,7 @@ fn trail_finding(
         key: FindingKey {
             connection_id: ctx.connection_id,
             check_id: "06".into(),
-            resource_identity: format!("cloudtrail:{acct}"),
+            resource_identity: format!("{service}:{acct}"),
             variant: variant.into(),
         },
         severity,
@@ -160,7 +166,7 @@ fn trail_finding(
         next_step: step.into(),
         cost_monthly_usd: None,
         evidence: vec![Evidence {
-            source: format!("cloudtrail:{acct}"),
+            source: format!("{service}:{acct}"),
             excerpt,
         }],
     }
