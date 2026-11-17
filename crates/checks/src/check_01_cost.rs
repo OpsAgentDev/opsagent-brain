@@ -1,4 +1,4 @@
-use crate::ctx::{draft, Check, CheckCtx};
+use crate::ctx::{draft, short, Check, CheckCtx};
 use opsagent_connectors::Capability;
 use opsagent_core::finding::{Evidence, FindingDraft, FindingKey, Severity};
 use opsagent_core::resource::Provider;
@@ -35,29 +35,30 @@ impl Check for CostAndIdle {
         &[Capability::Inventory]
     }
 
-    // shortcut: ~51 lines, one match arm per resource kind; split per variant when a fourth appears.
+    // shortcut: ~55 lines, one match arm per resource kind; split per variant when a fourth appears.
     fn run(&self, ctx: &CheckCtx) -> Vec<FindingDraft> {
         let mut out = vec![];
         for r in ctx.resources {
             let a = &r.attributes;
             let usd = a["monthly_cost_usd"].as_f64().unwrap_or(0.0);
+            let n = short(r);
             let (variant, title, step, excerpt) = match r.service() {
                 "ebs" if a["attached"] == false => (
                     "unattached_volume",
-                    format!("Unattached volume {}", r.identity),
-                    "Snapshot it if needed, then delete the volume.",
+                    format!("Unattached volume {n}"),
+                    "A volume attached to nothing is still billed every month. Snapshot it if the data matters, then delete it: EC2 console > Volumes > Actions > Delete volume, or `aws ec2 delete-volume --volume-id <volume-id>`.",
                     format!("attached=false size_gb={}", a["size_gb"]),
                 ),
                 "eip" if a["associated"] == false => (
                     "unassociated_address",
-                    format!("Unassociated address {}", r.identity),
-                    "Release the address if it is not reserved on purpose.",
+                    format!("Unassociated address {n}"),
+                    "AWS bills public IPv4 addresses even when they point at nothing. Release it unless it is kept on purpose: EC2 console > Elastic IPs > Actions > Release, or `aws ec2 release-address --allocation-id <allocation-id>`.",
                     "associated=false".to_owned(),
                 ),
                 "elb" if a["request_count_7d"].as_u64() == Some(0) => (
                     "idle_load_balancer",
-                    format!("Idle load balancer {}", r.identity),
-                    "Confirm nothing routes here and delete the load balancer.",
+                    format!("Idle load balancer {n}"),
+                    "A load balancer with no requests is billed by the hour for nothing. Confirm nothing routes to it, then delete it: EC2 console > Load balancers > Actions > Delete, or `aws elbv2 delete-load-balancer --load-balancer-arn <arn>`.",
                     "request_count_7d=0".to_owned(),
                 ),
                 "ec2"
@@ -66,14 +67,14 @@ impl Check for CostAndIdle {
                 {
                     (
                         "idle_instance",
-                        format!("Idle instance {}", r.identity),
-                        "Stop or downsize the instance if the low load is expected to last.",
+                        format!("Idle instance {n}"),
+                        "An instance under 5% CPU for a week pays for capacity it does not use. Stop it or move it to a smaller type: EC2 console > Instances > Instance state > Stop, or `aws ec2 stop-instances --instance-ids <instance-id>`.",
                         format!("state=running cpu_avg_7d={}", a["cpu_avg_7d"]),
                     )
                 }
                 _ => continue,
             };
-            let summary = format!("{title}, costing about ${usd:.2}/month.");
+            let summary = format!("{} costs about ${usd:.2}/month.", r.identity);
             out.push(draft(
                 ctx,
                 "01",
@@ -134,7 +135,7 @@ fn anomaly(ctx: &CheckCtx) -> Vec<FindingDraft> {
             summary: format!(
                 "Spend was ${amt:.2} on {date}, {pct:.0}% above the ${m30:.2} baseline."
             ),
-            next_step: "Open Cost Explorer for that day and find the service that moved.".into(),
+            next_step: "A one-day jump this size usually means a new resource or a runaway job. Open Billing > Cost Explorer, set that day, and group by Service to find what moved.".into(),
             cost_monthly_usd: None,
             evidence: vec![Evidence {
                 source: format!("cost:{date}"),

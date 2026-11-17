@@ -1,4 +1,4 @@
-use crate::ctx::{draft, Check, CheckCtx};
+use crate::ctx::{draft, short, Check, CheckCtx};
 use chrono::{DateTime, Utc};
 use opsagent_connectors::Capability;
 use opsagent_core::finding::{FindingDraft, Severity};
@@ -25,8 +25,8 @@ impl Check for GpuAndTraining {
         let mut out = vec![];
         for r in ctx.resources {
             let a = &r.attributes;
-            let id = &r.identity;
-            let (variant, sev, title, step, ex) = match r.service() {
+            let (n, id) = (short(r), &r.identity);
+            let (variant, sev, title, s, step, ex) = match r.service() {
                 "ec2" if a["accelerated"] == true && a["state"] == "running" => {
                     let Some(u) = a["gpu_util_24h"].as_f64().filter(|u| *u < IDLE_PCT) else {
                         continue;
@@ -34,8 +34,9 @@ impl Check for GpuAndTraining {
                     (
                         "idle_gpu",
                         Severity::High,
-                        format!("Idle GPU instance {id}"),
-                        "Stop or terminate the instance, or move work onto it.",
+                        format!("Idle GPU instance {n}"),
+                        format!("{id} averaged {u}% GPU use over the last 24 hours."),
+                        "GPU instances are among the most expensive in AWS and bill every second they run. Stop it if no work is planned: EC2 console > Instances > Instance state > Stop, or `aws ec2 stop-instances --instance-ids <instance-id>`.",
                         format!("gpu_util_24h={u}"),
                     )
                 }
@@ -55,8 +56,9 @@ impl Check for GpuAndTraining {
                     (
                         "stuck_training_job",
                         Severity::Medium,
-                        format!("Training job {id} may be stuck"),
-                        "Check the job's logs and stop it if it is not making progress.",
+                        format!("Training job {n} may be stuck"),
+                        format!("{id} has run for {} hours, longer than its usual runtime.", run_s / 3600),
+                        "A stuck job keeps billing for its instances. SageMaker console > Training jobs > the job > View logs; if it is not progressing, Stop it, or `aws sagemaker stop-training-job --training-job-name <job>`.",
                         format!(
                             "runtime_s={run_s} median_runtime_s={}",
                             a["median_runtime_s"]
@@ -65,7 +67,6 @@ impl Check for GpuAndTraining {
                 }
                 _ => continue,
             };
-            let s = format!("{title}.");
             out.push(draft(ctx, "07", r, variant, sev, (title, s, step), ex));
         }
         out

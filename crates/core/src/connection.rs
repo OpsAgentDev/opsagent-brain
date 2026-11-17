@@ -232,24 +232,29 @@ pub trait ConnectionsRepo: Send + Sync {
     async fn claimed_by(&self, provider: &str, account: &str) -> RepoResult<Option<Connection>>;
 }
 
-/// Posture score of a connection (checks.md): `max(0, 100 - sum of weight(open))`, with the
-/// open count per severity. Accepted, snoozed and flapping findings are not in the rows.
+/// Posture score of a connection (checks.md): `max(0, 100 - sum over checks of
+/// min(CHECK_CAP, sum of weight(open)))`, with the open count per severity. The cap keeps one
+/// check from sinking the score alone. Accepted, snoozed and flapping findings are not in the rows.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Posture {
     pub score: f64,
     pub counts_by_severity: BTreeMap<Severity, u64>,
 }
 
+/// Most points one check can take off the score.
+pub const CHECK_CAP: f32 = 25.0;
+
 impl Posture {
     pub fn from_rows(rows: &[PostureRow]) -> Self {
         use Severity::*;
         let mut counts: BTreeMap<Severity, u64> =
             [Critical, High, Medium, Low, Info].map(|s| (s, 0)).into();
-        let mut sum = 0f32;
+        let mut per_check: BTreeMap<&str, f32> = BTreeMap::new();
         for r in rows {
-            sum += r.severity.weight() * r.open as f32;
+            *per_check.entry(&r.check_id).or_default() += r.severity.weight() * r.open as f32;
             *counts.entry(r.severity).or_default() += r.open;
         }
+        let sum: f32 = per_check.values().map(|w| w.min(CHECK_CAP)).sum();
         Self {
             score: f64::from((100.0 - sum).max(0.0)),
             counts_by_severity: counts,
@@ -262,7 +267,7 @@ mod posture_tests {
     use super::*;
 
     #[test]
-    fn from_rows_weighs_open_findings_and_floors_at_zero() {
+    fn from_rows_weighs_open_findings_caps_each_check_and_floors_at_zero() {
         let row = |severity, open| PostureRow {
             check_id: "c".into(),
             severity,
@@ -272,9 +277,23 @@ mod posture_tests {
         assert_eq!(p.score, 89.5);
         assert_eq!(p.counts_by_severity[&Severity::High], 2);
         assert_eq!(p.counts_by_severity[&Severity::Info], 0);
+        // One check takes at most 25 points; several can still reach 0.
         assert_eq!(
             Posture::from_rows(&[row(Severity::Critical, 11)]).score,
-            0.0
+            75.0
+        );
+        let other = |check: &str, severity, open| PostureRow {
+            check_id: check.into(),
+            severity,
+            open,
+        };
+        let many: Vec<_> = ["01", "02", "03", "04", "05"]
+            .map(|c| other(c, Severity::Critical, 3))
+            .into();
+        assert_eq!(Posture::from_rows(&many).score, 0.0);
+        assert_eq!(
+            Posture::from_rows(&[row(Severity::High, 19), other("x", Severity::Medium, 2)]).score,
+            71.0
         );
         let json = serde_json::to_value(Posture::from_rows(&[])).unwrap();
         assert_eq!(json["score"], 100.0);

@@ -1,4 +1,4 @@
-use crate::ctx::{draft, Check, CheckCtx};
+use crate::ctx::{draft, short, Check, CheckCtx};
 use chrono::{DateTime, Utc};
 use opsagent_connectors::Capability;
 use opsagent_core::finding::{FindingDraft, Severity};
@@ -21,9 +21,10 @@ impl Check for Certificates {
         let mut out = vec![];
         for r in ctx.resources.iter().filter(|r| r.service() == "acm") {
             let a = &r.attributes;
-            let id = &r.identity;
+            let (n, id) = (short(r), &r.identity);
+            let until = a["not_after"].as_str().unwrap_or("unknown");
             // Candidates in worst-first order; the first is the one finding emitted.
-            let mut hits: Vec<(Severity, String, &str)> = vec![];
+            let mut hits: Vec<(Severity, String, String, &str)> = vec![];
             let mut facts: Vec<String> = vec![];
 
             if a["presented_serial"].is_string() && a["presented_serial"] != a["expected_serial"] {
@@ -57,45 +58,49 @@ impl Check for Certificates {
                 hits.push((
                     Severity::Critical,
                     if left.is_some_and(|l| l.num_seconds() < 0) {
-                        format!("Certificate {id} expired {} days ago", -d)
+                        format!("Certificate {n} expired {} days ago", -d)
                     } else {
-                        format!("Certificate {id} expires in {d} days")
+                        format!("Certificate {n} expires in {d} days")
                     },
-                    "Renew or replace the certificate now.",
+                    format!("{id} is valid until {until}."),
+                    "An expired certificate makes browsers and clients refuse the connection. Renew or replace it now: ACM console > Request certificate (or Reimport for an imported one), then select it on the load balancer listener or distribution.",
                 ));
             }
             if failed {
                 hits.push((
                     Severity::High,
-                    format!("Certificate {id}: managed renewal failed"),
-                    "Fix the validation that blocks renewal (DNS record or email approval).",
+                    format!("Certificate {n}: managed renewal failed"),
+                    format!("ACM could not renew {id}; it is valid until {until}."),
+                    "ACM renews only while it can validate the domain, so this certificate will expire. ACM console > Certificates > the certificate: add the CNAME validation record shown there to your DNS, or approve the validation email.",
                 ));
             }
             if let Some(d) = days.filter(|d| *d < 30) {
                 hits.push((
                     Severity::High,
-                    format!("Certificate {id} expires in {d} days"),
-                    "Plan the renewal, or confirm automatic renewal will run.",
+                    format!("Certificate {n} expires in {d} days"),
+                    format!("{id} is valid until {until}."),
+                    "A missed renewal takes the site down on the expiry date. For an ACM-issued certificate check Renewal status in ACM console > Certificates; for an imported one, import the renewed certificate before then (`aws acm import-certificate --certificate-arn <arn>`).",
                 ));
             }
             if mismatch {
                 hits.push((
                     Severity::Medium,
-                    format!("Endpoint {id}: presented certificate does not match"),
-                    "Attach the expected certificate to the endpoint.",
+                    format!("Endpoint {n}: presented certificate does not match"),
+                    format!("{id} serves a different certificate than the one expected."),
+                    "Clients get a certificate other than the one you manage, which may be stale or wrong. EC2 console > Load balancers > Listeners > Edit, and select the expected certificate.",
                 ));
             }
             if unattached {
                 hits.push((
                     Severity::Info,
-                    format!("Certificate {id} is not attached to anything"),
-                    "Delete it if it is no longer needed.",
+                    format!("Certificate {n} is not attached to anything"),
+                    format!("No load balancer or distribution uses {id}."),
+                    "An unused certificate costs nothing but clutters the inventory and can be attached by mistake. Delete it if no longer needed: ACM console > Certificates > Delete, or `aws acm delete-certificate --certificate-arn <arn>`.",
                 ));
             }
 
             // One stable variant per certificate so the key never changes as days pass.
-            if let Some((sev, title, step)) = hits.into_iter().next() {
-                let s = format!("{title}.");
+            if let Some((sev, title, s, step)) = hits.into_iter().next() {
                 out.push(draft(
                     ctx,
                     "05",

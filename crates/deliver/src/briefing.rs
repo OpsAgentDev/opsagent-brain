@@ -4,11 +4,13 @@ use opsagent_core::connection::ConnectionStatus;
 use opsagent_core::finding::Severity;
 
 use crate::model::{
-    by_severity, connection_link, Briefing, ConnectionSnapshot, DailyCounts, EventKind,
-    FindingSnapshot, FindingStatus, Health, Item,
+    by_severity, connection_link, finding_link, Briefing, ConnectionSnapshot, DailyCounts,
+    EventKind, FindingSnapshot, FindingStatus, Health, Item,
 };
 
 pub const MAX_ITEMS: usize = 10;
+/// Open findings named under the counts.
+pub const TOP_ITEMS: usize = 5;
 const STALE_AFTER: Duration = Duration::hours(48);
 
 /// `None` when there is nothing to say since `since`.
@@ -20,15 +22,18 @@ pub fn build_briefing(
     link_base: &str,
 ) -> Option<Briefing> {
     let link = connection_link(link_base, conn.id);
-    if conn.first_scan_at.is_some_and(|t| t >= since) {
+    let live =
+        |f: &FindingSnapshot| matches!(f.status, FindingStatus::Open | FindingStatus::Flapping);
+    let top = top(findings.iter().filter(|f| live(f)), link_base);
+    // Only the briefing right after the first scan: no later scan has run since.
+    if conn.first_scan_at.is_some_and(|t| t >= since) && conn.last_scan_at == conn.first_scan_at {
         return Some(Briefing::FirstScan {
             counts: conn.counts_by_severity,
+            top,
             link,
         });
     }
     let has = |f: &FindingSnapshot, k: EventKind| f.events_since.contains(&k);
-    let live =
-        |f: &FindingSnapshot| matches!(f.status, FindingStatus::Open | FindingStatus::Flapping);
     let is_new = |f: &FindingSnapshot| {
         live(f)
             && matches!(f.severity, Severity::Critical | Severity::High)
@@ -76,8 +81,27 @@ pub fn build_briefing(
         resolved_critical: cap(resolved),
         health,
         counts,
+        top,
         link,
     })
+}
+
+/// The `TOP_ITEMS` most severe open findings, newest first within a severity, with links.
+fn top<'a>(
+    open: impl Iterator<Item = &'a FindingSnapshot>,
+    link_base: &str,
+) -> Vec<(Item, String)> {
+    let mut v: Vec<&FindingSnapshot> = open.collect();
+    v.sort_by(|a, b| {
+        b.severity
+            .weight()
+            .total_cmp(&a.severity.weight())
+            .then(b.first_seen_at.cmp(&a.first_seen_at))
+    });
+    v.into_iter()
+        .take(TOP_ITEMS)
+        .map(|f| (Item::of(f), finding_link(link_base, f.id)))
+        .collect()
 }
 
 fn health(conn: &ConnectionSnapshot, now: DateTime<Utc>) -> Option<Health> {

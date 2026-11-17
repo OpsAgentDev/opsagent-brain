@@ -36,6 +36,16 @@ pub trait Check {
     fn run(&self, ctx: &CheckCtx) -> Vec<FindingDraft>;
 }
 
+/// The resource's short name for titles (user name, instance or volume id, bucket name); the
+/// key and evidence keep the full identity.
+pub(crate) fn short(r: &Resource) -> &str {
+    if r.name.is_empty() {
+        &r.identity
+    } else {
+        &r.name
+    }
+}
+
 pub(crate) fn draft(
     ctx: &CheckCtx,
     check_id: &str,

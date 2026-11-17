@@ -1,4 +1,4 @@
-use crate::ctx::{draft, Check, CheckCtx};
+use crate::ctx::{draft, short, Check, CheckCtx};
 use opsagent_connectors::Capability;
 use opsagent_core::finding::{FindingDraft, Severity};
 use opsagent_core::resource::Provider;
@@ -16,13 +16,13 @@ impl Check for IamHygiene {
         &[Capability::IamReport]
     }
 
-    // shortcut: ~52 lines, one match arm per IAM variant; split per variant when a fourth appears.
+    // shortcut: ~65 lines, one match arm per IAM variant; split per variant when a fourth appears.
     fn run(&self, ctx: &CheckCtx) -> Vec<FindingDraft> {
         let mut out = vec![];
         for r in ctx.resources.iter().filter(|r| r.service() == "iam") {
             let a = &r.attributes;
-            let mut add = |v: &str, sev, title: String, step: &str, ex: String| {
-                let s = format!("{title}.");
+            let (n, id) = (short(r), &r.identity);
+            let mut add = |v: &str, sev, (title, s, step): (String, String, &str), ex: String| {
                 out.push(draft(ctx, "02", r, v, sev, (title, s, step), ex));
             };
             if a["root"] == true {
@@ -32,17 +32,21 @@ impl Check for IamHygiene {
                     add(
                         "root_used",
                         Severity::Critical,
-                        "Root account in use".into(),
-                        "Stop using root, delete its access keys, and use an IAM role.",
+                        ("Root account in use".into(),
+                        "The root user signed in within the last 30 days or has an active access key.".into(),
+                        "No policy can limit root, so one leaked root credential is full control of the account. Sign in as root, open the account menu > Security credentials, delete its access keys, and use an IAM role for daily work."),
                         format!("console_last_used_days={days:?} access_keys_active={keys}"),
                     );
                 }
-                if a["mfa"] == false {
+                // Centralised root access: no password and no keys leave nothing to protect with MFA.
+                let no_credentials = a["password"] == false && keys == 0;
+                if a["mfa"] == false && !no_credentials {
                     add(
                         "root_no_mfa",
                         Severity::High,
-                        "Root account has no MFA".into(),
-                        "Add an MFA device to the root user, or remove root access centrally.",
+                        ("Root account has no MFA".into(),
+                        "The root user can sign in with a password alone.".into(),
+                        "Anyone with the root password gets full control of the account. Sign in as root and open the account menu > Security credentials > Assign MFA device, or remove root credentials centrally from the management account (IAM > Root access management)."),
                         "root=true mfa=false".into(),
                     );
                 }
@@ -52,8 +56,9 @@ impl Check for IamHygiene {
                 add(
                     "key_over_90d",
                     Severity::Medium,
-                    format!("Access key of {} is over 90 days old", r.identity),
-                    "Rotate the key and delete the old one.",
+                    (format!("Access key of {n} is over 90 days old"),
+                    format!("User {id} has an active access key last rotated {} days ago.", a["key_age_days"]),
+                    "The older a key, the more places it may have leaked to. Create a new key, move the app to it, then delete the old one: IAM console > Users > the user > Security credentials, or `aws iam create-access-key` then `aws iam delete-access-key`."),
                     format!("key_age_days={}", a["key_age_days"]),
                 );
             }
@@ -61,8 +66,9 @@ impl Check for IamHygiene {
                 add(
                     "no_mfa",
                     Severity::Medium,
-                    format!("{} has console access without MFA", r.identity),
-                    "Require an MFA device for this user.",
+                    (format!("{n} has console access without MFA"),
+                    format!("User {id} can sign in to the console with a password alone."),
+                    "A phished or reused password is enough to sign in. Assign a device in IAM console > Users > the user > Security credentials > Assign MFA device."),
                     "console=true mfa=false".into(),
                 );
             }
@@ -72,8 +78,9 @@ impl Check for IamHygiene {
                 add(
                     "admin_user",
                     Severity::High,
-                    format!("{} has administrator access", r.identity),
-                    "Replace the admin policy with scoped permissions or a role.",
+                    (format!("{n} has administrator access"),
+                    format!("User {id} has the AdministratorAccess policy attached."),
+                    "A leaked key or password of this user can change anything in the account. Grant only what it needs or have it assume a role: IAM console > Users > the user > Permissions > remove AdministratorAccess, or `aws iam detach-user-policy --user-name <user> --policy-arn arn:aws:iam::aws:policy/AdministratorAccess`."),
                     "admin=true".into(),
                 );
             }

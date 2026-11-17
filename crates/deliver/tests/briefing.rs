@@ -30,18 +30,75 @@ fn nothing_changed_is_none() {
 }
 
 #[test]
-fn first_scan_after_since_is_counts_and_link_only() {
+fn first_scan_after_since_is_counts_top_findings_and_link() {
     let mut c = conn();
     c.first_scan_at = Some(now() - Duration::hours(1));
+    c.last_scan_at = c.first_scan_at;
     let fs = vec![opened(Severity::Critical, "public snapshot")];
     match build_briefing(&c, &fs, since(), now(), LINK_BASE) {
-        Some(Briefing::FirstScan { counts, link }) => {
+        Some(Briefing::FirstScan { counts, top, link }) => {
             assert_eq!(counts, c.counts_by_severity);
             assert!(link.starts_with(LINK_BASE));
             assert!(link.contains(&c.id.to_string()));
+            assert_eq!(top[0].0.title, "public snapshot");
+            assert_eq!(top[0].1, format!("{LINK_BASE}/findings/{}", fs[0].id));
         }
         other => panic!("expected first scan, got {other:?}"),
     }
+}
+
+#[test]
+fn a_scan_after_the_first_makes_it_a_daily_briefing() {
+    // Connected yesterday, scanned twice since: day two is no longer "first scan complete".
+    let mut c = conn();
+    c.first_scan_at = Some(now() - Duration::hours(20));
+    c.last_scan_at = Some(now() - Duration::hours(2));
+    let fs = vec![opened(Severity::High, "admin user")];
+    assert!(matches!(
+        build_briefing(&c, &fs, now() - Duration::days(2), now(), LINK_BASE),
+        Some(Briefing::Daily { .. })
+    ));
+}
+
+#[test]
+fn top_open_findings_are_five_by_severity_then_newest() {
+    let mut fs: Vec<_> = (0..4)
+        .map(|i| {
+            let mut f = opened(Severity::High, &format!("high {i}"));
+            f.first_seen_at = now() - Duration::days(i);
+            f
+        })
+        .collect();
+    fs.push(finding(
+        "02",
+        Severity::Medium,
+        FindingStatus::Open,
+        &[],
+        "medium",
+    ));
+    fs.push(finding(
+        "02",
+        Severity::Critical,
+        FindingStatus::Open,
+        &[],
+        "old crit",
+    ));
+    fs.push(finding(
+        "02",
+        Severity::Critical,
+        FindingStatus::Accepted,
+        &[],
+        "accepted",
+    ));
+    let Some(Briefing::Daily { top, .. }) = build_briefing(&conn(), &fs, since(), now(), LINK_BASE)
+    else {
+        panic!("expected daily");
+    };
+    let titles: Vec<_> = top.iter().map(|(i, _)| i.title.as_str()).collect();
+    assert_eq!(titles, ["old crit", "high 0", "high 1", "high 2", "high 3"]);
+    assert!(top
+        .iter()
+        .all(|(i, url)| url.ends_with(&format!("/findings/{}", i.id))));
 }
 
 #[test]

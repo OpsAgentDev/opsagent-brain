@@ -63,7 +63,7 @@ fn volume_severity_follows_attachment() {
     );
     assert!(d[0]
         .next_step
-        .starts_with("Encryption cannot be switched on in place"));
+        .contains("Encryption cannot be switched on in place"));
     assert_eq!(d[0].evidence[0].excerpt, "encrypted=false attached=true");
 }
 

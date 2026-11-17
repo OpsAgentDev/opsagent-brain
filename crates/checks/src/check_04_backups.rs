@@ -1,4 +1,4 @@
-use crate::ctx::{draft, Check, CheckCtx};
+use crate::ctx::{draft, short, Check, CheckCtx};
 use opsagent_connectors::Capability;
 use opsagent_core::finding::{FindingDraft, Severity};
 use opsagent_core::resource::Provider;
@@ -20,7 +20,7 @@ impl Check for Backups {
         let mut out = vec![];
         for r in ctx.resources {
             let a = &r.attributes;
-            let id = &r.identity;
+            let (n, id) = (short(r), &r.identity);
             let mut push = |variant, sev, title: String, summary: String, step, ex: String| {
                 out.push(draft(
                     ctx,
@@ -45,9 +45,9 @@ impl Check for Backups {
                         push(
                             "not_in_plan",
                             Severity::Medium,
-                            format!("{id} is not in any backup plan"),
+                            format!("{n} is not in any backup plan"),
                             format!("{id} has no backup plan selecting it."),
-                            "Add the resource to a backup plan.",
+                            "Without a backup, a deleted or corrupted resource cannot be restored. AWS Backup console > Backup plans > the plan > Assign resources, and add this resource.",
                             "in_backup_plan=false".into(),
                         );
                     } else if covered && a["backup_last_job_status"].is_null() && !automated {
@@ -56,9 +56,9 @@ impl Check for Backups {
                         push(
                             "no_recent_backup",
                             Severity::Medium,
-                            format!("{id} has no finished backup in the last 35 days"),
+                            format!("{n} has no finished backup in the last 35 days"),
                             format!("A backup plan selects {id}, but no backup job for it finished in the last 35 days."),
-                            "Check the plan's rules and schedule, then run a backup on demand.",
+                            "A plan that never finishes a job leaves no restore point. AWS Backup console > Backup plans: check the rule's schedule, then Protected resources > Create on-demand backup.",
                             "in_backup_plan=true backup_last_job_status=null".into(),
                         );
                     } else if a["backup_last_job_status"] == "FAILED" {
@@ -66,9 +66,9 @@ impl Check for Backups {
                         push(
                             "last_job_failed",
                             Severity::High,
-                            format!("Last backup job for {id} failed"),
+                            format!("Last backup job for {n} failed"),
                             format!("The most recent backup job for {id} ended FAILED."),
-                            "Open the failed job, fix the cause, and run the backup again.",
+                            "Until a job succeeds, the newest restore point is older than you think. AWS Backup console > Jobs > the failed job shows the reason; fix it, then Create on-demand backup.",
                             format!("backup_last_job_status=FAILED backup_last_job_at={at}"),
                         );
                     }
@@ -76,9 +76,9 @@ impl Check for Backups {
                         push(
                             "retention_1d",
                             Severity::Medium,
-                            format!("Database {id} keeps backups for 1 day"),
+                            format!("Database {n} keeps backups for 1 day"),
                             format!("{id} has automated backup retention of 1 day."),
-                            "Raise the retention period to at least 7 days.",
+                            "One day of backups cannot recover from a problem noticed after a weekend. RDS console > Databases > Modify > Backup retention period: 7 days or more, or `aws rds modify-db-instance --db-instance-identifier <id> --backup-retention-period 7`.",
                             "backup_retention_days=1".into(),
                         );
                     }
@@ -100,9 +100,9 @@ impl Check for Backups {
                         push(
                             "restore_perms_missing",
                             Severity::High,
-                            format!("Backup role for {id} cannot restore"),
+                            format!("Backup role for {n} cannot restore"),
                             format!("Restore actions are denied for the backup role of {id}."),
-                            "Grant the denied actions to the backup role.",
+                            "Backups this role cannot restore fail when they are needed most. IAM console > Roles > the backup role > Add permissions, and grant the denied actions in the evidence (the AWSBackupServiceRolePolicyForRestores managed policy covers them).",
                             format!("denied={denied:?}"),
                         );
                     } else if sims.len() < roles.len() || sims.iter().all(|s| s.allowed.is_empty())
@@ -110,9 +110,9 @@ impl Check for Backups {
                         push(
                             "coverage_unknown",
                             Severity::Info,
-                            format!("Restore permissions for {id} could not be verified"),
+                            format!("Restore permissions for {n} could not be verified"),
                             format!("The restore simulation for {id} was missing or undecided."),
-                            "Check the backup role's restore permissions manually.",
+                            "OpsAgent could not confirm the role can restore, so a restore may fail. Test the restore actions in the IAM policy simulator for the backup role, or run a test restore in AWS Backup console > Protected resources.",
                             format!("iam_role_arns={roles:?}"),
                         );
                     }
@@ -120,9 +120,9 @@ impl Check for Backups {
                 "backup" if a["vault"] == true && a["cross_account"] == true => push(
                     "coverage_unknown",
                     Severity::Info,
-                    format!("Vault {id} is in another account"),
+                    format!("Vault {n} is in another account"),
                     format!("Backups in {id} cannot be inspected from this account."),
-                    "Review backup coverage in the owning account.",
+                    "Backups in another account are outside this connection's view. Connect the owning account to OpsAgent, or review it in that account's AWS Backup console > Backup vaults.",
                     "cross_account=true".into(),
                 ),
                 _ => {}

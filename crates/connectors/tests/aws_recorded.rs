@@ -450,6 +450,24 @@ mod inventory {
     }
 
     #[test]
+    fn credential_report_root_without_password_is_known() {
+        let csv = "user,arn,password_enabled,mfa_active,access_key_1_active,access_key_2_active\n\
+<root_account>,arn:aws:iam::123456789012:root,false,false,false,false\n";
+        let g = Target {
+            region: "global",
+            ..T
+        };
+        let r = opsagent_connectors::aws::inventory::credential_report_users(
+            csv,
+            &|_| false,
+            &g,
+            chrono::Utc::now(),
+        );
+        assert_eq!(r[0].attributes["password"], false);
+        assert_eq!(r[0].attributes["access_keys_active"], 0);
+    }
+
+    #[test]
     fn credential_report_maps_users() {
         use chrono::TimeZone;
         let csv = r#"user,arn,user_creation_time,password_enabled,password_last_used,password_last_changed,password_next_rotation,mfa_active,access_key_1_active,access_key_1_last_rotated,access_key_1_last_used_date,access_key_1_last_used_region,access_key_1_last_used_service,access_key_2_active,access_key_2_last_rotated,access_key_2_last_used_date,access_key_2_last_used_region,access_key_2_last_used_service,cert_1_active,cert_1_last_rotated,cert_2_active,cert_2_last_rotated
@@ -477,7 +495,7 @@ admin,arn:aws:iam::123456789012:user/admin,2020-01-01T00:00:00+00:00,true,N/A,N/
         assert_eq!(
             root.attributes,
             json!({"service": "iam", "root": true, "mfa": false, "access_keys_active": 1,
-                   "console_last_used_days": 20})
+                   "console_last_used_days": 20, "password": null})
         );
         assert_eq!(r[0].identity, "arn:aws:iam::123456789012:user/stale");
         assert_eq!(r[0].kind, ResourceKind::Identity);

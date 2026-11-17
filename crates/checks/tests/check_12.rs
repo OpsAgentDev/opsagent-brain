@@ -50,7 +50,7 @@ fn public_ip_raises_to_high_and_evidence_names_the_attributes() {
         d[0].evidence[0].excerpt,
         "http_tokens=optional http_endpoint=enabled has_public_ip=true"
     );
-    assert!(d[0].next_step.starts_with("Require IMDSv2"));
+    assert!(d[0].next_step.contains("--http-tokens required"));
 }
 
 #[test]

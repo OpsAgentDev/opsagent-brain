@@ -1,4 +1,4 @@
-use crate::ctx::{draft, Check, CheckCtx};
+use crate::ctx::{draft, short, Check, CheckCtx};
 use opsagent_connectors::Capability;
 use opsagent_core::finding::{FindingDraft, Severity};
 use opsagent_core::resource::Provider;
@@ -34,9 +34,12 @@ impl Check for InstanceHardening {
             } else {
                 Severity::Medium
             };
-            let title = format!("Instance {} still allows IMDSv1", r.identity);
-            let s = format!("{title}.");
-            let step = "Require IMDSv2: set HttpTokens to required on the instance (and in the launch template).";
+            let title = format!("Instance {} still allows IMDSv1", short(r));
+            let s = format!(
+                "{} answers metadata requests without a session token.",
+                r.identity
+            );
+            let step = "IMDSv1 lets a server-side request forgery bug read the instance role's credentials. EC2 console > Instances > Actions > Instance settings > Modify instance metadata options > IMDSv2: Required, or `aws ec2 modify-instance-metadata-options --instance-id <instance-id> --http-tokens required`, and set the same in the launch template.";
             let ex = format!("http_tokens=optional http_endpoint=enabled has_public_ip={public}");
             out.push(draft(
                 ctx,

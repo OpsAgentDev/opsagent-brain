@@ -53,10 +53,7 @@ fn never_used_key_boundary_at_seven_days() {
     let d = run(&CredentialDepth, &rs, &[]);
     assert_eq!(set(&d), vec![t("old", "key_never_used", Medium)]);
     assert_eq!(d[0].evidence[0].excerpt, "unused_key_age_days=7");
-    assert_eq!(
-        d[0].next_step,
-        "Delete or rotate keys that were never used."
-    );
+    assert!(d[0].next_step.contains("aws iam delete-access-key"));
 }
 
 #[test]
