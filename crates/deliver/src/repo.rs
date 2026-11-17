@@ -186,6 +186,11 @@ pub const FAILED: &str = "failed";
 pub const FALLBACK_EMAIL: &str = "fallback_email";
 pub const SUPPRESSED: &str = "suppressed";
 
+/// `deliveries.fallback_reason` values: why a `fallback_email` row did not go to Slack.
+pub const SLACK_NOT_CONNECTED: &str = "slack_not_connected";
+pub const NO_CHANNEL: &str = "no_channel";
+pub const SLACK_FAILED: &str = "slack_failed";
+
 /// What a connection's urgent alerts have sent so far (`DeliveriesRepo::alert_tally`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AlertTally {
@@ -210,6 +215,8 @@ pub struct DeliveryRow {
     /// The channel id or the address.
     pub target: String,
     pub status: String,
+    /// Set on `fallback_email` rows only (`SLACK_NOT_CONNECTED`, `NO_CHANNEL`, `SLACK_FAILED`).
+    pub fallback_reason: Option<String>,
     pub attempts: i32,
     pub sent_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -226,6 +233,8 @@ pub struct NewDelivery<'a> {
     pub status: &'a str,
     /// Slack message `ts`.
     pub external_ref: Option<String>,
+    /// Why a `fallback_email` row went by email; `None` otherwise.
+    pub fallback_reason: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Default)]

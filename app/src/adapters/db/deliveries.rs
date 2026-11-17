@@ -34,6 +34,7 @@ fn row(m: deliveries::Model) -> DeliveryRow {
         channel: m.channel,
         target: m.target,
         status: m.status,
+        fallback_reason: m.fallback_reason,
         attempts: m.attempts,
         sent_at: m.sent_at.map(utc),
         created_at: utc(m.created_at),
@@ -121,9 +122,10 @@ impl<C: Conn> DeliveriesRepo for Pg<C> {
         self.db()
             .execute_raw(stmt(
                 "INSERT INTO deliveries (id, organisation_id, connection_id, kind, channel, target, \
-                 status, external_ref, attempts, sent_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, \
-                 CASE WHEN $7 IN ('sent','fallback_email') THEN now() END) \
+                 status, external_ref, fallback_reason, attempts, sent_at) VALUES ($1, $2, $3, $4, $5, \
+                 $6, $7, $8, $9, 1, CASE WHEN $7 IN ('sent','fallback_email') THEN now() END) \
                  ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, \
+                 fallback_reason = EXCLUDED.fallback_reason, \
                  external_ref = coalesce(EXCLUDED.external_ref, deliveries.external_ref), \
                  attempts = deliveries.attempts + 1, \
                  sent_at = coalesce(deliveries.sent_at, EXCLUDED.sent_at), updated_at = now() \
@@ -137,6 +139,7 @@ impl<C: Conn> DeliveriesRepo for Pg<C> {
                     d.target.into(),
                     d.status.into(),
                     d.external_ref.into(),
+                    d.fallback_reason.into(),
                 ],
             ))
             .await

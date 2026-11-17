@@ -61,6 +61,7 @@ impl DeliveriesRepo for MemStore {
         match s.deliveries.iter_mut().find(|d| d.id == id) {
             Some(d) if d.organisation_id == organisation_id => {
                 d.status = n.status.into();
+                d.fallback_reason = n.fallback_reason.map(Into::into);
                 d.attempts += 1;
                 d.sent_at = d.sent_at.or(sent_at);
             }
@@ -73,6 +74,7 @@ impl DeliveriesRepo for MemStore {
                 channel: n.channel.into(),
                 target: n.target.into(),
                 status: n.status.into(),
+                fallback_reason: n.fallback_reason.map(Into::into),
                 attempts: 1,
                 sent_at,
                 created_at: now,

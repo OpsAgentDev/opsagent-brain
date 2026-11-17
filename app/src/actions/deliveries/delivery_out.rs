@@ -25,7 +25,7 @@ pub(super) struct Out<'a> {
 
 impl Out<'_> {
     async fn row(&self, key: &str, channel: &str, target: &str, status: &str) -> LResult<()> {
-        self.row_ref(key, channel, target, status, None).await
+        self.row_ref(key, channel, target, status, None, None).await
     }
 
     async fn row_ref(
@@ -35,6 +35,7 @@ impl Out<'_> {
         target: &str,
         status: &str,
         external_ref: Option<String>,
+        fallback_reason: Option<&str>,
     ) -> LResult<()> {
         let row = NewDelivery {
             connection_id: self.connection_id,
@@ -45,6 +46,7 @@ impl Out<'_> {
             target,
             status,
             external_ref,
+            fallback_reason,
         };
         self.kit
             .uow
@@ -55,14 +57,15 @@ impl Out<'_> {
     }
 
     /// Mails `mail` once for effect `key` (`Idempotency-Key` `{run_id}:{key}`); its row gets
-    /// `status`. A refusal by `MailGuard` sends nothing and writes the row `suppressed`.
-    /// `member`: the address is a member or owner (`Recipient.member`).
+    /// `status` and `fallback_reason`. A refusal by `MailGuard` sends nothing and writes the row
+    /// `suppressed`. `member`: the address is a member or owner (`Recipient.member`).
     pub async fn email(
         &self,
         key: &str,
         mut mail: Mail,
         member: bool,
         status: &str,
+        fallback_reason: Option<&str>,
     ) -> LResult<()> {
         let to = mail.to.clone();
         if !self
@@ -87,7 +90,8 @@ impl Out<'_> {
             })
         })
         .await?;
-        self.row(key, "email", &to, status).await
+        self.row_ref(key, "email", &to, status, None, fallback_reason)
+            .await
     }
 
     /// Posts `text` to `channel` once for effect `key` (`client_msg_id` `{run_id}:{key}`). On
@@ -126,7 +130,7 @@ impl Out<'_> {
         .await;
         let e = match (res, failed) {
             (Ok(EffectState::Done(ts)), _) => {
-                self.row_ref(key, "slack", channel, SENT, ts).await?;
+                self.row_ref(key, "slack", channel, SENT, ts, None).await?;
                 return Ok(Ok(()));
             }
             (Ok(_), _) => return Ok(Ok(())), // not reached: idempotent effects always run

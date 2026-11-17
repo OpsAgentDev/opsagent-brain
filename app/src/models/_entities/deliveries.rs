@@ -20,6 +20,8 @@ pub struct Model {
     pub status: String,
     #[sea_orm(column_type = "Text", nullable)]
     pub external_ref: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub fallback_reason: Option<String>,
     pub attempts: i32,
     pub sent_at: Option<DateTimeWithTimeZone>,
     pub created_at: DateTimeWithTimeZone,

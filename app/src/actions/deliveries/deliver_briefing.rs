@@ -4,7 +4,7 @@
 use opsagent_core::run::{RunKey, RunStatus};
 use opsagent_deliver::{
     render_text,
-    repo::{BRIEFING, FALLBACK_EMAIL},
+    repo::{BRIEFING, FALLBACK_EMAIL, NO_CHANNEL, SLACK_FAILED, SLACK_NOT_CONNECTED},
 };
 use opsagent_ledger::{run_chunked, ChunkOutcome, JobKind, RunChunkedOptions, RunRow};
 use uuid::Uuid;
@@ -79,15 +79,20 @@ impl DeliverBriefing {
             .map_err(lerr)?
             .slack_channel;
         let mut channel_gone = false;
-        if let (Some(i), Some(ch)) = (&integration, &channel) {
-            match out.slack(BRIEFING, i, &c, ch, &text).await? {
+        let reason = match (&integration, &channel) {
+            (None, _) => SLACK_NOT_CONNECTED,
+            (Some(_), None) => NO_CHANNEL,
+            (Some(i), Some(ch)) => match out.slack(BRIEFING, i, &c, ch, &text).await? {
                 Ok(()) => return Ok(outcome("delivered", "slack")),
                 Err(e) => match out.retry_later(&e) {
                     Some(retry) => return Err(retry),
-                    None => channel_gone = e == SlackError::ChannelGone,
+                    None => {
+                        channel_gone = e == SlackError::ChannelGone;
+                        SLACK_FAILED
+                    }
                 },
-            }
-        }
+            },
+        };
         let notice = if channel_gone {
             CHANNEL_GONE_NOTICE
         } else if r
@@ -127,6 +132,7 @@ impl DeliverBriefing {
                 mail,
                 o.member,
                 FALLBACK_EMAIL,
+                Some(reason),
             )
             .await?;
         }
