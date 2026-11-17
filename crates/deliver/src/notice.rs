@@ -28,9 +28,14 @@ struct NoticeHtml<'a> {
 
 impl NoticeHtml<'_> {
     /// A list line ending in `: <url>` (a briefing's finding) as (text, url), so the text links.
+    /// Only a url on the trusted button's origin links: mails can carry customer-written lines
+    /// (contact forwards, review requests), whose urls must never hide behind link text.
     fn linked<'p>(&self, p: &'p str) -> Option<(&'p str, &'p str)> {
         let (text, url) = p.strip_prefix("• ").and(p.rsplit_once(": "))?;
-        (url.starts_with("http") && !url.contains(' ')).then_some((text, url))
+        let (_, trusted) = self.button.as_ref()?;
+        let origin = trusted.splitn(4, '/').take(3).collect::<Vec<_>>().join("/");
+        (origin.starts_with("http") && url.starts_with(&format!("{origin}/")) && !url.contains(' '))
+            .then_some((text, url))
     }
 }
 
