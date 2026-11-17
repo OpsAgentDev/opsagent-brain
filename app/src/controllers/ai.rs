@@ -27,6 +27,22 @@ fn credits(d: Decimal) -> String {
     format!("{:.2}", d)
 }
 
+/// Saving, changing or listing a connection's models calls the owner's endpoint (up to
+/// 120 s each), so each organisation gets at most this many a minute.
+const KEY_CALLS_PER_MIN: i64 = 10;
+
+/// 429 once the organisation is over `KEY_CALLS_PER_MIN`. Fails closed, as every limiter does.
+async fn limit_key_calls(app: &AppState, scope: &OrgScope) -> Result<(), ApiError> {
+    let key = format!("ratelimit:ai_key_calls:org:{}", scope.organisation.id);
+    if app.limiter.hit(&key, KEY_CALLS_PER_MIN, 60).await? {
+        return Ok(());
+    }
+    Err(ApiError::rate_limited(
+        "Too many key checks. Try again in a minute.",
+        60,
+    ))
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct AiUsageOut {
     /// Credits used on OpsAgent's key this period.
@@ -217,7 +233,7 @@ pub struct KeyPutOut {
     responses((status = 200, body = KeyPutOut), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 409, body = Problem, description = "`ai_primary_required`"),
         (status = 422, body = Problem, description = "`invalid`, `ai_endpoint_invalid`, `ai_key_invalid`, `models_required` or `ai_model_invalid`"),
-        (status = 502, body = Problem, description = "`ai_provider_outage`")))]
+        (status = 429, body = Problem), (status = 502, body = Problem, description = "`ai_provider_outage`")))]
 async fn put_key(
     State(app): State<AppState>,
     scope: OrgScope,
@@ -225,6 +241,7 @@ async fn put_key(
     ApiJson(body): ApiJson<KeyIn>,
 ) -> Result<Json<KeyPutOut>, ApiError> {
     scope.require_owner()?;
+    limit_key_calls(&app, &scope).await?;
     let input = KeyInput {
         style: body.style,
         base_url: body.base_url,
@@ -240,7 +257,7 @@ async fn put_key(
 
 #[utoipa::path(get, path = "/orgs/{org}/ai/keys/{slot}/models", tag = "ai", params(OrgSlotPath),
     responses((status = 200, body = Vec<KeyModelOut>, description = "Empty on an endpoint with no models list"),
-        (status = 403, body = Problem), (status = 404, body = Problem),
+        (status = 403, body = Problem), (status = 404, body = Problem), (status = 429, body = Problem),
         (status = 502, body = Problem, description = "`ai_key_failing` or `ai_provider_outage`")))]
 async fn key_models(
     State(app): State<AppState>,
@@ -248,6 +265,7 @@ async fn key_models(
     Path((_, s)): Path<(String, String)>,
 ) -> Result<Json<Vec<KeyModelOut>>, ApiError> {
     scope.require_owner()?;
+    limit_key_calls(&app, &scope).await?;
     let list = app
         .actions
         .ai
@@ -265,7 +283,7 @@ pub struct KeyPatchIn {
 #[utoipa::path(patch, path = "/orgs/{org}/ai/keys/{slot}", tag = "ai", params(OrgSlotPath), request_body = KeyPatchIn,
     responses((status = 200, body = AiStatusOut), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 422, body = Problem, description = "`invalid` (unknown model, a chat model without tools, a bad typed id), `ai_key_invalid` or `ai_model_invalid`"),
-        (status = 502, body = Problem, description = "`ai_key_failing` or `ai_provider_outage`")))]
+        (status = 429, body = Problem), (status = 502, body = Problem, description = "`ai_key_failing` or `ai_provider_outage`")))]
 async fn patch_key(
     State(app): State<AppState>,
     scope: OrgScope,
@@ -273,6 +291,7 @@ async fn patch_key(
     ApiJson(body): ApiJson<KeyPatchIn>,
 ) -> Result<Json<AiStatusOut>, ApiError> {
     scope.require_owner()?;
+    limit_key_calls(&app, &scope).await?;
     let patch = &app.actions.ai.patch_key;
     let st = patch
         .run(&scope, slot(&s)?, role_models(body.models))

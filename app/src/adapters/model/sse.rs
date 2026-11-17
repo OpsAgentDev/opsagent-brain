@@ -81,12 +81,22 @@ where
 }
 
 impl<S> State<S> {
-    /// Consumes whole lines from the buffer until a frame completes.
+    /// Consumes whole lines from the buffer until a frame completes; the consumed bytes are
+    /// drained once per call, not once per line (a chunk of many short lines stays linear).
     fn next_frame(&mut self) -> Option<Result<(String, String), ModelError>> {
-        while let Some(nl) = self.buf.iter().position(|&b| b == b'\n') {
-            let raw: Vec<u8> = self.buf.drain(..=nl).collect();
-            let line = String::from_utf8_lossy(&raw);
-            let line = line.trim_end_matches(['\n', '\r']);
+        let mut at = 0;
+        let out = self.frame_from(&mut at);
+        self.buf.drain(..at);
+        out
+    }
+
+    /// `next_frame` over the lines from `*at`, which it moves past every line it reads.
+    fn frame_from(&mut self, at: &mut usize) -> Option<Result<(String, String), ModelError>> {
+        while let Some(nl) = self.buf[*at..].iter().position(|&b| b == b'\n') {
+            let raw = &self.buf[*at..*at + nl];
+            *at += nl + 1;
+            let line = String::from_utf8_lossy(raw);
+            let line = line.trim_end_matches('\r');
             if line.is_empty() {
                 self.size = 0;
                 let event = std::mem::take(&mut self.event);
@@ -194,6 +204,15 @@ mod tests {
             got.len() * 9 <= STREAM_CAP + 9,
             "nothing past the cap is parsed"
         );
+    }
+
+    #[tokio::test]
+    async fn sse_parser_reads_many_frames_from_one_chunk_in_order() {
+        let body: String = (0..50_000).map(|i| format!("data: {i}\n\n")).collect();
+        let got: Vec<_> = run(&[body.leak(), "data: tail\n", "\n"]).await;
+        assert_eq!(got.len(), 50_001);
+        assert_eq!(got[49_999], Ok(("message".into(), "49999".into())));
+        assert_eq!(got[50_000], Ok(("message".into(), "tail".into())));
     }
 
     #[tokio::test]

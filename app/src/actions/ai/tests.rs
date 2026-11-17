@@ -606,6 +606,27 @@ async fn topup_used_after_period_quota() {
 }
 
 #[tokio::test]
+async fn overshoot_goes_below_zero_and_is_owed_from_the_next_topup() {
+    let e = env(vec![text()], true).await;
+    e.enable().await;
+    e.used(KeySource::OpsAgent, 990).await;
+    let a = e.access();
+    // The call passes with 10 credits left and costs 20 (as calls racing the check do).
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    e.call(&a, &mut plan).await.unwrap();
+    assert_eq!(e.store.topup_balance(e.org()).await.unwrap(), dec(-10));
+    assert_eq!(refused_with(&a, e.org()).await, AI_QUOTA_REACHED);
+    let s = a.status(&e.scope).await.unwrap();
+    assert_eq!((s.topup_balance, s.state), (dec(-10), AI_QUOTA_REACHED));
+    e.store
+        .grant_topup(e.org(), dec(100), "evt_1")
+        .await
+        .unwrap();
+    assert_eq!(e.store.topup_balance(e.org()).await.unwrap(), dec(90));
+    assert!(a.plan(e.org(), ModelRole::Chat).await.is_ok());
+}
+
+#[tokio::test]
 async fn topup_survives_period_rollover() {
     let e = env(vec![], true).await;
     e.enable().await;

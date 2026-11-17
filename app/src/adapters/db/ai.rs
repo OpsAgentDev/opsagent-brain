@@ -32,7 +32,7 @@ const PUT_KEY: &str = "INSERT INTO model_keys (id, organisation_id, provider, la
 const USAGE: &str = "WITH u AS (INSERT INTO ai_usage (id, organisation_id, member_id, purpose, \
   provider, model, key_source, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, \
   credits, estimated, slot, base_host) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, \
-  $13, $15, $16)) UPDATE organisations SET ai_topup_balance = GREATEST(ai_topup_balance - $14, 0) WHERE id = $2";
+  $13, $15, $16)) UPDATE organisations SET ai_topup_balance = ai_topup_balance - $14 WHERE id = $2";
 
 const GRANT: &str = "WITH g AS (INSERT INTO ai_credit_grants (id, organisation_id, credits, \
   stripe_event_id) VALUES ($1, $2, $3, $4) ON CONFLICT (stripe_event_id) DO NOTHING \
@@ -241,6 +241,8 @@ impl<C: Conn> AiRepo for Pg<C> {
 
     async fn record_usage(&self, row: &UsageRow, topup_debit: Decimal) -> RepoResult<()> {
         let u = &row.usage;
+        // Provider-reported counts: an absurd one is stored as the largest, not wrapped negative.
+        let n = |t: u64| i64::try_from(t).unwrap_or(i64::MAX);
         let values = vec![
             Uuid::now_v7().into(),
             row.organisation_id.into(),
@@ -249,10 +251,10 @@ impl<C: Conn> AiRepo for Pg<C> {
             row.provider.as_str().into(),
             row.model.clone().into(),
             row.key_source.as_str().into(),
-            (u.input_tokens as i64).into(),
-            (u.output_tokens as i64).into(),
-            (u.cache_read_tokens as i64).into(),
-            (u.cache_write_tokens as i64).into(),
+            n(u.input_tokens).into(),
+            n(u.output_tokens).into(),
+            n(u.cache_read_tokens).into(),
+            n(u.cache_write_tokens).into(),
             row.credits.into(),
             row.estimated.into(),
             topup_debit.into(),
