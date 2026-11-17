@@ -28,6 +28,8 @@ use crate::{
 
 /// Shortest official key we accept; real ones are far longer.
 const MIN_KEY_LEN: usize = 20;
+/// Shortest custom-endpoint key: below 16, the shown last 4 would give away a quarter or more.
+const MIN_CUSTOM_KEY_LEN: usize = 16;
 
 /// The key looks like one of `provider`'s: its prefix, ASCII letters, digits, `-` and `_`.
 fn well_formed(provider: AiProvider, key: &str) -> bool {
@@ -52,11 +54,15 @@ fn provider_down() -> AppError {
     refused(StatusCode::BAD_GATEWAY, AI_PROVIDER_OUTAGE, detail)
 }
 
-/// A list naming at least one model; `None` when the endpoint offers none (ruling 4).
+/// A list naming at least one model; `None` when the endpoint offers none (ruling 4). Ids
+/// that fail the typed-id shape (ruling 6) are dropped: a custom endpoint writes this list.
 fn usable(r: Result<Vec<ModelInfo>, ModelError>) -> Result<Option<Vec<ModelInfo>>, ModelError> {
     match r {
-        Ok(l) if !l.is_empty() => Ok(Some(l)),
-        Ok(_) | Err(ModelError::ModelGone | ModelError::Other(_)) => Ok(None),
+        Ok(mut l) => {
+            l.retain(|m| graphic(&m.id, 1..=200));
+            Ok((!l.is_empty()).then_some(l))
+        }
+        Err(ModelError::ModelGone | ModelError::Other(_)) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -169,7 +175,7 @@ impl PutKey {
         let key = input.api_key.as_str();
         let shaped = match custom {
             None => well_formed(style, key),
-            Some(_) => graphic(key, 8..=512),
+            Some(_) => graphic(key, MIN_CUSTOM_KEY_LEN..=512),
         };
         if !shaped {
             return Err(key_invalid());
@@ -388,5 +394,26 @@ impl DeleteKey {
         tx.audit().record(entry).await?;
         tx.commit().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usable_drops_listed_ids_of_the_wrong_shape() {
+        let info = |id: &str| ModelInfo {
+            id: id.into(),
+            tools: true,
+        };
+        let long = "m".repeat(201);
+        let list = vec![info("ok-1"), info(""), info("a b"), info(&long), info("é")];
+        let got = usable(Ok(list)).unwrap().unwrap();
+        assert_eq!(
+            got.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["ok-1"]
+        );
+        assert!(usable(Ok(vec![info("a\nb")])).unwrap().is_none());
     }
 }

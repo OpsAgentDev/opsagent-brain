@@ -647,11 +647,11 @@ async fn custom_key_shape() {
     serve_with(private, |req, ctx| async move {
         let (t, org) = owner(&req, &ctx).await;
         openai(&ctx);
-        for bad in ["1234567", "gsk_1234 5678"] {
+        for bad in ["123456789012345", "gsk_1234 5678 90ab"] {
             let res = put_slot(&req, &t, &org, "primary", custom(&silent, bad)).await;
             assert_eq!(refusal(&res), (422, "ai_key_invalid".into()), "{bad}");
         }
-        let res = put_slot(&req, &t, &org, "primary", custom(&api, "gsk_12345678")).await; // gitleaks:allow (fake, 12-char shape case)
+        let res = put_slot(&req, &t, &org, "primary", custom(&api, "gsk_1234567890ab")).await; // gitleaks:allow (fake, 16-char shape case)
         assert_eq!(res.status_code(), 200, "{}", res.text());
     })
     .await;
@@ -966,6 +966,25 @@ async fn put_custom_endpoint_with_html_list_needs_models() {
         assert_eq!(res.status_code(), 422, "{}", res.text());
         let p: Value = res.json();
         assert_eq!(p["code"], "models_required");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn key_routes_limited_per_org() {
+    serve(|req, ctx| async move {
+        let (t, org) = owner(&req, &ctx).await;
+        for _ in 0..10 {
+            let res = put_key(&req, &t, &org, "sk-ant-short").await;
+            assert_eq!(res.status_code(), 422);
+        }
+        let res = put_key(&req, &t, &org, "sk-ant-short").await;
+        assert_eq!(refusal(&res), (429, "rate_limited".into()));
+        let models = req
+            .get(&format!("/v1/orgs/{org}/ai/keys/primary/models"))
+            .await;
+        assert_eq!(models.status_code(), 429);
     })
     .await;
 }

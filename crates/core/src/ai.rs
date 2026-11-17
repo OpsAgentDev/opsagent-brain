@@ -243,8 +243,8 @@ pub trait AiRepo: Send + Sync {
         at: DateTime<Utc>,
     ) -> RepoResult<bool>;
 
-    /// Inserts the row and takes `topup_debit` off the top-up balance (never below 0), in one
-    /// transaction.
+    /// Inserts the row and takes `topup_debit` off the top-up balance, in one
+    /// transaction. The balance may go below 0: an overshoot is owed from the next top-up.
     async fn record_usage(&self, row: &UsageRow, topup_debit: Decimal) -> RepoResult<()>;
     /// Credits of `source` recorded in `since..until`.
     async fn credits_used(
