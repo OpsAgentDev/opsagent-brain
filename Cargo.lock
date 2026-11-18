@@ -717,9 +717,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-cloudwatchlogs"
-version = "1.159.0"
+version = "1.160.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20f6a822d5aa208af15881ad127b1fe6af4ce5a4a62f0091b8ba71e21d140cee"
+checksum = "b9ffb5aa6c64847b66ef776046bdf7e131c538395a626c25b947d10b753bec1b"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
