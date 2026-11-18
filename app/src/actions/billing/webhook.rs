@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::{provider_failed, unavailable, BillingSettings};
+use super::{enqueue_sync, provider_failed, unavailable, BillingSettings};
 use crate::{
     actions::{
         human_reviews::enqueue_notice,
@@ -306,11 +306,15 @@ impl HandleWebhook {
                 self.second_subscription(ev, &kept.subscription_id, &s)
                     .await
             }
-            _ => repo
-                .apply_subscription(org, &s, created)
-                .await
-                .map(|_| ())
-                .map_err(Into::into),
+            _ => {
+                let applied = repo.apply_subscription(org, &s, created).await?;
+                // A trial just started: the organisation's run mails its owners
+                // (nightly::trial_started_notice), so the mail never holds up the webhook.
+                if applied && s.status == B::Trialing && stored.status != B::Trialing {
+                    enqueue_sync(tx, org, created).await?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -384,17 +388,13 @@ mod tests {
         adapters::memory::{FixedClock, MemStore},
     };
 
-    #[tokio::test]
-    async fn event_for_an_organisation_gone_mid_way_is_acknowledged() {
-        let store = MemStore::default();
-        let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
-        store.set_customer(org.id, "cus_1").await.unwrap();
-        store.forget_org(org.id);
-        let now = Utc::now();
+    /// A `customer.subscription.*` event for `cus_1` at `now`, and its signature.
+    fn sub_event(id: &str, status: &str, now: DateTime<Utc>) -> (String, String) {
         let item = json!({ "quantity": 1, "price": { "id": "p_t" } });
-        let object = json!({ "id": "sub_1", "customer": "cus_1", "status": "active",
-            "items": { "data": [item] } });
-        let body = json!({ "id": "evt_1", "type": "customer.subscription.updated",
+        let trial_end = (now + chrono::Duration::days(14)).timestamp();
+        let object = json!({ "id": "sub_1", "customer": "cus_1", "status": status,
+            "trial_end": trial_end, "items": { "data": [item] } });
+        let body = json!({ "id": id, "type": "customer.subscription.updated",
             "created": now.timestamp(), "data": { "object": object } })
         .to_string();
         let mut m = Hmac::<Sha256>::new_from_slice(b"whsec").unwrap();
@@ -405,15 +405,50 @@ mod tests {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        let sig = format!("t={},v1={v1}", now.timestamp());
-        let hook = HandleWebhook::new(
+        (format!("t={},v1={v1}", now.timestamp()), body)
+    }
+
+    fn hook(store: &MemStore, now: DateTime<Utc>) -> HandleWebhook {
+        HandleWebhook::new(
             Arc::new(store.clone()),
             Arc::new(NoStripe),
             Arc::new(FixedClock(now)),
             settings(),
-        );
+        )
+    }
+
+    #[tokio::test]
+    async fn event_for_an_organisation_gone_mid_way_is_acknowledged() {
+        let store = MemStore::default();
+        let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+        store.set_customer(org.id, "cus_1").await.unwrap();
+        store.forget_org(org.id);
+        let now = Utc::now();
+        let (sig, body) = sub_event("evt_1", "active", now);
+        let hook = hook(&store, now);
         hook.run(Some(&sig), body.as_bytes()).await.unwrap();
         // Recorded with the transaction, so Stripe's redelivery is a no-op.
         assert!(!store.record_event("evt_1", "x").await.unwrap());
+    }
+
+    /// The webhook sends no mail itself (it has no mailer): the trial's start queues the
+    /// organisation's `billing_sync` run, which mails the owners, so mail can never fail it.
+    #[tokio::test]
+    async fn a_trial_starting_queues_its_notice_run_once() {
+        let store = MemStore::default();
+        let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+        store.set_customer(org.id, "cus_1").await.unwrap();
+        let now = Utc::now();
+        let hook = hook(&store, now);
+        // The same event again, then a later one of the same trial: one run, queued once.
+        for (id, secs) in [("evt_1", 0), ("evt_1", 0), ("evt_2", 60)] {
+            let at = now + chrono::Duration::seconds(secs);
+            let (sig, body) = sub_event(id, "trialing", at);
+            hook.run(Some(&sig), body.as_bytes()).await.unwrap();
+        }
+        let jobs = store.jobs();
+        assert_eq!(jobs.len(), 1, "{jobs:?}");
+        assert_eq!(jobs[0].kind, opsagent_ledger::JobKind::BillingSync);
+        assert_eq!(store.billing(org.id).await.unwrap().status, B::Trialing);
     }
 }

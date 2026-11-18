@@ -4,6 +4,7 @@ pub mod auth;
 pub mod billing;
 pub mod connections;
 pub mod contact;
+pub mod deleted_notice;
 pub mod deliveries;
 pub mod findings;
 pub mod human_reviews;

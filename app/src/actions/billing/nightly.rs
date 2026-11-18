@@ -2,7 +2,8 @@
 //! organisation: connections still `revoked` within `RENEWAL_WINDOW` of the period's end are
 //! disconnected and the quantity is reconciled (so the renewal does not bill them), the trial
 //! reminders go out on day 12 and day 14, a first failed payment and an ended trial each get
-//! one notice, and 7 days past due becomes `paused` with one notice. Each mail is sent once per owner: its ledger key (`<key>:<owner id>`) sits on a
+//! one notice, and 7 days past due becomes `paused` with one notice. The trial-started notice
+//! is here too, sent by the organisation's own run. Each mail is sent once per owner: its ledger key (`<key>:<owner id>`) sits on a
 //! `billing_notice` marker run keyed by the organisation and the trial end (or period start),
 //! so later nights find it done.
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
@@ -16,7 +17,6 @@ use opsagent_core::{
     },
     connection::ConnectionStatus as S,
     org::org_web_base,
-    run::{RunKey, RunStatus},
 };
 use opsagent_ledger::{effects::with_effect, LedgerError};
 use serde::Serialize;
@@ -25,7 +25,10 @@ use uuid::Uuid;
 
 use super::{enqueue_sync, BillingSync};
 use crate::{
-    actions::runs::classify::{lerr, LResult},
+    actions::runs::{
+        classify::{lerr, LResult},
+        notice_marker,
+    },
     mailers::{branded, Mail},
 };
 
@@ -35,8 +38,6 @@ const TRIAL_ENDED_NOTICE_DAYS: i64 = 3;
 /// A revoked connection is disconnected once its period ends within this many hours: two
 /// nightly runs, so one failed or missed night still lands before the renewal.
 const RENEWAL_WINDOW_HOURS: i64 = 50;
-/// The job type of the marker runs that hold the notices' ledger keys (no worker).
-const NOTICE_JOB: &str = "billing_notice";
 
 #[derive(Debug, Default, Serialize)]
 struct Night {
@@ -199,6 +200,37 @@ impl BillingSync {
             .await
     }
 
+    /// One mail when a trial has just started (the webhook that starts it queues this
+    /// organisation's run); not for a trial already under way (no backlog on deploy, and none
+    /// from a later run of the organisation).
+    pub(super) async fn trial_started_notice(
+        &self,
+        org: Uuid,
+        now: DateTime<Utc>,
+    ) -> LResult<bool> {
+        let b = self.uow.billing().billing(org).await.map_err(lerr)?;
+        let sub = b.subscription.as_ref().filter(|_| b.status == B::Trialing);
+        let Some((sub, ends)) = sub.and_then(|s| Some((s, s.trial_ends_at?))) else {
+            return Ok(false);
+        };
+        if ends - now < Duration::days(TRIAL_DAYS - 1) {
+            return Ok(false);
+        }
+        let price = sub.tier.unwrap_or(Tier::Team).monthly_usd();
+        let billing_url = self.billing_url(org).await?;
+        let text = format!(
+            "Your free trial runs until {}. On that day your card is charged US${price} a month \
+             per connected cloud account, plus tax where applicable.\n\nCancel any time before \
+             then in Settings > Billing and nothing is charged.\n\nThe trial covers one cloud \
+             account.\n\nManage billing: {billing_url}",
+            ends.format("%-d %B %Y"),
+        );
+        let subject = "Your OpsAgent trial has started";
+        let key = "billing:trial_started";
+        self.mail_owners(org, ends, key, subject, &text, &billing_url)
+            .await
+    }
+
     /// One mail when a trial has just ended (expired or cancelled); not for old ones.
     async fn trial_ended_notice(
         &self,
@@ -267,26 +299,6 @@ impl BillingSync {
         Ok(format!("{base}/settings/billing"))
     }
 
-    /// The organisation's `billing_notice` marker run at `anchor` (created `done`, once).
-    async fn marker(&self, org: Uuid, anchor: DateTime<Utc>) -> LResult<Uuid> {
-        let key = RunKey {
-            organisation_id: Some(org),
-            connection_id: None,
-            job_type: NOTICE_JOB.into(),
-            scheduled_at: anchor,
-        };
-        let tx = self.uow.begin().await.map_err(lerr)?;
-        let out = tx.ledger().create_run(key).await?;
-        if out.created {
-            let (id, fence) = (out.run.id, out.run.fence);
-            tx.ledger()
-                .set_status(id, fence, RunStatus::Done, None)
-                .await?;
-        }
-        tx.commit().await.map_err(lerr)?;
-        Ok(out.run.id)
-    }
-
     /// Mails each owner once for ledger key `<key>:<owner id>` on the marker at `anchor`, so a
     /// failure part-way never resends to owners already mailed; `true` when this call sent
     /// any. A failed send is retried the next night (Resend dedupes on the key).
@@ -299,7 +311,7 @@ impl BillingSync {
         text: &str,
         link: &str,
     ) -> LResult<bool> {
-        let marker = self.marker(org, anchor).await?;
+        let marker = notice_marker(&*self.uow, Some(org), anchor).await?;
         let owners = self.uow.recipients().owners(org).await.map_err(lerr)?;
         let sent = AtomicBool::new(false);
         for o in owners {

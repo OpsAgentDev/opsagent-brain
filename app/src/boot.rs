@@ -362,7 +362,11 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             ),
             current_user: auth::CurrentUser::new(d.uow.clone()),
             accept_terms: auth::AcceptTerms::new(d.uow.clone(), d.clock.clone()),
-            delete_account: auth::DeleteAccount::new(d.uow.clone(), d.clock.clone()),
+            delete_account: auth::DeleteAccount::new(
+                d.uow.clone(),
+                d.clock.clone(),
+                d.mailer.clone(),
+            ),
             passkeys: auth::Passkeys::new(d.uow.clone(), d.webauthn.clone(), d.clock.clone()),
         },
         orgs: orgs::Orgs {
@@ -376,6 +380,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.clock.clone(),
                 d.billing.clone(),
                 d.config.stripe_configured(),
+                (d.mailer.clone(), guard.clone()),
             ),
             is_owner_anywhere: orgs::IsOwnerAnywhere::new(d.uow.clone()),
         },

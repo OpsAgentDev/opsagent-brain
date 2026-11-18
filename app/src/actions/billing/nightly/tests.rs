@@ -18,7 +18,7 @@ use crate::{
         uow::Repos,
     },
     adapters::memory::{FixedClock, MemRateLimiter, MemStore},
-    mailers::CaptureMailer,
+    mailers::{CaptureMailer, FailingMailer, Mailer},
 };
 
 /// The nightly pass makes no Stripe calls.
@@ -74,6 +74,10 @@ pub(in crate::actions::billing) fn settings() -> BillingSettings {
 }
 
 fn sync(store: &MemStore, mail: &Arc<CaptureMailer>, now: DateTime<Utc>) -> BillingSync {
+    sync_with(store, mail.clone(), now)
+}
+
+fn sync_with(store: &MemStore, mail: Arc<dyn Mailer>, now: DateTime<Utc>) -> BillingSync {
     let uow = Arc::new(store.clone());
     let guard = Arc::new(MailGuard::new(
         uow.clone(),
@@ -83,7 +87,7 @@ fn sync(store: &MemStore, mail: &Arc<CaptureMailer>, now: DateTime<Utc>) -> Bill
         uow,
         redis::Client::open("redis://localhost:1").unwrap(),
         Arc::new(NoStripe),
-        (mail.clone(), guard),
+        (mail, guard),
         Arc::new(FixedClock(now)),
         settings(),
     )
@@ -334,4 +338,69 @@ async fn trial_ended_is_mailed_once_and_only_while_recent() {
     assert_eq!(m.len(), 1);
     assert_eq!(m[0].subject, "Your OpsAgent trial has ended");
     assert!(m[0].text.ends_with("/settings/billing"));
+}
+
+#[tokio::test]
+async fn trial_started_is_mailed_once_to_each_owner_and_only_at_the_start() {
+    let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
+    let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+    let second = user(&store, "p@example.com").await;
+    store
+        .add_member(org.id, second.id, Role::Owner)
+        .await
+        .unwrap();
+    let member = user(&store, "m@example.com").await;
+    store
+        .add_member(org.id, member.id, Role::Member)
+        .await
+        .unwrap();
+    let ends = Utc.with_ymd_and_hms(2026, 12, 2, 10, 0, 0).unwrap();
+    let start = ends - Duration::days(14);
+    // Not subscribed: nothing to say.
+    let (st, sent, id) = (store.clone(), mail.clone(), org.id);
+    let notice = |at| {
+        let sync = sync(&st, &sent, at);
+        async move { sync.trial_started_notice(id, at).await }
+    };
+    assert!(!notice(start).await.unwrap());
+    store
+        .apply_subscription(org.id, &sub(B::Trialing, ends), start)
+        .await
+        .unwrap();
+    // A mail provider that is down fails the run (it is retried), and nothing is marked sent.
+    let down = sync_with(&store, Arc::new(FailingMailer), start);
+    assert!(down.trial_started_notice(org.id, start).await.is_err());
+    assert!(notice(start + Duration::minutes(1)).await.unwrap());
+    // A later run of the organisation sends nothing more.
+    assert!(!notice(start + Duration::minutes(5)).await.unwrap());
+    let m = mail.sent();
+    let to: Vec<_> = m.iter().map(|m| m.to.as_str()).collect();
+    assert_eq!(to, ["o@example.com", "p@example.com"]);
+    assert_eq!(m[0].subject, "Your OpsAgent trial has started");
+    assert_eq!(
+        m[0].text,
+        "Your free trial runs until 2 December 2026. On that day your card is charged US$299 a \
+         month per connected cloud account, plus tax where applicable.\n\nCancel any time \
+         before then in Settings > Billing and nothing is charged.\n\nThe trial covers one \
+         cloud account.\n\nManage billing: https://opsagent.test/o/acme/settings/billing"
+    );
+    let html = m[0].html.as_deref().unwrap();
+    assert!(
+        html.contains("href=\"https://opsagent.test/o/acme/settings/billing\"")
+            && html.contains("Manage billing")
+    );
+    assert_ne!(m[0].idempotency_key, m[1].idempotency_key);
+
+    // A trial already under way (one that began before this mail existed) is not announced.
+    let (_, old) = owned_org(&store, "q@example.com", "Older").await;
+    store
+        .apply_subscription(old.id, &sub(B::Trialing, ends), start)
+        .await
+        .unwrap();
+    let late = start + Duration::days(2);
+    assert!(!sync(&store, &mail, late)
+        .trial_started_notice(old.id, late)
+        .await
+        .unwrap());
+    assert_eq!(mail.sent().len(), 2);
 }

@@ -102,7 +102,11 @@ impl BillingSync {
         run_chunked(storage, &self.redis, run_id, chunks, opts, |_, _| async {
             let now = self.clock.now();
             let stats = match run.key.organisation_id {
-                Some(org) => self.sync_org(&run, org).await?,
+                Some(org) => {
+                    let stats = self.sync_org(&run, org).await?;
+                    self.trial_started_notice(org, now).await?;
+                    stats
+                }
                 None => self.nightly(run.id, now).await?,
             };
             Ok(ChunkOutcome {
