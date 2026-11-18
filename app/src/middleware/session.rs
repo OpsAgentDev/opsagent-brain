@@ -1,5 +1,8 @@
 use async_trait::async_trait;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+    ColumnTrait, Condition, DatabaseConnection, EntityTrait, QueryFilter, QuerySelect, Set,
+    TransactionTrait,
+};
 use tower_sessions::{
     cookie::SameSite,
     session::{Id, Record},
@@ -32,10 +35,12 @@ fn to_chrono(t: time::OffsetDateTime) -> chrono::DateTime<chrono::FixedOffset> {
         .into()
 }
 
+type Data = std::collections::HashMap<String, serde_json::Value>;
+
 /// The signed-in user of a session, kept in its own column so all of a person's sessions can be
 /// found and ended.
-fn user_of(record: &Record) -> Option<uuid::Uuid> {
-    serde_json::from_value(record.data.get(USER_KEY)?.clone()).ok()
+fn user_of(data: &Data) -> Option<uuid::Uuid> {
+    serde_json::from_value(data.get(USER_KEY)?.clone()).ok()
 }
 
 /// Ends every session of `user`, on every device ("sign out everywhere").
@@ -50,19 +55,20 @@ pub async fn delete_all_for(
         .map(|_| ())
 }
 
-/// Holds the data as `load` read it, so `save` can tell a request that changed nothing. Never stored.
+/// Holds the data as `load` read it, so `save` can tell what this request changed. Never stored.
 const LOADED_KEY: &str = "_loaded";
 
-/// The bytes to store, the expiry, and whether the data is still what `load` read.
-fn encode(
-    record: &Record,
-) -> session_store::Result<(Vec<u8>, chrono::DateTime<chrono::FixedOffset>, bool)> {
+fn to_bytes(data: &Data) -> session_store::Result<Vec<u8>> {
+    serde_json::to_vec(data).map_err(|e| session_store::Error::Encode(e.to_string()))
+}
+
+/// The record's data without the `load` copy, and that copy (none for a session not loaded here).
+fn split(record: &Record) -> (Data, Option<Data>) {
     let mut data = record.data.clone();
-    let loaded = data.remove(LOADED_KEY);
-    let unchanged = loaded.is_some_and(|l| serde_json::to_value(&data).is_ok_and(|d| d == l));
-    let bytes =
-        serde_json::to_vec(&data).map_err(|e| session_store::Error::Encode(e.to_string()))?;
-    Ok((bytes, to_chrono(record.expiry_date), unchanged))
+    let loaded = data
+        .remove(LOADED_KEY)
+        .and_then(|l| serde_json::from_value(l).ok());
+    (data, loaded)
 }
 
 #[async_trait]
@@ -77,14 +83,15 @@ impl SessionStore for DbStore {
         {
             record.id = Id::default();
         }
-        let (data, expiry, _) = encode(record)?;
+        let (data, _) = split(record);
+        let expiry = to_chrono(record.expiry_date);
         sessions::Entity::insert(sessions::ActiveModel {
             id: Set(record.id.to_string()),
-            data: Set(data),
+            user_id: Set(user_of(&data)),
+            data: Set(to_bytes(&data)?),
             expiry_date: Set(expiry),
             created_at: Set(now()),
             updated_at: Set(now()),
-            user_id: Set(user_of(record)),
         })
         .exec(&self.0)
         .await
@@ -95,26 +102,63 @@ impl SessionStore for DbStore {
     /// UPDATE only: with always_save, the end-of-request save must not resurrect a row that
     /// sign-out deleted or that has expired. Inserts happen in `create` only.
     ///
-    /// A request that changed nothing only slides the expiry. Writing its copy of the data back
-    /// would undo what a request that overlapped it stored (a passkey or OAuth state in progress).
-    /// Two overlapping requests that both change the data are still last write wins.
+    /// Only the keys this request changed are written, onto the row as it is now. Writing the
+    /// whole copy back would undo what an overlapping request stored (seen: a slow GET ending
+    /// after passkey register/start, so finish found no ceremony). A request that changed nothing
+    /// only slides the expiry. Two requests that change the same key are last write wins.
     async fn save(&self, record: &Record) -> session_store::Result<()> {
-        let (data, expiry, unchanged) = encode(record)?;
-        let mut update = sessions::Entity::update_many()
-            .col_expr(sessions::Column::ExpiryDate, expiry.into())
-            .col_expr(sessions::Column::UpdatedAt, now().into());
-        if !unchanged {
-            update = update
-                .col_expr(sessions::Column::Data, data.into())
-                .col_expr(sessions::Column::UserId, user_of(record).into());
+        let (data, loaded) = split(record);
+        let expiry = to_chrono(record.expiry_date);
+        let live = || {
+            Condition::all()
+                .add(sessions::Column::Id.eq(record.id.to_string()))
+                .add(sessions::Column::ExpiryDate.gt(now()))
+        };
+        let touch = || {
+            sessions::Entity::update_many()
+                .col_expr(sessions::Column::ExpiryDate, expiry.into())
+                .col_expr(sessions::Column::UpdatedAt, now().into())
+                .filter(live())
+        };
+        let write = |data: &Data| -> session_store::Result<_> {
+            Ok(touch()
+                .col_expr(sessions::Column::Data, to_bytes(data)?.into())
+                .col_expr(sessions::Column::UserId, user_of(data).into()))
+        };
+        let Some(loaded) = loaded else {
+            return write(&data)?
+                .exec(&self.0)
+                .await
+                .map(|_| ())
+                .map_err(backend);
+        };
+        let set: Vec<_> = data
+            .iter()
+            .filter(|(k, v)| loaded.get(*k) != Some(v))
+            .collect();
+        let removed: Vec<_> = loaded.keys().filter(|k| !data.contains_key(*k)).collect();
+        if set.is_empty() && removed.is_empty() {
+            return touch().exec(&self.0).await.map(|_| ()).map_err(backend);
         }
-        update
-            .filter(sessions::Column::Id.eq(record.id.to_string()))
-            .filter(sessions::Column::ExpiryDate.gt(now()))
-            .exec(&self.0)
+        let txn = self.0.begin().await.map_err(backend)?;
+        let row = sessions::Entity::find()
+            .filter(live())
+            .lock_exclusive()
+            .one(&txn)
             .await
-            .map(|_| ())
-            .map_err(backend)
+            .map_err(backend)?;
+        if let Some(row) = row {
+            let mut current: Data = serde_json::from_slice(&row.data)
+                .map_err(|e| session_store::Error::Decode(e.to_string()))?;
+            for (k, v) in set {
+                current.insert(k.clone(), v.clone());
+            }
+            for k in removed {
+                current.remove(k);
+            }
+            write(&current)?.exec(&txn).await.map_err(backend)?;
+        }
+        txn.commit().await.map_err(backend)
     }
 
     async fn load(&self, id: &Id) -> session_store::Result<Option<Record>> {
@@ -127,9 +171,8 @@ impl SessionStore for DbStore {
         else {
             return Ok(None);
         };
-        let mut data: std::collections::HashMap<String, serde_json::Value> =
-            serde_json::from_slice(&row.data)
-                .map_err(|e| session_store::Error::Decode(e.to_string()))?;
+        let mut data: Data = serde_json::from_slice(&row.data)
+            .map_err(|e| session_store::Error::Decode(e.to_string()))?;
         let loaded = serde_json::to_value(&data).map_err(backend)?;
         data.insert(LOADED_KEY.into(), loaded);
         Ok(Some(Record {
