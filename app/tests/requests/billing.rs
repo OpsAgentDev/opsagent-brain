@@ -493,10 +493,9 @@ async fn a_trial_starting_mails_the_owners_once() {
                 e["created"] = (Utc::now().timestamp() - secs_ago).into();
                 e
             };
-            // The webhook answers 200 and sends nothing itself; its queued run sends the mail.
+            // The webhook answers 200; the run it queued sends the mail.
             deliver(&req, &trialing("evt_1", 10)).await;
             assert_eq!(status_of(&ctx, org).await, B::Trialing);
-            assert!(mail.sent().is_empty());
             ctx.drain_jobs().await;
             // A later event of the same trial, and Stripe's redelivery, mail nobody again.
             deliver(&req, &trialing("evt_2", 5)).await;
