@@ -52,6 +52,7 @@ async fn grant(s: &dyn Repos, organisation_id: Uuid, member_id: Uuid) -> Grant {
         client_id: CLIENT.into(),
         member_id,
         organisation_id,
+        scope: opsagent_core::oauth::SCOPE_READ_WRITE.into(),
         created_at: at(0),
         last_used_at: None,
         revoked_at: None,
@@ -61,6 +62,17 @@ async fn grant(s: &dyn Repos, organisation_id: Uuid, member_id: Uuid) -> Grant {
 }
 
 contract_suite! {
+    async fn grant_keeps_the_scope_it_was_approved_for(s) {
+        client(s).await;
+        let o = org_id(s, "acme").await;
+        let wide = grant(s, o, Uuid::new_v4()).await;
+        let narrow = Grant { id: Uuid::new_v4(), scope: opsagent_core::oauth::SCOPE.into(), ..wide.clone() };
+        s.oauth().insert_grant(&narrow).await.unwrap();
+        let scope = |id| async move { s.oauth().grant(o, id).await.unwrap().unwrap().scope };
+        assert_eq!(scope(wide.id).await, "opsagent.read opsagent.write");
+        assert_eq!(scope(narrow.id).await, "opsagent.read");
+    }
+
     async fn consume_code_is_single_use(s) {
         client(s).await;
         let c = consent(None);

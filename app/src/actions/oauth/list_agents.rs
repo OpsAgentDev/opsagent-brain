@@ -15,6 +15,8 @@ pub struct Agent {
     pub client_name: String,
     pub client_kind: &'static str,
     pub member_email: String,
+    /// The grant's scopes: `opsagent.read`, and `opsagent.write` when changes were approved.
+    pub scopes: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
 }
@@ -49,6 +51,7 @@ impl ListAgents {
                     .map_or(g.client_id.clone(), |c| c.name.clone()),
                 client_kind: client.map_or("dynamic", |c| c.kind.as_str()),
                 member_email: member.email.as_str().into(),
+                scopes: super::get_consent::scopes(&g.scope),
                 created_at: g.created_at,
                 last_used_at: g.last_used_at,
             });

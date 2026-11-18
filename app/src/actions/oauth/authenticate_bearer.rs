@@ -99,6 +99,7 @@ mod tests {
             client_id: "c".into(),
             member_id: member.id,
             organisation_id: org.id,
+            scope: opsagent_core::oauth::SCOPE.into(),
             created_at: Utc::now(),
             last_used_at: None,
             revoked_at: None,

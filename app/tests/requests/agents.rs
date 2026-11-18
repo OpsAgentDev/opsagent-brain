@@ -1,12 +1,12 @@
 use axum_test::TestServer;
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use opsagent_brain::models::_entities::audit_events;
-use opsagent_core::oauth::Grant;
+use opsagent_core::oauth::{Grant, SCOPE_READ_WRITE};
 use sea_orm::entity::prelude::*;
 use serde_json::{json, Value};
 use serial_test::serial;
 
-use super::{oauth_authorize::*, support::*};
+use super::{mcp_auth::mint_scoped, oauth_authorize::*, support::*};
 
 struct Team {
     slug: String,
@@ -24,6 +24,7 @@ async fn grant(app: &TestApp, org: Uuid, member: Uuid) -> Uuid {
         client_id: CLIENT.into(),
         member_id: member,
         organisation_id: org,
+        scope: opsagent_core::oauth::SCOPE.into(),
         created_at: Utc::now(),
         last_used_at: None,
         revoked_at: None,
@@ -144,6 +145,17 @@ async fn owner_lists_all_member_lists_own() {
         assert_eq!(all[0]["client_name"], "Demo client");
         assert_eq!(all[0]["client_kind"], "dynamic");
         assert_eq!(all[0]["last_used_at"], Value::Null);
+        assert_eq!(all[0]["scopes"], json!(["opsagent.read"]));
+        let org = org_id(&req, &t.slug).await;
+        let member: Uuid = t.mate_member.parse().unwrap();
+        let (wide, _) = mint_scoped(&app, org, member, Duration::hours(1), SCOPE_READ_WRITE).await;
+        let all = req.get(&format!("/v1/orgs/{}/agents", t.slug)).await;
+        let all = all.json::<Vec<Value>>();
+        let wide = all.iter().find(|a| a["grant_id"] == wide.to_string());
+        assert_eq!(
+            wide.unwrap()["scopes"],
+            json!(["opsagent.read", "opsagent.write"])
+        );
 
         as_mate(&mut req, &t).await;
         let own = req

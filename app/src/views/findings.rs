@@ -2,6 +2,7 @@
 use chrono::{DateTime, FixedOffset};
 use opsagent_core::ai::Explanation;
 use opsagent_core::finding::{self as core, StoredEvidence};
+use opsagent_deliver::model::finding_link;
 use sea_orm::prelude::Decimal;
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -21,6 +22,8 @@ pub struct FindingSummary {
     /// `open`, `resolved`, `accepted`, `snoozed` or `flapping`.
     pub status: String,
     pub title: String,
+    /// The finding's page in the dashboard, to hand to a person.
+    pub url: String,
     pub cost_monthly_usd: Option<Decimal>,
     pub created_at: DateTime<FixedOffset>,
     pub updated_at: DateTime<FixedOffset>,
@@ -96,8 +99,10 @@ pub fn explanation(e: Explanation) -> ExplanationOut {
     }
 }
 
-pub fn summary(f: core::Finding) -> FindingSummary {
+/// `link_base` is the organisation's dashboard address (`org_web_base`).
+pub fn summary(f: core::Finding, link_base: &str) -> FindingSummary {
     FindingSummary {
+        url: finding_link(link_base, f.id),
         id: f.id,
         connection_id: f.connection_id,
         check_id: f.key.check_id,
@@ -112,7 +117,7 @@ pub fn summary(f: core::Finding) -> FindingSummary {
     }
 }
 
-pub fn full(f: core::Finding) -> Finding {
+pub fn full(f: core::Finding, link_base: &str) -> Finding {
     Finding {
         summary: f.summary.clone(),
         next_step: f.next_step.clone(),
@@ -123,7 +128,7 @@ pub fn full(f: core::Finding) -> Finding {
         resolved_reason: f.resolved_reason.clone(),
         first_seen_run_id: f.first_seen_run_id,
         last_seen_run_id: f.last_seen_run_id,
-        finding: summary(f),
+        finding: summary(f, link_base),
     }
 }
 
@@ -148,9 +153,9 @@ fn event(e: core::FindingEvent) -> FindingEvent {
 }
 
 /// The wire view of one finding with its evidence and events.
-pub fn detail(d: crate::actions::findings::FindingDetail) -> FindingDetail {
+pub fn detail(d: crate::actions::findings::FindingDetail, link_base: &str) -> FindingDetail {
     FindingDetail {
-        finding: full(d.finding),
+        finding: full(d.finding, link_base),
         evidence: d.evidence.into_iter().map(evidence_item).collect(),
         events: d.events.into_iter().map(event).collect(),
         explanation: d.explanation.map(explanation),

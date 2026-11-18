@@ -14,7 +14,7 @@ mod start_authorization;
 use chrono::{DateTime, Duration, Utc};
 use opsagent_core::{
     audit::AuditEntry,
-    oauth::{AccessToken, Grant, RefreshToken, SCOPE},
+    oauth::{AccessToken, Grant, RefreshToken},
     org::Member,
     repo::RepoResult,
 };
@@ -68,7 +68,8 @@ pub struct TokenResponse {
     pub token_type: &'static str,
     pub expires_in: i64,
     pub refresh_token: String,
-    pub scope: &'static str,
+    /// The grant's scopes: a refresh repeats them, never more.
+    pub scope: String,
 }
 
 fn internal(e: impl std::fmt::Display) -> OAuthError {
@@ -112,7 +113,7 @@ async fn mint(
         token_type: "Bearer",
         expires_in: ACCESS_TTL_SECS,
         refresh_token: refresh,
-        scope: SCOPE,
+        scope: grant.scope.clone(),
     })
 }
 

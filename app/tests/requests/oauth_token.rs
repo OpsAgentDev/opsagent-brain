@@ -5,7 +5,7 @@ use sea_orm::entity::prelude::*;
 use serde_json::{json, Value};
 use serial_test::serial;
 
-use super::{oauth_authorize::*, support::*};
+use super::{mcp_auth::call, oauth_authorize::*, support::*};
 
 /// Signs in, creates an org, authorizes and approves: the issued code.
 async fn code(req: &TestServer, app: &TestApp) -> String {
@@ -94,6 +94,82 @@ async fn code_exchange_happy_path() {
         assert_eq!(b["scope"], "opsagent.read");
         assert!(b["access_token"].as_str().unwrap().len() > 20);
         assert!(!grant_revoked(&app, b["access_token"].as_str().unwrap()).await);
+    })
+    .await;
+}
+
+/// The scope a token carries in practice: whether a write tool runs with it.
+async fn can_write(req: &TestServer, access_token: &str) -> bool {
+    let args = json!({"id": uuid::Uuid::new_v4().to_string()});
+    let got = call(req, access_token, "reopen_finding", args).await;
+    // `not_found` means the tool ran; a read-only grant never gets that far.
+    match got["result"]["structuredContent"]["code"].as_str() {
+        Some("not_found") => true,
+        Some("insufficient_scope") => false,
+        other => panic!("unexpected {other:?}: {got}"),
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn write_is_granted_only_when_requested_and_approved_and_refresh_keeps_it() {
+    serve(|req, app| async move {
+        let mail = prepare(&app);
+        let csrf = sign_in(&req, &mail, "owner@example.com").await;
+        let org = create_org(&req, &csrf, "Acme").await;
+        client(&app).await;
+        let both = "opsagent.read opsagent.write";
+        let res = authorize(&req, &with(params(REDIRECT), "scope", both)).await;
+        let id = query_of(res.header("location").to_str().unwrap())["request_id"].clone();
+        // Requested but denied: no code, so no grant of any scope.
+        let denied = decide(&req, &csrf, &id, json!({"deny": true})).await;
+        let to = denied.json::<Value>()["redirect_to"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(query_of(&to)["error"], "access_denied");
+        assert!(!query_of(&to).contains_key("code"));
+        let grants = app
+            .state
+            .uow
+            .oauth()
+            .grants_for_org(org["id"].as_str().unwrap().parse().unwrap());
+        assert!(grants.await.unwrap().is_empty());
+        // Requested and approved.
+        let res = authorize(&req, &with(params(REDIRECT), "scope", both)).await;
+        let id = query_of(res.header("location").to_str().unwrap())["request_id"].clone();
+        let res = decide(&req, &csrf, &id, json!({"organisation": slug(&org)})).await;
+        let c = query_of(res.json::<Value>()["redirect_to"].as_str().unwrap())["code"].clone();
+        let first: Value = exchange(&req, &c, VERIFIER, REDIRECT).await.json();
+        assert_eq!(first["scope"], both);
+        assert!(can_write(&req, first["access_token"].as_str().unwrap()).await);
+        let second: Value = refresh(&req, &rt(&first), CLIENT).await.json();
+        assert_eq!(second["scope"], both);
+        assert!(can_write(&req, second["access_token"].as_str().unwrap()).await);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn refresh_never_widens_a_read_only_grant() {
+    serve(|req, app| async move {
+        let first = tokens(&req, &app).await;
+        assert_eq!(first["scope"], "opsagent.read");
+        assert!(!can_write(&req, first["access_token"].as_str().unwrap()).await);
+        let res = req
+            .post("/oauth/token")
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", rt(&first).as_str()),
+                ("client_id", CLIENT),
+                ("scope", "opsagent.read opsagent.write"),
+            ])
+            .await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        let second: Value = res.json();
+        assert_eq!(second["scope"], "opsagent.read");
+        assert!(!can_write(&req, second["access_token"].as_str().unwrap()).await);
     })
     .await;
 }

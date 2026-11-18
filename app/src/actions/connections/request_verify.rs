@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use super::disconnected;
 use crate::{
-    actions::{runs::RunDispatcher, uow::UnitOfWork},
+    actions::{orgs::OrgScope, runs::RunDispatcher, uow::UnitOfWork},
     creds::{self, Creds},
     error::{AppError, AppResult},
 };
@@ -39,7 +39,8 @@ fn role_error(e: ConnectorError, service: &str) -> AppError {
     }
 }
 
-/// Stores the reported role and queues a `verify` run; returns the run id.
+/// Stores the reported role and queues a `verify` run; returns the run id. Owners only.
+#[derive(Clone)]
 pub struct RequestVerify {
     uow: Arc<dyn UnitOfWork>,
     kek: Arc<dyn Kek>,
@@ -62,13 +63,9 @@ impl RequestVerify {
         }
     }
 
-    pub async fn run(
-        &self,
-        organisation_id: Uuid,
-        actor: Uuid,
-        id: Uuid,
-        role_arn: &str,
-    ) -> AppResult<Uuid> {
+    pub async fn run(&self, scope: &OrgScope, id: Uuid, role_arn: &str) -> AppResult<Uuid> {
+        scope.require_owner()?;
+        let (organisation_id, actor) = (scope.organisation.id, scope.member.user_id);
         let c = self.uow.connections().get(organisation_id, id).await?;
         let c = c.ok_or(AppError::NotFound)?;
         let from = c.status;

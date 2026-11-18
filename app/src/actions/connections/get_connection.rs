@@ -9,6 +9,7 @@ use crate::{
 };
 
 /// One connection with its latest verification; `NotFound` for another organisation's.
+#[derive(Clone)]
 pub struct GetConnection {
     uow: Arc<dyn UnitOfWork>,
 }

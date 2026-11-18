@@ -1,16 +1,17 @@
 use std::sync::Arc;
 
+use axum::http::StatusCode;
 use opsagent_connectors::{
     registry::{self, ProviderSpec},
     Registry,
 };
-use opsagent_core::{audit::AuditEntry, connection::NewConnection};
+use opsagent_core::{audit::AuditEntry, connection::NewConnection, org::valid_name};
 use opsagent_secrets::Kek;
 use uuid::Uuid;
 
-use super::TEMPLATE_VERSION;
+use super::{QuickCreate, TEMPLATE_VERSION};
 use crate::{
-    actions::{billing::BillingGate, uow::UnitOfWork},
+    actions::{billing::BillingGate, orgs::OrgScope, uow::UnitOfWork},
     creds::{Creds, Dek},
     error::{AppError, AppResult},
 };
@@ -22,13 +23,15 @@ pub struct Created {
     pub spec: ProviderSpec,
 }
 
-/// Creates a `pending` connection and its sealed credentials, for owner `actor`; 402
-/// `trial_limit` when a trialing organisation already has its billable connection.
+/// Creates a `pending` connection and its sealed credentials. Owners only; 402 `trial_limit`
+/// when a trialing organisation already has its billable connection.
+#[derive(Clone)]
 pub struct CreateConnection {
     uow: Arc<dyn UnitOfWork>,
     kek: Arc<dyn Kek>,
     registry: Registry,
     gate: BillingGate,
+    links: QuickCreate,
 }
 
 impl CreateConnection {
@@ -37,22 +40,34 @@ impl CreateConnection {
         kek: Arc<dyn Kek>,
         registry: Registry,
         gate: BillingGate,
+        links: QuickCreate,
     ) -> Self {
         Self {
             uow,
             kek,
             registry,
             gate,
+            links,
         }
     }
 
     pub async fn run(
         &self,
-        organisation_id: Uuid,
-        actor: Uuid,
+        scope: &OrgScope,
         provider: &str,
-        display_name: String,
+        display_name: &str,
     ) -> AppResult<Created> {
+        scope.require_owner()?;
+        let display_name = valid_name(display_name).map_err(|e| AppError::Invalid(e.into()))?;
+        // Before any row is written: AWS needs the outbound role to build the onboarding link.
+        if provider == "aws" && self.links.principal.is_none() {
+            return Err(AppError::Refused {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                code: "connector_unavailable",
+                detail: "AWS connections are not available yet.".into(),
+            });
+        }
+        let (organisation_id, actor) = (scope.organisation.id, scope.member.user_id);
         let spec = self
             .registry
             .spec(provider)

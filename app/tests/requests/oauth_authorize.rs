@@ -44,7 +44,7 @@ pub fn params(redirect_uri: &str) -> Vec<(&'static str, String)> {
     ]
 }
 
-fn with(
+pub fn with(
     mut p: Vec<(&'static str, String)>,
     k: &'static str,
     v: &str,
@@ -123,11 +123,39 @@ async fn authorize_plain_pkce_redirects_with_invalid_request() {
         assert_eq!(q["error"], "invalid_request");
         assert_eq!(q["state"], "st-1");
         assert_eq!(q["iss"], BASE);
-        let res = authorize(&req, &with(params(REDIRECT), "scope", "opsagent.write")).await;
-        assert_eq!(
-            query_of(res.header("location").to_str().unwrap())["error"],
-            "invalid_scope"
-        );
+        // Write never without read, and nothing but the two scopes.
+        for scope in ["opsagent.write", "opsagent.read admin", "admin"] {
+            let res = authorize(&req, &with(params(REDIRECT), "scope", scope)).await;
+            let q = query_of(res.header("location").to_str().unwrap());
+            assert_eq!(q["error"], "invalid_scope", "{scope}");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn authorize_stores_write_only_when_asked_and_consent_shows_it() {
+    serve(|req, app| async move {
+        let mail = prepare(&app);
+        sign_in(&req, &mail, "owner@example.com").await;
+        client(&app).await;
+        for (asked, stored) in [
+            ("opsagent.read", vec!["opsagent.read"]),
+            ("", vec!["opsagent.read"]),
+            (
+                "opsagent.write opsagent.read",
+                vec!["opsagent.read", "opsagent.write"],
+            ),
+        ] {
+            let res = authorize(&req, &with(params(REDIRECT), "scope", asked)).await;
+            assert_eq!(res.status_code(), 302, "{}", res.text());
+            let id = query_of(res.header("location").to_str().unwrap())["request_id"].clone();
+            let row = app.state.uow.oauth().consent(id.parse().unwrap()).await;
+            assert_eq!(row.unwrap().unwrap().scope, stored.join(" "));
+            let v: Value = req.get(&format!("/v1/oauth/consent/{id}")).await.json();
+            assert_eq!(v["scopes"], json!(stored), "{asked:?}");
+        }
     })
     .await;
 }
@@ -212,6 +240,7 @@ async fn consent_view_flags_loopback() {
                 "verified": false,
                 "publisher": null,
                 "loopback": true,
+                "scopes": ["opsagent.read"],
                 "organisations": [{"slug": slug(&org), "name": "Acme"}],
             })
         );

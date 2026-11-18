@@ -75,7 +75,8 @@ impl DecideConsent {
             )
             .await;
         gone_if_missing(decided)?;
-        let entry = AuditEntry::member(Some(org_id), user_id, "oauth.consent.approved", target);
+        let entry = AuditEntry::member(Some(org_id), user_id, "oauth.consent.approved", target)
+            .with_meta(serde_json::json!({ "scope": request.scope }));
         tx.audit().record(entry).await?;
         tx.commit().await?;
         let pairs = [("code", Some(code.as_str())), ("state", state)];

@@ -5,8 +5,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{
-    enum_arg, filter_id, page_json, page_request, parse_args, schema_of, Access, Caller, Tool,
-    ToolError, ToolSpec,
+    enum_arg, filter_id, link_base, page_json, page_request, parse_args, schema_of, Access, Caller,
+    Tool, ToolError, ToolSpec,
 };
 use crate::{actions::findings::ListFindings, views::findings::summary};
 
@@ -32,11 +32,12 @@ const STATUSES: [&str; 5] = ["open", "resolved", "accepted", "snoozed", "flappin
 /// The organisation's findings, most severe first, then oldest.
 pub struct ListFindingsTool {
     list: ListFindings,
+    web_base_url: String,
 }
 
 impl ListFindingsTool {
-    pub fn new(list: ListFindings) -> Self {
-        Self { list }
+    pub fn new(list: ListFindings, web_base_url: String) -> Self {
+        Self { list, web_base_url }
     }
 }
 
@@ -81,7 +82,8 @@ impl Tool for ListFindingsTool {
             .list
             .run(caller.scope.organisation.id, filter, page)
             .await?;
-        page_json(got, summary)
+        let base = link_base(&self.web_base_url, caller);
+        page_json(got, |f| summary(f, &base))
     }
 }
 
@@ -101,10 +103,18 @@ mod tests {
         let store = MemStore::default();
         let (org, other) = (Uuid::new_v4(), Uuid::new_v4());
         seeded(&store, org, "x").await;
-        let tool = ListFindingsTool::new(ListFindings::new(std::sync::Arc::new(store)));
+        let tool = ListFindingsTool::new(
+            ListFindings::new(std::sync::Arc::new(store)),
+            "https://web.test".into(),
+        );
         let got = tool.call(&caller(org), json!({})).await.unwrap();
         assert_eq!(got["items"].as_array().unwrap().len(), 1);
         assert_eq!(got["items"][0]["check_id"], "no_mfa");
+        let id = got["items"][0]["id"].as_str().unwrap();
+        assert_eq!(
+            got["items"][0]["url"],
+            format!("https://web.test/o/o/findings/{id}")
+        );
         // Open is the default; `all` is every status.
         let resolved = tool.call(&caller(org), json!({"status": "resolved"})).await;
         assert_eq!(resolved.unwrap()["items"], json!([]));

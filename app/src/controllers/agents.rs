@@ -24,6 +24,8 @@ pub struct AgentView {
     /// `dynamic` or `metadata_document`.
     pub client_kind: String,
     pub member_email: String,
+    /// `["opsagent.read"]` (read only) or `["opsagent.read", "opsagent.write"]` (read and changes).
+    pub scopes: Vec<String>,
     pub created_at: DateTime<FixedOffset>,
     pub last_used_at: Option<DateTime<FixedOffset>>,
 }
@@ -42,6 +44,7 @@ async fn list(
                 client_name: a.client_name,
                 client_kind: a.client_kind.into(),
                 member_email: a.member_email,
+                scopes: a.scopes,
                 created_at: a.created_at.fixed_offset(),
                 last_used_at: a.last_used_at.map(|t| t.fixed_offset()),
             })

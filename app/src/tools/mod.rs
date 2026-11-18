@@ -1,6 +1,7 @@
 //! Transport-neutral tools: each a struct over the Actions it needs, registered once in
 //! `boot.rs`. No transport types here; MCP (`crate::mcp`) and Plan 5's model harness are
 //! adapters over the `ToolRegistry`.
+pub mod connect_cloud_account;
 pub mod get_cost_anomalies;
 pub mod get_finding;
 pub mod get_scan;
@@ -10,6 +11,8 @@ pub mod list_resources;
 pub mod prompts;
 pub mod resources;
 pub mod run_check;
+pub mod triage_finding;
+pub mod verify_connection;
 
 use std::{sync::Arc, time::Instant};
 
@@ -17,6 +20,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     audit::AuditEntry,
+    org::org_web_base,
     repo::{PageOf, PageRequest, RepoError},
 };
 use schemars::JsonSchema;
@@ -31,6 +35,7 @@ use crate::{
     views::page::{Page, WireCursor, DEFAULT_LIMIT, MAX_LIMIT},
 };
 
+pub use connect_cloud_account::ConnectCloudAccountTool;
 pub use get_cost_anomalies::GetCostAnomaliesTool;
 pub use get_finding::GetFindingTool;
 pub use get_scan::GetScanTool;
@@ -40,6 +45,8 @@ pub use list_resources::ListResourcesTool;
 pub use prompts::{Prompt, PromptRegistry};
 pub use resources::{ResourceRegistry, ResourceSource};
 pub use run_check::RunCheckTool;
+pub use triage_finding::{Triage, TriageFindingTool};
+pub use verify_connection::VerifyConnectionTool;
 
 /// Who is calling a tool: the organisation scope and the door they came through.
 #[derive(Debug, Clone)]
@@ -54,6 +61,8 @@ pub enum Via {
         grant_id: Uuid,
         client_id: String,
         token_id: Uuid,
+        /// The grant carries `opsagent.write`: the member approved changes.
+        write: bool,
     },
     /// The dashboard chat, for the member who owns the session.
     Chat { session_id: Uuid, member_id: Uuid },
@@ -67,13 +76,19 @@ impl Via {
             Via::Chat { .. } => "chat",
         }
     }
+
+    /// Only an MCP grant approved for changes may run a write tool; the chat never does.
+    fn may_write(&self) -> bool {
+        matches!(self, Via::Mcp { write: true, .. })
+    }
 }
 
-/// What a tool may do. Read only in this release: a write tool needs a new variant and an
-/// approval path, which nothing here provides.
+/// What a tool may do. `Write` changes OpsAgent's own state for the organisation (never the
+/// customer's cloud) and runs only for a caller that `may_write`; the registry enforces it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
     Read,
+    Write,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +124,13 @@ pub enum ToolError {
     ConnectionBlocked,
     #[error("This organisation is read-only until billing is set up.")]
     BillingRequired,
+    #[error("This connection is read-only. Connect the agent again and approve changes.")]
+    InsufficientScope,
+    #[error("{0}")]
+    Forbidden(&'static str),
+    /// An Action's own refusal, with the code and wording REST gives.
+    #[error("{detail}")]
+    Refused { code: &'static str, detail: String },
     /// The detail is logged, never shown to the caller.
     #[error("internal: {0}")]
     Internal(String),
@@ -124,6 +146,9 @@ impl ToolError {
             Self::ScanTooSoon { .. } => "scan_too_soon",
             Self::ConnectionBlocked => "connection_blocked",
             Self::BillingRequired => "billing_required",
+            Self::InsufficientScope => "insufficient_scope",
+            Self::Forbidden(_) => "forbidden",
+            Self::Refused { code, .. } => code,
             Self::Internal(_) => "internal",
         }
     }
@@ -138,8 +163,18 @@ impl From<AppError> for ToolError {
                 code: "billing_required",
                 ..
             } => Self::BillingRequired,
+            AppError::Forbidden => Self::Forbidden("Owner role required."),
+            AppError::Refused { code, detail, .. } => Self::Refused { code, detail },
             e => Self::Internal(e.to_string()),
         }
+    }
+}
+
+/// An Action's error for the connect tools, where a member's refusal names what owners do.
+pub fn owner_only(e: AppError) -> ToolError {
+    match e {
+        AppError::Forbidden => ToolError::Forbidden("Only an owner can connect a cloud account."),
+        e => e.into(),
     }
 }
 
@@ -179,6 +214,11 @@ pub fn page_json<T, K: WireCursor, U: Serialize>(
     view: impl FnMut(T) -> U,
 ) -> Result<Value, ToolError> {
     to_json(&Page::of(got).map(view))
+}
+
+/// The caller's organisation's dashboard address, for each finding's `url`.
+pub fn link_base(web_base_url: &str, caller: &Caller) -> String {
+    org_web_base(web_base_url, &caller.scope.organisation.slug)
 }
 
 /// An id naming a record: a malformed one is `NotFound`, as in REST.
@@ -223,7 +263,8 @@ impl ToolRegistry {
     }
 
     /// Runs the tool and audits it (`audited`). An unknown name is `Unknown`, not audited;
-    /// failed audit write fails the call.
+    /// failed audit write fails the call. A write tool never runs for a caller that may not
+    /// write: that is `InsufficientScope`, audited like any outcome.
     pub async fn invoke(
         &self,
         caller: &Caller,
@@ -235,7 +276,11 @@ impl ToolRegistry {
             return Err(ToolError::Unknown(name.to_owned()));
         };
         let started = Instant::now();
-        let result = tool.call(caller, args).await;
+        let result = if tool.spec().access == Access::Write && !caller.via.may_write() {
+            Err(ToolError::InsufficientScope)
+        } else {
+            tool.call(caller, args).await
+        };
         audited(
             &*self.uow,
             caller,
@@ -301,6 +346,64 @@ mod tests {
     use crate::adapters::memory::MemStore;
 
     struct Named(&'static str);
+
+    /// A write tool that records whether it ran.
+    struct Writes(Arc<std::sync::atomic::AtomicBool>);
+
+    #[async_trait]
+    impl Tool for Writes {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "w",
+                access: Access::Write,
+                ..Named("w").spec()
+            }
+        }
+        async fn call(&self, _: &Caller, _: Value) -> Result<Value, ToolError> {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(Value::Null)
+        }
+    }
+
+    #[tokio::test]
+    async fn write_tool_runs_only_for_a_write_grant() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let store = MemStore::default();
+        let r = ToolRegistry::new(vec![Arc::new(Writes(ran.clone()))], Arc::new(store.clone()));
+        let write = test_support::caller(Uuid::new_v4());
+        let mut read = write.clone();
+        if let Via::Mcp { write, .. } = &mut read.via {
+            *write = false;
+        }
+        let chat = Caller {
+            via: Via::Chat {
+                session_id: Uuid::new_v4(),
+                member_id: write.scope.member.id,
+            },
+            ..write.clone()
+        };
+        for refused in [&read, &chat] {
+            let e = r.invoke(refused, "w", Value::Null).await.unwrap_err();
+            assert_eq!(e.code(), "insufficient_scope");
+            assert_eq!(
+                e.to_string(),
+                "This connection is read-only. Connect the agent again and approve changes."
+            );
+            assert!(!ran.load(SeqCst), "the tool ran");
+        }
+        r.invoke(&write, "w", Value::Null).await.unwrap();
+        assert!(ran.load(SeqCst));
+        let outcomes: Vec<_> = store
+            .audit_entries()
+            .into_iter()
+            .map(|a| a.outcome)
+            .collect();
+        assert_eq!(
+            outcomes,
+            ["insufficient_scope", "insufficient_scope", "success"]
+        );
+    }
 
     #[async_trait]
     impl Tool for Named {
@@ -381,7 +484,7 @@ pub(crate) mod test_support {
 
     use super::*;
 
-    /// An MCP caller for organisation `org`.
+    /// An MCP caller for organisation `org`: an owner whose grant allows changes.
     pub fn caller(org: Uuid) -> Caller {
         let organisation = Organisation {
             id: org,
@@ -408,6 +511,7 @@ pub(crate) mod test_support {
                 grant_id: Uuid::new_v4(),
                 client_id: "test".into(),
                 token_id: Uuid::new_v4(),
+                write: true,
             },
         }
     }

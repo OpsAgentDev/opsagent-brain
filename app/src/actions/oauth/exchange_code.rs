@@ -77,6 +77,8 @@ impl ExchangeCode {
             client_id: c.client_id,
             member_id: member.id,
             organisation_id: member.organisation_id,
+            // What authorize validated and the member approved on the consent page.
+            scope: c.scope,
             created_at: now,
             last_used_at: None,
             revoked_at: None,
@@ -96,7 +98,7 @@ impl ExchangeCode {
             "oauth.token.issued",
             target,
         )
-        .with_meta(serde_json::json!({"client_id": grant.client_id}));
+        .with_meta(serde_json::json!({"client_id": grant.client_id, "scope": grant.scope}));
         tx.audit().record(entry).await.map_err(internal)?;
         tx.commit().await.map_err(internal)?;
         Ok(tokens)

@@ -7,7 +7,7 @@ use opsagent_core::{repo::PageOf, resource::ResourceFilter, run::RunFilter};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::{audited, page_request, to_json, Caller, ToolError};
+use super::{audited, link_base, page_request, to_json, Caller, ToolError};
 use crate::{
     actions::{findings::ListFindings, resources::ListResources, runs::ListRuns, uow::UnitOfWork},
     views::{
@@ -166,11 +166,12 @@ impl ResourceSource for LatestInventory {
 /// The first page of open findings.
 pub struct OpenFindings {
     list: ListFindings,
+    web_base_url: String,
 }
 
 impl OpenFindings {
-    pub fn new(list: ListFindings) -> Self {
-        Self { list }
+    pub fn new(list: ListFindings, web_base_url: String) -> Self {
+        Self { list, web_base_url }
     }
 }
 
@@ -195,7 +196,8 @@ impl ResourceSource for OpenFindings {
             .list
             .run(caller.scope.organisation.id, filter, page)
             .await?;
-        first_page(got, findings::summary, "list_findings")
+        let base = link_base(&self.web_base_url, caller);
+        first_page(got, |f| findings::summary(f, &base), "list_findings")
     }
 }
 
@@ -215,9 +217,10 @@ mod tests {
         let (org, other) = (Uuid::new_v4(), Uuid::new_v4());
         seeded(&store, org, "x").await;
         let reg = ResourceRegistry::new(
-            vec![Arc::new(OpenFindings::new(ListFindings::new(Arc::new(
-                store.clone(),
-            ))))],
+            vec![Arc::new(OpenFindings::new(
+                ListFindings::new(Arc::new(store.clone())),
+                String::new(),
+            ))],
             Arc::new(store),
         );
         let uri = "opsagent://findings/open";

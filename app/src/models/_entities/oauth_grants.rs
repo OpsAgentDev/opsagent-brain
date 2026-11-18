@@ -12,6 +12,8 @@ pub struct Model {
     pub client_id: String,
     pub member_id: Uuid,
     pub organisation_id: Uuid,
+    #[sea_orm(column_type = "Text")]
+    pub scope: String,
     pub created_at: DateTimeWithTimeZone,
     pub last_used_at: Option<DateTimeWithTimeZone>,
     pub revoked_at: Option<DateTimeWithTimeZone>,

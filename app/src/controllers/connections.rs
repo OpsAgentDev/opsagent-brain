@@ -3,8 +3,6 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use opsagent_connectors::aws::client::short_id;
-use opsagent_core::org::valid_name;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -12,42 +10,12 @@ use uuid::Uuid;
 
 use super::{parse_id, OrgIdPath, OrgPath, RunAccepted};
 use crate::{
-    actions::connections::{PatchInput, TEMPLATE_VERSION},
+    actions::connections::{stack_name, PatchInput, TEMPLATE_VERSION},
     api_error::{ApiError, ApiJson, Problem},
-    config::Config,
     middleware::org_scope::OrgScope,
     state::AppState,
     views::connections::{view, Connection},
 };
-
-fn stack_name(organisation_id: Uuid) -> String {
-    format!("OpsAgent-Read-{}", short_id(&organisation_id))
-}
-
-fn quick_create_url(
-    c: &Config,
-    organisation_id: Uuid,
-    external_id: &str,
-) -> Result<String, ApiError> {
-    let principal = c
-        .aws_outbound_role_arn
-        .as_deref()
-        .ok_or_else(|| ApiError::internal("OPSAGENT_AWS_OUTBOUND_ROLE_ARN is not set"))?;
-    let template = format!(
-        "{}/aws/opsagent-read-role-v{TEMPLATE_VERSION}.yaml",
-        c.template_base_url.trim_end_matches('/')
-    );
-    let e = |s: &str| urlencoding::encode(s).into_owned();
-    Ok(format!(
-        "https://console.aws.amazon.com/cloudformation/home#/stacks/quickcreate?templateURL={}&stackName={}\
-         &param_ExternalId={}&param_OpsAgentPrincipal={}&param_OrgShortId={}&param_TemplateVersion={TEMPLATE_VERSION}",
-        e(&template),
-        stack_name(organisation_id),
-        e(external_id),
-        e(principal),
-        short_id(&organisation_id),
-    ))
-}
 
 #[derive(Deserialize, ToSchema)]
 pub struct NewConnection {
@@ -74,25 +42,12 @@ async fn create(
     scope: OrgScope,
     ApiJson(body): ApiJson<NewConnection>,
 ) -> Result<(StatusCode, Json<CreatedConnection>), ApiError> {
-    scope.require_owner()?;
-    let name = valid_name(&body.display_name).map_err(ApiError::invalid)?;
-    // Before any row is written: AWS needs the outbound role to build the onboarding link.
-    if body.provider == "aws" && app.config.aws_outbound_role_arn.is_none() {
-        return Err(ApiError::unavailable(
-            "connector_unavailable",
-            "AWS connections are not available yet.",
-        ));
-    }
-    let org_id = scope.organisation.id;
-    let create = &app.actions.connections.create_connection;
-    let created = create
-        .run(org_id, scope.member.user_id, &body.provider, name)
+    let c = &app.actions.connections;
+    let created = c
+        .create_connection
+        .run(&scope, &body.provider, &body.display_name)
         .await?;
-    let url = created
-        .spec
-        .uses_template
-        .then(|| quick_create_url(&app.config, org_id, &created.creds.external_id))
-        .transpose()?;
+    let url = c.quick_create.link(scope.organisation.id, &created)?;
     Ok((
         StatusCode::CREATED,
         Json(CreatedConnection {
@@ -186,12 +141,8 @@ async fn verify(
     Path((_, id)): Path<(String, String)>,
     ApiJson(body): ApiJson<VerifyBody>,
 ) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
-    scope.require_owner()?;
     let verify = &app.actions.connections.request_verify;
-    let (org_id, id) = (scope.organisation.id, parse_id(&id)?);
-    let run_id = verify
-        .run(org_id, scope.member.user_id, id, &body.role_arn)
-        .await?;
+    let run_id = verify.run(&scope, parse_id(&id)?, &body.role_arn).await?;
     Ok((StatusCode::ACCEPTED, Json(RunAccepted { run_id })))
 }
 
@@ -219,11 +170,7 @@ async fn reconnect(
     let got = link
         .run(org_id, scope.member.user_id, parse_id(&id)?)
         .await?;
-    let url = got
-        .spec
-        .uses_template
-        .then(|| quick_create_url(&app.config, org_id, &got.creds.external_id))
-        .transpose()?;
+    let url = app.actions.connections.quick_create.link(org_id, &got)?;
     Ok(Json(ReconnectLink {
         quick_create_url: url,
         stack_name: stack_name(org_id),
