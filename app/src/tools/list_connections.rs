@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use opsagent_core::{repo::PageRequest, run::RunFilter};
+use opsagent_core::{connection::ConnectionStatus, repo::PageRequest, run::RunFilter};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -30,7 +30,9 @@ impl Tool for ListConnectionsTool {
             name: "list_connections",
             title: "List connections",
             description: "Lists the organisation's cloud connections: id, provider, name, \
-                          status and the latest scan. Use a connection id to filter the other tools.",
+                          cloud account id, status and the latest scan. Only `connected` ones are \
+                          scanned; a `disconnected` one keeps its old findings. Use a connection \
+                          id to filter the other tools.",
             input_schema: schema_of::<Args>(),
             access: Access::Read,
             idempotent: true,
@@ -42,6 +44,10 @@ impl Tool for ListConnectionsTool {
         let org = caller.scope.organisation.id;
         let mut out = Vec::new();
         for c in self.list.run(org).await? {
+            // An abandoned connect attempt is not a cloud account: the dashboard hides it too.
+            if c.status == ConnectionStatus::Disconnected && c.first_connected_at.is_none() {
+                continue;
+            }
             // shortcut: one runs query per connection, batch when connections per org grow past ~50
             let filter = RunFilter {
                 connection_id: Some(c.id),
@@ -56,6 +62,7 @@ impl Tool for ListConnectionsTool {
                 "id": c.id,
                 "provider": c.provider,
                 "name": c.display_name,
+                "account_id": c.external_account_id,
                 "status": c.status,
                 "last_scan": last.map(|r| json!({
                     "run_id": r.id,
