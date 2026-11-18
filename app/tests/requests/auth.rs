@@ -366,6 +366,50 @@ async fn an_unchanged_request_does_not_undo_an_overlapping_session_write() {
     .await;
 }
 
+/// Two requests that each change a different key overlap: both changes are kept, and a key one
+/// of them removed stays removed.
+#[tokio::test]
+#[serial]
+async fn overlapping_session_writes_to_different_keys_are_both_kept() {
+    use opsagent_brain::middleware::session::DbStore;
+    use tower_sessions::SessionStore;
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        sign_in(&req, &mail, "merge@example.com").await;
+        let row = || async {
+            sessions::Entity::find()
+                .one(&ctx.db)
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        let id = row().await.id.parse().unwrap();
+        let store = DbStore(ctx.db.clone());
+        let load = || async { store.load(&id).await.unwrap().unwrap() };
+
+        let mut seed = load().await;
+        seed.data.insert("old".into(), json!(1));
+        store.save(&seed).await.unwrap();
+
+        let (mut a, mut b) = (load().await, load().await);
+        a.data.insert("passkey".into(), json!("a"));
+        b.data.insert("slack".into(), json!("b"));
+        b.data.remove("old");
+        store.save(&a).await.unwrap();
+        store.save(&b).await.unwrap();
+
+        let row = row().await;
+        let data: Value = serde_json::from_slice(&row.data).unwrap();
+        assert_eq!(
+            (&data["passkey"], &data["slack"]),
+            (&json!("a"), &json!("b"))
+        );
+        assert!(data.get("old").is_none(), "{data}");
+        assert!(data["user_id"].is_string() && row.user_id.is_some());
+    })
+    .await;
+}
+
 #[tokio::test]
 #[serial]
 async fn signed_out_session_is_not_resurrected() {
