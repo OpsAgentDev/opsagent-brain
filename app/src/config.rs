@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn opsagent_ai_alias_used_when_empty() {
-        // Railway today sets only this variable.
+        // Older deployments set only this variable.
         let p = ai_conn(&[("OPSAGENT_ANTHROPIC_API_KEY", "k")]).expect("primary");
         assert_eq!(
             (p.style, p.base_url, p.api_key.as_str()),

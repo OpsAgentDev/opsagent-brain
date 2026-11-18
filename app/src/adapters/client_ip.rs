@@ -3,7 +3,7 @@
 //! `TRUSTED_PROXY_SECRET` is set and the request carries it in `X-Origin-Auth` (Cloudflare adds
 //! the header, so only its traffic has it), `CF-Connecting-IP` is the client. Otherwise it is
 //! the rightmost `X-Forwarded-For` value, which the single trusted proxy in front of the app
-//! (Railway's edge) appends. The socket address is never used.
+//! (the AWS load balancer) appends. The socket address is never used.
 use std::{convert::Infallible, net::IpAddr};
 
 use axum::{extract::FromRequestParts, http::request::Parts};
