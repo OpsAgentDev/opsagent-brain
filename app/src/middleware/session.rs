@@ -20,7 +20,7 @@ const MAX_AGE_DAYS: i64 = 30;
 /// Postgres store on the existing `sessions` table via SeaORM. (tower-sessions-sqlx-store
 /// pins sqlx 0.8; this app's sea-orm uses 0.9, so the pools are not interchangeable.)
 #[derive(Clone, Debug)]
-pub struct DbStore(DatabaseConnection);
+pub struct DbStore(pub DatabaseConnection);
 
 fn backend(e: impl std::fmt::Display) -> session_store::Error {
     session_store::Error::Backend(e.to_string())
@@ -50,12 +50,19 @@ pub async fn delete_all_for(
         .map(|_| ())
 }
 
+/// Holds the data as `load` read it, so `save` can tell a request that changed nothing. Never stored.
+const LOADED_KEY: &str = "_loaded";
+
+/// The bytes to store, the expiry, and whether the data is still what `load` read.
 fn encode(
     record: &Record,
-) -> session_store::Result<(Vec<u8>, chrono::DateTime<chrono::FixedOffset>)> {
-    let data = serde_json::to_vec(&record.data)
-        .map_err(|e| session_store::Error::Encode(e.to_string()))?;
-    Ok((data, to_chrono(record.expiry_date)))
+) -> session_store::Result<(Vec<u8>, chrono::DateTime<chrono::FixedOffset>, bool)> {
+    let mut data = record.data.clone();
+    let loaded = data.remove(LOADED_KEY);
+    let unchanged = loaded.is_some_and(|l| serde_json::to_value(&data).is_ok_and(|d| d == l));
+    let bytes =
+        serde_json::to_vec(&data).map_err(|e| session_store::Error::Encode(e.to_string()))?;
+    Ok((bytes, to_chrono(record.expiry_date), unchanged))
 }
 
 #[async_trait]
@@ -70,7 +77,7 @@ impl SessionStore for DbStore {
         {
             record.id = Id::default();
         }
-        let (data, expiry) = encode(record)?;
+        let (data, expiry, _) = encode(record)?;
         sessions::Entity::insert(sessions::ActiveModel {
             id: Set(record.id.to_string()),
             data: Set(data),
@@ -87,13 +94,21 @@ impl SessionStore for DbStore {
 
     /// UPDATE only: with always_save, the end-of-request save must not resurrect a row that
     /// sign-out deleted or that has expired. Inserts happen in `create` only.
+    ///
+    /// A request that changed nothing only slides the expiry. Writing its copy of the data back
+    /// would undo what a request that overlapped it stored (a passkey or OAuth state in progress).
+    /// Two overlapping requests that both change the data are still last write wins.
     async fn save(&self, record: &Record) -> session_store::Result<()> {
-        let (data, expiry) = encode(record)?;
-        sessions::Entity::update_many()
-            .col_expr(sessions::Column::Data, data.into())
+        let (data, expiry, unchanged) = encode(record)?;
+        let mut update = sessions::Entity::update_many()
             .col_expr(sessions::Column::ExpiryDate, expiry.into())
-            .col_expr(sessions::Column::UpdatedAt, now().into())
-            .col_expr(sessions::Column::UserId, user_of(record).into())
+            .col_expr(sessions::Column::UpdatedAt, now().into());
+        if !unchanged {
+            update = update
+                .col_expr(sessions::Column::Data, data.into())
+                .col_expr(sessions::Column::UserId, user_of(record).into());
+        }
+        update
             .filter(sessions::Column::Id.eq(record.id.to_string()))
             .filter(sessions::Column::ExpiryDate.gt(now()))
             .exec(&self.0)
@@ -112,10 +127,14 @@ impl SessionStore for DbStore {
         else {
             return Ok(None);
         };
+        let mut data: std::collections::HashMap<String, serde_json::Value> =
+            serde_json::from_slice(&row.data)
+                .map_err(|e| session_store::Error::Decode(e.to_string()))?;
+        let loaded = serde_json::to_value(&data).map_err(backend)?;
+        data.insert(LOADED_KEY.into(), loaded);
         Ok(Some(Record {
             id: *id,
-            data: serde_json::from_slice(&row.data)
-                .map_err(|e| session_store::Error::Decode(e.to_string()))?,
+            data,
             expiry_date: time::OffsetDateTime::from_unix_timestamp(row.expiry_date.timestamp())
                 .map_err(backend)?,
         }))

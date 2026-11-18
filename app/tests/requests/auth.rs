@@ -332,6 +332,40 @@ async fn sign_out_everywhere_ends_the_users_other_sessions_only() {
     .await;
 }
 
+/// A slow request that changed nothing ends after another request stored something (seen in
+/// e2e: GET billing ending after passkey register/start, so finish found no ceremony).
+#[tokio::test]
+#[serial]
+async fn an_unchanged_request_does_not_undo_an_overlapping_session_write() {
+    use opsagent_brain::middleware::session::DbStore;
+    use tower_sessions::SessionStore;
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        sign_in(&req, &mail, "overlap@example.com").await;
+        let row = || async {
+            sessions::Entity::find()
+                .one(&ctx.db)
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        let id = row().await.id.parse().unwrap();
+        let store = DbStore(ctx.db.clone());
+
+        let slow = store.load(&id).await.unwrap().unwrap();
+        let mut writer = store.load(&id).await.unwrap().unwrap();
+        writer.data.insert("ceremony".into(), json!("state"));
+        store.save(&writer).await.unwrap();
+        store.save(&slow).await.unwrap();
+
+        let data: Value = serde_json::from_slice(&row().await.data).unwrap();
+        assert_eq!(data["ceremony"], "state");
+        assert!(data["user_id"].is_string());
+        assert!(data.get("_loaded").is_none(), "{data}");
+    })
+    .await;
+}
+
 #[tokio::test]
 #[serial]
 async fn signed_out_session_is_not_resurrected() {
