@@ -19,12 +19,13 @@ mod watch_scan;
 
 use std::{future::Future, sync::Arc};
 
-use opsagent_core::run::RunStatus;
+use chrono::{DateTime, Utc};
+use opsagent_core::run::{RunKey, RunStatus};
 use opsagent_ledger::{redis, run_chunked, ChunkOutcome, RunChunkedOptions, RunRow};
 use uuid::Uuid;
 
 use crate::actions::uow::UnitOfWork;
-use classify::LResult;
+use classify::{lerr, LResult};
 
 pub use dispatch::RunDispatcher;
 pub use full_scan::FullScan;
@@ -78,6 +79,31 @@ where
         send(run.clone())
     })
     .await
+}
+
+/// The `billing_notice` marker run of `org` (`None`: no organisation) at `anchor`, created
+/// `done`, once. It has no worker: it holds the ledger keys of mails sent once.
+pub(crate) async fn notice_marker(
+    uow: &dyn UnitOfWork,
+    org: Option<Uuid>,
+    anchor: DateTime<Utc>,
+) -> LResult<Uuid> {
+    let key = RunKey {
+        organisation_id: org,
+        connection_id: None,
+        job_type: "billing_notice".into(),
+        scheduled_at: anchor,
+    };
+    let tx = uow.begin().await.map_err(lerr)?;
+    let out = tx.ledger().create_run(key).await?;
+    if out.created {
+        let (id, fence) = (out.run.id, out.run.fence);
+        tx.ledger()
+            .set_status(id, fence, RunStatus::Done, None)
+            .await?;
+    }
+    tx.commit().await.map_err(lerr)?;
+    Ok(out.run.id)
 }
 
 #[cfg(test)]

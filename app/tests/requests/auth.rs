@@ -224,6 +224,13 @@ async fn deleting_the_account_needs_the_email_and_signs_out() {
         assert_eq!(del("someone@example.com").await.status_code(), 422);
         assert_eq!(del("Gone@Example.com").await.status_code(), 204);
         assert_eq!(req.get("/v1/auth/me").await.status_code(), 401);
+        // The address the account had is told, once.
+        let subject = "Your OpsAgent account was deleted";
+        let mut told = mail.sent();
+        told.retain(|m| m.subject == subject);
+        assert_eq!(told.len(), 1);
+        assert_eq!(told[0].to, "gone@example.com");
+        assert!(told[0].text.contains("sign up again"), "{}", told[0].text);
         let row = users::Entity::find()
             .filter(users::Column::DeletedAt.is_not_null())
             .one(&ctx.db)

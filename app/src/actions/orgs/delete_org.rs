@@ -12,19 +12,25 @@ use crate::{
     actions::{
         billing::{provider_failed, unavailable},
         connections::end_connection,
+        deleted_notice::{org_deleted, send_once},
+        recipients::MailGuard,
         uow::UnitOfWork,
     },
     error::AppResult,
+    mailers::{magic_link::mail_safe_name, Mail, Mailer},
 };
 
 /// Soft-deletes the organisation, in one transaction: every connection is disconnected and
 /// every schedule disabled, so nothing is scanned for it again. Owners only. A live Stripe
 /// subscription is cancelled first; if Stripe fails, nothing is deleted (502, or 503 unconfigured).
+/// Afterwards every owner is mailed once (`deleted_notice`); a mail failure changes nothing.
 pub struct DeleteOrg {
     uow: Arc<dyn UnitOfWork>,
     clock: Arc<dyn Clock>,
     billing: Arc<dyn BillingProvider>,
     stripe_configured: bool,
+    mailer: Arc<dyn Mailer>,
+    guard: Arc<MailGuard>,
 }
 
 impl DeleteOrg {
@@ -33,18 +39,23 @@ impl DeleteOrg {
         clock: Arc<dyn Clock>,
         billing: Arc<dyn BillingProvider>,
         stripe_configured: bool,
+        (mailer, guard): (Arc<dyn Mailer>, Arc<MailGuard>),
     ) -> Self {
         Self {
             uow,
             clock,
             billing,
             stripe_configured,
+            mailer,
+            guard,
         }
     }
 
     pub async fn run(&self, scope: &OrgScope, actor: Uuid) -> AppResult<()> {
         scope.require_owner()?;
         let organisation_id = scope.organisation.id;
+        // Read before the delete: who is told, and where.
+        let mails = self.owner_mails(scope).await?;
         self.cancel_subscription(organisation_id).await?;
         let tx = self.uow.begin().await?;
         tx.orgs().lock(organisation_id).await?;
@@ -62,6 +73,15 @@ impl DeleteOrg {
         let entry = AuditEntry::member(Some(organisation_id), actor, "org.delete", target);
         tx.audit().record(entry).await?;
         tx.commit().await?;
+        let anchor = scope.organisation.created_at;
+        send_once(
+            &*self.uow,
+            &*self.mailer,
+            Some(organisation_id),
+            anchor,
+            mails,
+        )
+        .await;
         Ok(())
     }
 
@@ -87,6 +107,27 @@ impl DeleteOrg {
             Err(e) => Err(provider_failed(e)),
         }
     }
+
+    /// The "organisation deleted" mail for each owner, with its ledger key.
+    async fn owner_mails(&self, scope: &OrgScope) -> AppResult<Vec<(String, Mail)>> {
+        let org = &scope.organisation;
+        let email = scope.member.email.as_str();
+        let name = scope.member.name.as_deref().map(mail_safe_name);
+        let by = match name.filter(|n| !n.is_empty()) {
+            Some(n) => format!("{n} ({email})"),
+            None => email.to_owned(),
+        };
+        let had_subscription = self.uow.billing().billing(org.id).await?;
+        let had_subscription = had_subscription.subscription.is_some();
+        let mut mails = Vec::new();
+        for o in self.uow.recipients().owners(org.id).await? {
+            if self.guard.may_deliver(org.id, &o.email, o.member).await? {
+                let mail = org_deleted(o.email, &mail_safe_name(&org.name), &by, had_subscription);
+                mails.push((format!("org_deleted:{}", o.id), mail));
+            }
+        }
+        Ok(mails)
+    }
 }
 
 #[cfg(test)]
@@ -98,7 +139,7 @@ mod tests {
         audit::AuditLog,
         connection::{ConnectionStatus, ConnectionsRepo, NewConnection, SealedCreds},
         finding::FindingsRepo,
-        org::OrganisationsRepo,
+        org::{OrganisationsRepo, Role},
         repo::{RepoError, RepoResult, SystemClock},
         resource::ResourcesRepo,
         run::{RunKey, RunsRepo},
@@ -116,6 +157,7 @@ mod tests {
             uow::{Repos, Tx},
         },
         adapters::memory::MemStore,
+        mailers::{CaptureMailer, FailingMailer},
     };
 
     /// Every schedule write fails.
@@ -278,6 +320,23 @@ mod tests {
         }
     }
 
+    fn mail(store: &MemStore, mailer: Arc<dyn Mailer>) -> (Arc<dyn Mailer>, Arc<MailGuard>) {
+        let limiter = Arc::new(crate::adapters::memory::MemRateLimiter::default());
+        let guard = MailGuard::new(Arc::new(store.clone()), limiter);
+        (mailer, Arc::new(guard))
+    }
+
+    fn action(store: &MemStore, mailer: Arc<dyn Mailer>) -> DeleteOrg {
+        let uow = Arc::new(store.clone());
+        DeleteOrg::new(
+            uow,
+            Arc::new(SystemClock),
+            no_stripe(),
+            false,
+            mail(store, mailer),
+        )
+    }
+
     async fn connection(store: &MemStore, organisation_id: Uuid) -> Uuid {
         let new = NewConnection {
             organisation_id,
@@ -320,7 +379,13 @@ mod tests {
 
         // A failing schedule write after the soft delete and the disconnect rolls back both.
         let broken = WithBrokenSchedules(Arc::new(store.clone()));
-        let refused = DeleteOrg::new(Arc::new(broken), Arc::new(SystemClock), no_stripe(), false);
+        let refused = DeleteOrg::new(
+            Arc::new(broken),
+            Arc::new(SystemClock),
+            no_stripe(),
+            false,
+            mail(&store, Arc::new(CaptureMailer::default())),
+        );
         let err = refused.run(&scope, owner.id).await.unwrap_err();
         assert!(
             matches!(err, AppError::Repo(RepoError::Storage(_))),
@@ -337,12 +402,7 @@ mod tests {
             .all(|e| e.action != "org.delete"));
         assert_eq!(store.enabled_schedules(org.id), schedules);
 
-        let delete = DeleteOrg::new(
-            Arc::new(store.clone()),
-            Arc::new(SystemClock),
-            no_stripe(),
-            false,
-        );
+        let delete = action(&store, Arc::new(CaptureMailer::default()));
         delete.run(&scope, owner.id).await.unwrap();
         assert!(store.is_deleted(org.id).await.unwrap());
         assert_eq!(
@@ -375,8 +435,8 @@ mod tests {
         let at = Utc::now();
         store.apply_subscription(org.id, &s, at).await.unwrap();
         let scope = scope(&store, &org, &owner).await;
-        let store_uow = Arc::new(store.clone());
-        let delete = DeleteOrg::new(store_uow, Arc::new(SystemClock), no_stripe(), false);
+        let sent = Arc::new(CaptureMailer::default());
+        let delete = action(&store, sent.clone());
         let err = delete.run(&scope, owner.id).await.unwrap_err();
         assert!(
             matches!(&err, AppError::Refused { status, code, .. }
@@ -388,6 +448,57 @@ mod tests {
         s.status = B::Canceled;
         let later = at + chrono::Duration::seconds(1);
         store.apply_subscription(org.id, &s, later).await.unwrap();
+        delete.run(&scope, owner.id).await.unwrap();
+        assert!(store.is_deleted(org.id).await.unwrap());
+        // It had a subscription, so the mail says it is cancelled.
+        let m = sent.sent();
+        assert_eq!(m.len(), 1);
+        assert!(
+            m[0].text
+                .ends_with(" Its subscription is cancelled and nothing more is charged."),
+            "{}",
+            m[0].text
+        );
+    }
+
+    #[tokio::test]
+    async fn every_owner_is_mailed_once_that_the_organisation_was_deleted() {
+        let store = MemStore::default();
+        let (owner, org) = owned_org(&store, "o@example.com", "Acme").await;
+        let second = user(&store, "p@example.com").await;
+        let member = user(&store, "m@example.com").await;
+        for (u, role) in [(&second, Role::Owner), (&member, Role::Member)] {
+            store.add_member(org.id, u.id, role).await.unwrap();
+        }
+        let scope = scope(&store, &org, &owner).await;
+        let sent = Arc::new(CaptureMailer::default());
+        let delete = action(&store, sent.clone());
+        delete.run(&scope, owner.id).await.unwrap();
+        // A second delete of the same organisation mails nobody again.
+        delete.run(&scope, owner.id).await.unwrap();
+        let m = sent.sent();
+        let to: Vec<_> = m.iter().map(|m| m.to.as_str()).collect();
+        assert_eq!(to, ["o@example.com", "p@example.com"]);
+        assert_eq!(m[0].subject, "The OpsAgent organisation Acme was deleted");
+        assert_eq!(
+            m[0].text,
+            "The organisation Acme was deleted by o@example.com.\n\nIts cloud \
+             connections, findings and settings are removed."
+        );
+        let html = m[0].html.as_deref().unwrap();
+        assert!(
+            html.contains("OpsAgent") && !html.contains("href=\"http"),
+            "{html}"
+        );
+        assert_ne!(m[0].idempotency_key, m[1].idempotency_key);
+    }
+
+    #[tokio::test]
+    async fn a_failing_mailer_does_not_fail_the_delete() {
+        let store = MemStore::default();
+        let (owner, org) = owned_org(&store, "o@example.com", "Acme").await;
+        let scope = scope(&store, &org, &owner).await;
+        let delete = action(&store, Arc::new(FailingMailer));
         delete.run(&scope, owner.id).await.unwrap();
         assert!(store.is_deleted(org.id).await.unwrap());
     }

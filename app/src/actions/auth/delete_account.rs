@@ -5,22 +5,28 @@ use opsagent_core::{audit::AuditEntry, org::Role, repo::Clock};
 use uuid::Uuid;
 
 use crate::{
-    actions::uow::UnitOfWork,
+    actions::{
+        deleted_notice::{account_deleted, send_once},
+        uow::UnitOfWork,
+    },
     error::{AppError, AppResult},
+    mailers::Mailer,
 };
 
 /// Deletes the signed-in user's account (PRD: refused while they are the only owner of an
 /// organisation). Leaves every organisation the way member removal does, then erases the user,
 /// in one transaction. The caller flushes the session; other sessions die on their next request
-/// because the user no longer resolves.
+/// because the user no longer resolves. Afterwards the address the account had is mailed
+/// once (`deleted_notice`); a mail failure changes nothing.
 pub struct DeleteAccount {
     uow: Arc<dyn UnitOfWork>,
     clock: Arc<dyn Clock>,
+    mailer: Arc<dyn Mailer>,
 }
 
 impl DeleteAccount {
-    pub fn new(uow: Arc<dyn UnitOfWork>, clock: Arc<dyn Clock>) -> Self {
-        Self { uow, clock }
+    pub fn new(uow: Arc<dyn UnitOfWork>, clock: Arc<dyn Clock>, mailer: Arc<dyn Mailer>) -> Self {
+        Self { uow, clock, mailer }
     }
 
     /// `confirm` must be the account's email (any case).
@@ -81,6 +87,10 @@ impl DeleteAccount {
             .record(AuditEntry::member(None, user_id, "user.delete", target))
             .await?;
         tx.commit().await?;
+        // To the address read before the erase.
+        let mail = account_deleted(user.email.as_str().to_owned());
+        let mails = vec![(format!("account_deleted:{user_id}"), mail)];
+        send_once(&*self.uow, &*self.mailer, None, user.created_at, mails).await;
         Ok(())
     }
 }
@@ -90,10 +100,59 @@ mod tests {
     use opsagent_core::{org::OrganisationsRepo, repo::SystemClock, user::UsersRepo};
 
     use super::*;
-    use crate::{actions::orgs::test_support::*, adapters::memory::MemStore};
+    use crate::{
+        actions::orgs::test_support::*,
+        adapters::memory::MemStore,
+        mailers::{CaptureMailer, FailingMailer},
+    };
 
     fn action(store: &MemStore) -> DeleteAccount {
-        DeleteAccount::new(Arc::new(store.clone()), Arc::new(SystemClock))
+        action_with(store, Arc::new(CaptureMailer::default()))
+    }
+
+    fn action_with(store: &MemStore, mailer: Arc<dyn Mailer>) -> DeleteAccount {
+        DeleteAccount::new(Arc::new(store.clone()), Arc::new(SystemClock), mailer)
+    }
+
+    #[tokio::test]
+    async fn the_address_the_account_had_is_mailed_once() {
+        let store = MemStore::default();
+        let u = user(&store, "pat@example.com").await;
+        // A refused delete mails nobody.
+        let sent = Arc::new(CaptureMailer::default());
+        let delete = action_with(&store, sent.clone());
+        assert!(delete.run(u.id, "pat@").await.is_err());
+        assert!(sent.sent().is_empty());
+        delete.run(u.id, "pat@example.com").await.unwrap();
+        // The account is gone, so a second delete is refused and mails nobody.
+        assert!(delete.run(u.id, "pat@example.com").await.is_err());
+        let m = sent.sent();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].to, "pat@example.com");
+        assert_eq!(m[0].subject, "Your OpsAgent account was deleted");
+        assert_eq!(
+            m[0].text,
+            "Your OpsAgent account and its sign-in methods are removed.\n\nYou can sign up \
+             again at any time."
+        );
+        let html = m[0].html.as_deref().unwrap();
+        assert!(
+            html.contains("OpsAgent") && !html.contains("href=\"http"),
+            "{html}"
+        );
+        // The ledger key is spent: the same mail offered again is not sent.
+        let again = vec![(format!("account_deleted:{}", u.id), m[0].clone())];
+        send_once(&store, &*sent, None, u.created_at, again).await;
+        assert_eq!(sent.sent().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failing_mailer_does_not_fail_the_delete() {
+        let store = MemStore::default();
+        let u = user(&store, "pat@example.com").await;
+        let delete = action_with(&store, Arc::new(FailingMailer));
+        delete.run(u.id, "pat@example.com").await.unwrap();
+        assert!(UsersRepo::get(&store, u.id).await.unwrap().is_none());
     }
 
     fn refused(err: AppError) -> (StatusCode, &'static str, String) {

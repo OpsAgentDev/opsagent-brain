@@ -309,6 +309,46 @@ async fn deleting_an_org_disconnects_its_connections_and_stops_scheduling() {
 
 #[tokio::test]
 #[serial]
+async fn deleting_an_org_mails_its_owners_once_and_a_mail_failure_does_not_stop_it() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let t = sign_in(&req, &mail, "o@example.com").await;
+        let acme = slug(&create_org(&req, &t, "Acme").await);
+        let other = slug(&create_org(&req, &t, "Other").await);
+        let delete = |org: String| {
+            req.delete(&format!("/v1/orgs/{org}"))
+                .add_header("X-CSRF-Token", &t)
+        };
+        let before = mail.sent().len();
+        assert_eq!(delete(acme.clone()).await.status_code(), 204);
+        // Gone: a second delete is a 404 and mails nobody.
+        assert_eq!(delete(acme).await.status_code(), 404);
+        let told: Vec<_> = mail.sent().into_iter().skip(before).collect();
+        assert_eq!(told.len(), 1);
+        assert_eq!(
+            (told[0].to.as_str(), told[0].subject.as_str()),
+            (
+                "o@example.com",
+                "The OpsAgent organisation Acme was deleted"
+            )
+        );
+        let text = &told[0].text;
+        assert!(
+            text.starts_with("The organisation Acme was deleted by ")
+                && text.contains("o@example.com")
+                && text.ends_with("Its cloud connections, findings and settings are removed."),
+            "{text}"
+        );
+
+        ctx.set_mailer(std::sync::Arc::new(opsagent_brain::mailers::FailingMailer));
+        assert_eq!(delete(other.clone()).await.status_code(), 204);
+        assert_eq!(delete(other).await.status_code(), 404);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn invites_list_cancel_and_role_change() {
     serve(|mut req, ctx| async move {
         let mail = prepare(&ctx);

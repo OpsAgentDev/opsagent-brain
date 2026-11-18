@@ -481,6 +481,49 @@ async fn subscription_updated_out_of_order_ignored() {
 
 #[tokio::test]
 #[serial]
+async fn a_trial_starting_mails_the_owners_once() {
+    serve_with(
+        stripe_on("http://127.0.0.1:9".into()),
+        |req, ctx| async move {
+            let (_, _, org) = org_with_customer(&req, &ctx).await;
+            let mail = prepare(&ctx);
+            // Created just now, as Stripe sends it: the notice run is due at once.
+            let trialing = |id: &str, secs_ago: i64| {
+                let mut e = sub_event(id, "customer.subscription.updated", 0, "trialing", 1, 30);
+                e["created"] = (Utc::now().timestamp() - secs_ago).into();
+                e
+            };
+            // The webhook answers 200 and sends nothing itself; its queued run sends the mail.
+            deliver(&req, &trialing("evt_1", 10)).await;
+            assert_eq!(status_of(&ctx, org).await, B::Trialing);
+            assert!(mail.sent().is_empty());
+            ctx.drain_jobs().await;
+            // A later event of the same trial, and Stripe's redelivery, mail nobody again.
+            deliver(&req, &trialing("evt_2", 5)).await;
+            deliver(&req, &trialing("evt_1", 10)).await;
+            ctx.drain_jobs().await;
+            let m = mail.sent();
+            assert_eq!(m.len(), 1);
+            assert_eq!(
+                (m[0].to.as_str(), m[0].subject.as_str()),
+                ("owner@example.com", "Your OpsAgent trial has started")
+            );
+            let until = at(14 * 86_400).format("%-d %B %Y");
+            let text = &m[0].text;
+            assert!(
+                text.starts_with(&format!("Your free trial runs until {until}."))
+                    && text.contains("US$299 a month per connected cloud account, plus tax")
+                    && text.contains("The trial covers one cloud account.")
+                    && text.ends_with("/settings/billing"),
+                "{text}"
+            );
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn deleted_while_trialing_is_trial_ended() {
     serve_with(
         stripe_on("http://127.0.0.1:9".into()),

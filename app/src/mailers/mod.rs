@@ -105,6 +105,18 @@ impl Mailer for CaptureMailer {
     }
 }
 
+/// Test double whose every send fails.
+#[cfg(feature = "test-support")]
+pub struct FailingMailer;
+
+#[cfg(feature = "test-support")]
+#[async_trait]
+impl Mailer for FailingMailer {
+    async fn send(&self, _: Mail) -> std::result::Result<(), String> {
+        Err("mail down".into())
+    }
+}
+
 pub struct ResendMailer {
     key: String,
     from: String,
