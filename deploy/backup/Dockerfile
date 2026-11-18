@@ -1,4 +1,4 @@
-# Build context is this directory (the Railway service root): `docker build deploy/backup`.
+# Build context is this directory (not the repo root): `docker build deploy/backup`.
 # pg_dump refuses to dump a server newer than itself, so this base image must track
 # or lead the production Postgres major (currently 18). Bump it with Postgres.
 # Pinned by digest; Dependabot (docker) bumps tag and digest together.

@@ -1,6 +1,6 @@
 # Deploying brain on AWS
 
-Production has run on AWS ECS Fargate (`us-west-2`, cluster `opsagent`) since 2026-11-12. Source of truth: `docs/tech-spec/aws-hosting.md` in the hub; the infrastructure is Terraform in `opsagent-infra`. Railway is stopped and kept as a fallback until 2026-11-19 (last section).
+Production has run on AWS ECS Fargate (`us-west-2`, cluster `opsagent`) since 2026-11-12. Source of truth: `docs/tech-spec/aws-hosting.md` in the hub; the infrastructure is Terraform in `opsagent-infra`.
 
 `.github/workflows/deploy-aws.yml` runs after a green `ci` for a push to `main`, or by hand. It assumes the role in the repo variable `AWS_DEPLOY_ROLE_ARN` through GitHub OIDC (no AWS key is stored in GitHub; the role trusts this workflow file on `main` only, `opsagent-infra/deploy.tf`), builds the root `Dockerfile` and `deploy/backup/Dockerfile`, pushes both to ECR under the commit SHA (tags are immutable, `ecr.tf`; an image that is already there is not rebuilt), runs `opsagent-brain db migrate` as a one-off task, then rolls `api`, `worker` and `scheduler` with `deploy/aws/roll.sh`. A failed migration stops the deploy before any service rolls.
 
@@ -113,14 +113,10 @@ RDS restores into a **new** instance; the running one is not changed.
 3. `pg_restore --no-owner --dbname=<scratch url> <file>.dump` finishes without errors.
 4. `DATABASE_URL=<scratch url> opsagent-brain db status`: all migrations applied.
 5. `select count(*)` on `organisations` and `findings`: counts are plausible against production.
-6. Record the date and result in the hub's `DECISIONS.md`; drop the scratch database. Last recorded test: 2026-11-05, against a Railway dump; next due 2026-12-05 (hub `DECISIONS.md`).
+6. Record the date and result in the hub's `DECISIONS.md`; drop the scratch database. Last recorded test: 2026-11-05, against a dump from the old Railway database; next due 2026-12-05 (hub `DECISIONS.md`).
 
 ## MCP server (Plan 4)
 
 No new variables. `APP_BASE_URL` must be exactly `https://brain.opsagent.dev` in production: the OAuth issuer, the MCP resource (`{APP_BASE_URL}/mcp`) and the MCP allowed host all derive from it, and boot fails if it is not an absolute URL. `SESSION_SECRET` also keys the consent browser-binding cookie. After deploy, `scripts/smoke.sh https://brain.opsagent.dev` checks MCP discovery and the 401 challenge.
 
 Consent works only on the custom domains (opsagent.dev and brain.opsagent.dev are same-site).
-
-## Railway fallback (until 2026-11-19)
-
-Railway's brain and web services are stopped; the project, its Postgres and its Redis are kept until 2026-11-19 and then deleted (hub `DECISIONS.md`, 2026-11-12). `railway.json` and `deploy/backup/railway.json` exist only for that fallback: there Railway builds the root `Dockerfile`, `api` runs `opsagent-brain db migrate` as its pre-deploy command, and `worker` and `scheduler` must have the pre-deploy command and healthcheck cleared. Nothing copies data back: what was written on AWS after the cutover is not in the Railway database. The stopped Railway `api` still holds the old `TRUSTED_PROXY_SECRET`, so a fallback also needs the Cloudflare header rule set back (same decision log entry). On `*.up.railway.app` hosts the SameSite=Lax consent cookie is not sent and MCP consent returns 403.

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       base_url:
-        description: Post-deploy smoke target, e.g. https://brain.opsagent.dev (run after a Railway deploy)
+        description: Post-deploy smoke target, e.g. https://brain.opsagent.dev (run after a deploy)
         required: true
 
 # A new push to the same branch cancels the run still going.
@@ -163,7 +163,7 @@ jobs:
       - if: always()
         run: docker compose --profile brain down -v
 
-  # Manual step after a Railway deploy (Railway deploys on push to main itself).
+  # Manual step after a deploy.
   smoke:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

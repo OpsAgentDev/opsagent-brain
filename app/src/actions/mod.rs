@@ -84,7 +84,7 @@ pub fn net_bucket(ip: std::net::IpAddr) -> std::net::IpAddr {
 }
 
 /// Counts one hit for the client at `ip` under `name`; `true` while within `cap`. `unknown`
-/// only without X-Forwarded-For: behind Railway's edge every request carries one.
+/// only without X-Forwarded-For: behind the load balancer every request carries one.
 pub async fn hit_ip(
     limiter: &dyn RateLimiter,
     name: &str,
