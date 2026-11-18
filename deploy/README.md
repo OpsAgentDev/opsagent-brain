@@ -1,6 +1,6 @@
 # Deploying brain on AWS
 
-Production has run on AWS ECS Fargate (`us-west-2`, cluster `opsagent`) since 2026-11-12. Source of truth: `docs/tech-spec/aws-hosting.md` in the hub; the infrastructure is Terraform in `opsagent-infra`. Railway is stopped and kept as a fallback until 2026-11-19 (last section).
+Production has run on AWS ECS Fargate (`us-west-2`, cluster `opsagent`) since 2026-11-12. Source of truth: `docs/tech-spec/aws-hosting.md` in the hub; the infrastructure is Terraform in `opsagent-infra`.
 
 `.github/workflows/deploy-aws.yml` runs after a green `ci` for a push to `main`, or by hand. It assumes the role in the repo variable `AWS_DEPLOY_ROLE_ARN` through GitHub OIDC (no AWS key is stored in GitHub; the role trusts this workflow file on `main` only, `opsagent-infra/deploy.tf`), builds the root `Dockerfile` and `deploy/backup/Dockerfile`, pushes both to ECR under the commit SHA (tags are immutable, `ecr.tf`; an image that is already there is not rebuilt), runs `opsagent-brain db migrate` as a one-off task, then rolls `api`, `worker` and `scheduler` with `deploy/aws/roll.sh`. A failed migration stops the deploy before any service rolls.
 
