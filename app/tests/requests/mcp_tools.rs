@@ -206,7 +206,7 @@ async fn unknown_tool_remediate_errors() {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names.len(), 7, "{names:?}");
+        assert_eq!(names.len(), 12, "{names:?}");
         let rc = list["result"]["tools"]
             .as_array()
             .unwrap()

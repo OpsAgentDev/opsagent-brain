@@ -147,15 +147,6 @@ async fn owner_lists_all_member_lists_own() {
         assert_eq!(all[0]["last_used_at"], Value::Null);
         assert_eq!(all[0]["scopes"], json!(["opsagent.read"]));
         let org = org_id(&req, &t.slug).await;
-        let member: Uuid = t.mate_member.parse().unwrap();
-        let (wide, _) = mint_scoped(&app, org, member, Duration::hours(1), SCOPE_READ_WRITE).await;
-        let all = req.get(&format!("/v1/orgs/{}/agents", t.slug)).await;
-        let all = all.json::<Vec<Value>>();
-        let wide = all.iter().find(|a| a["grant_id"] == wide.to_string());
-        assert_eq!(
-            wide.unwrap()["scopes"],
-            json!(["opsagent.read", "opsagent.write"])
-        );
 
         as_mate(&mut req, &t).await;
         let own = req
@@ -164,6 +155,17 @@ async fn owner_lists_all_member_lists_own() {
             .json::<Vec<Value>>();
         assert_eq!(own.len(), 1);
         assert_eq!(own[0]["grant_id"], t.mate_grant.to_string());
+
+        // A grant approved for changes shows both scopes.
+        let member: Uuid = t.mate_member.parse().unwrap();
+        let (wide, _) = mint_scoped(&app, org, member, Duration::hours(1), SCOPE_READ_WRITE).await;
+        let own = req.get(&format!("/v1/orgs/{}/agents", t.slug)).await;
+        let own = own.json::<Vec<Value>>();
+        let wide = own.iter().find(|a| a["grant_id"] == wide.to_string());
+        assert_eq!(
+            wide.unwrap()["scopes"],
+            json!(["opsagent.read", "opsagent.write"])
+        );
     })
     .await;
 }
