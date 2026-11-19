@@ -40,7 +40,8 @@ impl Check for CostAndIdle {
         let mut out = vec![];
         for r in ctx.resources {
             let a = &r.attributes;
-            let usd = a["monthly_cost_usd"].as_f64().unwrap_or(0.0);
+            // Unknown on AWS today: no amount is printed and none is assumed.
+            let usd = a["monthly_cost_usd"].as_f64();
             let n = short(r);
             let (variant, title, step, excerpt) = match r.service() {
                 "ebs" if a["attached"] == false => (
@@ -74,13 +75,16 @@ impl Check for CostAndIdle {
                 }
                 _ => continue,
             };
-            let summary = format!("{} costs about ${usd:.2}/month.", r.identity);
+            let summary = match usd {
+                Some(usd) => format!("{} costs about ${usd:.2}/month.", r.identity),
+                None => format!("{} is billed every month while unused.", r.identity),
+            };
             out.push(draft(
                 ctx,
                 "01",
                 r,
                 variant,
-                by_dollars(usd),
+                usd.map_or(Severity::Low, by_dollars),
                 (title, summary, step),
                 excerpt,
             ));

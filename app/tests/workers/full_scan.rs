@@ -329,6 +329,44 @@ impl Check for Twice {
     }
 }
 
+/// Test-only check that reports one finding, or panics while `FLAKY_PANICS` is set.
+struct Flaky;
+static FLAKY_PANICS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+impl Check for Flaky {
+    fn id(&self) -> &'static str {
+        "test_flaky"
+    }
+    fn supported(&self) -> &[Provider] {
+        &[Provider::Fake]
+    }
+    fn required(&self) -> &[Capability] {
+        &[]
+    }
+    fn run(&self, cx: &CheckCtx) -> Vec<FindingDraft> {
+        assert!(!FLAKY_PANICS.load(SeqCst), "check bug");
+        vec![FindingDraft {
+            key: FindingKey {
+                connection_id: cx.connection_id,
+                check_id: "test_flaky".into(),
+                resource_identity: "flaky".into(),
+                variant: String::new(),
+            },
+            severity: Low,
+            title: "flaky".into(),
+            summary: "flaky".into(),
+            next_step: "none".into(),
+            cost_monthly_usd: None,
+            evidence: vec![],
+        }]
+    }
+}
+
+fn with_flaky() -> Vec<Box<dyn Check>> {
+    let mut v = opsagent_checks::all();
+    v.push(Box::new(Flaky));
+    v
+}
+
 fn with_panics() -> Vec<Box<dyn Check>> {
     let mut v = opsagent_checks::all();
     v.insert(0, Box::new(Panics));
@@ -865,6 +903,31 @@ async fn panicking_check_is_isolated() {
             r.checkpoint["stats"]["check_errors"],
             json!(["test_panics"])
         );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_panicking_check_leaves_its_open_findings_as_they_were() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        let fs = full_scan(&ctx, &noisy()).with_checks(with_flaky);
+        let first = new_run(&ctx, conn, 0).await;
+        fs.run(first, RunChunkedOptions::default()).await.unwrap();
+        assert_eq!(finding(&ctx, conn, "flaky").await.status, "open");
+
+        FLAKY_PANICS.store(true, SeqCst);
+        let second = new_run(&ctx, conn, 1).await;
+        let st = fs.run(second, RunChunkedOptions::default()).await;
+        FLAKY_PANICS.store(false, SeqCst);
+        assert_eq!(st.unwrap(), RunStatus::Done);
+        // Not resolved and not seen: the check said nothing this scan.
+        let f = finding(&ctx, conn, "flaky").await;
+        assert_eq!(f.status, "open");
+        assert_eq!(f.last_seen_run_id, Some(first));
+        let r = run_row(&ctx, second).await;
+        assert_eq!(r.checkpoint["stats"]["check_errors"], json!(["test_flaky"]));
     })
     .await;
 }

@@ -4,6 +4,7 @@ pub mod auth;
 pub mod billing;
 pub mod connections;
 pub mod contact;
+pub mod day_counts;
 pub mod deleted_notice;
 pub mod deliveries;
 pub mod findings;

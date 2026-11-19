@@ -13,6 +13,7 @@ use uuid::Uuid;
 use super::{enqueue_sync, provider_failed, unavailable, BillingSettings};
 use crate::{
     actions::{
+        day_counts::{Counted, DayCounter},
         human_reviews::enqueue_notice,
         uow::{Tx, UnitOfWork},
     },
@@ -64,34 +65,39 @@ const TOPUP_CREDITS: i64 = 1000;
 
 /// A paid top-up session adds its credits to the organisation named by
 /// `client_reference_id`, once per event (`grant_topup` is keyed on it, like `record_event`).
-async fn topup_completed(tx: &dyn Tx, ev: &Event) -> AppResult<()> {
+/// True when a paid session matched no organisation (counted for the operator notice).
+async fn topup_completed(tx: &dyn Tx, ev: &Event) -> AppResult<bool> {
     let o = &ev.data.object;
     let org: Option<Uuid> = o["client_reference_id"]
         .as_str()
         .and_then(|r| r.parse().ok());
     let Some(org) = org else {
         warn_skip(ev, "top-up session without organisation");
-        return Ok(());
+        return Ok(o["payment_status"] == "paid");
     };
     // A delayed payment method completes unpaid; its `async_payment_succeeded` grants instead.
     if o["payment_status"] != "paid" {
         warn_skip(ev, "top-up session not paid");
-        return Ok(());
+        return Ok(false);
     }
     let credits = sea_orm::prelude::Decimal::from(TOPUP_CREDITS);
     match tx.ai().grant_topup(org, credits, &ev.id).await {
-        Err(RepoError::NotFound) => warn_skip(ev, "top-up session for an unknown organisation"),
+        Err(RepoError::NotFound) => {
+            warn_skip(ev, "top-up session for an unknown organisation");
+            Ok(true)
+        }
         r => {
             r?;
+            Ok(false)
         }
     }
-    Ok(())
 }
 
 /// A paid human review session marks its request paid, once: `mark_paid` flips only a
 /// `pending` row of the organisation named by `client_reference_id`, and queues its notice
 /// (human_reviews::enqueue_notice) in the same transaction.
-async fn review_paid(tx: &dyn Tx, ev: &Event, now: DateTime<Utc>) -> AppResult<()> {
+/// True when a paid session matched no request (counted for the operator notice).
+async fn review_paid(tx: &dyn Tx, ev: &Event, now: DateTime<Utc>) -> AppResult<bool> {
     let o = &ev.data.object;
     let uuid = |v: &Value| v.as_str().and_then(|r| r.parse::<Uuid>().ok());
     let (org, id) = (
@@ -100,20 +106,21 @@ async fn review_paid(tx: &dyn Tx, ev: &Event, now: DateTime<Utc>) -> AppResult<(
     );
     let (Some(org), Some(id)) = (org, id) else {
         warn_skip(ev, "human review session without organisation or request");
-        return Ok(());
+        return Ok(o["payment_status"] == "paid");
     };
     if o["payment_status"] != "paid" {
         warn_skip(ev, "human review session not paid");
-        return Ok(());
+        return Ok(false);
     }
     let Some(review) = tx.human_reviews().mark_paid(org, id, now).await? else {
         warn_skip(
             ev,
             "human review session for an unknown or already paid request",
         );
-        return Ok(());
+        return Ok(true);
     };
-    enqueue_notice(tx, org, &review).await
+    enqueue_notice(tx, org, &review).await?;
+    Ok(false)
 }
 
 fn ts(v: &Value) -> Option<DateTime<Utc>> {
@@ -151,6 +158,7 @@ pub struct HandleWebhook {
     provider: Arc<dyn BillingProvider>,
     clock: Arc<dyn Clock>,
     settings: BillingSettings,
+    counter: DayCounter,
 }
 
 impl HandleWebhook {
@@ -159,12 +167,14 @@ impl HandleWebhook {
         provider: Arc<dyn BillingProvider>,
         clock: Arc<dyn Clock>,
         settings: BillingSettings,
+        counter: DayCounter,
     ) -> Self {
         Self {
             uow,
             provider,
             clock,
             settings,
+            counter,
         }
     }
 
@@ -207,10 +217,11 @@ impl HandleWebhook {
             ev.kind.as_str(),
             "checkout.session.completed" | "checkout.session.async_payment_succeeded"
         );
+        let mut unmatched = false;
         if paid_event && purpose == Some(Some(TOPUP_PURPOSE)) {
-            topup_completed(tx.as_ref(), &ev).await?;
+            unmatched = topup_completed(tx.as_ref(), &ev).await?;
         } else if paid_event && purpose == Some(Some(HUMAN_REVIEW_PURPOSE)) {
-            review_paid(tx.as_ref(), &ev, self.clock.now()).await?;
+            unmatched = review_paid(tx.as_ref(), &ev, self.clock.now()).await?;
         } else if ev.kind == "checkout.session.completed" {
             self.checkout_completed(tx.as_ref(), &ev).await?;
         } else if paid_event {
@@ -231,6 +242,11 @@ impl HandleWebhook {
             }
         }
         tx.commit().await?;
+        // After the commit: an event Stripe has to send again is counted once.
+        let counter = &self.counter;
+        counter
+            .add(Counted::UnmatchedPayment, u64::from(unmatched))
+            .await;
         Ok(())
     }
 
@@ -381,11 +397,12 @@ mod tests {
 
     use super::*;
     use crate::{
+        actions::ai::CreditTally,
         actions::{
             billing::nightly::tests::{settings, NoStripe},
             orgs::test_support::owned_org,
         },
-        adapters::memory::{FixedClock, MemStore},
+        adapters::memory::{FixedClock, MemRateLimiter, MemStore},
     };
 
     /// A `customer.subscription.*` event for `cus_1` at `now`, and its signature.
@@ -397,6 +414,10 @@ mod tests {
         let body = json!({ "id": id, "type": "customer.subscription.updated",
             "created": now.timestamp(), "data": { "object": object } })
         .to_string();
+        (sign(&body, now), body)
+    }
+
+    fn sign(body: &str, now: DateTime<Utc>) -> String {
         let mut m = Hmac::<Sha256>::new_from_slice(b"whsec").unwrap();
         m.update(format!("{}.{body}", now.timestamp()).as_bytes());
         let v1: String = m
@@ -405,16 +426,57 @@ mod tests {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        (format!("t={},v1={v1}", now.timestamp()), body)
+        format!("t={},v1={v1}", now.timestamp())
     }
 
     fn hook(store: &MemStore, now: DateTime<Utc>) -> HandleWebhook {
+        hook_counting(store, now, Arc::new(MemRateLimiter::default()))
+    }
+
+    fn hook_counting(
+        store: &MemStore,
+        now: DateTime<Utc>,
+        tally: Arc<MemRateLimiter>,
+    ) -> HandleWebhook {
+        let clock = Arc::new(FixedClock(now));
         HandleWebhook::new(
             Arc::new(store.clone()),
             Arc::new(NoStripe),
-            Arc::new(FixedClock(now)),
+            clock.clone(),
             settings(),
+            DayCounter::new(tally, clock),
         )
+    }
+
+    #[tokio::test]
+    async fn a_paid_session_that_matches_nothing_is_counted_for_the_operator() {
+        let (store, now) = (MemStore::default(), Utc::now());
+        let tally = Arc::new(MemRateLimiter::default());
+        let h = hook_counting(&store, now, tally.clone());
+        let nobody = Uuid::new_v4().to_string();
+        let session = |id: &str, purpose: &str, paid: &str| {
+            let object = json!({ "mode": "payment", "payment_status": paid,
+                "client_reference_id": nobody,
+                "metadata": { "purpose": purpose, "review_request_id": nobody } });
+            json!({ "id": id, "type": "checkout.session.completed",
+                "created": now.timestamp(), "data": { "object": object } })
+            .to_string()
+        };
+        let key = format!("payment:unmatched:{}", now.date_naive());
+        // Not paid yet: nothing was lost, nothing is counted.
+        let unpaid = session("evt_0", TOPUP_PURPOSE, "unpaid");
+        h.run(Some(&sign(&unpaid, now)), unpaid.as_bytes())
+            .await
+            .unwrap();
+        assert_eq!(tally.total(&key).await.unwrap(), 0.into());
+        for (id, purpose) in [("evt_1", TOPUP_PURPOSE), ("evt_2", HUMAN_REVIEW_PURPOSE)] {
+            let body = session(id, purpose, "paid");
+            let sig = sign(&body, now);
+            h.run(Some(&sig), body.as_bytes()).await.unwrap();
+            // A repeat of the event is not counted again.
+            h.run(Some(&sig), body.as_bytes()).await.unwrap();
+        }
+        assert_eq!(tally.total(&key).await.unwrap(), 2.into());
     }
 
     #[tokio::test]

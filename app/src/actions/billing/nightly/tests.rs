@@ -11,7 +11,9 @@ use opsagent_ledger::redis;
 use super::*;
 use crate::{
     actions::{
+        ai::CreditTally,
         billing::BillingSettings,
+        day_counts::DayCounter,
         orgs::test_support::{owned_org, user},
         recipients::MailGuard,
         runs::test_support::connected,
@@ -78,11 +80,21 @@ fn sync(store: &MemStore, mail: &Arc<CaptureMailer>, now: DateTime<Utc>) -> Bill
 }
 
 fn sync_with(store: &MemStore, mail: Arc<dyn Mailer>, now: DateTime<Utc>) -> BillingSync {
+    sync_counting(store, mail, now, Arc::new(MemRateLimiter::default()))
+}
+
+fn sync_counting(
+    store: &MemStore,
+    mail: Arc<dyn Mailer>,
+    now: DateTime<Utc>,
+    tally: Arc<MemRateLimiter>,
+) -> BillingSync {
     let uow = Arc::new(store.clone());
     let guard = Arc::new(MailGuard::new(
         uow.clone(),
         Arc::new(MemRateLimiter::default()),
     ));
+    let counter = DayCounter::new(tally, Arc::new(FixedClock(now)));
     BillingSync::new(
         uow,
         redis::Client::open("redis://localhost:1").unwrap(),
@@ -90,6 +102,7 @@ fn sync_with(store: &MemStore, mail: Arc<dyn Mailer>, now: DateTime<Utc>) -> Bil
         (mail, guard),
         Arc::new(FixedClock(now)),
         settings(),
+        counter,
     )
 }
 
@@ -283,6 +296,37 @@ async fn past_due_7_days_pauses_and_notifies_once() {
     assert!(store.apply_payment(org.id, B::Active, paid).await.unwrap());
     night(&store, &mail, t0 + Duration::days(10)).await;
     assert_eq!((status().await, mail.sent().len()), (B::Active, 2));
+}
+
+#[tokio::test]
+async fn an_organisation_whose_pass_fails_is_counted_for_the_operator() {
+    let store = MemStore::default();
+    let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+    let t0 = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+    let s = sub(B::Active, t0 + Duration::days(20));
+    store
+        .apply_subscription(org.id, &s, t0 - Duration::days(1))
+        .await
+        .unwrap();
+    assert!(store.apply_payment(org.id, B::PastDue, t0).await.unwrap());
+    // The payment-failed mail cannot be sent: the organisation's pass fails.
+    let tally = Arc::new(MemRateLimiter::default());
+    let down = sync_counting(&store, Arc::new(FailingMailer), t0, tally.clone());
+    let st = down.nightly(Uuid::new_v4(), t0).await.unwrap();
+    assert_eq!(st["failed"], 1, "{st}");
+    let counted = tally.total("billing:failed:2026-11-01").await.unwrap();
+    assert_eq!(counted, 1.into());
+    // A clean night counts nothing.
+    let tally = Arc::new(MemRateLimiter::default());
+    let up = sync_counting(
+        &store,
+        Arc::new(CaptureMailer::default()),
+        t0,
+        tally.clone(),
+    );
+    assert_eq!(up.nightly(Uuid::new_v4(), t0).await.unwrap()["failed"], 0);
+    let counted = tally.total("billing:failed:2026-11-01").await.unwrap();
+    assert_eq!(counted, 0.into());
 }
 
 #[tokio::test]

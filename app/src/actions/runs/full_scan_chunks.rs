@@ -25,6 +25,7 @@ use super::{
     watch_scan, FullScan, RunDispatcher,
 };
 use crate::{
+    actions::day_counts::Counted,
     actions::runs::classify::{classify, lerr, revoked},
     actions::uow::{Repos, Tx},
     adapters::redact::redact_resource,
@@ -32,6 +33,9 @@ use crate::{
 
 pub(super) const SIMULATE: &str = "simulate";
 pub(super) const FINALIZE: &str = "finalize";
+
+/// The check fed by the daily cost read.
+const COST_CHECK: &str = "01";
 
 /// Restore simulations per scan; roles past the cap stay unsimulated (check 04: coverage unknown).
 const MAX_SIMULATED_ROLES: usize = 20;
@@ -263,16 +267,18 @@ impl Scan<'_> {
         let unavailable: BTreeSet<String> = parse(&so_far["unavailable"])?;
         let partial = so_far["partial"] == json!(true);
         let now = self.fs.clock.now();
-        let cost = if watch {
-            vec![]
+        let cost_read = if watch {
+            Ok(vec![])
         } else {
-            k.cost_daily(self.cr, 30).await.unwrap_or_else(|e| {
-                // Cost visibility is optional (PRD 7.3): cost checks see no rows.
-                let (code, _) = classify(&e);
-                tracing::warn!(code, run = %run_id, "full_scan: cost unavailable");
-                vec![]
-            })
+            k.cost_daily(self.cr, 30).await
         };
+        let cost_failed = cost_read.is_err();
+        let cost = cost_read.unwrap_or_else(|e| {
+            // Cost visibility is optional (PRD 7.3): cost checks see no rows.
+            let (code, _) = classify(&e);
+            tracing::warn!(code, run = %run_id, "full_scan: cost unavailable");
+            vec![]
+        });
         let tx = self.fs.uow.begin().await.map_err(lerr)?;
         tx.ledger().hold_fence(run_id, fence).await?;
         if !partial && !watch {
@@ -316,8 +322,13 @@ impl Scan<'_> {
             forget.await.map_err(lerr)?;
             json!({ "check_errors": check_errors, "skipped_checks": skipped })
         } else {
-            let (drafts, check_errors) = run_checks((self.fs.checks)(), k, &cx, run_id);
-            finding_lifecycle::apply(&*tx, c, run_id, &drafts, now, partial)
+            let (drafts, mut check_errors) = run_checks((self.fs.checks)(), k, &cx, run_id);
+            // The cost check still ran on the inventory, but without its cost rows: what it
+            // did not report this run is not resolved.
+            if cost_failed && !check_errors.contains(&COST_CHECK) {
+                check_errors.push(COST_CHECK);
+            }
+            finding_lifecycle::apply(&*tx, c, run_id, &drafts, &check_errors, now, partial)
                 .await
                 .map_err(lerr)?;
             let rows = tx.findings().posture_rows(c.organisation_id, c.id);
@@ -333,6 +344,10 @@ impl Scan<'_> {
         }
         self.enqueue_alert(&*tx, &run, now).await?;
         tx.commit().await.map_err(lerr)?;
+        // shortcut: a finalize re-run after a crash here counts again; the notice is a prompt to read the logs, not a ledger.
+        let failed = stats["check_errors"].as_array().map_or(0, Vec::len);
+        let counter = &self.fs.counter;
+        counter.add(Counted::FailedCheck, failed as u64).await;
         Ok(ChunkOutcome {
             stats,
             ..Default::default()
