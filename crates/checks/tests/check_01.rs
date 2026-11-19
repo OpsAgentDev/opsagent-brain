@@ -63,3 +63,22 @@ async fn flat_series_no_anomaly_single_spike_yes() {
     let d = run(&CostAndIdle, &r, &c);
     assert_eq!(set(&d), vec![t("cost:2026-09-26", "cost_anomaly", High)]);
 }
+
+#[tokio::test]
+async fn unknown_cost_prints_no_amount() {
+    let (mut r, c) = load("noisy").await;
+    for x in r.iter_mut() {
+        x.attributes["monthly_cost_usd"] = serde_json::Value::Null;
+    }
+    let d = run(&CostAndIdle, &r, &c);
+    let idle: Vec<_> = (d.iter())
+        .filter(|d| d.key.variant != "cost_anomaly")
+        .collect();
+    assert_eq!(idle.len(), 6);
+    for f in idle {
+        assert!(!f.summary.contains('$'), "{}", f.summary);
+        assert!(f.summary.ends_with("is billed every month while unused."));
+        assert_eq!(f.cost_monthly_usd, None);
+        assert_eq!(f.severity, Low);
+    }
+}
