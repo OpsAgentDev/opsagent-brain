@@ -28,7 +28,7 @@ pub fn redis_of(ctx: &TestApp) -> opsagent_ledger::redis::Client {
     ctx.redis()
 }
 
-/// Captures mail and resets the mail limiters, whose counters outlive a test (hours to days).
+/// Captures mail and resets the mail limiters and counters, which outlive a test (hours to days).
 pub fn prepare(ctx: &TestApp) -> Arc<CaptureMailer> {
     let mut c = redis_of(ctx).get_connection().unwrap();
     let mut keys: Vec<String> = Vec::new();
@@ -39,6 +39,8 @@ pub fn prepare(ctx: &TestApp) -> Arc<CaptureMailer> {
         "ratelimit:recipient_confirm:*",
         "ratelimit:invite:*",
         "recipient_confirm:*",
+        // The day counters behind the operator notice's mail line.
+        "mail:*",
     ] {
         let found: Vec<String> = opsagent_ledger::redis::cmd("KEYS")
             .arg(pattern)

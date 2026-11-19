@@ -1,5 +1,6 @@
 //! The nightly operator notice: counts of dead jobs and failed runs over the last 24 hours,
-//! mailed to the contact address once per night, and nothing at all when there are none.
+//! and the mail sent on a day near the mail plan's daily stop, mailed to the contact address
+//! once per night, and nothing at all when there is none of these.
 //! Counts and job kinds only: no customer data.
 use std::sync::Arc;
 
@@ -17,9 +18,13 @@ use super::{
     one_chunk_run,
 };
 use crate::{
-    actions::uow::UnitOfWork,
+    actions::{ai::CreditTally, uow::UnitOfWork},
     error::AppResult,
-    mailers::{branded, Mail, Mailer},
+    mailers::{
+        branded,
+        counting::{reportable_days, DayCount},
+        Mail, Mailer,
+    },
 };
 
 /// (job kind, count), by kind.
@@ -44,6 +49,8 @@ pub trait FailureCounts: Send + Sync {
 #[derive(Clone)]
 pub struct OperatorNotice {
     failures: Arc<dyn FailureCounts>,
+    /// The day counters `CountingMailer` writes.
+    mail_counts: Arc<dyn CreditTally>,
     uow: Arc<dyn UnitOfWork>,
     redis: redis::Client,
     mailer: Arc<dyn Mailer>,
@@ -53,6 +60,7 @@ pub struct OperatorNotice {
 impl OperatorNotice {
     pub fn new(
         failures: Arc<dyn FailureCounts>,
+        mail_counts: Arc<dyn CreditTally>,
         uow: Arc<dyn UnitOfWork>,
         redis: redis::Client,
         mailer: Arc<dyn Mailer>,
@@ -60,6 +68,7 @@ impl OperatorNotice {
     ) -> Self {
         Self {
             failures,
+            mail_counts,
             uow,
             redis,
             mailer,
@@ -76,10 +85,16 @@ impl OperatorNotice {
     async fn send(&self, run: &RunRow) -> LResult<ChunkOutcome> {
         let since = run.key.scheduled_at - Duration::hours(24);
         let found = self.failures.since(since).await.map_err(lerr)?;
-        if found.is_empty() {
+        // The run's slot, not the clock: a resumed run reads the same two days.
+        let today = run.key.scheduled_at.date_naive();
+        let mail_days = reportable_days(&*self.mail_counts, today)
+            .await
+            .map_err(lerr)?;
+        if found.is_empty() && mail_days.is_empty() {
             return Ok(outcome(false));
         }
-        let (subject, text) = ("OpsAgent: failures in the last 24 hours", body(&found));
+        let subject = "OpsAgent: failures in the last 24 hours";
+        let text = body(&found, &mail_days);
         let mail = Mail {
             to: self.contact_to.clone(),
             subject: subject.into(),
@@ -122,9 +137,10 @@ fn line(label: &str, by_kind: &[(String, i64)]) -> String {
     format!("{label}: {total} ({})", kinds.join(", "))
 }
 
-fn body(f: &Failures) -> String {
+fn body(f: &Failures, mail_days: &[DayCount]) -> String {
+    let mail: String = mail_days.iter().map(|d| d.line() + "\n").collect();
     format!(
-        "In the last 24 hours:\n\n{}\n{}\n\nDetails are in the logs.",
+        "In the last 24 hours:\n\n{}\n{}\n{mail}\nDetails are in the logs.",
         line("Dead jobs", &f.dead_jobs),
         line("Failed runs", &f.failed_runs)
     )
@@ -144,12 +160,28 @@ mod tests {
             dead_jobs: vec![k("full_scan", 2), k("verify", 1)],
             failed_runs: vec![],
         };
-        let text = body(&f);
+        let text = body(&f, &[]);
         assert!(
             text.contains("Dead jobs: 3 (full_scan 2, verify 1)"),
             "{text}"
         );
         assert!(text.contains("Failed runs: 0 ()"), "{text}");
+        assert!(
+            text.ends_with("Failed runs: 0 ()\n\nDetails are in the logs."),
+            "{text}"
+        );
         assert!(!f.is_empty() && Failures::default().is_empty());
+    }
+
+    #[test]
+    fn body_has_one_line_per_reported_mail_day() {
+        let day = DayCount {
+            day: chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap(),
+            sent: 80.into(),
+            refused: 2.into(),
+        };
+        let text = body(&Failures::default(), &[day]);
+        let line = "Mail on 2026-11-18: 80 sent, 2 not sent. The Resend plan stops at 100 a day.";
+        assert!(text.contains(&format!("\n{line}\n\nDetails")), "{text}");
     }
 }
