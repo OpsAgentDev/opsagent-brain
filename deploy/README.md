@@ -94,7 +94,7 @@ A `sha` run does not change which image the nightly backup runs (`backup_image_t
 
 ## Restore
 
-No restore of a dump produced on AWS and no point-in-time restore has been drilled yet; the one recorded restore into RDS is the cutover load of 2026-11-12 (hub `DECISIONS.md`). Both paths need the admin credentials from the hub's `.secrets/aws.prod.env`: the deploy and backup roles cannot read dumps or touch RDS.
+A dump produced on AWS was restored on 2026-11-19 (logical restore below, into a scratch Postgres 18, no errors). No point-in-time restore has been drilled yet; the one recorded restore into RDS is the cutover load of 2026-11-12 (hub `DECISIONS.md`). Both paths need the admin credentials from the hub's `.secrets/aws.prod.env`: the deploy and backup roles cannot read dumps or touch RDS.
 
 ### Point in time (RDS, last 7 days)
 
@@ -113,7 +113,7 @@ RDS restores into a **new** instance; the running one is not changed.
 3. `pg_restore --no-owner --dbname=<scratch url> <file>.dump` finishes without errors.
 4. `DATABASE_URL=<scratch url> opsagent-brain db status`: all migrations applied.
 5. `select count(*)` on `organisations` and `findings`: counts are plausible against production.
-6. Record the date and result in the hub's `DECISIONS.md`; drop the scratch database. Last recorded test: 2026-11-05, against a dump from the old Railway database; next due 2026-12-05 (hub `DECISIONS.md`).
+6. Record the date and result in the hub's `DECISIONS.md`; drop the scratch database. Last recorded test: 2026-11-19, against the 03:00 UTC dump from the AWS bucket (`pg_restore` 18.7, no errors or warnings); next due 2026-12-19 (hub `DECISIONS.md`). The scratch server must be Postgres 18 or newer: an older `pg_restore` does not read the dump.
 
 ## MCP server (Plan 4)
 
