@@ -98,7 +98,7 @@ async fn read_only_grant_is_refused_on_every_write_tool_and_changes_nothing() {
                 result(&got),
                 &json!({
                     "code": "insufficient_scope",
-                    "message": "This connection is read-only. Connect the agent again and approve changes.",
+                    "message": "This connection is read-only. Revoke it under Settings > Connected agents, connect the agent again and tick 'Let this agent make changes'.",
                 }),
                 "{tool}"
             );

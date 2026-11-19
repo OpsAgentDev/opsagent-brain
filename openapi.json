@@ -5903,6 +5903,13 @@
       "ConsentDecision": {
         "type": "object",
         "properties": {
+          "allow_changes": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` grants `opsagent.read opsagent.write` (owners only, else 403 `forbidden`), `false`\ngrants `opsagent.read`. Absent grants what the client asked for, without write for a member."
+          },
           "deny": {
             "type": [
               "boolean",
@@ -5922,11 +5929,16 @@
         "type": "object",
         "required": [
           "slug",
-          "name"
+          "name",
+          "role"
         ],
         "properties": {
           "name": {
             "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "description": "The caller's role there: `owner` or `member`. Only an owner may send `allow_changes: true`."
           },
           "slug": {
             "type": "string"
@@ -5984,7 +5996,7 @@
             "items": {
               "type": "string"
             },
-            "description": "What the client asks for: `[\"opsagent.read\"]`, or `[\"opsagent.read\", \"opsagent.write\"]`\nwhen it also wants to accept, snooze and reopen findings and connect cloud accounts.\nApproving grants exactly these."
+            "description": "What the client asks for: `[\"opsagent.read\"]`, or `[\"opsagent.read\", \"opsagent.write\"]`\nwhen it also wants to accept, snooze and reopen findings and connect cloud accounts.\nThe member chooses what is granted with `allow_changes`, whatever is asked for here."
           },
           "verified": {
             "type": "boolean",

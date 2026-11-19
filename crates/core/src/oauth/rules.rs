@@ -135,6 +135,23 @@ pub fn allows_write(scope: &str) -> bool {
     scope.split_whitespace().any(|s| s == SCOPE_WRITE)
 }
 
+/// The scope a consent approval grants, `None` when refused. `allow_changes` is the member's
+/// choice on the consent page: `Some(true)` adds write whatever the client asked for,
+/// `Some(false)` removes it, `None` (an older web) keeps what the client asked for. Write is an
+/// owner's to give: a member who chooses it is refused, and a member who made no choice gets read.
+pub fn granted_scope(
+    requested: &str,
+    allow_changes: Option<bool>,
+    owner: bool,
+) -> Option<&'static str> {
+    let write = match allow_changes {
+        Some(true) if !owner => return None,
+        Some(choice) => choice,
+        None => owner && allows_write(requested),
+    };
+    Some(if write { SCOPE_READ_WRITE } else { SCOPE })
+}
+
 /// The only post-login destination allowed: `/oauth/consent?request_id=<uuid>`, nothing else.
 pub fn consent_return_to(raw: &str) -> Option<String> {
     let id = raw.strip_prefix("/oauth/consent?request_id=")?;
@@ -226,6 +243,26 @@ mod tests {
         assert!(pkce_s256_matches(c, v));
         assert!(!pkce_s256_matches(c, &v.replace('d', "e")));
         assert!(!pkce_s256_matches(c, &v[..42]));
+    }
+
+    #[test]
+    fn granted_scope_is_the_choice_and_write_needs_an_owner() {
+        for requested in [SCOPE, SCOPE_READ_WRITE] {
+            assert_eq!(
+                granted_scope(requested, Some(true), true),
+                Some(SCOPE_READ_WRITE)
+            );
+            assert_eq!(granted_scope(requested, Some(true), false), None);
+            for owner in [true, false] {
+                assert_eq!(granted_scope(requested, Some(false), owner), Some(SCOPE));
+            }
+            assert_eq!(granted_scope(requested, None, false), Some(SCOPE));
+        }
+        assert_eq!(granted_scope(SCOPE, None, true), Some(SCOPE));
+        assert_eq!(
+            granted_scope(SCOPE_READ_WRITE, None, true),
+            Some(SCOPE_READ_WRITE)
+        );
     }
 
     #[test]

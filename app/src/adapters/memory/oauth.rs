@@ -78,6 +78,7 @@ impl OAuthRepo for MemStore {
         id: Uuid,
         member_id: Uuid,
         organisation_id: Uuid,
+        scope: &str,
         code_hash: &str,
         code_expires_at: DateTime<Utc>,
         now: DateTime<Utc>,
@@ -90,6 +91,7 @@ impl OAuthRepo for MemStore {
             .ok_or(RepoError::NotFound)?;
         c.member_id = Some(member_id);
         c.organisation_id = Some(organisation_id);
+        c.scope = scope.into();
         c.code_hash = Some(code_hash.into());
         c.code_expires_at = Some(code_expires_at);
         Ok(())

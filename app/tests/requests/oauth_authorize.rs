@@ -241,7 +241,7 @@ async fn consent_view_flags_loopback() {
                 "publisher": null,
                 "loopback": true,
                 "scopes": ["opsagent.read"],
-                "organisations": [{"slug": slug(&org), "name": "Acme"}],
+                "organisations": [{"slug": slug(&org), "name": "Acme", "role": "owner"}],
             })
         );
         let id = request_id(&req, REDIRECT).await;

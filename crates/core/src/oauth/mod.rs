@@ -122,13 +122,15 @@ pub trait OAuthRepo: Send + Sync {
 
     async fn insert_consent(&self, request: &ConsentRequest) -> RepoResult<()>;
     async fn consent(&self, id: Uuid) -> RepoResult<Option<ConsentRequest>>;
-    /// Records the member's approval and the hashed code; `NotFound` for an unknown, expired
-    /// or already decided request.
+    /// Records the member's approval, the scope they granted (it replaces the requested one)
+    /// and the hashed code; `NotFound` for an unknown, expired or already decided request.
+    #[allow(clippy::too_many_arguments)]
     async fn decide_consent(
         &self,
         id: Uuid,
         member_id: Uuid,
         organisation_id: Uuid,
+        scope: &str,
         code_hash: &str,
         code_expires_at: DateTime<Utc>,
         now: DateTime<Utc>,

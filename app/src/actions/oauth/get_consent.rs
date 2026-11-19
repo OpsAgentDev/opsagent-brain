@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use opsagent_core::oauth::{rules::is_loopback, ClientKind, ConsentRequest, OAuthClient};
+use opsagent_core::{
+    oauth::{rules::is_loopback, ClientKind, ConsentRequest, OAuthClient},
+    org::Role,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -22,8 +25,8 @@ pub struct ConsentView {
     pub loopback: bool,
     /// What the client asks for: `opsagent.read`, and `opsagent.write` when it wants to change things.
     pub scopes: Vec<String>,
-    /// `(slug, name)` of the member's live organisations.
-    pub organisations: Vec<(String, String)>,
+    /// `(slug, name, role)` of the member's live organisations; only an owner may grant write.
+    pub organisations: Vec<(String, String, Role)>,
 }
 
 /// An open consent request: `Gone("consent_expired")` once expired or decided.
@@ -94,7 +97,7 @@ impl GetConsent {
             .list_for_user(user_id)
             .await?
             .into_iter()
-            .map(|(o, _)| (o.slug, o.name))
+            .map(|(o, role)| (o.slug, o.name, role))
             .collect();
         Ok(ConsentView {
             publisher: publisher(&client),

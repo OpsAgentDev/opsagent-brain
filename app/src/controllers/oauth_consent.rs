@@ -78,6 +78,8 @@ pub struct RequestPath {
 pub struct ConsentOrganisation {
     pub slug: String,
     pub name: String,
+    /// The caller's role there: `owner` or `member`. Only an owner may send `allow_changes: true`.
+    pub role: String,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -93,7 +95,7 @@ pub struct ConsentView {
     pub loopback: bool,
     /// What the client asks for: `["opsagent.read"]`, or `["opsagent.read", "opsagent.write"]`
     /// when it also wants to accept, snooze and reopen findings and connect cloud accounts.
-    /// Approving grants exactly these.
+    /// The member chooses what is granted with `allow_changes`, whatever is asked for here.
     pub scopes: Vec<String>,
     pub organisations: Vec<ConsentOrganisation>,
 }
@@ -125,7 +127,11 @@ async fn show(
         organisations: v
             .organisations
             .into_iter()
-            .map(|(slug, name)| ConsentOrganisation { slug, name })
+            .map(|(slug, name, role)| ConsentOrganisation {
+                slug,
+                name,
+                role: role.as_str().into(),
+            })
             .collect(),
     }))
 }
@@ -135,6 +141,9 @@ pub struct ConsentDecision {
     /// Slug of the organisation to grant access to; required unless `deny`.
     pub organisation: Option<String>,
     pub deny: Option<bool>,
+    /// `true` grants `opsagent.read opsagent.write` (owners only, else 403 `forbidden`), `false`
+    /// grants `opsagent.read`. Absent grants what the client asked for, without write for a member.
+    pub allow_changes: Option<bool>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -159,7 +168,10 @@ async fn decide(
     require_browser(&app.config, &headers, id)?;
     let decision = match (body.deny, body.organisation) {
         (Some(true), _) => Decision::Deny,
-        (_, Some(slug)) => Decision::Approve(slug),
+        (_, Some(organisation)) => Decision::Approve {
+            organisation,
+            allow_changes: body.allow_changes,
+        },
         _ => return Err(ApiError::invalid("Choose an organisation or deny.")),
     };
     let redirect_to = app
