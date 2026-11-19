@@ -106,7 +106,31 @@ async fn read_only_blocks_writes_402_allows_gets() {
 async fn read_only_exemptions_pass() {
     serve_with(enforced, |req, ctx| async move {
         let (t, org, id) = owner_org(&req, &prepare(&ctx)).await;
+        set_billing(&ctx, id, "active", "team", 0).await;
+        let made = new_connection(&req, &t, &org).await;
+        assert_eq!(made.status_code(), 201, "{}", made.text());
+        let conn = made.json::<Value>()["id"].as_str().unwrap().to_owned();
         set_billing(&ctx, id, "trial_ended", "team", 0).await;
+        // Leaving is never blocked: the cloud account disconnects while read-only, and
+        // removing Slack or the AI key passes the gate (nothing there: not 402).
+        let res = req
+            .delete(&format!("/v1/orgs/{org}/connections/{conn}"))
+            .add_header("X-CSRF-Token", &t)
+            .await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        for path in [
+            format!("integrations/{}", Uuid::new_v4()),
+            "ai/keys/primary".to_owned(),
+        ] {
+            let res = req
+                .delete(&format!("/v1/orgs/{org}/{path}"))
+                .add_header("X-CSRF-Token", &t)
+                .await;
+            assert_ne!(res.status_code(), 402, "{path}: {}", res.text());
+            assert!(res.status_code().as_u16() < 500, "{path}: {}", res.text());
+        }
+        // Any other write is still refused.
+        refused(&new_connection(&req, &t, &org).await, "billing_required");
         // Stripe is not configured here: 503 shows the request got past the gate.
         let res = post(
             &req,

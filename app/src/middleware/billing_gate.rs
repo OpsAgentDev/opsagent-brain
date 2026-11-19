@@ -10,13 +10,17 @@ use axum::{
 
 use crate::{actions::orgs::OrgScope, api_error::ApiError, state::AppState};
 
-/// What a read-only organisation may still do: pay, leave, or take access away (remove a
+/// What a read-only organisation may still do: pay, leave (delete the organisation, disconnect
+/// a cloud account, remove Slack, delete its own AI key), or take access away (remove a
 /// member, revoke an agent, cancel an invite, change a role), since reads and `/mcp` stay open.
-const EXEMPT: [(&str, &str); 8] = [
+const EXEMPT: [(&str, &str); 11] = [
     ("POST", "/v1/orgs/{org}/human-reviews"),
     ("POST", "/v1/orgs/{org}/billing/checkout"),
     ("POST", "/v1/orgs/{org}/billing/portal"),
     ("DELETE", "/v1/orgs/{org}"),
+    ("DELETE", "/v1/orgs/{org}/connections/{id}"),
+    ("DELETE", "/v1/orgs/{org}/integrations/{id}"),
+    ("DELETE", "/v1/orgs/{org}/ai/keys/{slot}"),
     ("DELETE", "/v1/orgs/{org}/members/{id}"),
     ("PATCH", "/v1/orgs/{org}/members/{id}"),
     ("DELETE", "/v1/orgs/{org}/agents/{id}"),
@@ -41,4 +45,24 @@ pub async fn read_only(app: &AppState, scope: &OrgScope, parts: &Parts) -> Resul
     Ok(gate
         .require_writable(&*app.uow, scope.organisation.id)
         .await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exempt;
+
+    #[test]
+    fn leaving_is_exempt_and_other_writes_are_not() {
+        for path in ["connections/{id}", "integrations/{id}", "ai/keys/{slot}"] {
+            assert!(exempt("DELETE", &format!("/v1/orgs/{{org}}/{path}")));
+        }
+        for (method, path) in [
+            ("POST", "connections"),
+            ("PATCH", "connections/{id}"),
+            ("PUT", "ai/keys/{slot}"),
+            ("DELETE", "recipients/{id}"),
+        ] {
+            assert!(!exempt(method, &format!("/v1/orgs/{{org}}/{path}")));
+        }
+    }
 }

@@ -1682,16 +1682,6 @@
           "204": {
             "description": "Removing the primary promotes the backup"
           },
-          "402": {
-            "description": "Billing required, or a trial or plan limit reached",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
           "403": {
             "content": {
               "application/json": {
@@ -2794,16 +2784,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Disconnected"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "Billing required, or a trial or plan limit reached",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -4288,16 +4268,6 @@
         ],
         "responses": {
           "204": {},
-          "402": {
-            "description": "Billing required, or a trial or plan limit reached",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
           "403": {
             "content": {
               "application/json": {
