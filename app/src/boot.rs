@@ -418,7 +418,9 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.kek.clone(),
                 d.registry.clone(),
                 gate.clone(),
+                connections::QuickCreate::new(&d.config),
             ),
+            quick_create: connections::QuickCreate::new(&d.config),
             list_connections: connections::ListConnections::new(d.uow.clone()),
             get_connection: connections::GetConnection::new(d.uow.clone()),
             update_connection: connections::UpdateConnection::new(d.uow.clone(), d.clock.clone()),
@@ -514,6 +516,15 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
 
 /// Every tool, the only registry of tool names: a new tool is one file and one line here.
 pub fn build_tools(d: &Deps, a: &Actions) -> ToolRegistry {
+    let web = || d.config.web_base_url.clone();
+    let triage = |kind| -> Arc<dyn Tool> {
+        Arc::new(tools::TriageFindingTool::new(
+            kind,
+            a.findings.change_finding_status.clone(),
+            a.findings.get_finding.clone(),
+            web(),
+        ))
+    };
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(tools::ListConnectionsTool::new(
             a.connections.list_connections.clone(),
@@ -521,8 +532,12 @@ pub fn build_tools(d: &Deps, a: &Actions) -> ToolRegistry {
         )),
         Arc::new(tools::ListFindingsTool::new(
             a.findings.list_findings.clone(),
+            web(),
         )),
-        Arc::new(tools::GetFindingTool::new(a.findings.get_finding.clone())),
+        Arc::new(tools::GetFindingTool::new(
+            a.findings.get_finding.clone(),
+            web(),
+        )),
         Arc::new(tools::ListResourcesTool::new(
             a.resources.list_resources.clone(),
         )),
@@ -534,6 +549,18 @@ pub fn build_tools(d: &Deps, a: &Actions) -> ToolRegistry {
         Arc::new(tools::GetCostAnomaliesTool::new(
             a.findings.list_findings.clone(),
             d.clock.clone(),
+            web(),
+        )),
+        triage(tools::Triage::Accept),
+        triage(tools::Triage::Snooze),
+        triage(tools::Triage::Reopen),
+        Arc::new(tools::ConnectCloudAccountTool::new(
+            a.connections.create_connection.clone(),
+            a.connections.quick_create.clone(),
+        )),
+        Arc::new(tools::VerifyConnectionTool::new(
+            a.connections.request_verify.clone(),
+            a.connections.get_connection.clone(),
         )),
     ];
     ToolRegistry::new(tools, d.uow.clone())
@@ -548,6 +575,7 @@ pub fn build_resources(d: &Deps, a: &Actions) -> ResourceRegistry {
         )),
         Arc::new(tools::resources::OpenFindings::new(
             a.findings.list_findings.clone(),
+            d.config.web_base_url.clone(),
         )),
     ];
     ResourceRegistry::new(sources, d.uow.clone())

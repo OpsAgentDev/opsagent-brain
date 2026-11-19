@@ -5335,6 +5335,7 @@
           "client_name",
           "client_kind",
           "member_email",
+          "scopes",
           "created_at"
         ],
         "properties": {
@@ -5362,6 +5363,13 @@
           },
           "member_email": {
             "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`[\"opsagent.read\"]` (read only) or `[\"opsagent.read\", \"opsagent.write\"]` (read and changes)."
           }
         }
       },
@@ -5944,6 +5952,7 @@
           "redirect_uri",
           "verified",
           "loopback",
+          "scopes",
           "organisations"
         ],
         "properties": {
@@ -5969,6 +5978,13 @@
           },
           "redirect_uri": {
             "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the client asks for: `[\"opsagent.read\"]`, or `[\"opsagent.read\", \"opsagent.write\"]`\nwhen it also wants to accept, snooze and reopen findings and connect cloud accounts.\nApproving grants exactly these."
           },
           "verified": {
             "type": "boolean",
@@ -6392,6 +6408,7 @@
           "severity",
           "status",
           "title",
+          "url",
           "created_at",
           "updated_at"
         ],
@@ -6434,6 +6451,10 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "url": {
+            "type": "string",
+            "description": "The finding's page in the dashboard, to hand to a person."
           },
           "variant": {
             "type": "string"
@@ -7225,6 +7246,7 @@
                 "severity",
                 "status",
                 "title",
+                "url",
                 "created_at",
                 "updated_at"
               ],
@@ -7267,6 +7289,10 @@
                 "updated_at": {
                   "type": "string",
                   "format": "date-time"
+                },
+                "url": {
+                  "type": "string",
+                  "description": "The finding's page in the dashboard, to hand to a person."
                 },
                 "variant": {
                   "type": "string"

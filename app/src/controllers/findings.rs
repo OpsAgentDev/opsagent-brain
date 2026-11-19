@@ -4,7 +4,10 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
-use opsagent_core::finding::{self as core, Severity};
+use opsagent_core::{
+    finding::{self as core, Severity},
+    org::org_web_base,
+};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -26,6 +29,11 @@ use crate::{
         page::{page_request, Page, PageParams},
     },
 };
+
+/// The organisation's dashboard address, for each finding's `url`.
+fn link_base(app: &AppState, scope: &OrgScope) -> String {
+    org_web_base(&app.config.web_base_url, &scope.organisation.slug)
+}
 
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -71,7 +79,8 @@ async fn list(
         .list_findings
         .run(scope.organisation.id, filter, page)
         .await?;
-    Ok(Json(Page::of(got).map(summary)))
+    let base = link_base(&app, &scope);
+    Ok(Json(Page::of(got).map(|f| summary(f, &base))))
 }
 
 #[utoipa::path(get, path = "/orgs/{org}/findings/{id}", tag = "findings", params(OrgIdPath),
@@ -87,7 +96,7 @@ async fn show(
         .get_finding
         .run(scope.organisation.id, super::parse_id(&id)?)
         .await?;
-    Ok(Json(detail(d)))
+    Ok(Json(detail(d, &link_base(&app, &scope))))
 }
 
 async fn act(
@@ -103,7 +112,7 @@ async fn act(
         .change_finding_status
         .run(scope.organisation.id, scope.member.user_id, id, action)
         .await?;
-    Ok(Json(full(updated)))
+    Ok(Json(full(updated, &link_base(app, scope))))
 }
 
 #[derive(Deserialize, ToSchema)]

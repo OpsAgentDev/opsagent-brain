@@ -2,8 +2,8 @@ use std::{net::IpAddr, sync::Arc};
 
 use chrono::{DateTime, Duration, Utc};
 use opsagent_core::oauth::{
-    rules::{redirect_uri_matches, resource_matches},
-    ConsentRequest, SCOPE,
+    rules::{redirect_uri_matches, requested_scope, resource_matches},
+    ConsentRequest,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -112,12 +112,9 @@ impl StartAuthorization {
         if state.as_ref().is_some_and(|s| s.len() > MAX_STATE_CHARS) {
             return Err(fail("invalid_request"));
         }
-        if p.scope
-            .as_deref()
-            .is_some_and(|s| !s.split_whitespace().all(|s| s == SCOPE))
-        {
+        let Some(scope) = requested_scope(p.scope.as_deref()) else {
             return Err(fail("invalid_scope"));
-        }
+        };
         if p.resource
             .as_deref()
             .is_some_and(|r| !resource_matches(&self.resource, r))
@@ -131,7 +128,7 @@ impl StartAuthorization {
             code_challenge: challenge,
             state: state.clone(),
             resource: self.resource.clone(),
-            scope: SCOPE.into(),
+            scope: scope.into(),
             member_id: None,
             organisation_id: None,
             code_hash: None,

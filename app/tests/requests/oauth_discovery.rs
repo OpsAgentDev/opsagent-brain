@@ -16,7 +16,10 @@ async fn protected_resource_metadata_path_and_alias() {
             let b: Value = res.json();
             assert_eq!(b["resource"], format!("{BASE}/mcp"));
             assert_eq!(b["authorization_servers"], json!([BASE]));
-            assert_eq!(b["scopes_supported"], json!(["opsagent.read"]));
+            assert_eq!(
+                b["scopes_supported"],
+                json!(["opsagent.read", "opsagent.write"])
+            );
             assert_eq!(b["bearer_methods_supported"], json!(["header"]));
         }
     })
@@ -43,7 +46,7 @@ async fn as_metadata_fields() {
                 "grant_types_supported": ["authorization_code", "refresh_token"],
                 "code_challenge_methods_supported": ["S256"],
                 "token_endpoint_auth_methods_supported": ["none"],
-                "scopes_supported": ["opsagent.read"],
+                "scopes_supported": ["opsagent.read", "opsagent.write"],
                 "client_id_metadata_document_supported": true,
                 "authorization_response_iss_parameter_supported": true,
             })

@@ -20,6 +20,8 @@ pub struct ConsentView {
     /// client that is proven (its name is self-asserted). `None` for dynamic clients.
     pub publisher: Option<String>,
     pub loopback: bool,
+    /// What the client asks for: `opsagent.read`, and `opsagent.write` when it wants to change things.
+    pub scopes: Vec<String>,
     /// `(slug, name)` of the member's live organisations.
     pub organisations: Vec<(String, String)>,
 }
@@ -59,6 +61,11 @@ fn publisher(client: &OAuthClient) -> Option<String> {
     })
 }
 
+/// A stored scope string as the list the API shows.
+pub(super) fn scopes(scope: &str) -> Vec<String> {
+    scope.split_whitespace().map(str::to_owned).collect()
+}
+
 pub struct GetConsent {
     uow: Arc<dyn UnitOfWork>,
 }
@@ -93,6 +100,7 @@ impl GetConsent {
             publisher: publisher(&client),
             client_name: client.name,
             loopback: is_loopback(&request.redirect_uri),
+            scopes: scopes(&request.scope),
             redirect_uri: request.redirect_uri,
             verified: false,
             organisations,

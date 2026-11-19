@@ -35,6 +35,7 @@ pub async fn layer(
                 scope: b.scope,
                 via: Via::Mcp {
                     grant_id: b.grant.id,
+                    write: opsagent_core::oauth::rules::allows_write(&b.grant.scope),
                     client_id: b.grant.client_id,
                     token_id: b.token.id,
                 },
@@ -124,7 +125,8 @@ async fn authenticate(
     Ok(b)
 }
 
-/// 401 pointing the client at the protected resource metadata (RFC 9728 section 5.1).
+/// 401 pointing the client at the protected resource metadata (RFC 9728 section 5.1). It names
+/// the read scope only, so a client that asks for nothing more stays read-only.
 fn unauthorized(app: &AppState) -> Response {
     let value = format!(
         "Bearer resource_metadata=\"{}/.well-known/oauth-protected-resource/mcp\", scope=\"{}\"",

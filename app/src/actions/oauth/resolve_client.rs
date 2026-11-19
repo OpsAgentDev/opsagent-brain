@@ -309,6 +309,7 @@ mod tests {
                 client_id: "dyn1".into(),
                 member_id: Uuid::new_v4(),
                 organisation_id: Uuid::new_v4(),
+                scope: opsagent_core::oauth::SCOPE.into(),
                 created_at: now,
                 last_used_at: None,
                 revoked_at: None,

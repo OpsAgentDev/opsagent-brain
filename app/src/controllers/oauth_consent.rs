@@ -91,6 +91,10 @@ pub struct ConsentView {
     pub publisher: Option<String>,
     /// The redirect goes to this computer: warn the member.
     pub loopback: bool,
+    /// What the client asks for: `["opsagent.read"]`, or `["opsagent.read", "opsagent.write"]`
+    /// when it also wants to accept, snooze and reopen findings and connect cloud accounts.
+    /// Approving grants exactly these.
+    pub scopes: Vec<String>,
     pub organisations: Vec<ConsentOrganisation>,
 }
 
@@ -117,6 +121,7 @@ async fn show(
         verified: v.verified,
         publisher: v.publisher,
         loopback: v.loopback,
+        scopes: v.scopes,
         organisations: v
             .organisations
             .into_iter()

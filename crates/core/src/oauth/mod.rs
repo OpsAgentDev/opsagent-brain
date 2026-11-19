@@ -8,8 +8,12 @@ use uuid::Uuid;
 
 use crate::repo::RepoResult;
 
-/// The one scope a token can carry.
+/// The scope every grant carries, and the only one a client gets without asking for more.
 pub const SCOPE: &str = "opsagent.read";
+/// Lets an agent change OpsAgent's own state for the organisation; never granted without `SCOPE`.
+pub const SCOPE_WRITE: &str = "opsagent.write";
+/// Both scopes, as a grant stores them.
+pub const SCOPE_READ_WRITE: &str = "opsagent.read opsagent.write";
 
 /// A dynamic client expires this long after it was last used (never while it has a live grant).
 pub const DYNAMIC_CLIENT_TTL_DAYS: i64 = 90;
@@ -78,6 +82,8 @@ pub struct Grant {
     pub client_id: String,
     pub member_id: Uuid,
     pub organisation_id: Uuid,
+    /// The scopes the member approved: `SCOPE` or `SCOPE_READ_WRITE`. Fixed for the grant's life.
+    pub scope: String,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,

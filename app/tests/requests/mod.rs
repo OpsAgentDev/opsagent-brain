@@ -16,6 +16,7 @@ mod logging;
 mod mcp_auth;
 mod mcp_prompts;
 mod mcp_tools;
+mod mcp_write;
 mod oauth_authorize;
 mod oauth_cimd;
 mod oauth_discovery;

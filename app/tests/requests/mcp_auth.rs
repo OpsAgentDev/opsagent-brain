@@ -4,7 +4,7 @@ use opsagent_brain::{
     models::_entities::audit_events,
     tokens::{hash_token, new_token},
 };
-use opsagent_core::oauth::{AccessToken, Grant};
+use opsagent_core::oauth::{AccessToken, Grant, SCOPE};
 use sea_orm::entity::prelude::*;
 use serde_json::{json, Value};
 use serial_test::serial;
@@ -52,14 +52,26 @@ pub(super) async fn agent(
     (a, csrf)
 }
 
-/// A grant for `member` and an access token expiring after `ttl`.
+/// A read-only grant for `member` and an access token expiring after `ttl`.
 pub(super) async fn mint(app: &TestApp, org: Uuid, member: Uuid, ttl: Duration) -> (Uuid, String) {
+    mint_scoped(app, org, member, ttl, SCOPE).await
+}
+
+/// A grant for `member` holding `scope`, and an access token expiring after `ttl`.
+pub(super) async fn mint_scoped(
+    app: &TestApp,
+    org: Uuid,
+    member: Uuid,
+    ttl: Duration,
+    scope: &str,
+) -> (Uuid, String) {
     let o = app.state.uow.oauth();
     let g = Grant {
         id: Uuid::new_v4(),
         client_id: CLIENT.into(),
         member_id: member,
         organisation_id: org,
+        scope: scope.into(),
         created_at: Utc::now(),
         last_used_at: None,
         revoked_at: None,

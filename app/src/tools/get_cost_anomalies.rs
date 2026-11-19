@@ -8,8 +8,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{
-    filter_id, page_request, parse_args, schema_of, to_json, Access, Caller, Tool, ToolError,
-    ToolSpec,
+    filter_id, link_base, page_request, parse_args, schema_of, to_json, Access, Caller, Tool,
+    ToolError, ToolSpec,
 };
 use crate::{
     actions::findings::ListFindings,
@@ -34,11 +34,16 @@ struct Args {
 pub struct GetCostAnomaliesTool {
     list: ListFindings,
     clock: Arc<dyn Clock>,
+    web_base_url: String,
 }
 
 impl GetCostAnomaliesTool {
-    pub fn new(list: ListFindings, clock: Arc<dyn Clock>) -> Self {
-        Self { list, clock }
+    pub fn new(list: ListFindings, clock: Arc<dyn Clock>, web_base_url: String) -> Self {
+        Self {
+            list,
+            clock,
+            web_base_url,
+        }
     }
 }
 
@@ -79,7 +84,8 @@ impl Tool for GetCostAnomaliesTool {
             .list
             .run(caller.scope.organisation.id, filter, page)
             .await?;
-        let items: Vec<_> = got.items.into_iter().map(full).collect();
+        let base = link_base(&self.web_base_url, caller);
+        let items: Vec<_> = got.items.into_iter().map(|f| full(f, &base)).collect();
         Ok(json!({ "findings": to_json(&items)? }))
     }
 }
@@ -130,6 +136,7 @@ mod tests {
             GetCostAnomaliesTool::new(
                 ListFindings::new(Arc::new(store.clone())),
                 Arc::new(FixedClock(t)),
+                String::new(),
             )
         };
         let got = tool(now).call(&caller(org), json!({})).await.unwrap();

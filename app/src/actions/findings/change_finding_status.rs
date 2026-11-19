@@ -115,6 +115,7 @@ fn cas_miss(e: RepoError) -> AppError {
 
 /// Applies one action for `actor`: status compare-and-set, event and audit row, one
 /// transaction. Returns the updated finding.
+#[derive(Clone)]
 pub struct ChangeFindingStatus {
     uow: Arc<dyn UnitOfWork>,
     clock: Arc<dyn Clock>,

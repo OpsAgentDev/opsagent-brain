@@ -3,6 +3,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::{SCOPE, SCOPE_READ_WRITE, SCOPE_WRITE};
+
 /// `(scheme lowercased, authority, rest)` for `scheme://authority rest`; `None` without `//`.
 fn split_hier(uri: &str) -> Option<(String, &str, &str)> {
     let (scheme, after) = uri.split_once("://")?;
@@ -110,6 +112,29 @@ pub fn pkce_s256_matches(challenge: &str, verifier: &str) -> bool {
     shape && URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())) == challenge
 }
 
+/// The scope an authorize request asks for, as stored: read when absent or empty, read and
+/// write only when both are named. Write alone or any unknown scope is `None` (`invalid_scope`).
+pub fn requested_scope(raw: Option<&str>) -> Option<&'static str> {
+    let (mut read, mut write) = (false, false);
+    for s in raw.unwrap_or_default().split_whitespace() {
+        match s {
+            SCOPE => read = true,
+            SCOPE_WRITE => write = true,
+            _ => return None,
+        }
+    }
+    match (read, write) {
+        (true, true) => Some(SCOPE_READ_WRITE),
+        (_, false) => Some(SCOPE),
+        (false, true) => None,
+    }
+}
+
+/// Whether a stored grant scope includes write.
+pub fn allows_write(scope: &str) -> bool {
+    scope.split_whitespace().any(|s| s == SCOPE_WRITE)
+}
+
 /// The only post-login destination allowed: `/oauth/consent?request_id=<uuid>`, nothing else.
 pub fn consent_return_to(raw: &str) -> Option<String> {
     let id = raw.strip_prefix("/oauth/consent?request_id=")?;
@@ -201,6 +226,30 @@ mod tests {
         assert!(pkce_s256_matches(c, v));
         assert!(!pkce_s256_matches(c, &v.replace('d', "e")));
         assert!(!pkce_s256_matches(c, &v[..42]));
+    }
+
+    #[test]
+    fn scope_is_read_or_read_and_write() {
+        assert_eq!(requested_scope(None), Some(SCOPE));
+        assert_eq!(requested_scope(Some("")), Some(SCOPE));
+        assert_eq!(requested_scope(Some("opsagent.read")), Some(SCOPE));
+        for both in [
+            "opsagent.read opsagent.write",
+            "opsagent.write  opsagent.read",
+        ] {
+            assert_eq!(requested_scope(Some(both)), Some(SCOPE_READ_WRITE));
+        }
+        for bad in [
+            "opsagent.write",
+            "opsagent.read admin",
+            "opsagent.read opsagent.writex",
+            "OPSAGENT.WRITE opsagent.read",
+        ] {
+            assert_eq!(requested_scope(Some(bad)), None, "{bad}");
+        }
+        assert!(allows_write(SCOPE_READ_WRITE));
+        assert!(!allows_write(SCOPE));
+        assert!(!allows_write("opsagent.writex"));
     }
 
     #[test]
