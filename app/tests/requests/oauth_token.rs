@@ -112,7 +112,7 @@ async fn can_write(req: &TestServer, access_token: &str) -> bool {
 
 #[tokio::test]
 #[serial]
-async fn write_is_granted_only_when_requested_and_approved_and_refresh_keeps_it() {
+async fn write_requested_and_approved_by_an_owner_is_granted_and_refresh_keeps_it() {
     serve(|req, app| async move {
         let mail = prepare(&app);
         let csrf = sign_in(&req, &mail, "owner@example.com").await;
@@ -146,6 +146,141 @@ async fn write_is_granted_only_when_requested_and_approved_and_refresh_keeps_it(
         let second: Value = refresh(&req, &rt(&first), CLIENT).await.json();
         assert_eq!(second["scope"], both);
         assert!(can_write(&req, second["access_token"].as_str().unwrap()).await);
+    })
+    .await;
+}
+
+/// Authorizes asking for `asked`, approves for `org` with `allow_changes` (absent when `None`).
+async fn approve(
+    req: &TestServer,
+    csrf: &str,
+    org: &Value,
+    asked: &str,
+    allow_changes: Option<bool>,
+) -> axum_test::TestResponse {
+    let res = authorize(req, &with(params(REDIRECT), "scope", asked)).await;
+    let id = query_of(res.header("location").to_str().unwrap())["request_id"].clone();
+    let mut body = json!({"organisation": slug(org)});
+    if let Some(allow) = allow_changes {
+        body["allow_changes"] = json!(allow);
+    }
+    decide(req, csrf, &id, body).await
+}
+
+/// The token response for an approved consent.
+async fn token_of_approval(req: &TestServer, approved: &axum_test::TestResponse) -> Value {
+    assert_eq!(approved.status_code(), 200, "{}", approved.text());
+    let c = query_of(approved.json::<Value>()["redirect_to"].as_str().unwrap())["code"].clone();
+    exchange(req, &c, VERIFIER, REDIRECT).await.json()
+}
+
+/// The `scope` of every `action` audit row, sorted.
+async fn audited_scopes(app: &TestApp, action: &str) -> Vec<String> {
+    let rows = audit_events::Entity::find()
+        .filter(audit_events::Column::Action.eq(action))
+        .all(&app.db)
+        .await
+        .unwrap();
+    let mut scopes: Vec<String> = rows
+        .iter()
+        .map(|r| r.metadata["scope"].as_str().unwrap().to_owned())
+        .collect();
+    scopes.sort();
+    scopes
+}
+
+#[tokio::test]
+#[serial]
+async fn owner_chooses_the_access_whatever_the_client_asked_for() {
+    serve(|req, app| async move {
+        let mail = prepare(&app);
+        let csrf = sign_in(&req, &mail, "owner@example.com").await;
+        let org = create_org(&req, &csrf, "Acme").await;
+        client(&app).await;
+        let (read, both) = ("opsagent.read", "opsagent.read opsagent.write");
+        let cases = [
+            (read, Some(true), both),
+            (read, Some(false), read),
+            (read, None, read),
+            (both, Some(true), both),
+            (both, Some(false), read),
+            (both, None, both),
+        ];
+        for (asked, allow, granted) in cases {
+            let approved = approve(&req, &csrf, &org, asked, allow).await;
+            let t = token_of_approval(&req, &approved).await;
+            assert_eq!(t["scope"], granted, "{asked:?} {allow:?}");
+            let token = t["access_token"].as_str().unwrap();
+            assert_eq!(
+                can_write(&req, token).await,
+                granted == both,
+                "{asked:?} {allow:?}"
+            );
+            // Refresh keeps the granted scope: never the requested one.
+            let again: Value = refresh(&req, &rt(&t), CLIENT).await.json();
+            assert_eq!(again["scope"], granted, "{asked:?} {allow:?}");
+        }
+        let mut granted = cases.map(|(_, _, g)| g.to_owned());
+        granted.sort();
+        assert_eq!(
+            audited_scopes(&app, "oauth.consent.approved").await,
+            granted
+        );
+        assert_eq!(audited_scopes(&app, "oauth.token.issued").await, granted);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn member_cannot_grant_changes() {
+    serve(|mut req, app| async move {
+        let mail = prepare(&app);
+        let csrf = sign_in(&req, &mail, "owner@example.com").await;
+        let org = create_org(&req, &csrf, "Acme").await;
+        client(&app).await;
+        let csrf = as_member(&mut req, &app, &mail, &slug(&org), "member@example.com").await;
+        let (read, both) = ("opsagent.read", "opsagent.read opsagent.write");
+        // The consent view tells web the role, so the page can hide the checkbox.
+        let id = request_id(&req, REDIRECT).await;
+        let view: Value = req.get(&format!("/v1/oauth/consent/{id}")).await.json();
+        assert_eq!(
+            view["organisations"],
+            json!([{"slug": slug(&org), "name": "Acme", "role": "member"}])
+        );
+        // Choosing changes is refused and decides nothing: no code, the request stays open.
+        for asked in [read, both] {
+            let res = authorize(&req, &with(params(REDIRECT), "scope", asked)).await;
+            let id = query_of(res.header("location").to_str().unwrap())["request_id"].clone();
+            let body = json!({"organisation": slug(&org), "allow_changes": true});
+            let refused = decide(&req, &csrf, &id, body).await;
+            assert_eq!(refused.status_code(), 403, "{}", refused.text());
+            let problem: Value = refused.json();
+            assert_eq!(problem["code"], "forbidden");
+            assert_eq!(
+                problem["detail"],
+                "Only an owner can let an agent make changes."
+            );
+            let row = app.state.uow.oauth().consent(id.parse().unwrap()).await;
+            let row = row.unwrap().unwrap();
+            assert_eq!((row.code_hash, row.member_id), (None, None));
+        }
+        let org_id = org["id"].as_str().unwrap().parse().unwrap();
+        let grants = app.state.uow.oauth().grants_for_org(org_id).await.unwrap();
+        assert!(grants.is_empty());
+        assert!(audited_scopes(&app, "oauth.consent.approved")
+            .await
+            .is_empty());
+        // Without the choice (an older web) or with `false`, a member gets read, even when
+        // the client asked for write.
+        for (asked, allow) in [(both, None), (both, Some(false)), (read, None)] {
+            let approved = approve(&req, &csrf, &org, asked, allow).await;
+            let t = token_of_approval(&req, &approved).await;
+            assert_eq!(t["scope"], read, "{asked:?} {allow:?}");
+            assert!(!can_write(&req, t["access_token"].as_str().unwrap()).await);
+        }
+        let all = audited_scopes(&app, "oauth.consent.approved").await;
+        assert_eq!(all, [read, read, read]);
     })
     .await;
 }

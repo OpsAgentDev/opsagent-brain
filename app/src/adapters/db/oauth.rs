@@ -207,6 +207,7 @@ impl<C: Conn> OAuthRepo for Pg<C> {
         id: Uuid,
         member_id: Uuid,
         organisation_id: Uuid,
+        scope: &str,
         code_hash: &str,
         code_expires_at: DateTime<Utc>,
         now: DateTime<Utc>,
@@ -215,6 +216,7 @@ impl<C: Conn> OAuthRepo for Pg<C> {
         let done = consents::Entity::update_many()
             .col_expr(Col::MemberId, Some(member_id).into())
             .col_expr(Col::OrganisationId, Some(organisation_id).into())
+            .col_expr(Col::Scope, scope.to_owned().into())
             .col_expr(Col::CodeHash, Some(code_hash.to_owned()).into())
             .col_expr(Col::CodeExpiresAt, Some(ts(code_expires_at)).into())
             .filter(Col::Id.eq(id))

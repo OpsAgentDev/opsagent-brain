@@ -124,7 +124,7 @@ pub enum ToolError {
     ConnectionBlocked,
     #[error("This organisation is read-only until billing is set up.")]
     BillingRequired,
-    #[error("This connection is read-only. Connect the agent again and approve changes.")]
+    #[error("This connection is read-only. Revoke it under Settings > Connected agents, connect the agent again and tick 'Let this agent make changes'.")]
     InsufficientScope,
     #[error("{0}")]
     Forbidden(&'static str),
@@ -388,7 +388,7 @@ mod tests {
             assert_eq!(e.code(), "insufficient_scope");
             assert_eq!(
                 e.to_string(),
-                "This connection is read-only. Connect the agent again and approve changes."
+                "This connection is read-only. Revoke it under Settings > Connected agents, connect the agent again and tick 'Let this agent make changes'."
             );
             assert!(!ran.load(SeqCst), "the tool ran");
         }

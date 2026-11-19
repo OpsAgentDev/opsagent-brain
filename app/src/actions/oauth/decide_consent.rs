@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
+use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
-use opsagent_core::{audit::AuditEntry, repo::RepoError};
+use opsagent_core::{audit::AuditEntry, oauth::rules::granted_scope, org::Role, repo::RepoError};
 use uuid::Uuid;
 
 use super::{get_consent::open_request, redirect_with, CODE_TTL_SECS};
@@ -13,8 +14,12 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    /// Approve for the organisation with this slug.
-    Approve(String),
+    /// Approve for the organisation with this slug. `allow_changes` is the member's choice of
+    /// access; `None` (an older web) keeps what the client asked for.
+    Approve {
+        organisation: String,
+        allow_changes: Option<bool>,
+    },
     Deny,
 }
 
@@ -45,7 +50,7 @@ impl DecideConsent {
         let state = request.state.as_deref();
         let iss = self.issuer.as_str();
         let target = Some(("oauth_client", request.client_id.clone()));
-        let slug = match decision {
+        let (slug, allow_changes) = match decision {
             Decision::Deny => {
                 let tx = self.uow.begin().await?;
                 gone_if_missing(tx.oauth().close_consent(request_id, now).await)?;
@@ -55,10 +60,20 @@ impl DecideConsent {
                 let pairs = [("error", Some("access_denied")), ("state", state)];
                 return Ok(redirect_with(&request.redirect_uri, &pairs, iss));
             }
-            Decision::Approve(slug) => slug,
+            Decision::Approve {
+                organisation,
+                allow_changes,
+            } => (organisation, allow_changes),
         };
         let scope = self.scope.run(user_id, &slug).await?;
         let org_id = scope.organisation.id;
+        let owner = scope.member.role == Role::Owner;
+        let granted =
+            granted_scope(&request.scope, allow_changes, owner).ok_or(AppError::Refused {
+                status: StatusCode::FORBIDDEN,
+                code: "forbidden",
+                detail: "Only an owner can let an agent make changes.".into(),
+            })?;
         let code = new_token();
         let tx = self.uow.begin().await?;
         let expires = now + Duration::seconds(CODE_TTL_SECS);
@@ -69,6 +84,7 @@ impl DecideConsent {
                 request_id,
                 scope.member.id,
                 org_id,
+                granted,
                 &code_hash,
                 expires,
                 now,
@@ -76,7 +92,7 @@ impl DecideConsent {
             .await;
         gone_if_missing(decided)?;
         let entry = AuditEntry::member(Some(org_id), user_id, "oauth.consent.approved", target)
-            .with_meta(serde_json::json!({ "scope": request.scope }));
+            .with_meta(serde_json::json!({ "scope": granted }));
         tx.audit().record(entry).await?;
         tx.commit().await?;
         let pairs = [("code", Some(code.as_str())), ("state", state)];
