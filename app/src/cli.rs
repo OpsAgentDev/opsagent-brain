@@ -254,6 +254,13 @@ async fn task(name: &str, vars: &TaskVars) -> AppResult<()> {
                     "{} announcement(s) not sent; re-run to retry them",
                     r.failed
                 ))),
+                r if r.left > 0 => {
+                    tracing::warn!(
+                        left = r.left,
+                        "waitlist: more to announce, run again tomorrow"
+                    );
+                    Ok(())
+                }
                 _ => Ok(()),
             }
         }

@@ -13,11 +13,19 @@ use crate::{
 /// a 429 here, so one a second leaves room for sign-in mail sent meanwhile.
 pub const SEND_GAP: Duration = Duration::from_secs(1);
 
+/// The most mails one run sends. Resend's free plan refuses mail past 100 a day, and sign-in
+/// codes must keep going out, so a run takes half of that; run the task once a day until
+/// nothing is left.
+/// shortcut: sized for the free plan and not enforced per day; raise it when the plan changes.
+pub const RUN_LIMIT: usize = 50;
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct AnnounceReport {
     pub sent: u64,
     /// Not sent this time; still unannounced, so a re-run tries them again.
     pub failed: u64,
+    /// Beyond this run's limit: the next day's run takes them.
+    pub left: u64,
 }
 
 pub struct AnnounceWaitlist {
@@ -56,8 +64,14 @@ impl AnnounceWaitlist {
                 "sign-ups are not open: SIGNUP_ALLOWED_DOMAINS must be `*`".into(),
             ));
         }
-        let mut report = AnnounceReport { sent: 0, failed: 0 };
-        for (id, email) in self.store.unannounced().await? {
+        let entries = self.store.unannounced().await?;
+        let left = entries.len().saturating_sub(RUN_LIMIT) as u64;
+        let mut report = AnnounceReport {
+            sent: 0,
+            failed: 0,
+            left,
+        };
+        for (id, email) in entries.into_iter().take(RUN_LIMIT) {
             // Never log the address.
             let key = format!("waitlist:announce:{id}");
             match self
@@ -79,6 +93,7 @@ impl AnnounceWaitlist {
         tracing::info!(
             sent = report.sent,
             failed = report.failed,
+            left = report.left,
             "waitlist announced"
         );
         Ok(report)
@@ -145,15 +160,36 @@ mod tests {
         let a = announce(&store, mail.clone(), "*");
         assert_eq!(
             a.run().await.unwrap(),
-            AnnounceReport { sent: 2, failed: 0 }
+            AnnounceReport {
+                sent: 2,
+                failed: 0,
+                left: 0
+            }
         );
         assert_eq!(
             a.run().await.unwrap(),
-            AnnounceReport { sent: 0, failed: 0 }
+            AnnounceReport {
+                sent: 0,
+                failed: 0,
+                left: 0
+            }
         );
         let sent = mail.sent();
         assert_eq!(sent.len(), 2);
         assert!(sent[0].text.contains("https://opsagent.dev/sign-up"));
+    }
+
+    #[tokio::test]
+    async fn one_run_sends_at_most_the_limit_and_the_next_takes_the_rest() {
+        let emails: Vec<String> = (0..RUN_LIMIT + 3).map(|i| format!("p{i}@b.io")).collect();
+        let refs: Vec<&str> = emails.iter().map(String::as_str).collect();
+        let (store, mail) = (Store::with(&refs), Arc::new(CaptureMailer::default()));
+        let a = announce(&store, mail.clone(), "*");
+        let first = a.run().await.unwrap();
+        assert_eq!((first.sent, first.left), (RUN_LIMIT as u64, 3));
+        let second = a.run().await.unwrap();
+        assert_eq!((second.sent, second.left), (3, 0));
+        assert_eq!(mail.sent().len(), RUN_LIMIT + 3);
     }
 
     #[tokio::test]
@@ -190,11 +226,19 @@ mod tests {
         let a = announce(&store, mailer.clone(), "*");
         assert_eq!(
             a.run().await.unwrap(),
-            AnnounceReport { sent: 1, failed: 1 }
+            AnnounceReport {
+                sent: 1,
+                failed: 1,
+                left: 0
+            }
         );
         assert_eq!(
             a.run().await.unwrap(),
-            AnnounceReport { sent: 1, failed: 0 }
+            AnnounceReport {
+                sent: 1,
+                failed: 0,
+                left: 0
+            }
         );
         assert_eq!(mailer.0.sent().len(), 2);
     }
