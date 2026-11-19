@@ -102,3 +102,122 @@ pub(crate) async fn create_customer(
     uow.billing().set_customer(org.id, &id).await?;
     Ok(id)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use chrono::Utc;
+    use opsagent_core::billing::{BillingRepo, BillingResult, ReviewCheckout, SubscriptionState};
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::{
+        actions::{
+            billing::nightly::tests::settings,
+            orgs::test_support::{owned_org, scope},
+        },
+        adapters::memory::{FixedClock, MemStore},
+    };
+
+    /// Records each Checkout session asked for.
+    #[derive(Default)]
+    struct Sessions(Mutex<Vec<CheckoutRequest>>);
+
+    #[async_trait]
+    impl BillingProvider for Sessions {
+        async fn create_customer(
+            &self,
+            _: Uuid,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> BillingResult<String> {
+            Ok("cus_1".into())
+        }
+        async fn checkout_session(&self, r: &CheckoutRequest, _: &str) -> BillingResult<String> {
+            self.0.lock().unwrap().push(r.clone());
+            Ok("https://checkout.test/s".into())
+        }
+        async fn portal_session(&self, _: &str, _: &str) -> BillingResult<String> {
+            unreachable!()
+        }
+        async fn human_review_session(&self, _: &ReviewCheckout, _: &str) -> BillingResult<String> {
+            unreachable!()
+        }
+        async fn topup_session(
+            &self,
+            _: &str,
+            _: Uuid,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> BillingResult<String> {
+            unreachable!()
+        }
+        async fn set_quantity(&self, _: &str, _: i32, _: bool, _: &str) -> BillingResult<()> {
+            unreachable!()
+        }
+        async fn change_price(&self, _: &str, _: &str, _: &str) -> BillingResult<()> {
+            unreachable!()
+        }
+        async fn cancel_subscription(&self, _: &str, _: &str) -> BillingResult<()> {
+            unreachable!()
+        }
+    }
+
+    fn start(store: &MemStore, stripe: &Arc<Sessions>) -> StartCheckout {
+        StartCheckout::new(
+            Arc::new(store.clone()),
+            stripe.clone(),
+            Arc::new(FixedClock(Utc::now())),
+            settings(),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_tier_picks_the_price_and_only_team_gets_the_trial() {
+        let (store, stripe) = (MemStore::default(), Arc::new(Sessions::default()));
+        let (owner, org) = owned_org(&store, "o@example.com", "Acme").await;
+        let sc = scope(&store, &org, &owner).await;
+        let checkout = start(&store, &stripe);
+        for tier in [None, Some("team"), Some("starter"), Some("scale")] {
+            let url = checkout.run(&sc, tier).await.unwrap();
+            assert_eq!(url, "https://checkout.test/s");
+        }
+        let asked: Vec<_> = (stripe.0.lock().unwrap().iter())
+            .map(|r| (r.price_id.clone(), r.trial))
+            .collect();
+        let want = [("p_t", true), ("p_t", true), ("p_s", false), ("p_x", false)];
+        assert_eq!(asked, want.map(|(p, t)| (p.to_owned(), t)));
+
+        let bad = checkout.run(&sc, Some("gold")).await.unwrap_err();
+        assert!(matches!(bad, AppError::Invalid(_)), "{bad:?}");
+        assert_eq!(stripe.0.lock().unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn team_gets_no_second_trial_from_the_same_creator() {
+        let (store, stripe) = (MemStore::default(), Arc::new(Sessions::default()));
+        let (owner, first) = owned_org(&store, "o@example.com", "Acme").await;
+        let now = Utc::now();
+        let trialed = SubscriptionState {
+            subscription_id: "sub_1".into(),
+            status: BillingStatus::Trialing,
+            tier: Some(Tier::Team),
+            quantity: 1,
+            trial_ends_at: Some(now),
+            current_period_start: None,
+            current_period_end: None,
+            cancel_at_period_end: false,
+        };
+        let applied = store.apply_subscription(first.id, &trialed, now);
+        applied.await.unwrap();
+        let (_, second) = owned_org(&store, "o@example.com", "Other").await;
+        let sc = scope(&store, &second, &owner).await;
+        start(&store, &stripe).run(&sc, None).await.unwrap();
+        let asked = stripe.0.lock().unwrap();
+        assert_eq!((asked[0].price_id.as_str(), asked[0].trial), ("p_t", false));
+    }
+}
