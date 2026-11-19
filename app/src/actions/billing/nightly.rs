@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use super::{enqueue_sync, BillingSync};
 use crate::{
+    actions::day_counts::Counted,
     actions::runs::{
         classify::{lerr, LResult},
         notice_marker,
@@ -76,6 +77,8 @@ impl BillingSync {
             }
         }
         tracing::info!(failed = night.failed, "billing nightly done");
+        let counter = &self.counter;
+        counter.add(Counted::BillingOrg, night.failed).await;
         serde_json::to_value(night).map_err(lerr)
     }
 

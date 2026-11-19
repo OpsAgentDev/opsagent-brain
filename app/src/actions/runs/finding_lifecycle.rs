@@ -15,12 +15,14 @@ use crate::actions::uow::Repos;
 /// Applies one run's drafts. Every unseen finding resolves, except those of checks whose
 /// capability was partial: a partial scan resolves nothing for a partial capability. `partial`
 /// is run-wide today (no check reports which capability it lacked), so every check counts as
-/// partial and a partial run resolves nothing.
+/// partial and a partial run resolves nothing. Nor do the findings of `failed` checks (one
+/// that panicked or could not read its input): a check that did not run says nothing.
 pub(super) async fn apply(
     repos: &dyn Repos,
     c: &Connection,
     run_id: Uuid,
     drafts: &[FindingDraft],
+    failed: &[&str],
     now: DateTime<Utc>,
     partial: bool,
 ) -> RepoResult<()> {
@@ -29,7 +31,9 @@ pub(super) async fn apply(
     if partial {
         return Ok(());
     }
-    findings.resolve_unseen(org, conn, run_id, &[], now).await?;
+    let failed: Vec<String> = failed.iter().map(|id| (*id).to_owned()).collect();
+    let resolve = findings.resolve_unseen(org, conn, run_id, &failed, now);
+    resolve.await?;
     Ok(())
 }
 
@@ -129,19 +133,43 @@ mod tests {
         let c = connected(&store, Uuid::new_v4()).await;
         let now = Utc::now();
         let seen = [draft(&c, "no_mfa")];
-        apply(&store, &c, Uuid::new_v4(), &seen, now, false)
+        apply(&store, &c, Uuid::new_v4(), &seen, &[], now, false)
             .await
             .unwrap();
         assert_eq!(status(&store, &c).await, "open");
         // The check could not be fed this run: its unseen finding stays open.
-        apply(&store, &c, Uuid::new_v4(), &[], now, true)
+        apply(&store, &c, Uuid::new_v4(), &[], &[], now, true)
             .await
             .unwrap();
         assert_eq!(status(&store, &c).await, "open");
         // A complete run that does not see it resolves it.
-        apply(&store, &c, Uuid::new_v4(), &[], now, false)
+        apply(&store, &c, Uuid::new_v4(), &[], &[], now, false)
             .await
             .unwrap();
         assert_eq!(status(&store, &c).await, "resolved");
+    }
+
+    #[tokio::test]
+    async fn a_failed_check_resolves_nothing_and_writes_no_seen() {
+        let store = MemStore::default();
+        let c = connected(&store, Uuid::new_v4()).await;
+        let now = Utc::now();
+        let seen = [draft(&c, "no_mfa"), draft(&c, "other")];
+        let first = Uuid::new_v4();
+        apply(&store, &c, first, &seen, &[], now, false)
+            .await
+            .unwrap();
+        // `no_mfa` panicked this run and reported nothing; `other` ran and saw nothing.
+        apply(&store, &c, Uuid::new_v4(), &[], &["no_mfa"], now, false)
+            .await
+            .unwrap();
+        let all = store
+            .findings()
+            .list(c.organisation_id, Default::default(), page());
+        for f in all.await.unwrap().items {
+            let held = f.key.check_id == "no_mfa";
+            assert_eq!(f.status, if held { "open" } else { "resolved" });
+            assert_eq!(f.last_seen_run_id, Some(first));
+        }
     }
 }

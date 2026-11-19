@@ -1,6 +1,7 @@
 //! The nightly operator notice: counts of dead jobs and failed runs over the last 24 hours,
-//! and the mail sent on a day near the mail plan's daily stop, mailed to the contact address
-//! once per night, and nothing at all when there is none of these.
+//! the mail sent on a day near the mail plan's daily stop, and the day's counted failures
+//! (`day_counts`), mailed to the contact address once per night, and nothing at all when
+//! there is none of these.
 //! Counts and job kinds only: no customer data.
 use std::sync::Arc;
 
@@ -18,13 +19,9 @@ use super::{
     one_chunk_run,
 };
 use crate::{
-    actions::{ai::CreditTally, uow::UnitOfWork},
+    actions::{ai::CreditTally, day_counts, uow::UnitOfWork},
     error::AppResult,
-    mailers::{
-        branded,
-        counting::{reportable_days, DayCount},
-        Mail, Mailer,
-    },
+    mailers::{branded, counting::reportable_days, Mail, Mailer},
 };
 
 /// (job kind, count), by kind.
@@ -49,7 +46,7 @@ pub trait FailureCounts: Send + Sync {
 #[derive(Clone)]
 pub struct OperatorNotice {
     failures: Arc<dyn FailureCounts>,
-    /// The day counters `CountingMailer` writes.
+    /// The day counters `CountingMailer` and `DayCounter` write.
     mail_counts: Arc<dyn CreditTally>,
     uow: Arc<dyn UnitOfWork>,
     redis: redis::Client,
@@ -90,11 +87,14 @@ impl OperatorNotice {
         let mail_days = reportable_days(&*self.mail_counts, today)
             .await
             .map_err(lerr)?;
-        if found.is_empty() && mail_days.is_empty() {
+        let mut days: Vec<String> = mail_days.iter().map(|d| d.line()).collect();
+        let counted = day_counts::lines(&*self.mail_counts, today).await;
+        days.extend(counted.map_err(lerr)?);
+        if found.is_empty() && days.is_empty() {
             return Ok(outcome(false));
         }
         let subject = "OpsAgent: failures in the last 24 hours";
-        let text = body(&found, &mail_days);
+        let text = body(&found, &days);
         let mail = Mail {
             to: self.contact_to.clone(),
             subject: subject.into(),
@@ -137,10 +137,11 @@ fn line(label: &str, by_kind: &[(String, i64)]) -> String {
     format!("{label}: {total} ({})", kinds.join(", "))
 }
 
-fn body(f: &Failures, mail_days: &[DayCount]) -> String {
-    let mail: String = mail_days.iter().map(|d| d.line() + "\n").collect();
+/// `days`: the per-day lines (mail, then counted failures), one each.
+fn body(f: &Failures, days: &[String]) -> String {
+    let days: String = days.iter().map(|d| format!("{d}\n")).collect();
     format!(
-        "In the last 24 hours:\n\n{}\n{}\n{mail}\nDetails are in the logs.",
+        "In the last 24 hours:\n\n{}\n{}\n{days}\nDetails are in the logs.",
         line("Dead jobs", &f.dead_jobs),
         line("Failed runs", &f.failed_runs)
     )
@@ -149,6 +150,7 @@ fn body(f: &Failures, mail_days: &[DayCount]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mailers::counting::DayCount;
 
     fn k(s: &str, n: i64) -> (String, i64) {
         (s.into(), n)
@@ -180,8 +182,12 @@ mod tests {
             sent: 80.into(),
             refused: 2.into(),
         };
-        let text = body(&Failures::default(), &[day]);
+        let billing = "Billing on 2026-11-18: 2 organisations could not be processed.";
+        let text = body(&Failures::default(), &[day.line(), billing.into()]);
         let line = "Mail on 2026-11-18: 80 sent, 2 not sent. The Resend plan stops at 100 a day.";
-        assert!(text.contains(&format!("\n{line}\n\nDetails")), "{text}");
+        assert!(
+            text.contains(&format!("\n{line}\n{billing}\n\nDetails")),
+            "{text}"
+        );
     }
 }

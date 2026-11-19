@@ -22,6 +22,7 @@ use uuid::Uuid;
 use super::BillingSettings;
 use crate::{
     actions::{
+        day_counts::DayCounter,
         recipients::MailGuard,
         runs::classify::{lerr, LResult},
         uow::{Tx, UnitOfWork},
@@ -69,6 +70,7 @@ pub struct BillingSync {
     pub(super) guard: Arc<MailGuard>,
     clock: Arc<dyn Clock>,
     pub(super) settings: BillingSettings,
+    pub(super) counter: DayCounter,
 }
 
 impl BillingSync {
@@ -79,6 +81,7 @@ impl BillingSync {
         (mailer, guard): (Arc<dyn Mailer>, Arc<MailGuard>),
         clock: Arc<dyn Clock>,
         settings: BillingSettings,
+        counter: DayCounter,
     ) -> Self {
         Self {
             uow,
@@ -88,6 +91,7 @@ impl BillingSync {
             guard,
             clock,
             settings,
+            counter,
         }
     }
 

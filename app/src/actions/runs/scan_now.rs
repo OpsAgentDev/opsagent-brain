@@ -57,7 +57,10 @@ mod tests {
     use opsagent_secrets::EnvKek;
 
     use super::*;
-    use crate::adapters::memory::MemStore;
+    use crate::{
+        actions::day_counts::DayCounter,
+        adapters::memory::{MemRateLimiter, MemStore},
+    };
 
     #[tokio::test]
     async fn unknown_connection_is_not_found() {
@@ -67,7 +70,8 @@ mod tests {
         let redis = opsagent_ledger::redis::Client::open("redis://localhost:1").unwrap();
         let kek = Arc::new(EnvKek::new([7; 32], 1, None));
         let connectors = Arc::new(Registry::new(AwsOutbound::default(), true));
-        let full_scan = FullScan::new(uow.clone(), redis, kek, connectors, clock.clone());
+        let counter = DayCounter::new(Arc::new(MemRateLimiter::default()), clock.clone());
+        let full_scan = FullScan::new(uow.clone(), redis, kek, connectors, clock.clone(), counter);
         let err = ScanNow::new(uow, full_scan, clock)
             .run(Uuid::new_v4())
             .await

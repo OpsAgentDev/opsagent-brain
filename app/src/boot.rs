@@ -16,9 +16,9 @@ use axum::{middleware::from_fn_with_state, Router};
 
 use crate::{
     actions::{
-        ai, auth, billing, connections, contact, deliveries, findings, human_reviews, integrations,
-        members, oauth, orgs, recipients, resources, retention, runs, status, uow::UnitOfWork,
-        waitlist, Actions, ClientMetadataSource, ConnectorSource, RateLimiter,
+        ai, auth, billing, connections, contact, day_counts, deliveries, findings, human_reviews,
+        integrations, members, oauth, orgs, recipients, resources, retention, runs, status,
+        uow::UnitOfWork, waitlist, Actions, ClientMetadataSource, ConnectorSource, RateLimiter,
     },
     adapters::{
         client_metadata::HttpClientMetadata,
@@ -245,12 +245,14 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
     let resolve_client = oauth::ResolveClient::new(d.uow.clone(), d.client_metadata.clone());
     let dispatcher = Arc::new(runs::RunDispatcher::new(d.uow.clone()));
     let connectors: Arc<dyn ConnectorSource> = Arc::new(d.registry.clone());
+    let counter = day_counts::DayCounter::new(d.credit_tally.clone(), d.clock.clone());
     let full_scan = runs::FullScan::new(
         d.uow.clone(),
         d.redis.clone(),
         d.kek.clone(),
         connectors.clone(),
         d.clock.clone(),
+        counter.clone(),
     );
     // One guard for recipient confirms and delivery mail.
     let guard = Arc::new(recipients::MailGuard::new(d.uow.clone(), d.limiter.clone()));
@@ -323,6 +325,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                     d.billing.clone(),
                     d.clock.clone(),
                     s.clone(),
+                    counter.clone(),
                 ),
                 sync: billing::BillingSync::new(
                     d.uow.clone(),
@@ -331,6 +334,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                     (d.mailer.clone(), guard.clone()),
                     d.clock.clone(),
                     s,
+                    counter,
                 ),
                 gate: gate.clone(),
                 skip_gated: billing::SkipGatedRun::new(

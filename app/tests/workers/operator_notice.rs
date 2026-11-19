@@ -132,3 +132,41 @@ async fn mails_on_a_refused_mail_alone_and_is_silent_below_80_sent() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn mails_one_line_per_counted_failure() {
+    serve(|_req, ctx| async move {
+        let mail = prepare(&ctx);
+        let now = slot(0);
+        let day = now.date_naive();
+        let mut c = ctx
+            .redis()
+            .get_multiplexed_async_connection()
+            .await
+            .unwrap();
+        for (kind, n) in [
+            ("billing:failed", 2),
+            ("payment:unmatched", 1),
+            ("check:failed", 3),
+        ] {
+            let _: i64 = opsagent_ledger::redis::cmd("INCRBY")
+                .arg(format!("{kind}:{day}"))
+                .arg(n)
+                .query_async(&mut c)
+                .await
+                .unwrap();
+        }
+        let run = night(&ctx, now).await;
+        perform(&ctx, JobKind::OperatorNotice, run).await.unwrap();
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 1);
+        let lines = format!(
+            "Billing on {day}: 2 organisations could not be processed.\n\
+             Payments on {day}: 1 paid events matched no organisation or request.\n\
+             Checks on {day}: 3 checks panicked or could not read their input.\n"
+        );
+        assert!(sent[0].text.contains(&lines), "{}", sent[0].text);
+    })
+    .await;
+}

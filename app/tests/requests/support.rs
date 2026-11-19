@@ -41,6 +41,10 @@ pub fn prepare(ctx: &TestApp) -> Arc<CaptureMailer> {
         "recipient_confirm:*",
         // The day counters behind the operator notice's mail line.
         "mail:*",
+        // And its counted failures (`day_counts`).
+        "billing:failed:*",
+        "payment:unmatched:*",
+        "check:failed:*",
     ] {
         let found: Vec<String> = opsagent_ledger::redis::cmd("KEYS")
             .arg(pattern)

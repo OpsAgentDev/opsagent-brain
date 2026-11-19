@@ -18,9 +18,9 @@ const DAILY_STOP: i64 = 100;
 /// A day with this many sent is reported: room to act before Resend's Free plan stops.
 const WARN_AT: i64 = 80;
 /// The notice reads yesterday and today; a third day covers a late run.
-const KEEP_SECS: i64 = 3 * DAY_SECS;
+pub(crate) const KEEP_SECS: i64 = 3 * DAY_SECS;
 /// A counter that does not answer is given up on, so a send never waits on it for long.
-const COUNT_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const COUNT_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn key(outcome: &str, day: NaiveDate) -> String {
     format!("mail:{outcome}:{day}")

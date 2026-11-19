@@ -28,7 +28,7 @@ use super::{
 };
 use crate::{
     actions::runs::classify::{job_err, lerr, revoked},
-    actions::{uow::UnitOfWork, ConnectorSource},
+    actions::{day_counts::DayCounter, uow::UnitOfWork, ConnectorSource},
     creds,
     models::enum_str,
 };
@@ -55,6 +55,7 @@ pub struct FullScan {
     kek: Arc<dyn Kek>,
     connectors: Arc<dyn ConnectorSource>,
     pub(super) clock: Arc<dyn Clock>,
+    pub(super) counter: DayCounter,
     connector: Option<Arc<dyn Connector>>,
     pub(super) checks: fn() -> Vec<Box<dyn Check>>,
     pub(super) profile: ScanProfile,
@@ -76,6 +77,7 @@ impl FullScan {
         kek: Arc<dyn Kek>,
         connectors: Arc<dyn ConnectorSource>,
         clock: Arc<dyn Clock>,
+        counter: DayCounter,
     ) -> Self {
         Self {
             uow,
@@ -83,6 +85,7 @@ impl FullScan {
             kek,
             connectors,
             clock,
+            counter,
             connector: None,
             checks: opsagent_checks::all,
             profile: ScanProfile::Full,
