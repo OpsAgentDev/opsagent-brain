@@ -150,7 +150,12 @@ pub async fn deps(config: Config, db: DatabaseConnection) -> AppResult<Deps> {
         challenge: challenge(&config)?,
         models: models(&config.model_settings())?,
         webauthn: Arc::new(crate::webauthn::build(&config.web_base_url)?),
-        mailer: mailers::from_config(&config).map_err(internal)?,
+        // Wrapped once, here, so every send in the app is counted once.
+        mailer: Arc::new(mailers::counting::CountingMailer::new(
+            mailers::from_config(&config).map_err(internal)?,
+            limiter.clone(),
+            Arc::new(SystemClock),
+        )),
         config,
         uow: Arc::new(Pg::new(db.clone())),
         db,
@@ -472,6 +477,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             ),
             operator_notice: runs::OperatorNotice::new(
                 Arc::new(PgFailures(d.db.clone())),
+                d.credit_tally.clone(),
                 d.uow.clone(),
                 d.redis.clone(),
                 d.mailer.clone(),

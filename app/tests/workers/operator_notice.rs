@@ -94,3 +94,41 @@ async fn silent_when_healthy_counts_only_the_last_day_and_mails_once() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn mails_on_a_refused_mail_alone_and_is_silent_below_80_sent() {
+    serve(|_req, ctx| async move {
+        let mail = prepare(&ctx);
+        let now = slot(0);
+        let count = |outcome: &'static str, n: i64| {
+            let key = format!("mail:{outcome}:{}", now.date_naive());
+            let redis = ctx.redis();
+            async move {
+                let mut c = redis.get_multiplexed_async_connection().await.unwrap();
+                let _: i64 = opsagent_ledger::redis::cmd("INCRBY")
+                    .arg(key)
+                    .arg(n)
+                    .query_async(&mut c)
+                    .await
+                    .unwrap();
+            }
+        };
+        count("sent", 79).await;
+        let quiet = night(&ctx, now).await;
+        perform(&ctx, JobKind::OperatorNotice, quiet).await.unwrap();
+        assert!(mail.sent().is_empty());
+
+        count("refused", 1).await;
+        let run = night(&ctx, now + Duration::minutes(1)).await;
+        perform(&ctx, JobKind::OperatorNotice, run).await.unwrap();
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 1);
+        let line = format!(
+            "Mail on {}: 79 sent, 1 not sent. The Resend plan stops at 100 a day.",
+            now.date_naive()
+        );
+        assert!(sent[0].text.contains(&line), "{}", sent[0].text);
+    })
+    .await;
+}
