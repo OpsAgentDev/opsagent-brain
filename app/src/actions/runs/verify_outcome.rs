@@ -80,8 +80,12 @@ impl VerifyConnection {
     }
 
     /// Consecutive denials; `revoked` only once they repeat 3 times over at least an hour.
+    /// A first connect is told at once instead (`first_connect_denied`).
     async fn denied(&self, step: &Step<'_>, o: &VerifyOutcome) -> LResult<()> {
         let (run, c, now) = (step.run, step.c, self.clock.now());
+        if c.status == S::Verifying && c.first_connected_at.is_none() {
+            return self.first_connect_denied(step, o).await;
+        }
         let streak = c.verify_denied_streak + 1;
         let first = c.verify_denied_first_at.unwrap_or(now);
         let revoke = (streak >= DENIED_TIMES && now - first >= DENIED_SPAN)
@@ -129,6 +133,28 @@ impl VerifyConnection {
         } else {
             retry_or_fail(tx.ledger(), run.id, run.attempts, step.fence).await?;
         }
+        tx.commit().await.map_err(lerr)
+    }
+
+    /// A connection that never connected has no working role to wait for: back to `pending`
+    /// with `access_denied` at once and no streak, so the role can be corrected and verified
+    /// again (customer-review-fixes W1). The run is done: a retry would meet the same role.
+    async fn first_connect_denied(&self, step: &Step<'_>, o: &VerifyOutcome) -> LResult<()> {
+        let (run, c, reason) = (step.run, step.c, Some("access_denied"));
+        let tx = self.fenced(step).await?;
+        let repo = tx.connections();
+        let cas = repo.cas_status(c.organisation_id, c.id, c.status, S::Pending, reason);
+        if !cas.await.map_err(lerr)? {
+            drop(tx);
+            return self
+                .end(step, RunStatus::Skipped, "connection_changed")
+                .await;
+        }
+        self.record(&*tx, c, run.id, Some(o), "access_denied", None)
+            .await?;
+        tx.ledger()
+            .set_status(run.id, step.fence, RunStatus::Done, None)
+            .await?;
         tx.commit().await.map_err(lerr)
     }
 
