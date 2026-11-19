@@ -160,6 +160,86 @@ async fn access_denied_three_times_over_an_hour_revokes() {
     .await;
 }
 
+/// customer-review-fixes W1: a first connect the cloud refuses says so at once.
+#[tokio::test]
+#[serial]
+async fn never_connected_denied_goes_to_pending_at_once_and_can_verify_again() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (t, org, id) = fake_connection(&req, &mail, "o@example.com", "Org", "denied").await;
+        let cid: Uuid = id.parse().unwrap();
+        set(&ctx, cid, |a| a.status = Set("verifying".into())).await;
+        let r = run_worker(&ctx, cid, 0).await;
+        let c = conn(&ctx, cid).await;
+        assert_eq!(
+            (c.status.as_str(), c.status_reason.as_deref()),
+            ("pending", Some("access_denied"))
+        );
+        assert_eq!(
+            (c.verify_denied_streak, c.verify_denied_first_at),
+            (0, None)
+        );
+        // Nothing to retry: the run is done and its outcome recorded.
+        let run = runs::Entity::find_by_id(r)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.status, "done");
+        assert!(run.next_attempt_at.is_none());
+        let v = connection_verifications::Entity::find()
+            .filter(connection_verifications::Column::ConnectionId.eq(cid))
+            .all(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].outcome, "access_denied");
+
+        // The role is corrected: the same verify action connects it and clears the reason.
+        set_fixture(&ctx, cid, "clean").await;
+        assert_eq!(verify(&req, &t, &org, &id, "").await.status_code(), 202);
+        let c = conn(&ctx, cid).await;
+        assert_eq!((c.status.as_str(), c.status_reason), ("connected", None));
+        assert!(c.first_connected_at.is_some());
+    })
+    .await;
+}
+
+/// The rule for a connection that worked before is unchanged, also while it is `verifying`.
+#[tokio::test]
+#[serial]
+async fn connected_before_denied_keeps_its_status_and_counts_the_streak() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let (_, _, id) = fake_connection(&req, &mail, "o@example.com", "Org", "denied").await;
+        let id: Uuid = id.parse().unwrap();
+        for status in ["verifying", "connected"] {
+            set(&ctx, id, |a| {
+                a.status = Set(status.into());
+                a.first_connected_at = Set(Some(Utc::now().into()));
+                a.external_account_id = Set(Some("denied".into()));
+                a.verify_denied_streak = Set(0);
+            })
+            .await;
+            let minute = i64::from(status == "connected");
+            let r = run_worker(&ctx, id, minute).await;
+            let c = conn(&ctx, id).await;
+            assert_eq!(
+                (c.status.as_str(), c.status_reason.as_deref()),
+                (status, None)
+            );
+            assert_eq!(c.verify_denied_streak, 1);
+            let run = runs::Entity::find_by_id(r)
+                .one(&ctx.db)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(run.status, "queued");
+        }
+    })
+    .await;
+}
+
 #[tokio::test]
 #[serial]
 async fn non_retryable_connector_error_is_recorded_on_first_run() {

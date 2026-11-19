@@ -37,8 +37,10 @@ impl Tool for VerifyConnectionTool {
             title: "Verify a cloud connection",
             description: "Tells OpsAgent the read role's ARN (the stack output RoleArn) and \
                           queues its verification. Owners only. Returns the connection's status; \
-                          poll list_connections until it is `connected`, then run_check may \
-                          start the first scan.",
+                          poll list_connections and read its `status` and `status_reason`. \
+                          `connected`: run_check may start the first scan. `pending` with \
+                          `access_denied`: the cloud refused the role, so check the stack \
+                          finished and the RoleArn is its output, then verify again.",
             input_schema: schema_of::<Args>(),
             access: Access::Write,
             idempotent: true,
