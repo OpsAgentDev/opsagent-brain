@@ -2141,6 +2141,84 @@
         }
       }
     },
+    "/orgs/{org}/audit": {
+      "get": {
+        "tags": [
+          "orgs"
+        ],
+        "summary": "The organisation's audit log, newest first. Owners only.",
+        "operationId": "orgs_audit",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` from the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, default 50; values above 200 are clamped to 200.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AuditEntry"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs/{org}/billing": {
       "get": {
         "tags": [
@@ -3142,7 +3220,7 @@
         "tags": [
           "connections"
         ],
-        "summary": "Owner only, for a `revoked` connection (409 `connection_not_revoked` otherwise). The owner\nlaunches the stack again and calls `verify`; the connection and its findings are kept.",
+        "summary": "Owner only, for a `revoked` connection or one still `pending` (409 `connection_not_revoked`\notherwise). The owner launches the stack (again) and calls `verify`; the connection and its\nfindings are kept.",
         "operationId": "connections_reconnect",
         "parameters": [
           {
@@ -3520,6 +3598,75 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org}/export": {
+      "post": {
+        "tags": [
+          "orgs"
+        ],
+        "summary": "The organisation's own data as one JSON document, sent as an attachment: `organisation`,\n`members`, `connections`, `findings` (with stored evidence), `delivery_settings`,\n`recipients`, `deliveries` and `audit_log`. Owners only; once per organisation per hour.",
+        "operationId": "orgs_export",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The export document (`Content-Disposition: attachment`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`export_too_large`: over 20 MB; contact support",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
             "content": {
               "application/json": {
                 "schema": {
@@ -5681,6 +5828,64 @@
           }
         }
       },
+      "AuditEntry": {
+        "type": "object",
+        "description": "One audit log entry.",
+        "required": [
+          "id",
+          "at",
+          "actor_type",
+          "actor",
+          "action",
+          "metadata"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Stable action code, e.g. `connection.create`."
+          },
+          "actor": {
+            "type": "string",
+            "description": "A member's name and email (`Former member` once they left), `agent <client name>`, or\n`OpsAgent` for the system."
+          },
+          "actor_type": {
+            "type": "string",
+            "description": "`member`, `agent` or `system`."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "The entry's metadata with anything secret-like left out."
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target by name, where it has one and still exists."
+          },
+          "target_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the action was on (`connection`, `member`, `finding`, ...); null without a target."
+          }
+        }
+      },
       "AuthorizeUrl": {
         "type": "object",
         "required": [
@@ -7291,6 +7496,82 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "Page_AuditEntry": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One audit log entry.",
+              "required": [
+                "id",
+                "at",
+                "actor_type",
+                "actor",
+                "action",
+                "metadata"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "description": "Stable action code, e.g. `connection.create`."
+                },
+                "actor": {
+                  "type": "string",
+                  "description": "A member's name and email (`Former member` once they left), `agent <client name>`, or\n`OpsAgent` for the system."
+                },
+                "actor_type": {
+                  "type": "string",
+                  "description": "`member`, `agent` or `system`."
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "metadata": {
+                  "type": "object",
+                  "description": "The entry's metadata with anything secret-like left out."
+                },
+                "outcome": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "target": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The target by name, where it has one and still exists."
+                },
+                "target_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "What the action was on (`connection`, `member`, `finding`, ...); null without a target."
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` to get the next page; null on the last page."
           }
         }
       },

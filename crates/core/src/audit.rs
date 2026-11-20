@@ -1,8 +1,9 @@
 //! The audit trail: one entry per state change, by a member or by the system.
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::repo::RepoResult;
+use crate::repo::{PageOf, PageRequest, RepoResult};
 
 /// Who acted: `audit_events.actor_type` and `actor_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,9 +84,29 @@ impl AuditEntry {
     }
 }
 
+/// A stored entry, as read back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuditRecord {
+    pub id: Uuid,
+    pub at: DateTime<Utc>,
+    pub actor: Actor,
+    pub action: String,
+    /// `(kind, id)`.
+    pub target: Option<(String, String)>,
+    pub outcome: Option<String>,
+    pub meta: serde_json::Value,
+}
+
 #[async_trait]
 pub trait AuditLog: Send + Sync {
     async fn record(&self, e: AuditEntry) -> RepoResult<()>;
+    /// The organisation's entries, newest first. Global entries (no organisation) are never
+    /// returned.
+    async fn list(
+        &self,
+        organisation_id: Uuid,
+        page: PageRequest,
+    ) -> RepoResult<PageOf<AuditRecord>>;
     /// Whether the organisation already has an `action` entry whose metadata names `run_id`.
     async fn recorded_for_run(
         &self,

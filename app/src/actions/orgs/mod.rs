@@ -1,16 +1,23 @@
 //! Organisation use cases.
+mod audit_view;
 mod create_org;
 mod delete_org;
+mod export_doc;
+mod export_org;
 mod get_org;
 mod is_owner_anywhere;
+mod list_audit;
 mod list_orgs;
 mod scope;
 mod update_org;
 
+pub use audit_view::AuditItem;
 pub use create_org::{CreateOrg, CreateOrgInput, ORGS_PER_USER_PER_DAY};
 pub use delete_org::DeleteOrg;
+pub use export_org::{ExportOrg, EXPORT_MAX_BYTES};
 pub use get_org::GetOrg;
 pub use is_owner_anywhere::IsOwnerAnywhere;
+pub use list_audit::ListAudit;
 pub use list_orgs::ListOrgs;
 pub use scope::{OrgScope, ResolveOrgScope};
 pub use update_org::UpdateOrg;
@@ -25,6 +32,8 @@ pub struct Orgs {
     pub update_org: UpdateOrg,
     pub delete_org: DeleteOrg,
     pub is_owner_anywhere: IsOwnerAnywhere,
+    pub list_audit: ListAudit,
+    pub export_org: ExportOrg,
 }
 
 fn valid_name(raw: &str) -> AppResult<String> {

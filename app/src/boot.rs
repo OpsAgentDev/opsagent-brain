@@ -410,6 +410,8 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 (d.mailer.clone(), guard.clone()),
             ),
             is_owner_anywhere: orgs::IsOwnerAnywhere::new(d.uow.clone()),
+            list_audit: orgs::ListAudit::new(d.uow.clone()),
+            export_org: orgs::ExportOrg::new(d.uow.clone(), d.limiter.clone(), d.clock.clone()),
         },
         members: members::Members {
             list_members: members::ListMembers::new(d.uow.clone()),

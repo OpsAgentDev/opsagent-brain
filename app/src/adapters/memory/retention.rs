@@ -369,7 +369,7 @@ impl RetentionRepo for MemStore {
             return Ok(None);
         }
         let counts = s.purge(org);
-        s.audit.push(AuditEntry {
+        s.push_audit(AuditEntry {
             organisation_id: None,
             actor: Actor::System,
             action: ORG_PURGED.into(),

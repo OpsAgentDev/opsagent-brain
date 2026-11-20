@@ -423,7 +423,7 @@ async fn patch_urgent_alerts_round_trips() {
 
 #[tokio::test]
 #[serial]
-async fn reconnect_returns_the_same_link_only_for_a_revoked_connection() {
+async fn reconnect_returns_the_same_link_for_a_pending_or_revoked_connection() {
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);
         let t = sign_in(&req, &mail, "owner@example.com").await;
@@ -436,10 +436,19 @@ async fn reconnect_returns_the_same_link_only_for_a_revoked_connection() {
                 .add_header("X-CSRF-Token", &t)
         };
 
+        // Never finished: the owner gets the launch link again and can verify from there.
         let pending = reconnect().await;
-        assert_eq!(pending.status_code(), 409, "{}", pending.text());
-        assert_eq!(pending.json::<Value>()["code"], "connection_not_revoked");
-        assert_eq!(audits(&ctx, "connection.reconnect_link").await, 0);
+        assert_eq!(pending.status_code(), 200, "{}", pending.text());
+        assert_eq!(pending.json::<Value>()["quick_create_url"], first);
+        assert_eq!(audits(&ctx, "connection.reconnect_link").await, 1);
+        assert_eq!(row(&ctx, &id).await.status, "pending");
+        // Being verified: not now.
+        let mut a: connections::ActiveModel = row(&ctx, &id).await.into();
+        a.status = Set("verifying".into());
+        a.update(&ctx.db).await.unwrap();
+        let verifying = reconnect().await;
+        assert_eq!(verifying.status_code(), 409, "{}", verifying.text());
+        assert_eq!(verifying.json::<Value>()["code"], "connection_not_revoked");
 
         let mut a: connections::ActiveModel = row(&ctx, &id).await.into();
         a.status = Set("revoked".into());
@@ -453,7 +462,7 @@ async fn reconnect_returns_the_same_link_only_for_a_revoked_connection() {
         // Same ExternalId and the current principal: the new stack repairs this connection.
         assert_eq!(body["quick_create_url"], first);
         assert_eq!(body["stack_name"], query_param(&first, "stackName"));
-        assert_eq!(audits(&ctx, "connection.reconnect_link").await, 1);
+        assert_eq!(audits(&ctx, "connection.reconnect_link").await, 2);
 
         let ext = query_param(&first, "param_ExternalId");
         let one = req.get(&format!("/v1/orgs/{org}/connections/{id}")).await;

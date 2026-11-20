@@ -146,6 +146,22 @@ contract_suite! {
         assert!(s.oauth().access_by_hash("zz").await.unwrap().is_none());
     }
 
+    async fn client_names_cover_own_grants_revoked_or_not(s) {
+        client(s).await;
+        let (a, b) = (org_id(s, "acme").await, org_id(s, "other").await);
+        let (keep, gone, elsewhere) = (
+            grant(s, a, Uuid::new_v4()).await,
+            grant(s, a, Uuid::new_v4()).await,
+            grant(s, b, Uuid::new_v4()).await,
+        );
+        s.oauth().revoke_grant(a, gone.id, at(1)).await.unwrap();
+        let ids = [keep.id, gone.id, elsewhere.id, Uuid::new_v4()];
+        let names = s.oauth().client_names(a, &ids).await.unwrap();
+        assert_eq!(names.len(), 2);
+        assert_eq!((names[&keep.id].as_str(), names[&gone.id].as_str()), ("Example", "Example"));
+        assert!(s.oauth().client_names(a, &[]).await.unwrap().is_empty());
+    }
+
     async fn grants_for_org_excludes_revoked_and_other_orgs(s) {
         client(s).await;
         let (a, b) = (org_id(s, "acme").await, org_id(s, "other").await);
