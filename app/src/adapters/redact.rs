@@ -29,19 +29,29 @@ static RULES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
             r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
             "[redacted:email]",
         ),
-        // A name that is or ends in one of these words (`DB_PASSWORD`, `PGPASSWORD`,
-        // `client_secret`, `GITHUB_TOKEN`, `signing_key`); a bare `key` is an object key or a
-        // tag key, so `key` counts only after an underscore or as `api key`. A value that an
-        // earlier rule already replaced (`[redacted:...]`) keeps its label.
-        (
-            r#"(?i)(\b[a-z0-9_]*(secret|password|passwd|token|api[_-]?key|_key)\b["']?\s*[:=]\s*["']?)[^\s"'\[][^\s"']{7,}"#,
-            "${1}[redacted:secret]",
-        ),
     ]
     .into_iter()
     .map(|(p, r)| (Regex::new(p).expect("redaction regex"), r))
     .collect()
 });
+
+/// A value after a name that is or ends in one of these words (`DB_PASSWORD`, `PGPASSWORD`,
+/// `client_secret`, `GITHUB_TOKEN`, `signing_key`). A bare `key` is an object key or a tag key,
+/// so `key` counts only after an underscore or as `api key`. Runs last: see `redact`.
+static LABELLED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)(\b[a-z0-9_]*(secret|password|passwd|token|api[_-]?key|_key)\b["']?\s*[:=]\s*["']?)([^\s"']{8,})"#,
+    )
+    .expect("redaction regex")
+});
+
+/// Exactly a label an earlier rule wrote, nothing before or after it.
+fn is_label(value: &str) -> bool {
+    value
+        .strip_prefix("[redacted:")
+        .and_then(|v| v.strip_suffix(']'))
+        .is_some_and(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+}
 
 /// The redacted text and whether anything was replaced.
 pub fn redact(text: &str) -> (String, bool) {
@@ -50,6 +60,19 @@ pub fn redact(text: &str) -> (String, bool) {
         if re.is_match(&out) {
             out = re.replace_all(&out, *rep).into_owned();
         }
+    }
+    // A value that is exactly an earlier label keeps it; anything else after the name goes,
+    // including one that merely starts with `[` or has text around a label.
+    if LABELLED.is_match(&out) {
+        out = LABELLED
+            .replace_all(&out, |c: &regex::Captures<'_>| {
+                if is_label(&c[3]) {
+                    c[0].to_owned()
+                } else {
+                    format!("{}[redacted:secret]", &c[1])
+                }
+            })
+            .into_owned();
     }
     let changed = out != text;
     (out, changed)
@@ -276,6 +299,24 @@ mod tests {
             "state=running cpu=2 next_page=abcdefghijkl",
         ] {
             assert_eq!(redact(t), (t.to_owned(), false), "{t}");
+        }
+    }
+
+    #[test]
+    fn a_labelled_value_starting_with_a_bracket_is_still_redacted() {
+        for (before, after) in [
+            ("password=[hunter2hunter2", "password=[redacted:secret]"),
+            ("DB_PASSWORD=[abc]defghijk", "DB_PASSWORD=[redacted:secret]"),
+            (
+                "token=[redacted:token]tail-of-the-secret",
+                "token=[redacted:secret]",
+            ),
+            (
+                "GITHUB_TOKEN=[redacted:token]",
+                "GITHUB_TOKEN=[redacted:token]",
+            ),
+        ] {
+            assert_eq!(redact(before).0, after, "{before}");
         }
     }
 }
