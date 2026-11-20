@@ -48,6 +48,8 @@ async fn served_to_owners_only() {
             "/orgs/{org}/connections/{id}/scan",
             "/orgs/{org}/connections",
             "/orgs/{org}/members",
+            "/orgs/{org}/audit",
+            "/orgs/{org}/export",
             "/auth/me",
         ] {
             assert!(doc["paths"][p].is_object(), "missing {p}");

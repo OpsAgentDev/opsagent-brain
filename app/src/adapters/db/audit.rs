@@ -1,16 +1,52 @@
 use async_trait::async_trait;
 use opsagent_core::{
-    audit::{Actor, AuditEntry, AuditLog},
-    repo::RepoResult,
+    audit::{Actor, AuditEntry, AuditLog, AuditRecord},
+    repo::{PageOf, PageRequest, RepoResult},
 };
-use sea_orm::{ActiveModelTrait, ConnectionTrait, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, Set};
 use uuid::Uuid;
 
-use super::{db_err, ledger_storage::stmt, Conn, Pg};
+use super::{db_err, ledger_storage::stmt, page, utc, Conn, Pg};
 use crate::models::{_entities::audit_events, now};
+
+/// An actor whose id does not parse (never written by `record`) reads as the system.
+fn record_of(m: audit_events::Model) -> AuditRecord {
+    let id = m.actor_id.as_deref().and_then(|s| s.parse::<Uuid>().ok());
+    let actor = match (m.actor_type.as_str(), id) {
+        ("member", Some(id)) => Actor::Member(id),
+        ("mcp_client", Some(id)) => Actor::McpClient(id),
+        _ => Actor::System,
+    };
+    AuditRecord {
+        id: m.id,
+        at: utc(m.created_at),
+        actor,
+        action: m.action,
+        target: m.target_type.zip(m.target_id),
+        outcome: m.outcome,
+        meta: m.metadata,
+    }
+}
 
 #[async_trait]
 impl<C: Conn> AuditLog for Pg<C> {
+    async fn list(&self, organisation_id: Uuid, p: PageRequest) -> RepoResult<PageOf<AuditRecord>> {
+        use audit_events::Column as Col;
+        let select = audit_events::Entity::find().filter(Col::OrganisationId.eq(organisation_id));
+        let got = page(
+            self.db(),
+            select,
+            (Col::CreatedAt, Col::Id),
+            |m| (m.created_at, m.id),
+            p,
+        )
+        .await?;
+        Ok(PageOf {
+            items: got.items.into_iter().map(record_of).collect(),
+            next: got.next,
+        })
+    }
+
     async fn record(&self, e: AuditEntry) -> RepoResult<()> {
         let (actor_type, actor_id) = match e.actor {
             Actor::Member(id) => ("member", Some(id.to_string())),

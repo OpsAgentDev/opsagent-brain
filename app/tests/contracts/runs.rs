@@ -58,6 +58,41 @@ contract_suite! {
         assert!(!s.audit().recorded_for_run(o, action, Uuid::new_v4()).await.unwrap());
     }
 
+    async fn audit_list_pages_one_organisation_newest_first(s) {
+        use opsagent_core::audit::{Actor, AuditEntry};
+        let (o, other) = (org(s).await, org(s).await);
+        let user = Uuid::new_v4();
+        let first = AuditEntry::member(Some(o), user, "a.first", Some(("connection", "c1".into())));
+        s.audit().record(first).await.unwrap();
+        s.audit().record(AuditEntry::member(Some(other), user, "theirs", None)).await.unwrap();
+        s.audit().record(AuditEntry::member(None, user, "global", None)).await.unwrap();
+        let second = AuditEntry::system(o, "a.second", ("run", "r".into()), "failed")
+            .with_meta(serde_json::json!({ "code": "x" }));
+        s.audit().record(second).await.unwrap();
+        let grant = Uuid::new_v4();
+        s.audit().record(AuditEntry::mcp_client(o, grant, "a.third", "success")).await.unwrap();
+
+        let all = s.audit().list(o, page(50)).await.unwrap();
+        let actions: Vec<_> = all.items.iter().map(|e| e.action.as_str()).collect();
+        assert_eq!(actions, ["a.third", "a.second", "a.first"]);
+        assert!(all.next.is_none());
+        assert_eq!(all.items[0].actor, Actor::McpClient(grant));
+        assert_eq!(all.items[0].target, None);
+        assert_eq!(all.items[1].actor, Actor::System);
+        assert_eq!(all.items[1].outcome.as_deref(), Some("failed"));
+        assert_eq!(all.items[1].meta, serde_json::json!({ "code": "x" }));
+        assert_eq!(all.items[2].actor, Actor::Member(user));
+        assert_eq!(all.items[2].target, Some(("connection".into(), "c1".into())));
+
+        let one = s.audit().list(o, page(2)).await.unwrap();
+        assert_eq!(one.items.len(), 2);
+        let rest = PageRequest { after: one.next, limit: 2 };
+        let two = s.audit().list(o, rest).await.unwrap();
+        let got: Vec<_> = two.items.iter().map(|e| e.action.as_str()).collect();
+        assert_eq!(got, ["a.first"]);
+        assert!(two.next.is_none());
+    }
+
     async fn list_pages_newest_first_with_cursor(s) {
         let o = org(s).await;
         let c = connection(s, o, "Prod").await.id;

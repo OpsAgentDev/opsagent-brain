@@ -157,6 +157,23 @@ impl OAuthRepo for MemStore {
             .cloned())
     }
 
+    async fn client_names(
+        &self,
+        organisation_id: Uuid,
+        grant_ids: &[Uuid],
+    ) -> RepoResult<std::collections::HashMap<Uuid, String>> {
+        let s = self.state();
+        let mine = s
+            .oauth_grants
+            .iter()
+            .filter(|g| g.organisation_id == organisation_id && grant_ids.contains(&g.id));
+        let named = mine.filter_map(|g| {
+            let c = s.oauth_clients.iter().find(|c| c.client_id == g.client_id);
+            c.map(|c| (g.id, c.name.clone()))
+        });
+        Ok(named.collect())
+    }
+
     async fn grants_for_org(&self, organisation_id: Uuid) -> RepoResult<Vec<Grant>> {
         let s = self.state();
         let mut rows: Vec<Grant> = s
