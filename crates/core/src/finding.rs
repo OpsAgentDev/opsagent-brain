@@ -1,4 +1,6 @@
 //! Findings: the dedup key, drafts checks emit, stored findings and their repository.
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -185,6 +187,19 @@ pub trait FindingsRepo: Send + Sync {
         organisation_id: Uuid,
         finding_id: Uuid,
     ) -> RepoResult<Vec<StoredEvidence>>;
+    /// `evidence` for many findings in one query: each of the organisation's findings among
+    /// `ids` that has unexpired evidence, with it newest first.
+    async fn evidence_of(
+        &self,
+        organisation_id: Uuid,
+        ids: &[Uuid],
+    ) -> RepoResult<HashMap<Uuid, Vec<StoredEvidence>>>;
+    /// The title of each of the organisation's findings among `ids`, in one query.
+    async fn titles(
+        &self,
+        organisation_id: Uuid,
+        ids: &[Uuid],
+    ) -> RepoResult<HashMap<Uuid, String>>;
     /// `NotFound` for an unknown id, `Conflict("finding_state_changed")` when the status moved.
     async fn change_status(
         &self,

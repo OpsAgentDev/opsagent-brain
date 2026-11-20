@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
@@ -202,6 +204,38 @@ impl FindingsRepo for MemStore {
     ) -> RepoResult<Vec<StoredEvidence>> {
         let ev = self.finding_row(organisation_id, finding_id, |f| f.evidence.clone());
         Ok(ev.unwrap_or_default().into_iter().rev().collect())
+    }
+
+    async fn evidence_of(
+        &self,
+        organisation_id: Uuid,
+        ids: &[Uuid],
+    ) -> RepoResult<HashMap<Uuid, Vec<StoredEvidence>>> {
+        let s = self.state();
+        let mine = s
+            .findings
+            .iter()
+            .filter(|f| f.finding.organisation_id == organisation_id)
+            .filter(|f| ids.contains(&f.finding.id) && !f.evidence.is_empty());
+        Ok(mine
+            .map(|f| (f.finding.id, f.evidence.iter().rev().cloned().collect()))
+            .collect())
+    }
+
+    async fn titles(
+        &self,
+        organisation_id: Uuid,
+        ids: &[Uuid],
+    ) -> RepoResult<HashMap<Uuid, String>> {
+        let s = self.state();
+        let mine = s
+            .findings
+            .iter()
+            .filter(|f| f.finding.organisation_id == organisation_id)
+            .filter(|f| ids.contains(&f.finding.id));
+        Ok(mine
+            .map(|f| (f.finding.id, f.finding.title.clone()))
+            .collect())
     }
 
     async fn change_status(

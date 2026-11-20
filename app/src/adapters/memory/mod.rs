@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     ai::AiRepo,
-    audit::{AuditEntry, AuditLog},
+    audit::AuditLog,
     billing::BillingRepo,
     chat::ChatRepo,
     connection::{Connection, ConnectionsRepo, SealedCreds, Verification},
@@ -134,7 +134,7 @@ pub struct MemState {
     users: Vec<User>,
     magic_links: Vec<MagicLinkRow>,
     passkeys: Vec<StoredPasskey>,
-    audit: Vec<AuditEntry>,
+    audit: Vec<audit::Stamped>,
     connections: Vec<(Connection, SealedCreds)>,
     runs: Vec<runs::RunEntry>,
     /// `None`: started, `Some(external_ref)`: done.

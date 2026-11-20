@@ -419,6 +419,35 @@ contract_suite! {
         assert_eq!(s.findings().get(org, id).await.unwrap().unwrap().status, "open");
     }
 
+    async fn evidence_and_titles_of_many_findings_are_org_scoped(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let (other, theirs) = world(s, seed).await;
+        let mut drafts = vec![
+            draft(conn, "no_mfa", "a", Severity::High),
+            draft(conn, "no_mfa", "b", Severity::Low),
+        ];
+        drafts[0].evidence[0].excerpt = "of a".into();
+        drafts[1].evidence[0].excerpt = "of b".into();
+        scan(s, seed, org, conn, &drafts).await;
+        scan(s, seed, other, theirs, &[draft(theirs, "no_mfa", "c", Severity::High)]).await;
+        let mine = s.findings().list(org, FindingFilter::default(), all()).await.unwrap().items;
+        let far = s.findings().list(other, FindingFilter::default(), all()).await.unwrap().items[0].id;
+        let ids = [mine[0].id, mine[1].id, far, Uuid::new_v4()];
+
+        let ev = s.findings().evidence_of(org, &ids).await.unwrap();
+        assert_eq!(ev.len(), 2);
+        for f in &mine {
+            assert_eq!(ev[&f.id], s.findings().evidence(org, f.id).await.unwrap());
+            assert_eq!(ev[&f.id].len(), 1);
+        }
+        assert_ne!(ev[&mine[0].id][0].excerpt, ev[&mine[1].id][0].excerpt);
+        let titles = s.findings().titles(org, &ids).await.unwrap();
+        assert_eq!(titles.len(), 2);
+        assert_eq!(titles[&mine[0].id], mine[0].title);
+        assert!(s.findings().evidence_of(org, &[]).await.unwrap().is_empty());
+        assert!(s.findings().titles(org, &[]).await.unwrap().is_empty());
+    }
+
     async fn view_fields_and_stored_evidence_round_trip(s, seed) {
         let (org, conn) = world(s, seed).await;
         let mut d = draft(conn, "no_mfa", "u", Severity::High);

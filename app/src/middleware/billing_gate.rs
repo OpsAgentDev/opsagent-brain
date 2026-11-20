@@ -10,10 +10,11 @@ use axum::{
 
 use crate::{actions::orgs::OrgScope, api_error::ApiError, state::AppState};
 
-/// What a read-only organisation may still do: pay, leave (delete the organisation, disconnect
-/// a cloud account, remove Slack, delete its own AI key), or take access away (remove a
+/// What a read-only organisation may still do: pay, leave (export its data, delete the
+/// organisation, disconnect a cloud account, remove Slack, delete its own AI key), or take access away (remove a
 /// member, revoke an agent, cancel an invite, change a role), since reads and `/mcp` stay open.
-const EXEMPT: [(&str, &str); 11] = [
+const EXEMPT: [(&str, &str); 12] = [
+    ("POST", "/v1/orgs/{org}/export"),
     ("POST", "/v1/orgs/{org}/human-reviews"),
     ("POST", "/v1/orgs/{org}/billing/checkout"),
     ("POST", "/v1/orgs/{org}/billing/portal"),
@@ -56,6 +57,7 @@ mod tests {
         for path in ["connections/{id}", "integrations/{id}", "ai/keys/{slot}"] {
             assert!(exempt("DELETE", &format!("/v1/orgs/{{org}}/{path}")));
         }
+        assert!(exempt("POST", "/v1/orgs/{org}/export"));
         for (method, path) in [
             ("POST", "connections"),
             ("PATCH", "connections/{id}"),

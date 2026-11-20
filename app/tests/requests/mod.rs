@@ -1,5 +1,6 @@
 mod agents;
 mod ai;
+mod audit_export;
 mod auth;
 pub mod billing;
 pub mod billing_gate;
