@@ -1,4 +1,4 @@
-//! Template version 3 reads: who a snapshot is shared with, and 7-day CPU and traffic.
+//! Template version 3 reads: who a cluster snapshot is shared with, public disk snapshots, and 7-day CPU and traffic.
 
 use aws_sdk_cloudwatch::operation::get_metric_data::GetMetricDataOutput;
 use aws_sdk_cloudwatch::types::{MetricDataResult, StatusCode};
@@ -20,11 +20,8 @@ const T: Target = Target {
 
 mod snapshots {
     use super::*;
-    use aws_sdk_ec2::error::ErrorMetadata;
-    use aws_sdk_ec2::operation::describe_snapshot_attribute::DescribeSnapshotAttributeError;
-    use aws_sdk_ec2::operation::describe_snapshot_attribute::DescribeSnapshotAttributeOutput;
     use aws_sdk_ec2::operation::describe_snapshots::DescribeSnapshotsOutput;
-    use aws_sdk_ec2::types::{CreateVolumePermission, PermissionGroup, Snapshot};
+    use aws_sdk_ec2::types::Snapshot;
     use aws_sdk_rds::operation::describe_db_cluster_snapshot_attributes::{
         DescribeDBClusterSnapshotAttributesError, DescribeDbClusterSnapshotAttributesOutput,
     };
@@ -34,87 +31,68 @@ mod snapshots {
         DbClusterSnapshotAttributesResult,
     };
 
-    fn disk_list() -> aws_smithy_mocks::Rule {
-        mock!(aws_sdk_ec2::Client::describe_snapshots).then_output(|| {
-            let snap = |id: &str| Snapshot::builder().snapshot_id(id).encrypted(true).build();
-            DescribeSnapshotsOutput::builder()
-                .snapshots(snap("snap-public"))
-                .snapshots(snap("snap-shared"))
-                .snapshots(snap("snap-gone"))
-                .build()
-        })
-    }
-
-    fn disk_attrs(id: &'static str, perm: CreateVolumePermission) -> aws_smithy_mocks::Rule {
-        mock!(aws_sdk_ec2::Client::describe_snapshot_attribute)
-            .match_requests(move |r| r.snapshot_id() == Some(id))
-            .then_output(move || {
-                DescribeSnapshotAttributeOutput::builder()
-                    .snapshot_id(id)
-                    .create_volume_permissions(perm.clone())
-                    .build()
-            })
+    /// The listing restorable by `all` holds `public`; the plain owner listing holds `all`.
+    fn disk_rules(
+        public: &'static [&'static str],
+        all: &'static [&'static str],
+    ) -> [aws_smithy_mocks::Rule; 2] {
+        let list = |ids: &'static [&'static str]| {
+            move || {
+                let mut out = DescribeSnapshotsOutput::builder();
+                for id in ids {
+                    out =
+                        out.snapshots(Snapshot::builder().snapshot_id(*id).encrypted(true).build());
+                }
+                out.build()
+            }
+        };
+        [
+            mock!(aws_sdk_ec2::Client::describe_snapshots)
+                .match_requests(|r| {
+                    r.owner_ids() == ["self"] && r.restorable_by_user_ids() == ["all"]
+                })
+                .then_output(list(public)),
+            mock!(aws_sdk_ec2::Client::describe_snapshots)
+                .match_requests(|r| {
+                    r.owner_ids() == ["self"] && r.restorable_by_user_ids().is_empty()
+                })
+                .then_output(list(all)),
+        ]
     }
 
     #[tokio::test]
-    async fn disk_snapshots_are_public_when_create_volume_includes_all() {
-        let public = disk_attrs(
-            "snap-public",
-            CreateVolumePermission::builder()
-                .group(PermissionGroup::All)
-                .build(),
-        );
-        let shared = disk_attrs(
-            "snap-shared",
-            CreateVolumePermission::builder()
-                .user_id("999999999999")
-                .build(),
-        );
-        // `InvalidSnapshot.NotFound` is not a modelled fault: the code is all there is.
-        let gone = mock!(aws_sdk_ec2::Client::describe_snapshot_attribute)
-            .match_requests(|r| r.snapshot_id() == Some("snap-gone"))
-            .then_error(|| {
-                DescribeSnapshotAttributeError::generic(
-                    ErrorMetadata::builder()
-                        .code("InvalidSnapshot.NotFound")
-                        .build(),
-                )
-            });
-        let ec2 = mock_client!(
-            aws_sdk_ec2,
-            RuleMode::MatchAny,
-            [&disk_list(), &public, &shared, &gone]
-        );
-        let r = ec2_snapshots(&ec2, &T, true).await.unwrap();
+    async fn a_disk_snapshot_is_public_when_the_public_listing_returns_it() {
+        let [public, all] = disk_rules(&["snap-public"], &["snap-public", "snap-private"]);
+        let ec2 = mock_client!(aws_sdk_ec2, RuleMode::MatchAny, [&public, &all]);
+        let r = ec2_snapshots(&ec2, &T).await.unwrap();
         let got: Vec<_> = r
             .iter()
             .map(|r| (r.name.as_str(), r.attributes["public"].clone()))
             .collect();
         assert_eq!(
             got,
-            [("snap-public", json!(true)), ("snap-shared", json!(false))]
+            [("snap-public", json!(true)), ("snap-private", json!(false))]
         );
+        // One public listing and one plain listing, however many snapshots: no per-snapshot call.
+        assert_eq!((public.num_calls(), all.num_calls()), (1, 1));
     }
 
     #[tokio::test]
-    async fn disk_snapshot_attributes_are_not_asked_without_the_permission() {
-        let ec2 = mock_client!(aws_sdk_ec2, RuleMode::MatchAny, [&disk_list()]);
-        let r = ec2_snapshots(&ec2, &T, false).await.unwrap();
-        assert_eq!(r.len(), 3);
-        assert!(r.iter().all(|r| r.attributes["public"].is_null()));
-    }
-
-    #[tokio::test]
-    async fn a_denied_attribute_read_fails_the_service_with_its_code() {
-        let denied = mock!(aws_sdk_ec2::Client::describe_snapshot_attribute).then_error(|| {
-            DescribeSnapshotAttributeError::generic(
-                ErrorMetadata::builder()
-                    .code("UnauthorizedOperation")
-                    .build(),
-            )
-        });
-        let ec2 = mock_client!(aws_sdk_ec2, RuleMode::MatchAny, [&disk_list(), &denied]);
-        let err = ec2_snapshots(&ec2, &T, true).await.unwrap_err();
+    async fn a_failed_public_listing_fails_the_service_never_reports_private() {
+        use aws_sdk_ec2::error::ErrorMetadata;
+        use aws_sdk_ec2::operation::describe_snapshots::DescribeSnapshotsError;
+        let [_, all] = disk_rules(&[], &["snap-1"]);
+        let denied = mock!(aws_sdk_ec2::Client::describe_snapshots)
+            .match_requests(|r| r.restorable_by_user_ids() == ["all"])
+            .then_error(|| {
+                DescribeSnapshotsError::generic(
+                    ErrorMetadata::builder()
+                        .code("UnauthorizedOperation")
+                        .build(),
+                )
+            });
+        let ec2 = mock_client!(aws_sdk_ec2, RuleMode::MatchAny, [&denied, &all]);
+        let err = ec2_snapshots(&ec2, &T).await.unwrap_err();
         assert!(
             matches!(&err, ConnectorError::Api { code: Some(c), .. } if c == "UnauthorizedOperation"),
             "{err:?}"
@@ -201,7 +179,7 @@ mod snapshots {
     /// A role that cannot read the sharing attributes (a version 3 connection whose stack was
     /// changed): those two services are partial, with their codes, and nothing else fails.
     #[tokio::test]
-    async fn denied_sharing_reads_are_partial_for_those_services_only() {
+    async fn a_denied_cluster_sharing_read_is_partial_for_that_service_only() {
         let http = infallible_client_fn(|req| {
             let (host, body) = (req.uri().host().unwrap_or_default().to_owned(), req.body());
             let body = String::from_utf8_lossy(body.bytes().unwrap_or_default()).into_owned();
@@ -209,9 +187,6 @@ mod snapshots {
             let ec2 = |inner: &str| {
                 format!("<DescribeSnapshotsResponse xmlns=\"http://ec2.amazonaws.com/doc/2016-11-15/\"><requestId>r</requestId>{inner}</DescribeSnapshotsResponse>")
             };
-            if host.starts_with("ec2.") && body.contains("DescribeSnapshotAttribute") {
-                return r.status(400).body("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Errors><Error><Code>UnauthorizedOperation</Code><Message>no</Message></Error></Errors><RequestID>r</RequestID></Response>".to_owned()).unwrap();
-            }
             if host.starts_with("ec2.") {
                 return r
                     .status(200)
@@ -248,13 +223,9 @@ mod snapshots {
             .map(|e| (e.service.as_str(), e.code.as_deref().unwrap_or_default()))
             .collect();
         got.sort();
-        assert_eq!(
-            got,
-            [
-                ("ebs_snapshot", "UnauthorizedOperation"),
-                ("rds_cluster_snapshot", "AccessDenied")
-            ]
-        );
+        assert_eq!(got, [("rds_cluster_snapshot", "AccessDenied")]);
+        // The disk snapshots were read and are not public.
+        assert_eq!(r.resources.len(), 1);
         // The same role, connection recorded before version 3: no such read, nothing partial.
         let r = inventory(&session, "aws", "123456789012", &both, false)
             .await
@@ -473,50 +444,35 @@ mod older_roles {
     use super::*;
     use aws_sdk_iam::operation::simulate_principal_policy::SimulatePrincipalPolicyOutput;
     use aws_sdk_iam::types::{EvaluationResult, PolicyEvaluationDecisionType as D};
-    use opsagent_connectors::aws::simulate::allows_snapshot_sharing;
+    use opsagent_connectors::aws::simulate::allows_cluster_snapshot_sharing;
 
     const ROLE: &str = "arn:aws:iam::123456789012:role/OpsAgentReadRole-abcd1234";
 
-    fn simulated(decisions: [D; 2]) -> aws_sdk_iam::Client {
+    fn simulated(decision: D) -> aws_sdk_iam::Client {
         let rule = mock!(aws_sdk_iam::Client::simulate_principal_policy)
             .match_requests(|r| {
                 r.policy_source_arn() == Some(ROLE)
-                    && r.action_names()
-                        == [
-                            "ec2:DescribeSnapshotAttribute",
-                            "rds:DescribeDBClusterSnapshotAttributes",
-                        ]
+                    && r.action_names() == ["rds:DescribeDBClusterSnapshotAttributes"]
             })
             .then_output(move || {
-                let mut out = SimulatePrincipalPolicyOutput::builder();
-                for (a, d) in [
-                    "ec2:DescribeSnapshotAttribute",
-                    "rds:DescribeDBClusterSnapshotAttributes",
-                ]
-                .iter()
-                .zip(decisions.clone())
-                {
-                    out = out.evaluation_results(
+                SimulatePrincipalPolicyOutput::builder()
+                    .evaluation_results(
                         EvaluationResult::builder()
-                            .eval_action_name(*a)
-                            .eval_decision(d)
+                            .eval_action_name("rds:DescribeDBClusterSnapshotAttributes")
+                            .eval_decision(decision.clone())
                             .build()
                             .unwrap(),
-                    );
-                }
-                out.build()
+                    )
+                    .build()
             });
         mock_client!(aws_sdk_iam, RuleMode::Sequential, [&rule])
     }
 
     #[tokio::test]
-    async fn a_role_is_asked_by_simulation_and_needs_both_reads() {
-        assert!(allows_snapshot_sharing(&simulated([D::Allowed, D::Allowed]), ROLE).await);
-        // A version 2 role: neither read is in its policy.
-        assert!(
-            !allows_snapshot_sharing(&simulated([D::ImplicitDeny, D::ImplicitDeny]), ROLE).await
-        );
-        assert!(!allows_snapshot_sharing(&simulated([D::Allowed, D::ImplicitDeny]), ROLE).await);
+    async fn a_role_is_asked_by_simulation() {
+        assert!(allows_cluster_snapshot_sharing(&simulated(D::Allowed), ROLE).await);
+        // A version 2 role: the read is not in its policy.
+        assert!(!allows_cluster_snapshot_sharing(&simulated(D::ImplicitDeny), ROLE).await);
     }
 
     #[tokio::test]
@@ -529,6 +485,6 @@ mod older_roles {
             )
         });
         let iam = mock_client!(aws_sdk_iam, RuleMode::Sequential, [&rule]);
-        assert!(!allows_snapshot_sharing(&iam, ROLE).await);
+        assert!(!allows_cluster_snapshot_sharing(&iam, ROLE).await);
     }
 }

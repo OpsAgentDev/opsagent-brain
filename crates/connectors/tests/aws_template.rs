@@ -347,15 +347,13 @@ fn version_1_still_allows_every_connector_call() {
     }
 }
 
-/// The two reads version 3 adds, and nothing else (MVP live list 12.1): who a snapshot is
-/// shared with. CPU and traffic need no new action, `cloudwatch:GetMetricData` is in version 2.
-const SNAPSHOT_SHARING: [&str; 2] = [
-    "ec2:DescribeSnapshotAttribute",
-    "rds:DescribeDBClusterSnapshotAttributes",
-];
+/// The one read version 3 adds, and nothing else (MVP live list 12.1): who an Aurora cluster
+/// snapshot is shared with. Public disk snapshots come from `DescribeSnapshots` and CPU and
+/// traffic from `cloudwatch:GetMetricData`, both in version 2.
+const SNAPSHOT_SHARING: [&str; 1] = ["rds:DescribeDBClusterSnapshotAttributes"];
 
 #[test]
-fn version_3_adds_only_the_snapshot_sharing_reads_to_version_2() {
+fn version_3_adds_only_the_cluster_snapshot_sharing_read_to_version_2() {
     let allow = |v: &str| {
         actions(
             &stmts(&render_template(v, &params(None)).unwrap().policies),
@@ -367,6 +365,7 @@ fn version_3_adds_only_the_snapshot_sharing_reads_to_version_2() {
     let added: Vec<_> = three.difference(&two).map(String::as_str).collect();
     assert_eq!(added, SNAPSHOT_SHARING);
     assert!(three.contains("cloudwatch:GetMetricData") && two.contains("cloudwatch:GetMetricData"));
+    assert!(!three.contains("ec2:DescribeSnapshotAttribute"));
     assert!(
         !three.iter().any(|a| a.starts_with("logs:Get")),
         "no log reads"
@@ -374,17 +373,17 @@ fn version_3_adds_only_the_snapshot_sharing_reads_to_version_2() {
 }
 
 /// A connection made with version 1 or 2 keeps working: its role holds every call the
-/// connector makes for it, which is every call but the two snapshot-sharing reads (which it
-/// never makes: `reads_snapshot_sharing`).
+/// connector makes for it, which is every call but the cluster snapshot sharing read (which it
+/// never makes without a simulation allowing it: `reads_cluster_snapshot_sharing`).
 #[test]
-fn version_2_allows_every_connector_call_but_the_snapshot_sharing_reads() {
+fn version_2_allows_every_connector_call_but_the_cluster_snapshot_sharing_read() {
     let s = stmts(&render_template("2", &params(None)).unwrap().policies);
     let allow = actions(&s, "Allow");
     for a in opsagent_connectors::aws::session_actions() {
         assert_eq!(allow.contains(a), !SNAPSHOT_SHARING.contains(&a), "{a}");
     }
     for v in ["1", "2", "3", "10"] {
-        let reads = opsagent_connectors::aws::policy_diff::reads_snapshot_sharing(v);
+        let reads = opsagent_connectors::aws::policy_diff::reads_cluster_snapshot_sharing(v);
         assert_eq!(reads, v == "3" || v == "10", "{v}");
     }
 }

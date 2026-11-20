@@ -70,8 +70,6 @@ Resources:
                   - ec2:DescribeInstances
                   - ec2:DescribeVolumes
                   - ec2:DescribeSnapshots
-                  # Who may create a volume from an owned snapshot: public when it includes "all". Names no data.
-                  - ec2:DescribeSnapshotAttribute
                   - ec2:DescribeAddresses
                   - ec2:DescribeSecurityGroups
                   - ec2:DescribeNetworkInterfaces

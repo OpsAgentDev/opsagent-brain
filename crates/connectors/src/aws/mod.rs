@@ -143,11 +143,14 @@ impl Connector for AwsConnector {
             .session(arn, ext, ctx, inventory::INVENTORY_ACTIONS)
             .await?;
         // Roles made before version 3 are asked, once, whether a stack update has since given
-        // them the two sharing reads: a simulation, so a role without them sees no denied call.
-        let sharing = policy_diff::reads_snapshot_sharing(version)
-            || (inventory::reads_snapshots(scope)
-                && simulate::allows_snapshot_sharing(&aws_sdk_iam::Client::new(&session), arn)
-                    .await);
+        // them the cluster snapshot sharing read: a simulation, so a role without them sees no denied call.
+        let sharing = policy_diff::reads_cluster_snapshot_sharing(version)
+            || (inventory::reads_cluster_snapshots(scope)
+                && simulate::allows_cluster_snapshot_sharing(
+                    &aws_sdk_iam::Client::new(&session),
+                    arn,
+                )
+                .await);
         inventory::inventory(&session, &role.partition, &role.account, scope, sharing).await
     }
 

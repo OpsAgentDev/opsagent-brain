@@ -38,7 +38,6 @@ pub const INVENTORY_ACTIONS: &[&str] = &[
     "ec2:DescribeInstances",
     "ec2:DescribeVolumes",
     "ec2:DescribeSnapshots",
-    "ec2:DescribeSnapshotAttribute",
     "ec2:DescribeAddresses",
     "ec2:DescribeSecurityGroups",
     "ec2:DescribeNetworkInterfaces",
@@ -75,13 +74,9 @@ pub const INVENTORY_ACTIONS: &[&str] = &[
     "sagemaker:ListTrainingJobs",
 ];
 
-/// True when `scope` includes a service whose snapshots carry who they are shared with.
-pub fn reads_snapshots(scope: &Scope) -> bool {
-    scope.services.is_empty()
-        || scope
-            .services
-            .iter()
-            .any(|s| matches!(s.as_str(), "ebs_snapshot" | "rds_cluster_snapshot"))
+/// True when `scope` includes the cluster snapshots, whose sharing needs the v3 read.
+pub fn reads_cluster_snapshots(scope: &Scope) -> bool {
+    scope.services.is_empty() || scope.services.iter().any(|s| s == "rds_cluster_snapshot")
 }
 
 /// Account and region a call is made in; builds ARNs and `Resource`s.
@@ -283,7 +278,7 @@ async fn regional(
         gate(want("rds"), rds_snapshots(&rds, t)),
         gate(want("cloudtrail"), cloudtrails(&ct, t)),
         gate(want("guardduty"), guardduty(&gd, t)),
-        gate(want("ebs_snapshot"), ec2_snapshots(&ec2, t, sharing)),
+        gate(want("ebs_snapshot"), ec2_snapshots(&ec2, t)),
         gate(want("rds_cluster"), rds_clusters(&rds, t)),
         gate(
             want("rds_cluster_snapshot"),
@@ -379,8 +374,8 @@ async fn protection_and_ml(
     out.result.partial_errors.extend(cert_errs);
 }
 
-/// Full inventory for a session. `sharing`: the role may read who snapshots are shared with
-/// (`policy_diff::reads_snapshot_sharing`). Per-service failures land in `partial_errors`; see
+/// Full inventory for a session. `sharing`: the role may read who cluster snapshots are shared with
+/// (`policy_diff::reads_cluster_snapshot_sharing`). Per-service failures land in `partial_errors`; see
 /// `auth_failure` for when the whole call fails with `ConnectorError::Auth`.
 pub async fn inventory(
     session: &SdkConfig,

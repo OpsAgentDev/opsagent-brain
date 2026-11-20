@@ -199,7 +199,7 @@ fn judged(deployed: &DeployedRole, recorded: &str) -> (String, Vec<String>, Vec<
 fn a_role_is_judged_by_the_template_its_connection_was_made_with() {
     // Version 1 grants more than version 2: clean for a version 1 connection, never "extra".
     assert_eq!(judged(&role("1"), "1"), ("1".into(), vec![], vec![]));
-    // Version 3 grants two reads more than version 2, and a version 2 connection is never
+    // Version 3 grants one read more than version 2, and a version 2 connection is never
     // "missing" them: its role is clean against its own template.
     assert_eq!(judged(&role("3"), "3"), ("3".into(), vec![], vec![]));
     assert_eq!(judged(&role("2"), "2"), ("2".into(), vec![], vec![]));

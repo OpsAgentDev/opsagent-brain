@@ -23,11 +23,11 @@ pub const TEMPLATE_VERSION: &str = "3";
 /// Every version, oldest first; the last is `TEMPLATE_VERSION`.
 const VERSIONS: [&str; 3] = ["1", "2", "3"];
 
-/// First version whose role holds the two reads of who a snapshot is shared with
-/// (`ec2:DescribeSnapshotAttribute`, `rds:DescribeDBClusterSnapshotAttributes`). A connection
-/// made with an older one is asked by simulation instead (`simulate::allows_snapshot_sharing`),
-/// never by a call that may be denied.
-pub fn reads_snapshot_sharing(template_version: &str) -> bool {
+/// First version whose role holds `rds:DescribeDBClusterSnapshotAttributes` (who an Aurora
+/// cluster snapshot is shared with). A connection made with an older one is asked by
+/// simulation instead (`simulate::allows_cluster_snapshot_sharing`), never by a call that may
+/// be denied. Public disk snapshots need no new read: `DescribeSnapshots` is in every version.
+pub fn reads_cluster_snapshot_sharing(template_version: &str) -> bool {
     template_version.parse::<u32>().is_ok_and(|v| v >= 3)
 }
 

@@ -2,12 +2,10 @@
 use super::{name_or, rfc3339_aws, Target};
 use crate::aws::client::provider_err;
 use crate::Result;
-use aws_sdk_ec2::error::ProvideErrorMetadata;
-use aws_sdk_ec2::types::{PermissionGroup, SnapshotAttributeName};
 use opsagent_core::resource::{Resource, ResourceKind};
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 fn ec2_tags(tags: &[aws_sdk_ec2::types::Tag]) -> BTreeMap<String, String> {
     tags.iter()
@@ -87,14 +85,25 @@ pub async fn ec2_volumes(ec2: &aws_sdk_ec2::Client, t: &Target<'_>) -> Result<Ve
     Ok(out)
 }
 
-/// Snapshots the account owns (`OwnerIds=self`). `public` (a create-volume permission for
-/// `all`) is read when `sharing`, i.e. the connection's role may call `DescribeSnapshotAttribute`;
-/// it is `null` otherwise, and a check says nothing.
-pub async fn ec2_snapshots(
-    ec2: &aws_sdk_ec2::Client,
-    t: &Target<'_>,
-    sharing: bool,
-) -> Result<Vec<Resource>> {
+/// Snapshots the account owns (`OwnerIds=self`). `public` is true for those a second listing,
+/// restorable by `all`, returns: one paginated call, not one per snapshot. Either listing
+/// failing fails the service, so a snapshot is never reported private on a failed read.
+pub async fn ec2_snapshots(ec2: &aws_sdk_ec2::Client, t: &Target<'_>) -> Result<Vec<Resource>> {
+    let mut public = HashSet::new();
+    let mut pages = ec2
+        .describe_snapshots()
+        .owner_ids("self")
+        .restorable_by_user_ids("all")
+        .into_paginator()
+        .send();
+    while let Some(page) = pages.next().await {
+        public.extend(
+            page.map_err(provider_err)?
+                .snapshots()
+                .iter()
+                .filter_map(|s| s.snapshot_id().map(str::to_owned)),
+        );
+    }
     let mut out = vec![];
     let mut pages = ec2
         .describe_snapshots()
@@ -104,28 +113,8 @@ pub async fn ec2_snapshots(
     while let Some(page) = pages.next().await {
         for s in page.map_err(provider_err)?.snapshots() {
             let id = s.snapshot_id().unwrap_or_default();
-            let mut public = None;
-            if sharing {
-                let got = ec2
-                    .describe_snapshot_attribute()
-                    .snapshot_id(id)
-                    .attribute(SnapshotAttributeName::CreateVolumePermission)
-                    .send()
-                    .await;
-                public = match got {
-                    Ok(a) => Some(
-                        a.create_volume_permissions()
-                            .iter()
-                            .any(|p| p.group() == Some(&PermissionGroup::All)),
-                    ),
-                    // Deleted between the listing and this call: it no longer exists to expose.
-                    Err(e) if e.code() == Some("InvalidSnapshot.NotFound") => continue,
-                    Err(e) => return Err(provider_err(e)),
-                };
-            }
             let tags = ec2_tags(s.tags());
-            let attrs =
-                json!({"service": "ebs_snapshot", "public": public, "encrypted": s.encrypted()});
+            let attrs = json!({"service": "ebs_snapshot", "public": public.contains(id), "encrypted": s.encrypted()});
             let arn = t.arn("ec2", &format!("snapshot/{id}"));
             out.push(t.resource(
                 ResourceKind::Storage,
