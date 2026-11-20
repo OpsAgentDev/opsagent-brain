@@ -59,6 +59,8 @@ pub const INVENTORY_ACTIONS: &[&str] = &[
     "guardduty:GetDetector",
     "backup:ListBackupPlans",
     "backup:GetBackupPlan",
+    "backup:ListBackupSelections",
+    "backup:GetBackupSelection",
     "backup:ListBackupJobs",
     "backup:ListBackupVaults",
     "acm:ListCertificates",

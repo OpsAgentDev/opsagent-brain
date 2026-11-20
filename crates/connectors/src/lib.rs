@@ -78,6 +78,9 @@ pub struct VerifyOutcome {
     pub account_matches: bool,
     pub extra_grants: Vec<String>,
     pub missing_grants: Vec<String>,
+    /// The role template version the grants were judged against; `None` when no role was read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_version: Option<String>,
 }
 
 /// Who a provider call is made for. AWS puts it in the session name and session tags.
@@ -101,6 +104,8 @@ pub enum Credentials {
         external_id: String,
         /// `TerraformStateBucket` / `TerraformStatePrefix` the stack was launched with.
         terraform_state: Option<TerraformState>,
+        /// The role template version the connection was made with.
+        template_version: String,
         context: CallContext,
     },
     Fake {

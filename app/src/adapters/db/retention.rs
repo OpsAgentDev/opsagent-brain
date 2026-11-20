@@ -27,6 +27,24 @@ const DELETE_UNPROVEN_USERS: &str = "WITH doomed AS ( \
   links AS (DELETE FROM magic_links WHERE user_id IN (SELECT id FROM doomed)) \
   DELETE FROM users WHERE id IN (SELECT id FROM doomed)";
 
+/// One statement: the clients' NO ACTION keys are checked at its end, after the sibling CTEs
+/// removed what pointed at them. A client with an unrevoked grant is still in use and is kept.
+// tenancy: clients are global; the grants removed are revoked ones of a registration that
+// can no longer be used, whichever organisation they were in.
+const DELETE_EXPIRED_CLIENTS: &str = "WITH doomed AS ( \
+    SELECT c.client_id FROM oauth_clients c \
+    WHERE c.kind = 'dynamic' AND c.expires_at < $1 \
+      AND NOT EXISTS (SELECT 1 FROM oauth_grants g \
+        WHERE g.client_id = c.client_id AND g.revoked_at IS NULL) \
+    ORDER BY c.expires_at LIMIT $2 FOR UPDATE SKIP LOCKED), \
+  dead AS (SELECT id FROM oauth_grants WHERE client_id IN (SELECT client_id FROM doomed)), \
+  a AS (DELETE FROM oauth_access_tokens WHERE grant_id IN (SELECT id FROM dead)), \
+  r AS (DELETE FROM oauth_refresh_tokens WHERE grant_id IN (SELECT id FROM dead)), \
+  q AS (DELETE FROM oauth_consent_requests WHERE client_id IN (SELECT client_id FROM doomed) \
+    OR grant_id IN (SELECT id FROM dead)), \
+  g AS (DELETE FROM oauth_grants WHERE id IN (SELECT id FROM dead)) \
+  DELETE FROM oauth_clients WHERE client_id IN (SELECT client_id FROM doomed)";
+
 /// The column each table expires on.
 fn expiry_column(t: TtlTable) -> &'static str {
     match t {
@@ -178,6 +196,18 @@ impl<C: Conn> RetentionRepo for Pg<C> {
             .db()
             .execute_raw(stmt(
                 DELETE_UNPROVEN_USERS,
+                vec![cutoff.into(), (batch as i64).into()],
+            ))
+            .await
+            .map_err(db_err)?;
+        Ok(done.rows_affected())
+    }
+
+    async fn delete_expired_clients(&self, cutoff: DateTime<Utc>, batch: u64) -> RepoResult<u64> {
+        let done = self
+            .db()
+            .execute_raw(stmt(
+                DELETE_EXPIRED_CLIENTS,
                 vec![cutoff.into(), (batch as i64).into()],
             ))
             .await

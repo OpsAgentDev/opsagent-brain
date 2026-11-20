@@ -134,7 +134,7 @@ impl DeliverWeekly {
 
     fn weekly_mail(&self, w: &Weekly, to: &Recipient) -> Mail {
         let k = &self.kit;
-        let mut w = w.clone();
+        let mut w = w.mail_safe();
         if !k.human_review_enabled {
             w.human_review_url = None;
         }
@@ -181,7 +181,7 @@ impl DeliverWeekly {
             let mut w = self.weekly(c).await?;
             w.link = None;
             w.human_review_url = None;
-            parts.push(render_text(&w));
+            parts.push(render_text(&w.mail_safe()));
         }
         let o = r.orgs().get(org).await.map_err(lerr)?;
         let name = o.as_ref().map(|o| o.name.clone()).unwrap_or_default();
@@ -192,11 +192,12 @@ impl DeliverWeekly {
             ),
             None => return Ok(outcome("skipped", "organisation_deleted")),
         };
-        let subject = format!("OpsAgent weekly summary: {}", mail_safe_name(&name));
+        let name = mail_safe_name(&name);
+        let subject = format!("OpsAgent weekly summary: {name}");
         let html_text = parts.join("\n----\n\n");
         let text = format!("{html_text}\nDashboard: {dashboard}\n");
         let html = render_notice(&NoticeEmail {
-            preheader: format!("Weekly summary for {}", mail_safe_name(&name)),
+            preheader: format!("Weekly summary for {name}"),
             heading: format!("Weekly summary: {name}"),
             paragraphs: html_text
                 .lines()

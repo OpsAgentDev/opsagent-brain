@@ -1,5 +1,6 @@
 use opsagent_connectors::aws::policy_diff::{
-    render_template_v1, substitute, TemplateParams, TEMPLATE_V1_YAML,
+    render_template, substitute, RenderedRole, TemplateParams, TEMPLATE_V1_YAML, TEMPLATE_V2_YAML,
+    TEMPLATE_VERSION,
 };
 use opsagent_connectors::ConnectorError;
 use serde_json::{json, Value};
@@ -8,8 +9,21 @@ use std::collections::BTreeSet;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../templates/aws");
 
+/// Every version stays in the repo and in the bucket; the last is the current one.
+const VERSIONS: [(&str, &str); 2] = [("1", TEMPLATE_V1_YAML), ("2", TEMPLATE_V2_YAML)];
+
+fn file(version: &str, ext: &str) -> String {
+    std::fs::read_to_string(format!("{DIR}/opsagent-read-role-v{version}.{ext}")).unwrap()
+}
+
+/// The current template's file.
 fn raw() -> String {
-    std::fs::read_to_string(format!("{DIR}/opsagent-read-role-v1.yaml")).unwrap()
+    file(TEMPLATE_VERSION, "yaml")
+}
+
+/// The current template, rendered.
+fn render_current(p: &TemplateParams) -> opsagent_connectors::Result<RenderedRole> {
+    render_template(TEMPLATE_VERSION, p)
 }
 
 fn params(tf: Option<(&'static str, &'static str)>) -> TemplateParams<'static> {
@@ -33,8 +47,43 @@ fn by_sid<'a>(s: &'a [Value], sid: &str) -> Option<&'a Value> {
 }
 
 #[test]
-fn embedded_template_is_the_file() {
-    assert_eq!(TEMPLATE_V1_YAML, raw());
+fn embedded_templates_are_the_files_and_the_last_is_current() {
+    for (version, embedded) in VERSIONS {
+        assert_eq!(embedded, file(version, "yaml"), "v{version}");
+        let y: serde_norway::Value = serde_norway::from_str(embedded).unwrap();
+        let p = &y["Parameters"]["TemplateVersion"];
+        assert_eq!(p["Default"].as_str(), Some(version));
+        assert_eq!(p["AllowedValues"][0].as_str(), Some(version));
+    }
+    assert_eq!(VERSIONS[VERSIONS.len() - 1].0, TEMPLATE_VERSION);
+    assert!(matches!(
+        render_template("3", &params(None)),
+        Err(ConnectorError::Template(_))
+    ));
+}
+
+/// The quick-create link and verify work unchanged across versions.
+#[test]
+fn versions_share_parameters_outputs_trust_and_denies() {
+    let part = |yaml: &str, key: &str| {
+        let mut y: serde_norway::Value = serde_norway::from_str(yaml).unwrap();
+        if let Some(v) = y["Parameters"]["TemplateVersion"].as_mapping_mut() {
+            v.clear();
+        }
+        y[key].clone()
+    };
+    let rendered = |v: &str| {
+        let r = render_template(v, &params(Some(("tf-state", "envs/prod/")))).unwrap();
+        let deny: Vec<Value> = stmts(&r.policies)
+            .into_iter()
+            .filter(|s| s["Effect"] == "Deny" || s["Sid"] == "ReadOwnRolePolicy")
+            .collect();
+        (r.trust, deny)
+    };
+    for key in ["Parameters", "Conditions", "Outputs"] {
+        assert_eq!(part(TEMPLATE_V1_YAML, key), part(TEMPLATE_V2_YAML, key));
+    }
+    assert_eq!(rendered("1"), rendered("2"));
 }
 
 #[test]
@@ -44,7 +93,7 @@ fn trust_requires_external_id_and_allows_tag_session() {
         y["Resources"]["OpsAgentReadRole"]["Properties"]["MaxSessionDuration"],
         serde_norway::Value::from(3600)
     );
-    let t = render_template_v1(&params(None)).unwrap().trust;
+    let t = render_current(&params(None)).unwrap().trust;
     assert_eq!(
         t["Statement"],
         json!([
@@ -65,7 +114,13 @@ fn trust_requires_external_id_and_allows_tag_session() {
 
 #[test]
 fn deny_list_covers_data_plane() {
-    let s = stmts(&render_template_v1(&params(None)).unwrap().policies);
+    for (version, _) in VERSIONS {
+        deny_list_covers_data_plane_in(version);
+    }
+}
+
+fn deny_list_covers_data_plane_in(version: &str) {
+    let s = stmts(&render_template(version, &params(None)).unwrap().policies);
     let deny: BTreeSet<String> = s
         .iter()
         .filter(|x| x["Effect"] == "Deny")
@@ -114,7 +169,7 @@ fn deny_list_covers_data_plane() {
 
 #[test]
 fn without_terraform_params_object_reads_are_denied_everywhere() {
-    let r = render_template_v1(&params(None)).unwrap();
+    let r = render_current(&params(None)).unwrap();
     assert_eq!(r.policies.len(), 2, "no OpsAgentTerraformState policy");
     let s = stmts(&r.policies);
     let d = by_sid(&s, "DenyObjectReads").unwrap();
@@ -125,7 +180,7 @@ fn without_terraform_params_object_reads_are_denied_everywhere() {
 
 #[test]
 fn with_terraform_params_prefix_is_carved_out_and_allowed() {
-    let r = render_template_v1(&params(Some(("tf-state", "envs/prod/")))).unwrap();
+    let r = render_current(&params(Some(("tf-state", "envs/prod/")))).unwrap();
     assert_eq!(r.policies.len(), 3);
     let s = stmts(&r.policies);
     let arn = "arn:aws:s3:::tf-state/envs/prod/*";
@@ -159,7 +214,7 @@ fn outputs_and_iam_scope() {
     let y: serde_norway::Value = serde_norway::from_str(&raw()).unwrap();
     assert!(y["Outputs"]["RoleArn"].is_mapping());
     assert!(y["Outputs"]["TemplateVersion"].is_mapping());
-    let s = stmts(&render_template_v1(&params(None)).unwrap().policies);
+    let s = stmts(&render_current(&params(None)).unwrap().policies);
     assert_eq!(
         by_sid(&s, "ReadOwnRolePolicy").unwrap()["Resource"],
         "arn:aws:iam::123456789012:role/OpsAgentReadRole-*"
@@ -167,13 +222,16 @@ fn outputs_and_iam_scope() {
 }
 
 #[test]
-fn sha256_file_matches_template() {
-    let want = std::fs::read_to_string(format!("{DIR}/opsagent-read-role-v1.sha256")).unwrap();
-    let got: String = Sha256::digest(raw().as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    assert_eq!(want.split_whitespace().next().unwrap(), got);
+fn sha256_files_match_templates() {
+    for (version, embedded) in VERSIONS {
+        let want = file(version, "sha256");
+        let got: String = Sha256::digest(embedded.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let name = format!("opsagent-read-role-v{version}.yaml");
+        assert_eq!(want.split_whitespace().collect::<Vec<_>>(), [&got, &name]);
+    }
 }
 
 #[test]
@@ -190,7 +248,7 @@ fn unclosed_placeholder_is_an_error_not_a_panic() {
     );
     // ...and rendering rejects the prefix before substitution.
     assert!(matches!(
-        render_template_v1(&p),
+        render_current(&p),
         Err(ConnectorError::Template(_))
     ));
 }
@@ -222,13 +280,13 @@ fn invalid_terraform_bucket_or_prefix_is_rejected() {
         ("tf-state", ""),
         ("", "envs/"),
     ] {
-        let r = render_template_v1(&params(Some((bucket, prefix))));
+        let r = render_current(&params(Some((bucket, prefix))));
         assert!(
             matches!(r, Err(ConnectorError::Template(_))),
             "{bucket:?} {prefix:?} accepted"
         );
     }
-    assert!(render_template_v1(&params(Some(("tf.state-01", "envs/prod/")))).is_ok());
+    assert!(render_current(&params(Some(("tf.state-01", "envs/prod/")))).is_ok());
 }
 
 /// IAM action patterns: `*` matches any run of characters; names are case-insensitive.
@@ -242,31 +300,69 @@ fn action_matches(pattern: &str, action: &str) -> bool {
     }
 }
 
+fn actions(s: &[Value], effect: &str) -> BTreeSet<String> {
+    s.iter()
+        .filter(|x| x["Effect"] == effect)
+        .flat_map(|x| x["Action"].as_array().unwrap().clone())
+        .map(|a| a.as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// The current template allows exactly the calls the connector can make: one missing breaks a
+/// scan, one more is a grant nobody uses. A new SDK call is added to its session list
+/// (`aws::session_actions`) and to the template.
 #[test]
-fn every_session_action_is_allowed_by_the_template_and_not_denied() {
-    use opsagent_connectors::aws::{
-        inventory::INVENTORY_ACTIONS, metrics::METRIC_ACTIONS, simulate::SIMULATE_ACTIONS,
-    };
-    let s = stmts(&render_template_v1(&params(None)).unwrap().policies);
-    let actions = |effect: &str| -> Vec<String> {
-        s.iter()
-            .filter(|x| x["Effect"] == effect)
-            .flat_map(|x| x["Action"].as_array().unwrap().clone())
-            .map(|a| a.as_str().unwrap().to_owned())
-            .collect()
-    };
-    let (allow, deny) = (actions("Allow"), actions("Deny"));
+fn current_template_allows_exactly_the_connector_calls() {
+    let s = stmts(&render_current(&params(None)).unwrap().policies);
+    let (allow, deny) = (actions(&s, "Allow"), actions(&s, "Deny"));
+    let used: BTreeSet<String> = opsagent_connectors::aws::session_actions()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(allow, used);
+    assert!(!allow.iter().any(|a| a.contains('*')), "{allow:?}");
+    for a in &used {
+        assert!(!deny.iter().any(|p| action_matches(p, a)), "{a} denied");
+    }
+}
+
+/// Version 1 is wider, so the connections made with it keep every call.
+#[test]
+fn version_1_still_allows_every_connector_call() {
+    let s = stmts(&render_template("1", &params(None)).unwrap().policies);
+    let (allow, deny) = (actions(&s, "Allow"), actions(&s, "Deny"));
     assert!(action_matches("backup:List*", "backup:ListBackupJobs"));
     assert!(!action_matches("s3:GetObject*", "s3:ListAllMyBuckets"));
-    for a in INVENTORY_ACTIONS
-        .iter()
-        .chain(METRIC_ACTIONS)
-        .chain(SIMULATE_ACTIONS)
-    {
+    for a in opsagent_connectors::aws::session_actions() {
         assert!(
             allow.iter().any(|p| action_matches(p, a)),
             "{a} not allowed"
         );
         assert!(!deny.iter().any(|p| action_matches(p, a)), "{a} denied");
+    }
+}
+
+/// What the second promise review found in version 1 (MVP live list 11.1, 11.2).
+#[test]
+fn current_template_drops_the_unused_services() {
+    let s = stmts(&render_current(&params(None)).unwrap().policies);
+    let allow = actions(&s, "Allow");
+    for gone in [
+        "ecs:",
+        "eks:",
+        "lambda:",
+        "autoscaling:",
+        "config:",
+        "securityhub:",
+        "budgets:",
+        "health:",
+        "kms:",
+        "logs:FilterLogEvents",
+        "logs:DescribeLogStreams",
+        "cloudtrail:LookupEvents",
+        "ec2:DescribeVpnConnections",
+        "ec2:DescribeSpot",
+        "sagemaker:Describe",
+    ] {
+        assert!(!allow.iter().any(|a| a.starts_with(gone)), "{gone} allowed");
     }
 }

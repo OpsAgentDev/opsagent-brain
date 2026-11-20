@@ -100,7 +100,8 @@ async fn owner_requests_a_finding_review() {
         let sent = mail.sent();
         assert_eq!(sent.len(), 2, "{sent:?}");
         let founder = sent.iter().find(|m| m.to == "info@opsagent.dev").unwrap();
-        assert_eq!(founder.subject, "Human review requested: finding · o@example.com");
+        // The fixture names the organisation after the address; a name cannot be one in mail.
+        assert_eq!(founder.subject, "Human review requested: finding · o@example[.]com");
         assert_eq!(founder.reply_to.as_deref(), Some("o@example.com"));
         let owner = sent.iter().find(|m| m.to == "o@example.com").unwrap();
         assert_eq!(owner.subject, "We got your human review request");
@@ -465,7 +466,7 @@ async fn webhook_marks_paid_once_then_mails() {
         let sent = mail.sent();
         assert_eq!(sent.len(), 2, "{sent:?}");
         let founder = sent.iter().find(|m| m.to == "info@opsagent.dev").unwrap();
-        assert_eq!(founder.subject, "Human review paid: finding · o@example.com");
+        assert_eq!(founder.subject, "Human review paid: finding · o@example[.]com");
         assert_eq!(founder.reply_to.as_deref(), Some("o@example.com"));
         let check = findings::Entity::find_by_id(fid).one(&ctx.db).await.unwrap().unwrap().check_id;
         assert!(

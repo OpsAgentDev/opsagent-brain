@@ -196,6 +196,7 @@ impl VerifyConnection {
             account,
             reason,
             first_connected_at: first_connect.then_some(now),
+            template_version: o.template_version.clone(),
         };
         let tx = self.fenced(step).await?;
         if self

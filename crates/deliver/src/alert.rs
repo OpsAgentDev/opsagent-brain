@@ -4,6 +4,8 @@ use chrono::{DateTime, Duration, Utc};
 use opsagent_core::finding::Finding;
 use uuid::Uuid;
 
+use crate::mail_safe::mail_safe_text;
+
 /// Individual messages per delivery run; the rest go into one roll-up.
 pub const ALERTS_PER_RUN: usize = 5;
 /// Individual messages per connection in a rolling 24 hours; roll-ups don't count.
@@ -63,6 +65,20 @@ pub fn render_alert(f: &Finding, at: &ConnectionInfo, web_base_url: &str) -> Str
         f.id
     ));
     lines.join("\n")
+}
+
+/// `render_alert` for the email fallback: the title and resource name are set by people who
+/// may not be the reader, so neither can become a link there (`mail_safe_text`).
+pub fn render_alert_mail(f: &Finding, at: &ConnectionInfo, web_base_url: &str) -> String {
+    let f = Finding {
+        title: mail_safe_text(&f.title),
+        ..f.clone()
+    };
+    let at = ConnectionInfo {
+        resource: mail_safe_text(&at.resource),
+        ..at.clone()
+    };
+    render_alert(&f, &at, web_base_url)
 }
 
 pub fn render_rollup(n: usize, web_base_url: &str) -> String {
@@ -235,6 +251,24 @@ mod tests {
         assert!(!got.contains("https://evil.test"), "{got}");
         assert!(got.contains("https[://]evil[.]test/aws"), "{got}");
         // Our own link stays one.
+        assert!(got.ends_with(&format!("https://opsagent.dev/o/acme/findings/{}", f.id)));
+    }
+
+    #[test]
+    fn the_mail_form_has_no_link_in_title_or_resource() {
+        let f = crit("Bucket evil.example/pay is public");
+        let at = ConnectionInfo {
+            account: "Prod".into(),
+            resource: "www.evil.example".into(),
+            region: None,
+        };
+        let got = render_alert_mail(&f, &at, "https://opsagent.dev/o/acme");
+        assert!(
+            got.starts_with(
+                "🔴 Urgent: Bucket evil[.]example pay is public\nwww[.]evil[.]example · Prod\n"
+            ),
+            "{got}"
+        );
         assert!(got.ends_with(&format!("https://opsagent.dev/o/acme/findings/{}", f.id)));
     }
 

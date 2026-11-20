@@ -168,16 +168,24 @@ mod tests {
 
     use super::*;
     use crate::{
-        actions::{findings::test_support::seeded, uow::Repos},
+        actions::{
+            billing::BillingGate, findings::test_support::seeded, orgs::test_support::owned_org,
+            uow::Repos,
+        },
         adapters::memory::MemStore,
         tools::test_support::caller,
     };
 
     fn tool(store: &MemStore, kind: Triage) -> TriageFindingTool {
+        gated_tool(store, kind, false)
+    }
+
+    fn gated_tool(store: &MemStore, kind: Triage, enforced: bool) -> TriageFindingTool {
         let uow = Arc::new(store.clone());
+        let gate = BillingGate::new(enforced, Arc::new(SystemClock));
         TriageFindingTool::new(
             kind,
-            ChangeFindingStatus::new(uow.clone(), Arc::new(SystemClock)),
+            ChangeFindingStatus::new(uow.clone(), Arc::new(SystemClock), gate),
             GetFinding::new(uow),
             "https://web.test".into(),
         )
@@ -218,6 +226,32 @@ mod tests {
             actions,
             ["finding.accepted", "finding.reopened", "finding.snoozed"]
         );
+    }
+
+    /// A read-only organisation (billing enforced, never subscribed) cannot triage through an
+    /// agent, as it cannot through REST; the finding and the audit log stay as they were.
+    #[tokio::test]
+    async fn read_only_organisation_gets_billing_required_and_nothing_changes() {
+        let store = MemStore::default();
+        let (_, o) = owned_org(&store, "own@example.com", "Acme").await;
+        let (id, _) = seeded(&store, o.id, "x").await;
+        let (me, id_s) = (caller(o.id), id.to_string());
+        let until = (Utc::now() + Duration::days(3)).to_rfc3339();
+        let before = store.audit_entries().len();
+        for (kind, args) in [
+            (Triage::Accept, json!({"id": id_s, "reason": "r"})),
+            (Triage::Snooze, json!({"id": id_s, "until": until})),
+            (Triage::Reopen, json!({"id": id_s})),
+        ] {
+            let e = gated_tool(&store, kind, true).call(&me, args).await;
+            assert_eq!(e.unwrap_err().code(), "billing_required", "{kind:?}");
+        }
+        assert_eq!(status(&store, o.id, id).await, "open");
+        assert_eq!(store.audit_entries().len(), before);
+        // Not enforced, the same organisation triages.
+        let args = json!({"id": id_s, "reason": "r"});
+        let got = tool(&store, Triage::Accept).call(&me, args).await.unwrap();
+        assert_eq!(got["status"], "accepted");
     }
 
     #[tokio::test]

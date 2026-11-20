@@ -1,12 +1,12 @@
-//! Run against a local AWS Emulator (https://github.com/aws/aws-emulator) with the v1 stack
-//! deployed in it. Ignored by default; `scripts/aws-emulator-test.sh` starts the emulator, deploys
+//! Run against a local AWS Emulator (https://github.com/aws/aws-emulator) with the current
+//! template's stack deployed in it. Ignored by default; `scripts/aws-emulator-test.sh` starts the emulator, deploys
 //! the template, seeds a bucket and runs these in order. No AWS account is needed.
 //!
 //! The emulator is not AWS: it enforces the role's trust and policies well enough for these
 //! tests, but a pass here does not replace `aws_sandbox` before a template change ships.
 
 use opsagent_connectors::{
-    aws::{AwsConnector, AwsOutbound},
+    aws::{policy_diff::TEMPLATE_VERSION, AwsConnector, AwsOutbound},
     CallContext, Connector, Credentials, Scope,
 };
 use uuid::Uuid;
@@ -21,6 +21,7 @@ fn creds() -> Credentials {
         role_arn: var("OPSAGENT_EMULATOR_ROLE_ARN"),
         external_id: var("OPSAGENT_EMULATOR_EXTERNAL_ID"),
         terraform_state: None,
+        template_version: TEMPLATE_VERSION.into(),
         context: CallContext {
             organisation_id: Uuid::now_v7(),
             run_id: Uuid::now_v7(),

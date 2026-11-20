@@ -6,6 +6,7 @@ use opsagent_core::{
     chat::ChatSession,
     finding::{Finding, FindingEvent, FindingKey, Severity, StoredEvidence},
     model::{AiProvider, Usage},
+    oauth::ClientKind,
     repo::{RepoError, RepoResult},
     retention::{DueOrg, PurgeCounts, RetentionRepo, TtlTable, ORG_PURGED},
     run::{RunKey, RunStatus},
@@ -226,6 +227,35 @@ impl RetentionRepo for MemStore {
             .collect();
         s.magic_links.retain(|l| !doomed.contains(&l.user_id));
         s.users.retain(|u| !doomed.contains(&u.id));
+        Ok(doomed.len() as u64)
+    }
+
+    async fn delete_expired_clients(&self, cutoff: DateTime<Utc>, batch: u64) -> RepoResult<u64> {
+        let mut s = self.state();
+        let doomed: Vec<String> = s
+            .oauth_clients
+            .iter()
+            .filter(|c| c.kind == ClientKind::Dynamic && c.expires_at.is_some_and(|e| e < cutoff))
+            .filter(|c| {
+                let mut grants = s.oauth_grants.iter();
+                !grants.any(|g| g.client_id == c.client_id && g.revoked_at.is_none())
+            })
+            .map(|c| c.client_id.clone())
+            .take(usize::try_from(batch).unwrap_or(usize::MAX))
+            .collect();
+        let dead: Vec<Uuid> = s
+            .oauth_grants
+            .iter()
+            .filter(|g| doomed.contains(&g.client_id))
+            .map(|g| g.id)
+            .collect();
+        s.oauth_access.retain(|t| !dead.contains(&t.grant_id));
+        s.oauth_refresh.retain(|t| !dead.contains(&t.grant_id));
+        s.oauth_consents.retain(|r| {
+            !doomed.contains(&r.client_id) && !r.grant_id.is_some_and(|g| dead.contains(&g))
+        });
+        s.oauth_grants.retain(|g| !dead.contains(&g.id));
+        s.oauth_clients.retain(|c| !doomed.contains(&c.client_id));
         Ok(doomed.len() as u64)
     }
 

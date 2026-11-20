@@ -1,5 +1,5 @@
 use super::Mail;
-use opsagent_core::org::is_bidi;
+pub use opsagent_deliver::mail_safe_name;
 
 pub fn magic_link(to: &str, link: &str, code: &str) -> Mail {
     let text = format!(
@@ -42,9 +42,11 @@ pub fn signup_closed(to: &str, web_base_url: &str) -> Mail {
     }
 }
 
-pub fn invite(to: &str, org_name: &str, inviter: &str, link: &str) -> Mail {
+/// `inviter` is `(name, email)`: the name when there is one, else the address they signed in with.
+pub fn invite(to: &str, org_name: &str, inviter: (Option<&str>, &str), link: &str) -> Mail {
     let org_name = &mail_safe_name(org_name);
-    let inviter = mail_safe_name(inviter);
+    let name = inviter.0.map(mail_safe_name).filter(|n| !n.is_empty());
+    let inviter = name.unwrap_or_else(|| inviter.1.to_owned());
     let text = format!("{inviter} invited you to join {org_name} on OpsAgent:\n\n{link}\n\nSign in with this email address to accept. The invite expires in 7 days.");
     Mail {
         to: to.into(),
@@ -56,22 +58,6 @@ pub fn invite(to: &str, org_name: &str, inviter: &str, link: &str) -> Mail {
         )),
         text,
         ..Default::default()
-    }
-}
-
-/// An organisation name for mail text: control and bidi-override characters dropped (no header
-/// injection or spoofed line breaks), at most 60 characters.
-pub fn mail_safe_name(raw: &str) -> String {
-    const MAX: usize = 60;
-    let clean: String = raw
-        .chars()
-        .map(|c| if c.is_control() || is_bidi(c) { ' ' } else { c })
-        .collect();
-    let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
-    if clean.chars().count() > MAX {
-        format!("{}…", clean.chars().take(MAX - 1).collect::<String>())
-    } else {
-        clean
     }
 }
 
@@ -93,7 +79,7 @@ pub fn recipient_confirm(to: &str, org_name: &str, link: &str) -> Mail {
 
 #[cfg(test)]
 mod tests {
-    use super::{invite, magic_link, mail_safe_name};
+    use super::{invite, magic_link, recipient_confirm};
 
     #[test]
     fn magic_link_shows_the_code_in_a_block() {
@@ -109,24 +95,49 @@ mod tests {
     }
 
     #[test]
-    fn org_name_is_capped_and_has_no_control_chars() {
-        let n = mail_safe_name(&format!("Evil\r\nBcc: x@y.z\u{202E}{}", "a".repeat(100)));
-        assert!(!n.contains(['\r', '\n', '\u{202E}']), "{n}");
-        assert_eq!(n.chars().count(), 60);
-        assert_eq!(mail_safe_name("  Acme  Ltd "), "Acme Ltd");
-    }
-
-    #[test]
     fn invite_mail_uses_the_safe_name() {
         let m = invite(
             "a@example.com",
             &format!("Org\u{202E}{}", "b".repeat(100)),
-            "Ann <ann@example.com>",
+            (Some("Ann <ann@example.com>"), "ann@example.com"),
             "https://x",
         );
         assert!(!m.subject.contains('\u{202E}') && !m.text.contains(&"b".repeat(60)));
+        // An address typed into the name is not one; the one they signed in with stands in
+        // for a missing name.
+        assert!(
+            m.text
+                .starts_with("Ann <ann@example[.]com> invited you to join"),
+            "{}",
+            m.text
+        );
+        let m = invite(
+            "a@example.com",
+            "Acme",
+            (None, "ann@example.com"),
+            "https://x",
+        );
         assert!(m
             .text
-            .starts_with("Ann <ann@example.com> invited you to join"));
+            .starts_with("ann@example.com invited you to join Acme"));
+    }
+
+    #[test]
+    fn names_cannot_carry_a_link_into_invites_and_confirmations() {
+        let org = "Pay at https://evil.example/now";
+        let who = (Some("www.evil.example"), "ann@example.com");
+        let ours = "https://opsagent.dev/invite/t";
+        for m in [
+            invite("a@example.com", org, who, ours),
+            recipient_confirm("a@example.com", org, ours),
+        ] {
+            let html = m.html.unwrap();
+            for part in [&m.subject, &m.text, &html] {
+                assert!(!part.contains("evil.example"), "{part}");
+                assert!(!part.contains("https://evil"), "{part}");
+            }
+            assert!(m.subject.contains("Pay at https evil[.]example now"));
+            assert!(m.text.contains(ours));
+        }
     }
 }

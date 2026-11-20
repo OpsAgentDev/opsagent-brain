@@ -229,6 +229,9 @@ impl ConnectionsRepo for MemStore {
         if v.account.is_some() {
             c.external_account_id = v.account;
         }
+        if v.template_version.is_some() {
+            c.template_version = v.template_version;
+        }
         if let Some(at) = v.first_connected_at {
             (c.first_connected_at, c.billable_from) = (Some(at), Some(at));
         }

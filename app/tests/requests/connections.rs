@@ -47,16 +47,16 @@ async fn create_returns_quick_create_url_and_never_shows_external_id_again() {
         let t = sign_in(&req, &mail, "owner@example.com").await;
         let org = slug(&create_org(&req, &t, "Acme").await);
         let c = create_connection(&req, &t, &org, "aws", "Production").await;
-        assert_eq!(c["template_version"], "1");
+        assert_eq!(c["template_version"], "2");
         let url = c["quick_create_url"].as_str().unwrap();
         let ext = query_param(url, "param_ExternalId");
         assert_eq!(uuid::Uuid::parse_str(&ext).unwrap().get_version_num(), 4);
         assert_eq!(
             query_param(url, "templateURL"),
-            format!("{TEMPLATE_BASE}/aws/opsagent-read-role-v1.yaml")
+            format!("{TEMPLATE_BASE}/aws/opsagent-read-role-v2.yaml")
         );
         assert_eq!(query_param(url, "param_OpsAgentPrincipal"), OUTBOUND_ARN);
-        assert_eq!(query_param(url, "param_TemplateVersion"), "1");
+        assert_eq!(query_param(url, "param_TemplateVersion"), "2");
         assert!(query_param(url, "stackName").starts_with("OpsAgent-Read-"));
         let id = c["id"].as_str().unwrap();
 

@@ -64,11 +64,28 @@ impl AwsConnector {
     }
 }
 
+/// Every IAM action a customer session is narrowed to, so every call the connector can make.
+/// A new SDK call goes into its session list here (AWS refuses it otherwise) and into the
+/// current role template; `tests/aws_template.rs` fails when the two differ.
+pub fn session_actions() -> impl Iterator<Item = &'static str> {
+    [
+        verify::VERIFY_ACTIONS,
+        inventory::INVENTORY_ACTIONS,
+        cost::COST_ACTIONS,
+        metrics::METRIC_ACTIONS,
+        simulate::SIMULATE_ACTIONS,
+    ]
+    .into_iter()
+    .flatten()
+    .copied()
+}
+
 type AwsRole<'a> = (
     &'a str,
     &'a str,
     Option<&'a TerraformState>,
     &'a CallContext,
+    &'a str,
 );
 
 fn aws_role(creds: &Credentials) -> Result<AwsRole<'_>> {
@@ -77,8 +94,15 @@ fn aws_role(creds: &Credentials) -> Result<AwsRole<'_>> {
             role_arn,
             external_id,
             terraform_state,
+            template_version,
             context,
-        } => Ok((role_arn, external_id, terraform_state.as_ref(), context)),
+        } => Ok((
+            role_arn,
+            external_id,
+            terraform_state.as_ref(),
+            context,
+            template_version,
+        )),
         _ => Err(ConnectorError::InvalidCredentials(
             "aws connector needs Credentials::AwsRole".into(),
         )),
@@ -108,12 +132,12 @@ impl Connector for AwsConnector {
     }
 
     async fn verify(&self, creds: &Credentials) -> Result<VerifyOutcome> {
-        let (arn, ext, tf, ctx) = aws_role(creds)?;
-        verify::verify(self, arn, ext, tf, ctx).await
+        let (arn, ext, tf, ctx, version) = aws_role(creds)?;
+        verify::verify(self, arn, ext, tf, version, ctx).await
     }
 
     async fn inventory(&self, creds: &Credentials, scope: &Scope) -> Result<InventoryResult> {
-        let (arn, ext, _, ctx) = aws_role(creds)?;
+        let (arn, ext, _, ctx, _) = aws_role(creds)?;
         let role = client::parse_role_arn(arn)?;
         let session = self
             .session(arn, ext, ctx, inventory::INVENTORY_ACTIONS)
@@ -122,7 +146,7 @@ impl Connector for AwsConnector {
     }
 
     async fn cost_daily(&self, creds: &Credentials, days: u32) -> Result<Vec<CostRow>> {
-        let (arn, ext, _, ctx) = aws_role(creds)?;
+        let (arn, ext, _, ctx, _) = aws_role(creds)?;
         let session = self.session(arn, ext, ctx, cost::COST_ACTIONS).await?;
         // Cost Explorer is served from us-east-1 only.
         let session = session
@@ -135,7 +159,7 @@ impl Connector for AwsConnector {
 
     /// `q.resource_identity` is an EC2 instance ARN; the call runs in the ARN's region.
     async fn metrics(&self, creds: &Credentials, q: MetricQuery) -> Result<Vec<MetricPoint>> {
-        let (arn, ext, _, ctx) = aws_role(creds)?;
+        let (arn, ext, _, ctx, _) = aws_role(creds)?;
         let (region, id) = metrics::instance_from_arn(&q.resource_identity)?;
         let session = self.session(arn, ext, ctx, metrics::METRIC_ACTIONS).await?;
         let session = session
@@ -151,7 +175,7 @@ impl Connector for AwsConnector {
         creds: &Credentials,
         role_arn: &str,
     ) -> Result<SimulationResult> {
-        let (arn, ext, _, ctx) = aws_role(creds)?;
+        let (arn, ext, _, ctx, _) = aws_role(creds)?;
         let own = client::parse_role_arn(arn)?.account;
         let session = self
             .session(arn, ext, ctx, simulate::SIMULATE_ACTIONS)

@@ -97,8 +97,14 @@ pub fn reported_role(provider: &str, raw: &str) -> Result<Option<String>> {
     Ok(Some(arn.to_owned()))
 }
 
-/// Call credentials for a stored record.
-pub fn credentials(provider: &str, creds: &Creds, context: CallContext) -> Result<Credentials> {
+/// Call credentials for a stored record. `template_version` is the connection's; one made
+/// before versions were recorded used version 1.
+pub fn credentials(
+    provider: &str,
+    creds: &Creds,
+    template_version: Option<&str>,
+    context: CallContext,
+) -> Result<Credentials> {
     match provider {
         "fake" => Ok(Credentials::Fake {
             account: creds.fake_account.clone().unwrap_or_default(),
@@ -110,6 +116,7 @@ pub fn credentials(provider: &str, creds: &Creds, context: CallContext) -> Resul
                 .ok_or_else(|| ConnectorError::InvalidCredentials("no role ARN".into()))?,
             external_id: creds.external_id.clone(),
             terraform_state: None,
+            template_version: template_version.unwrap_or("1").to_owned(),
             context,
         }),
         other => Err(ConnectorError::Unknown(other.to_owned())),
@@ -177,10 +184,10 @@ mod tests {
             role_arn: Some("arn:aws:iam::123456789012:role/R".into()),
             fake_account: None,
         };
-        let aws = credentials("aws", &c, ctx()).unwrap();
+        let aws = credentials("aws", &c, Some("2"), ctx()).unwrap();
         assert_eq!(aws.account().as_deref(), Some("123456789012"));
-        let f = credentials("fake", &new_creds("fake", "e".into(), "clean"), ctx()).unwrap();
+        let f = credentials("fake", &new_creds("fake", "e".into(), "clean"), None, ctx()).unwrap();
         assert_eq!(f.account().as_deref(), Some("clean"));
-        assert!(credentials("aws", &new_creds("aws", "e".into(), "x"), ctx()).is_err());
+        assert!(credentials("aws", &new_creds("aws", "e".into(), "x"), None, ctx()).is_err());
     }
 }

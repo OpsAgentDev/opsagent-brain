@@ -5,6 +5,8 @@ use opsagent_core::finding::{FindingKey, Severity};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::mail_safe::mail_safe_text;
+
 /// Mirrors `finding_events.kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -199,6 +201,27 @@ pub struct Weekly {
 }
 
 impl Briefing {
+    /// For mail: the same briefing with every title unable to become a link.
+    pub fn mail_safe(&self) -> Self {
+        let mut b = self.clone();
+        match &mut b {
+            Briefing::FirstScan { top, .. } => top.iter_mut().for_each(|(i, _)| i.mail_safe()),
+            Briefing::Daily {
+                new_critical_high,
+                escalated,
+                resolved_critical,
+                top,
+                ..
+            } => new_critical_high
+                .iter_mut()
+                .chain(escalated)
+                .chain(resolved_critical)
+                .chain(top.iter_mut().map(|(i, _)| i))
+                .for_each(Item::mail_safe),
+        }
+        b
+    }
+
     /// The connection's dashboard page.
     pub fn link(&self) -> &str {
         match self {
@@ -207,7 +230,29 @@ impl Briefing {
     }
 }
 
+impl Weekly {
+    /// For mail: the same report with the connection name and every title unable to become
+    /// a link.
+    pub fn mail_safe(&self) -> Self {
+        let mut w = self.clone();
+        w.connection_name = mail_safe_text(&w.connection_name);
+        if let Some(a) = &mut w.recommended_cost_action {
+            a.title = mail_safe_text(&a.title);
+        }
+        let items = w.certificates.iter_mut().chain(&mut w.awaiting_decision);
+        items.for_each(Item::mail_safe);
+        for line in &mut w.would_have_done {
+            *line = mail_safe_text(line);
+        }
+        w
+    }
+}
+
 impl Item {
+    fn mail_safe(&mut self) {
+        self.title = mail_safe_text(&self.title);
+    }
+
     pub fn of(f: &FindingSnapshot) -> Self {
         Self {
             id: f.id,

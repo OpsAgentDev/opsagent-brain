@@ -161,6 +161,8 @@ pub struct Verified {
     pub reason: Option<String>,
     /// Set on the first connect: stamps `first_connected_at` and `billable_from`.
     pub first_connected_at: Option<DateTime<Utc>>,
+    /// The role template version the role was judged against; `None` leaves it as it is.
+    pub template_version: Option<String>,
 }
 
 /// Credentials sealed under the org DEK; `kek_version` is the KEK version that wrapped it.

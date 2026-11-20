@@ -446,3 +446,36 @@ fn notice_links_list_lines_only_on_the_button_origin() {
     // Without a trusted button nothing in the text links.
     assert!(!render_notice(&n(None)).contains("findings/1\""));
 }
+
+/// Launch readiness L2: a mail's titles and connection name cannot become links; our own do.
+#[test]
+fn mail_safe_briefing_and_weekly_carry_no_customer_link() {
+    let evil = "Bucket evil.example/pay is public, see https://evil.example";
+    let f = opened(Severity::Critical, evil);
+    let b = build_briefing(&conn(), std::slice::from_ref(&f), since(), now(), LINK_BASE).unwrap();
+    assert!(
+        render_text(&b).contains("evil.example"),
+        "Slack is as it was"
+    );
+    let t = render_text(&b.mail_safe());
+    assert!(
+        !t.contains("evil.example") && !t.contains("https://evil"),
+        "{t}"
+    );
+    assert!(t.contains("Bucket evil[.]example pay is public"), "{t}");
+    assert!(
+        t.contains(&format!("<{LINK_BASE}/findings/{}|", f.id)),
+        "{t}"
+    );
+
+    let mut c = conn();
+    c.display_name = "www.evil.example".into();
+    let mut f = finding("01", Severity::High, FindingStatus::Open, &[], evil);
+    f.cost_monthly_usd = Some(50.0);
+    let w = build_weekly(&c, &[f], None, &WeeklyExtras::default(), now(), LINK_BASE).mail_safe();
+    for out in [render_text(&w), render_html(&w)] {
+        assert!(!out.contains("evil.example"), "{out}");
+        assert!(out.contains("www[.]evil[.]example"), "{out}");
+        assert!(out.contains(LINK_BASE), "{out}");
+    }
+}

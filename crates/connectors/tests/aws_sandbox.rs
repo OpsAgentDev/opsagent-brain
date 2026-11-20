@@ -1,10 +1,10 @@
-//! Live run against a sandbox account with the v1 stack deployed. Ignored by default:
+//! Live run against a sandbox account with the current stack deployed. Ignored by default:
 //! `OPSAGENT_SANDBOX_ROLE_ARN=... OPSAGENT_SANDBOX_EXTERNAL_ID=... \
 //!  cargo test -p opsagent-connectors --test aws_sandbox -- --ignored`
 //! Outbound credentials come from the default AWS provider chain.
 
 use opsagent_connectors::{
-    aws::{AwsConnector, AwsOutbound},
+    aws::{policy_diff::TEMPLATE_VERSION, AwsConnector, AwsOutbound},
     CallContext, Connector, Credentials, Scope, TerraformState,
 };
 use uuid::Uuid;
@@ -17,6 +17,7 @@ fn creds() -> Option<Credentials> {
             .ok()
             .zip(std::env::var("OPSAGENT_SANDBOX_TF_PREFIX").ok())
             .map(|(bucket, prefix)| TerraformState { bucket, prefix }),
+        template_version: TEMPLATE_VERSION.into(),
         context: CallContext {
             organisation_id: Uuid::now_v7(),
             run_id: Uuid::now_v7(),

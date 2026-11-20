@@ -290,7 +290,8 @@ impl FullScan {
             run_id,
             trigger: self.job().as_str().into(),
         };
-        providers::credentials(&c.provider, &creds, context).map_err(|e| job_err(&e))
+        providers::credentials(&c.provider, &creds, c.template_version.as_deref(), context)
+            .map_err(|e| job_err(&e))
     }
 
     /// Sets the final status (or retries) under a lease of its own.

@@ -129,7 +129,7 @@ mod tests {
         let url = got["launch_url"].as_str().unwrap();
         assert!(url.contains("quickcreate?templateURL="), "{url}");
         assert!(url.contains("param_ExternalId="), "{url}");
-        assert_eq!(got["template_version"], "1");
+        assert_eq!(got["template_version"], "2");
         assert!(got["next_step"]
             .as_str()
             .unwrap()

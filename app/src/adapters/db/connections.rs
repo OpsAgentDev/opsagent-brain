@@ -317,6 +317,9 @@ impl<C: Conn> ConnectionsRepo for Pg<C> {
         if let Some(account) = v.account {
             a.external_account_id = Set(Some(account));
         }
+        if v.template_version.is_some() {
+            a.template_version = Set(v.template_version);
+        }
         if let Some(at) = v.first_connected_at {
             a.first_connected_at = Set(Some(at.into()));
             a.billable_from = Set(Some(at.into()));

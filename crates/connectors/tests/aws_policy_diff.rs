@@ -1,6 +1,6 @@
 use opsagent_connectors::aws::policy_diff::{
-    diff_role, policy_diff, render_template_v1, trust_diff, DeployedRole, PolicyStatements,
-    TemplateParams,
+    diff_role, diff_role_for, policy_diff, render_template, trust_diff, DeployedRole,
+    PolicyStatements, TemplateParams,
 };
 use serde_json::{json, Value};
 
@@ -15,7 +15,7 @@ fn params(tf: Option<(&'static str, &'static str)>) -> TemplateParams<'static> {
 }
 
 fn template(tf: Option<(&'static str, &'static str)>) -> Vec<Value> {
-    render_template_v1(&params(tf)).unwrap().policies
+    render_template("1", &params(tf)).unwrap().policies
 }
 
 fn diff(
@@ -127,7 +127,7 @@ fn not_action_allow_is_extra() {
 }
 
 fn trust() -> Value {
-    render_template_v1(&params(None)).unwrap().trust
+    render_template("1", &params(None)).unwrap().trust
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn diff_role_combines_policies_trust_attached_and_duration() {
         attached_policy_arns: vec!["arn:aws:iam::aws:policy/ReadOnlyAccess".into()],
     };
     assert_eq!(
-        diff_role(&deployed, &params(None)).unwrap(),
+        diff_role(&deployed, &params(None), "1").unwrap(),
         (
             vec![
                 "attached-policy:arn:aws:iam::aws:policy/ReadOnlyAccess".to_owned(),
@@ -178,4 +178,50 @@ fn diff_role_combines_policies_trust_attached_and_duration() {
             vec![]
         )
     );
+}
+
+/// The role exactly as template `version` creates it.
+fn role(version: &str) -> DeployedRole {
+    let t = render_template(version, &params(None)).unwrap();
+    DeployedRole {
+        trust: t.trust,
+        max_session_duration: 3600,
+        policies: t.policies,
+        attached_policy_arns: vec![],
+    }
+}
+
+fn judged(deployed: &DeployedRole, recorded: &str) -> (String, Vec<String>, Vec<String>) {
+    diff_role_for(deployed, &params(None), recorded).unwrap()
+}
+
+#[test]
+fn a_role_is_judged_by_the_template_its_connection_was_made_with() {
+    // Version 1 grants more than version 2: clean for a version 1 connection, never "extra".
+    assert_eq!(judged(&role("1"), "1"), ("1".into(), vec![], vec![]));
+    assert_eq!(judged(&role("2"), "2"), ("2".into(), vec![], vec![]));
+    // The same wide role on a connection made with version 2 is a superset.
+    let (version, extra, _) = judged(&role("1"), "2");
+    assert_eq!(version, "2");
+    assert!(extra.contains(&"ec2:Describe*".to_owned()), "{extra:?}");
+}
+
+#[test]
+fn a_version_1_connection_moved_to_the_current_template_is_judged_by_that() {
+    assert_eq!(judged(&role("2"), "1"), ("2".into(), vec![], vec![]));
+    // Still held to it: an added grant is reported against the template the role now follows.
+    let mut moved = role("2");
+    stmt(&mut moved.policies, "ReadMetadata")["Action"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("ec2:TerminateInstances"));
+    let want = vec!["ec2:TerminateInstances".to_owned()];
+    assert_eq!(judged(&moved, "1"), ("2".into(), want.clone(), vec![]));
+    // A version 1 role with the same addition stays judged by version 1.
+    let mut old = role("1");
+    stmt(&mut old.policies, "ReadMetadata")["Action"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("ec2:TerminateInstances"));
+    assert_eq!(judged(&old, "1"), ("1".into(), want, vec![]));
 }
