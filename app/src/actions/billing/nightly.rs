@@ -2,7 +2,8 @@
 //! organisation: connections still `revoked` within `RENEWAL_WINDOW` of the period's end are
 //! disconnected and the quantity is reconciled (so the renewal does not bill them), the trial
 //! reminders go out on day 12 and day 14, a first failed payment and an ended trial each get
-//! one notice, and 7 days past due becomes `paused` with one notice. The trial-started notice
+//! one notice, and 7 days past due becomes `paused` with one notice. The reminders for a
+//! connection left `pending` go out here as well (`connection_reminders`). The trial-started notice
 //! is here too, sent by the organisation's own run. Each mail is sent once per owner: its ledger key (`<key>:<owner id>`) sits on a
 //! `billing_notice` marker run keyed by the organisation and the trial end (or period start),
 //! so later nights find it done.
@@ -33,6 +34,8 @@ use crate::{
     mailers::{branded, Mail},
 };
 
+mod connection_reminders;
+
 const TRIAL_DAYS: i64 = 14;
 /// A trial that ended longer ago than this gets no "trial ended" mail (no backlog on deploy).
 const TRIAL_ENDED_NOTICE_DAYS: i64 = 3;
@@ -48,6 +51,8 @@ struct Night {
     notices: u64,
     /// Trial-ended and payment-failed notices.
     lifecycle: u64,
+    /// Reminder mails tried for connections left `pending` (`connection_reminders`).
+    connection_reminders: u64,
     /// Organisations whose pass failed (logged; retried the next night).
     failed: u64,
 }
@@ -118,6 +123,13 @@ impl BillingSync {
         }
         if status == B::Paused {
             night.notices += u64::from(self.paused_notice(org, &b, now).await?);
+        }
+        // A read-only organisation cannot verify a connection, so it is not reminded.
+        // shortcut: only subscribed organisations pass here, which is every writable one while
+        // billing is enforced; list pending connections across organisations if it is ever off.
+        if !self.settings.enforced || b.in_good_standing(now) {
+            let mails = &mut night.connection_reminders;
+            self.connection_reminders(org, now, mails).await?;
         }
         Ok(())
     }
