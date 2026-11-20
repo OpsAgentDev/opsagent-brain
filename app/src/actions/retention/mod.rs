@@ -122,6 +122,12 @@ impl Retention {
             let n = batched(self.batch, deadline, &mut stats, step).await?;
             stats.counts.insert("unproven_users", n);
         }
+        if !stats.time_capped {
+            // An expired registration nobody holds a grant on is already refused at sign-in.
+            let step = || repo.delete_expired_clients(now, self.batch);
+            let n = batched(self.batch, deadline, &mut stats, step).await?;
+            stats.counts.insert("oauth_clients", n);
+        }
         runs::run(repo, now, self.batch, deadline, &mut stats).await?;
         Ok(stats)
     }
@@ -184,6 +190,33 @@ mod tests {
         assert_eq!(st.counts["organisations"], 1);
         assert!(st.time_capped);
         assert_eq!(outcome(&st)["partial_reason"], "time_cap");
+    }
+
+    /// An expired registration nobody ever approved goes with the nightly run; a current one stays.
+    #[tokio::test]
+    async fn the_run_removes_expired_agent_registrations() {
+        use opsagent_core::oauth::{ClientKind, OAuthClient, OAuthRepo};
+        let store = MemStore::default();
+        let now = Utc::now();
+        for (id, days) in [("old", -1), ("current", 1)] {
+            let c = OAuthClient {
+                client_id: id.into(),
+                kind: ClientKind::Dynamic,
+                name: id.into(),
+                redirect_uris: vec![],
+                document_fetched_at: None,
+                document_cache_until: None,
+                last_used_at: None,
+                expires_at: Some(now + Days::days(days)),
+            };
+            store.upsert_client(&c).await.unwrap();
+        }
+        let redis = redis::Client::open("redis://localhost:1").unwrap();
+        let r = Retention::new(Arc::new(store.clone()), redis, Arc::new(SystemClock));
+        let st = r.run(now).await.unwrap();
+        assert_eq!(st.counts["oauth_clients"], 1);
+        assert!(store.client("old").await.unwrap().is_none());
+        assert!(store.client("current").await.unwrap().is_some());
     }
 
     #[test]

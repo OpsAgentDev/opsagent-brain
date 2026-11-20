@@ -98,6 +98,12 @@ pub trait RetentionRepo: Send + Sync {
     /// Returns how many users.
     async fn delete_unproven_users(&self, cutoff: DateTime<Utc>, batch: u64) -> RepoResult<u64>;
 
+    /// Deletes at most `batch` self-registered (dynamic) OAuth clients whose `expires_at` is
+    /// before `cutoff` and that have no live (unrevoked) grant, the rule that already refuses
+    /// them at sign-in. What still points at them goes too: their revoked grants, those
+    /// grants' tokens, their consent requests. Returns how many clients.
+    async fn delete_expired_clients(&self, cutoff: DateTime<Utc>, batch: u64) -> RepoResult<u64>;
+
     /// Organisations soft-deleted before `deleted_before`, oldest deletion first; busy when
     /// they have a queued run or a running run started (or, unstarted, scheduled) after
     /// `busy_since`.

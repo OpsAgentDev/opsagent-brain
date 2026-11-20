@@ -1,6 +1,10 @@
 use chrono::{DateTime, Duration, Utc};
 use opsagent_brain::adapters::memory::RunLink;
-use opsagent_core::{retention::TtlTable, run::RunStatus};
+use opsagent_core::{
+    oauth::{AccessToken, ClientKind, ConsentRequest, Grant, OAuthClient, RefreshToken, SCOPE},
+    retention::TtlTable,
+    run::RunStatus,
+};
 use opsagent_deliver::schedule::{BILLING_SYNC_CRON, OPERATOR_NOTICE_CRON, RETENTION_CRON};
 
 use super::{contract_suite, org_id, Seed};
@@ -241,6 +245,115 @@ contract_suite! {
             assert!(users.get(kept).await.unwrap().is_some());
         }
         assert_eq!(s.retention().delete_unproven_users(cutoff, 100).await.unwrap(), 0);
+    }
+}
+
+/// A client `name` of `kind` expiring at `expires_at`, with a grant in `o` when `revoked` is
+/// given (`Some(true)`: revoked, with a token of each kind and a consent request on it).
+async fn client_with(
+    s: &dyn opsagent_brain::actions::uow::Repos,
+    o: uuid::Uuid,
+    (name, kind): (&str, ClientKind),
+    expires_at: Option<DateTime<Utc>>,
+    revoked: Option<bool>,
+) -> Option<Grant> {
+    let c = OAuthClient {
+        client_id: name.into(),
+        kind,
+        name: name.into(),
+        redirect_uris: vec!["https://app.example/cb".into()],
+        document_fetched_at: None,
+        document_cache_until: None,
+        last_used_at: None,
+        expires_at,
+    };
+    s.oauth().upsert_client(&c).await.unwrap();
+    let revoked = revoked?;
+    let t = now();
+    let g = Grant {
+        id: uuid::Uuid::new_v4(),
+        client_id: name.into(),
+        member_id: uuid::Uuid::new_v4(),
+        organisation_id: o,
+        scope: SCOPE.into(),
+        created_at: t,
+        last_used_at: None,
+        revoked_at: None,
+    };
+    s.oauth().insert_grant(&g).await.unwrap();
+    if revoked {
+        let (id, hash) = (uuid::Uuid::new_v4, || uuid::Uuid::new_v4().to_string());
+        let far = t + Duration::days(1);
+        let access = AccessToken {
+            id: id(),
+            grant_id: g.id,
+            organisation_id: o,
+            token_hash: hash(),
+            expires_at: far,
+        };
+        s.oauth().insert_access(&access).await.unwrap();
+        let refresh = RefreshToken {
+            id: id(),
+            grant_id: g.id,
+            organisation_id: o,
+            token_hash: hash(),
+            expires_at: far,
+            spent_at: None,
+            successor_id: None,
+            grace_reissued_at: None,
+        };
+        s.oauth().insert_refresh(&refresh).await.unwrap();
+        let consent = ConsentRequest {
+            id: id(),
+            client_id: name.into(),
+            redirect_uri: "https://app.example/cb".into(),
+            code_challenge: "c".into(),
+            state: None,
+            resource: "r".into(),
+            scope: SCOPE.into(),
+            member_id: None,
+            organisation_id: None,
+            code_hash: None,
+            code_expires_at: None,
+            code_used_at: None,
+            grant_id: None,
+            expires_at: far,
+        };
+        s.oauth().insert_consent(&consent).await.unwrap();
+        s.oauth().set_consent_grant(consent.id, g.id).await.unwrap();
+        s.oauth().revoke_grant(o, g.id, t).await.unwrap();
+    }
+    Some(g)
+}
+
+contract_suite! {
+    async fn expired_self_registered_clients_go_unless_a_grant_is_live(s) {
+        let o = org_id(s, "acme").await;
+        let t = now();
+        let (past, dynamic) = (Some(ago(t, 1, 0)), ClientKind::Dynamic);
+        client_with(s, o, ("idle", dynamic), past, None).await;
+        let revoked = client_with(s, o, ("revoked", dynamic), past, Some(true)).await.unwrap();
+        let held = client_with(s, o, ("held", dynamic), past, Some(false)).await.unwrap();
+        client_with(s, o, ("fresh", dynamic), Some(t + Duration::days(1)), None).await;
+        client_with(s, o, ("https://app.example/c.json", ClientKind::MetadataDocument), None, None).await;
+        // One per statement, oldest expiry first, until none is left.
+        let mut got = Vec::new();
+        loop {
+            let n = s.retention().delete_expired_clients(t, 1).await.unwrap();
+            got.push(n);
+            if n == 0 {
+                break;
+            }
+        }
+        assert_eq!(got, [1, 1, 0]);
+        for gone in ["idle", "revoked"] {
+            assert!(s.oauth().client(gone).await.unwrap().is_none(), "{gone}");
+        }
+        assert!(s.oauth().grant(o, revoked.id).await.unwrap().is_none());
+        for kept in ["held", "fresh", "https://app.example/c.json"] {
+            assert!(s.oauth().client(kept).await.unwrap().is_some(), "{kept}");
+        }
+        assert!(s.oauth().grant(o, held.id).await.unwrap().is_some());
     }
 }
 
