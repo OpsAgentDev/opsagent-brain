@@ -67,6 +67,16 @@ fn warn_skip(ev: &Event, msg: &str) {
 /// Credits one top-up buys (dashboard-ai.md, Top-ups).
 const TOPUP_CREDITS: i64 = 1000;
 
+/// What a top-up payment's refund and dispute events record, in `held_back`'s order: fully
+/// refunded, disputed, dispute won.
+const PAYMENT_MARKS: [&str; 3] = ["reversal:refund", "reversal:dispute", "restore:dispute"];
+
+/// Whether a top-up payment's credits are taken back: it is fully refunded, or it has a
+/// dispute that is not won.
+fn held_back([refunded, disputed, won]: [bool; 3]) -> bool {
+    refunded || (disputed && !won)
+}
+
 /// A paid top-up session adds its credits to the organisation named by
 /// `client_reference_id`, once per event (`grant_topup` is keyed on it, like `record_event`).
 /// True when a paid session matched no organisation (counted for the operator notice).
@@ -257,23 +267,25 @@ impl HandleWebhook {
         Ok(())
     }
 
-    /// A fully refunded (`charge.refunded`) or disputed (`charge.dispute.created`) top-up
-    /// payment gives its credits back, once per payment: the reversal is a negative grant
-    /// keyed on the payment intent, so the other event and any redelivery add nothing. The
-    /// balance may go below 0 (owed from the next top-up). A dispute closed `won`
-    /// (`charge.dispute.closed`) restores the credits of a reversed payment, once; any other
-    /// closing status changes nothing. Any other charge (a subscription's, a human review's)
-    /// changes nothing. The payment is matched through its Checkout session (the provider),
-    /// so a failed lookup fails the webhook and Stripe sends the event again.
+    /// Refunds and disputes of a top-up payment. Its credits are held back while the payment
+    /// is fully refunded or has a dispute that is not won (`held_back`). Each event records
+    /// its own marker for the payment (`PAYMENT_MARKS`, a grant keyed `<mark>:<payment
+    /// intent>`) carrying only the difference it makes, so whatever the order, the repeats
+    /// and the mix of causes, one payment never gives back more than it granted or less than
+    /// its state requires. The balance may go below 0 (owed from the next top-up). A partial
+    /// refund, a dispute closed any other way than `won`, and any other charge (a
+    /// subscription's, a human review's) change nothing. The payment is matched through its
+    /// Checkout session (the provider), so a failed lookup fails the webhook and Stripe sends
+    /// the event again.
     /// True when a top-up's refund or dispute matched no organisation (counted for the
     /// operator notice).
     async fn topup_charge(&self, tx: &dyn Tx, ev: &Event) -> AppResult<bool> {
         let o = &ev.data.object;
-        let (restore, reason) = match ev.kind.as_str() {
-            // A partial refund keeps the credits: `refunded` is true only once all is refunded.
-            "charge.refunded" if o["refunded"] == true => (false, "refund"),
-            "charge.dispute.created" => (false, "dispute"),
-            "charge.dispute.closed" if o["status"] == "won" => (true, "dispute_won"),
+        let (mark, reason) = match ev.kind.as_str() {
+            // `refunded` is true only once all of the charge is refunded.
+            "charge.refunded" if o["refunded"] == true => (0, "refund"),
+            "charge.dispute.created" => (1, "dispute"),
+            "charge.dispute.closed" if o["status"] == "won" => (2, "dispute_won"),
             _ => return Ok(false),
         };
         let Some(payment) = o["payment_intent"].as_str() else {
@@ -291,19 +303,25 @@ impl HandleWebhook {
         };
         let Some(org) = org.filter(|_| known) else {
             warn_skip(ev, "top-up refund or dispute matches no organisation");
-            // Counted when the credits could not be taken back; a restore had nothing to undo.
-            return Ok(!restore);
+            // Counted when credits could not be taken back; a won dispute takes none.
+            return Ok(mark != 2);
         };
-        let reversal = format!("reversal:{payment}");
+        // One at a time per organisation: two events of one payment must see each other's mark.
+        tx.orgs().lock(org).await?;
+        let key = |m: usize| format!("{}:{payment}", PAYMENT_MARKS[m]);
+        let mut marks = [false; 3];
+        for (m, set) in marks.iter_mut().enumerate() {
+            *set = tx.ai().has_grant(org, &key(m)).await?;
+        }
+        let before = held_back(marks);
+        marks[mark] = true;
         let credits = sea_orm::prelude::Decimal::from(TOPUP_CREDITS);
-        let (credits, key, action) = if !restore {
-            (-credits, reversal, "ai.topup_reversed")
-        } else if tx.ai().has_grant(org, &reversal).await? {
-            (credits, format!("restore:{payment}"), "ai.topup_restored")
-        } else {
-            return Ok(false);
+        let (change, action) = match (before, held_back(marks)) {
+            (false, true) => (-credits, "ai.topup_reversed"),
+            (true, false) => (credits, "ai.topup_restored"),
+            _ => (0.into(), ""),
         };
-        if tx.ai().grant_topup(org, credits, &key).await? {
+        if tx.ai().grant_topup(org, change, &key(mark)).await? && !change.is_zero() {
             let target = ("payment", payment.to_owned());
             let entry = AuditEntry::system(org, action, target, "success")
                 .with_meta(serde_json::json!({ "credits": TOPUP_CREDITS, "reason": reason }));
@@ -639,9 +657,6 @@ mod tests {
         let credits = sea_orm::prelude::Decimal::from(TOPUP_CREDITS);
         let balance = || async { store.topup_balance(org.id).await.unwrap() };
         const CLOSED: &str = "charge.dispute.closed";
-        // Won with nothing reversed (the reversal never arrived): nothing to restore.
-        charge(&h, "evt_0", CLOSED, "pi_1", true).await;
-        assert_eq!(balance().await, 0.into());
         charge(&h, "evt_1", "charge.dispute.created", "pi_1", false).await;
         assert_eq!(balance().await, -credits);
         // Lost: the credits stay taken back.
@@ -658,6 +673,46 @@ mod tests {
             .map(|e| (e.organisation_id, e.meta["reason"].as_str()))
             .collect();
         assert_eq!(restored, [(Some(org.id), Some("dispute_won"))]);
+    }
+
+    /// Every sequence of up to four of a payment's events, each delivered twice: whatever the
+    /// order and the repeats, the credits are out exactly when the payment is fully refunded
+    /// or has a dispute that was not won.
+    #[tokio::test]
+    async fn every_order_of_refund_and_dispute_events_nets_to_the_payment_state() {
+        // (kind, `charge`'s flag): refund in full, dispute opened, dispute won, dispute lost.
+        const EVENTS: [(&str, bool); 4] = [
+            ("charge.refunded", true),
+            ("charge.dispute.created", false),
+            ("charge.dispute.closed", true),
+            ("charge.dispute.closed", false),
+        ];
+        let now = Utc::now();
+        let credits = sea_orm::prelude::Decimal::from(TOPUP_CREDITS);
+        for len in 1..=4u32 {
+            for code in 0..4usize.pow(len) {
+                let seq: Vec<usize> = (0..len).map(|i| code / 4usize.pow(i) % 4).collect();
+                let store = MemStore::default();
+                let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+                let tally = Arc::new(MemRateLimiter::default());
+                let h = hook_counting(&store, now, tally, NoStripe(Some(org.id.to_string())));
+                assert!(store
+                    .grant_topup(org.id, credits, "evt_grant")
+                    .await
+                    .unwrap());
+                for (i, e) in seq.iter().enumerate() {
+                    let (kind, flag) = EVENTS[*e];
+                    for _ in 0..2 {
+                        charge(&h, &format!("evt_{i}"), kind, "pi_1", flag).await;
+                    }
+                }
+                let has = |e: usize| seq.contains(&e);
+                let out = has(0) || (has(1) && !has(2));
+                let want = if out { 0.into() } else { credits };
+                let got = store.topup_balance(org.id).await.unwrap();
+                assert_eq!(got, want, "events {seq:?}");
+            }
+        }
     }
 
     #[tokio::test]

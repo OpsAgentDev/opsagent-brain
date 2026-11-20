@@ -256,9 +256,10 @@ pub trait AiRepo: Send + Sync {
     ) -> RepoResult<Decimal>;
     async fn topup_balance(&self, organisation_id: Uuid) -> RepoResult<Decimal>;
     /// Records the grant and adds `credits` to the balance; `false` (nothing added) when the
-    /// Stripe event was already granted. A refunded or disputed top-up is taken back the same
-    /// way: negative `credits` under the key `reversal:<payment intent>`, once per payment; a
-    /// dispute won gives them back under `restore:<payment intent>`.
+    /// Stripe event was already granted. A top-up payment's refund and dispute events are
+    /// recorded the same way, each under its own key (`reversal:refund:<payment intent>`,
+    /// `reversal:dispute:…`, `restore:dispute:…`) with the credits it takes or gives back,
+    /// which may be 0.
     async fn grant_topup(
         &self,
         organisation_id: Uuid,

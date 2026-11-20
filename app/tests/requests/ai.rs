@@ -942,7 +942,12 @@ async fn topup_refund_and_dispute_take_the_credits_back_once() {
         let (_, _, id) = org_with_customer(&req, &ctx).await;
         let topup = json!({ "mode": "payment", "payment_status": "paid",
             "client_reference_id": id.to_string(), "metadata": { "purpose": "ai_topup" } });
-        for (payment, sessions) in [("pi_t1", json!([topup])), ("pi_sub", json!([]))] {
+        let paid = [
+            ("pi_t1", json!([topup])),
+            ("pi_t2", json!([topup])),
+            ("pi_sub", json!([])),
+        ];
+        for (payment, sessions) in paid {
             Mock::given(method("GET"))
                 .and(path("/v1/checkout/sessions"))
                 .and(query_param("payment_intent", payment))
@@ -982,10 +987,15 @@ async fn topup_refund_and_dispute_take_the_credits_back_once() {
             .unwrap();
         assert_eq!(reversed.len(), 1);
         assert_eq!(reversed[0].metadata["reason"], "refund");
-        // The dispute is won: the credits come back once, its redelivery adds nothing.
+        // A won dispute never restores a refunded payment.
+        deliver(&req, &charge("evt_r5", "charge.dispute.closed", "pi_t1")).await;
+        assert_eq!(repo.topup_balance(id).await.unwrap(), Decimal::ZERO);
+        // Another top-up is disputed, then the dispute is won: taken back, then restored once.
+        deliver(&req, &charge("evt_r6", "charge.dispute.created", "pi_t2")).await;
+        assert_eq!(repo.topup_balance(id).await.unwrap(), Decimal::from(-1000));
         for _ in 0..2 {
-            deliver(&req, &charge("evt_r5", "charge.dispute.closed", "pi_t1")).await;
-            assert_eq!(repo.topup_balance(id).await.unwrap(), Decimal::from(1000));
+            deliver(&req, &charge("evt_r7", "charge.dispute.closed", "pi_t2")).await;
+            assert_eq!(repo.topup_balance(id).await.unwrap(), Decimal::ZERO);
         }
     })
     .await;

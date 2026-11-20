@@ -704,7 +704,7 @@ async fn a_topup_debt_never_blocks_the_included_credits() {
     e.enable().await;
     // A top-up was spent, then refunded: 800 credits are owed.
     e.store
-        .grant_topup(e.org(), dec(-800), "reversal:pi_1")
+        .grant_topup(e.org(), dec(-800), "reversal:refund:pi_1")
         .await
         .unwrap();
     e.used(KeySource::OpsAgent, 500).await;
