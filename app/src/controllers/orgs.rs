@@ -1,4 +1,9 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{
+    extract::State,
+    http::{header, StatusCode},
+    response::IntoResponse,
+    Json,
+};
 use chrono::{DateTime, FixedOffset};
 use opsagent_core::org::{Organisation, OrganisationPatch};
 use serde::{Deserialize, Serialize};
@@ -8,10 +13,11 @@ use uuid::Uuid;
 
 use super::OrgPath;
 use crate::{
-    actions::orgs::CreateOrgInput,
-    api_error::{ApiError, ApiJson, Problem},
+    actions::orgs::{AuditItem, CreateOrgInput},
+    api_error::{ApiError, ApiJson, ApiQuery, Problem},
     middleware::org_scope::{AuthUser, OrgScope},
     state::AppState,
+    views::page::{page_request, Page, PageParams},
 };
 
 #[derive(Serialize, ToSchema)]
@@ -110,8 +116,89 @@ async fn delete(State(app): State<AppState>, scope: OrgScope) -> Result<StatusCo
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// One audit log entry.
+#[derive(Serialize, ToSchema)]
+pub struct AuditEntry {
+    pub id: Uuid,
+    pub at: DateTime<FixedOffset>,
+    /// `member`, `agent` or `system`.
+    pub actor_type: String,
+    /// A member's name and email (`Former member` once they left), `agent <client name>`, or
+    /// `OpsAgent` for the system.
+    pub actor: String,
+    /// Stable action code, e.g. `connection.create`.
+    pub action: String,
+    /// What the action was on (`connection`, `member`, `finding`, ...); null without a target.
+    pub target_type: Option<String>,
+    /// The target by name, where it has one and still exists.
+    pub target: Option<String>,
+    pub outcome: Option<String>,
+    /// The entry's metadata with anything secret-like left out.
+    #[schema(value_type = Object)]
+    pub metadata: serde_json::Value,
+}
+
+fn audit_view(i: AuditItem) -> AuditEntry {
+    AuditEntry {
+        id: i.id,
+        at: i.at.fixed_offset(),
+        actor_type: i.actor_type.into(),
+        actor: i.actor,
+        action: i.action,
+        target_type: i.target_type,
+        target: i.target,
+        outcome: i.outcome,
+        metadata: i.metadata,
+    }
+}
+
+/// The organisation's audit log, newest first. Owners only.
+#[utoipa::path(get, path = "/orgs/{org}/audit", tag = "orgs", params(OrgPath, PageParams),
+    responses((status = 200, body = Page<AuditEntry>), (status = 403, body = Problem),
+        (status = 404, body = Problem), (status = 422, body = Problem)))]
+async fn audit(
+    State(app): State<AppState>,
+    scope: OrgScope,
+    ApiQuery(p): ApiQuery<PageParams>,
+) -> Result<Json<Page<AuditEntry>>, ApiError> {
+    let list = &app.actions.orgs.list_audit;
+    let page = list.run(&scope, page_request(&p)?).await?;
+    Ok(Json(Page::of(page).map(audit_view)))
+}
+
+/// The organisation's own data as one JSON document, sent as an attachment: `organisation`,
+/// `members`, `connections`, `findings` (with stored evidence), `delivery_settings`,
+/// `recipients`, `deliveries` and `audit_log`. Owners only; once per organisation per hour.
+#[utoipa::path(post, path = "/orgs/{org}/export", tag = "orgs", params(OrgPath),
+    responses((status = 200, content_type = "application/json", body = Object,
+            description = "The export document (`Content-Disposition: attachment`)"),
+        (status = 403, body = Problem), (status = 404, body = Problem),
+        (status = 413, body = Problem, description = "`export_too_large`: over 20 MB; contact support"),
+        (status = 429, body = Problem)))]
+async fn export(
+    State(app): State<AppState>,
+    scope: OrgScope,
+) -> Result<impl IntoResponse, ApiError> {
+    let bytes = app.actions.orgs.export_org.run(&scope).await?;
+    // A slug is lowercase ASCII, digits and dashes: safe inside the quoted filename.
+    let name = format!("opsagent-export-{}.json", scope.organisation.slug);
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/json".to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}\""),
+            ),
+            (header::CACHE_CONTROL, "no-store".to_owned()),
+        ],
+        bytes,
+    ))
+}
+
 pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(create_org, list))
         .routes(routes!(show, update, delete))
+        .routes(routes!(audit))
+        .routes(routes!(export))
 }

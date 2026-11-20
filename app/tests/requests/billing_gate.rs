@@ -129,6 +129,12 @@ async fn read_only_exemptions_pass() {
             assert_ne!(res.status_code(), 402, "{path}: {}", res.text());
             assert!(res.status_code().as_u16() < 500, "{path}: {}", res.text());
         }
+        // Its own data can still be taken out.
+        let res = req
+            .post(&format!("/v1/orgs/{org}/export"))
+            .add_header("X-CSRF-Token", &t)
+            .await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
         // Any other write is still refused.
         refused(&new_connection(&req, &t, &org).await, "billing_required");
         // Stripe is not configured here: 503 shows the request got past the gate.

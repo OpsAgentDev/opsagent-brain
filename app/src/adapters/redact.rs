@@ -104,6 +104,24 @@ pub fn redact_resource(r: &opsagent_core::resource::Resource) -> opsagent_core::
     out
 }
 
+/// Audit metadata as shown to a customer: fields named like a credential (`sensitive_key`) or
+/// naming a session or a network address are left out, and every string is redacted.
+pub fn redact_json(v: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    const NEVER: [&str; 3] = ["session_id", "ip", "user_agent"];
+    match v {
+        Value::String(s) => Value::String(redact(s).0),
+        Value::Array(a) => Value::Array(a.iter().map(redact_json).collect()),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .filter(|(k, _)| !sensitive_key(k) && !NEVER.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), redact_json(v)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// A tag key whose value is a credential by name, whatever the value looks like.
 fn sensitive_key(k: &str) -> bool {
     let k: String = k
@@ -128,7 +146,27 @@ fn sensitive_key(k: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{redact, redact_resource};
+    use super::{redact, redact_json, redact_resource};
+
+    #[test]
+    fn redact_json_drops_secret_named_fields_and_redacts_strings() {
+        let v = serde_json::json!({
+            "scope": "opsagent.read",
+            "access_token": "abc",
+            "session_id": "s-1",
+            "ip": "203.0.113.9",
+            "nested": { "client_secret": "x", "note": "key AKIAIOSFODNN7EXAMPLE used", "n": 2 },
+            "list": ["Bearer abc.def", 1],
+        });
+        assert_eq!(
+            redact_json(&v),
+            serde_json::json!({
+                "scope": "opsagent.read",
+                "nested": { "note": "key [redacted:aws_key_id] used", "n": 2 },
+                "list": ["Bearer [redacted:token]", 1],
+            })
+        );
+    }
 
     #[test]
     fn redacts_tags_with_their_keys_and_the_name() {
