@@ -2,7 +2,8 @@
 //! organisation: connections still `revoked` within `RENEWAL_WINDOW` of the period's end are
 //! disconnected and the quantity is reconciled (so the renewal does not bill them), the trial
 //! reminders go out on day 12 and day 14, a first failed payment and an ended trial each get
-//! one notice, and 7 days past due becomes `paused` with one notice. The trial-started notice
+//! one notice, and 7 days past due becomes `paused` with one notice. The reminders for a
+//! connection left `pending` go out here as well (`connection_reminders`). The trial-started notice
 //! is here too, sent by the organisation's own run. Each mail is sent once per owner: its ledger key (`<key>:<owner id>`) sits on a
 //! `billing_notice` marker run keyed by the organisation and the trial end (or period start),
 //! so later nights find it done.
@@ -33,6 +34,8 @@ use crate::{
     mailers::{branded, Mail},
 };
 
+mod connection_reminders;
+
 const TRIAL_DAYS: i64 = 14;
 /// A trial that ended longer ago than this gets no "trial ended" mail (no backlog on deploy).
 const TRIAL_ENDED_NOTICE_DAYS: i64 = 3;
@@ -48,6 +51,8 @@ struct Night {
     notices: u64,
     /// Trial-ended and payment-failed notices.
     lifecycle: u64,
+    /// Reminders sent for connections left `pending` (`connection_reminders`).
+    connection_reminders: u64,
     /// Organisations whose pass failed (logged; retried the next night).
     failed: u64,
 }
@@ -118,6 +123,12 @@ impl BillingSync {
         }
         if status == B::Paused {
             night.notices += u64::from(self.paused_notice(org, &b, now).await?);
+        }
+        // A read-only organisation cannot verify a connection, so it is not reminded.
+        // shortcut: only subscribed organisations pass here, which is every writable one while
+        // billing is enforced; list pending connections across organisations if it is ever off.
+        if !self.settings.enforced || b.in_good_standing(now) {
+            night.connection_reminders += self.connection_reminders(org, now).await?;
         }
         Ok(())
     }
@@ -199,7 +210,7 @@ impl BillingSync {
             billing_url,
         );
         let key = format!("billing:trial_reminder:{day}");
-        self.mail_owners(org, ends, &key, &subject, &text, &billing_url)
+        self.mail_billing(org, ends, &key, &subject, &text, &billing_url)
             .await
     }
 
@@ -230,7 +241,7 @@ impl BillingSync {
         );
         let subject = "Your OpsAgent trial has started";
         let key = "billing:trial_started";
-        self.mail_owners(org, ends, key, subject, &text, &billing_url)
+        self.mail_billing(org, ends, key, subject, &text, &billing_url)
             .await
     }
 
@@ -255,7 +266,7 @@ impl BillingSync {
         );
         let subject = "Your OpsAgent trial has ended";
         let key = "billing:trial_ended";
-        self.mail_owners(org, ends, key, subject, &text, &billing_url)
+        self.mail_billing(org, ends, key, subject, &text, &billing_url)
             .await
     }
 
@@ -273,7 +284,7 @@ impl BillingSync {
         );
         let key = format!("billing:payment_failed:{}", since.timestamp());
         let subject = "Your OpsAgent payment failed";
-        self.mail_owners(org, since, &key, subject, &text, &billing_url)
+        self.mail_billing(org, since, &key, subject, &text, &billing_url)
             .await
     }
 
@@ -289,7 +300,7 @@ impl BillingSync {
         );
         let key = format!("billing:paused:{}", period.timestamp());
         let subject = "OpsAgent is paused: payment overdue";
-        self.mail_owners(org, period, &key, subject, &text, &billing_url)
+        self.mail_billing(org, period, &key, subject, &text, &billing_url)
             .await
     }
 
@@ -302,6 +313,21 @@ impl BillingSync {
         Ok(format!("{base}/settings/billing"))
     }
 
+    /// `mail_owners` with the billing page as its button.
+    async fn mail_billing(
+        &self,
+        org: Uuid,
+        anchor: DateTime<Utc>,
+        key: &str,
+        subject: &str,
+        text: &str,
+        url: &str,
+    ) -> LResult<bool> {
+        let button = ("Manage billing", url);
+        self.mail_owners(org, anchor, key, subject, text, button)
+            .await
+    }
+
     /// Mails each owner once for ledger key `<key>:<owner id>` on the marker at `anchor`, so a
     /// failure part-way never resends to owners already mailed; `true` when this call sent
     /// any. A failed send is retried the next night (Resend dedupes on the key).
@@ -312,7 +338,7 @@ impl BillingSync {
         key: &str,
         subject: &str,
         text: &str,
-        link: &str,
+        button: (&str, &str),
     ) -> LResult<bool> {
         let marker = notice_marker(&*self.uow, Some(org), anchor).await?;
         let owners = self.uow.recipients().owners(org).await.map_err(lerr)?;
@@ -330,7 +356,7 @@ impl BillingSync {
             let mail = Mail {
                 to: o.email,
                 subject: subject.into(),
-                html: Some(branded(subject, text, Some(("Manage billing", link)))),
+                html: Some(branded(subject, text, Some(button))),
                 text: text.into(),
                 idempotency_key: Some(format!("{marker}:{key}")),
                 ..Default::default()

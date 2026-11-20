@@ -75,11 +75,15 @@ pub(in crate::actions::billing) fn settings() -> BillingSettings {
     }
 }
 
-fn sync(store: &MemStore, mail: &Arc<CaptureMailer>, now: DateTime<Utc>) -> BillingSync {
+pub(super) fn sync(store: &MemStore, mail: &Arc<CaptureMailer>, now: DateTime<Utc>) -> BillingSync {
     sync_with(store, mail.clone(), now)
 }
 
-fn sync_with(store: &MemStore, mail: Arc<dyn Mailer>, now: DateTime<Utc>) -> BillingSync {
+pub(super) fn sync_with(
+    store: &MemStore,
+    mail: Arc<dyn Mailer>,
+    now: DateTime<Utc>,
+) -> BillingSync {
     sync_counting(store, mail, now, Arc::new(MemRateLimiter::default()))
 }
 
@@ -106,7 +110,7 @@ fn sync_counting(
     )
 }
 
-fn sub(status: B, ends: DateTime<Utc>) -> SubscriptionState {
+pub(super) fn sub(status: B, ends: DateTime<Utc>) -> SubscriptionState {
     SubscriptionState {
         subscription_id: "sub_1".into(),
         status,
@@ -119,7 +123,7 @@ fn sub(status: B, ends: DateTime<Utc>) -> SubscriptionState {
     }
 }
 
-async fn night(store: &MemStore, mail: &Arc<CaptureMailer>, now: DateTime<Utc>) {
+pub(super) async fn night(store: &MemStore, mail: &Arc<CaptureMailer>, now: DateTime<Utc>) {
     let st = sync(store, mail, now)
         .nightly(Uuid::new_v4(), now)
         .await
