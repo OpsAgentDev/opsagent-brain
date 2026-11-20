@@ -75,6 +75,34 @@ impl RecipientsRepo for MemStore {
         Ok(s.recipients.len() < before)
     }
 
+    async fn move_member_email(&self, user_id: Uuid, email: &str) -> RepoResult<()> {
+        let mut s = self.state();
+        let mine: Vec<(Uuid, Uuid)> = s
+            .members
+            .iter()
+            .filter(|m| m.user_id == user_id)
+            .map(|m| (m.id, m.organisation_id))
+            .collect();
+        let moving = |r: &RecipientRow| {
+            r.member_id
+                .is_some_and(|m| mine.contains(&(m, r.organisation_id)))
+                && r.email != email
+        };
+        let held: Vec<(Uuid, Option<Uuid>)> = s
+            .recipients
+            .iter()
+            .filter(|r| r.row.email.to_lowercase() == email)
+            .map(|r| (r.row.organisation_id, r.row.connection_id))
+            .collect();
+        s.recipients.retain(|r| {
+            !(moving(&r.row) && held.contains(&(r.row.organisation_id, r.row.connection_id)))
+        });
+        for r in s.recipients.iter_mut().filter(|r| moving(&r.row)) {
+            r.row.email = email.to_owned();
+        }
+        Ok(())
+    }
+
     async fn confirm(
         &self,
         token_hash: &str,

@@ -212,13 +212,15 @@ pub trait UsersRepo: Send + Sync {
     /// Stores a link; only the hashes of the token and of the mailed code are kept. The codes of
     /// the address's other links stop working (the links stay valid): one live code per address.
     async fn issue_magic_link(&self, link: NewMagicLink<'_>) -> RepoResult<()>;
-    /// Marks the link used, once; the link if it was unused and unexpired at `now`.
+    /// Marks the link used, once; the link if it was unused and unexpired at `now` and the
+    /// address it was mailed to is still its user's (a link for a former address signs nobody in).
     async fn consume_magic_link(
         &self,
         token_hash: &str,
         now: DateTime<Utc>,
     ) -> RepoResult<Option<SpentLink>>;
-    /// Unspent, unexpired links for `email` that still have a code.
+    /// Unspent, unexpired links for `email` that still have a code, while `email` is still
+    /// their user's address.
     async fn live_codes(&self, email: &Email, now: DateTime<Utc>) -> RepoResult<Vec<LiveCode>>;
     /// Marks the link used, once; `false` if it was already used or has expired at `now`.
     async fn spend_code(&self, id: Uuid, now: DateTime<Utc>) -> RepoResult<bool>;
@@ -243,8 +245,15 @@ pub trait UsersRepo: Send + Sync {
     ) -> RepoResult<Vec<LiveEmailChange>>;
     /// Moves the user to `email` and removes their unspent sign-in links and pending changes
     /// (they were mailed to the old address). `RepoError::Conflict("email_taken")` when another
-    /// user has the address; an unknown id is a no-op.
+    /// user has the address; `RepoError::NotFound` for an unknown or erased id.
     async fn set_email(&self, id: Uuid, email: &Email) -> RepoResult<()>;
+    /// True while the user never proved their email, by the retention job's rule (see
+    /// `RetentionRepo::delete_unproven_users`): no membership, passkey, linked GitHub or Google
+    /// id, redeemed magic link or `auth.sign_in` audit entry. Unlike that job, neither the row's
+    /// age nor a link still waiting to be redeemed matters. False for an unknown id.
+    async fn is_unproven(&self, id: Uuid) -> RepoResult<bool>;
+    /// Deletes the user and their magic links if `is_unproven`; whether it did.
+    async fn delete_unproven(&self, id: Uuid) -> RepoResult<bool>;
 }
 
 #[cfg(test)]

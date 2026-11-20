@@ -102,6 +102,24 @@ struct MagicLinkRow {
     used: bool,
 }
 
+impl MemState {
+    /// The retention rule for a user who never proved their email. `live_link_counts`: a link
+    /// still waiting to be redeemed at `now` keeps the user (the nightly job's reading).
+    fn never_proved(&self, u: &User, live_link_counts: Option<DateTime<Utc>>) -> bool {
+        u.github_id.is_none()
+            && u.google_id.is_none()
+            && !self.members.iter().any(|m| m.user_id == u.id)
+            && !self.passkeys.iter().any(|p| p.user_id == u.id)
+            && !self.magic_links.iter().any(|l| {
+                l.user_id == u.id
+                    && (l.used || live_link_counts.is_some_and(|now| l.expires_at > now))
+            })
+            && !self.audit.iter().any(|a| {
+                a.action == "auth.sign_in" && a.actor == opsagent_core::audit::Actor::Member(u.id)
+            })
+    }
+}
+
 #[derive(Clone)]
 struct MemRecipient {
     row: RecipientRow,

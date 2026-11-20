@@ -98,7 +98,14 @@ impl ConfirmEmailChange {
         }
         let user = tx.users().get(user_id).await?;
         let user = user.ok_or(AppError::Unauthenticated)?;
-        // The unique index decides a race with another account; the transaction is dropped.
+        // A row left by a sign-in link nobody redeemed is in the way, not an account.
+        if let Some(other) = tx.users().find_by_email(&hit.new_email).await? {
+            if other.id != user_id {
+                tx.users().delete_unproven(other.id).await?;
+            }
+        }
+        // The unique index decides for a proven account, and a race with one; the transaction
+        // is dropped either way.
         let moved = tx.users().set_email(user_id, &hit.new_email).await;
         moved.map_err(|e| match e {
             RepoError::Conflict("email_taken") => AppError::Refused {
@@ -106,8 +113,15 @@ impl ConfirmEmailChange {
                 code: "email_taken",
                 detail: "That address can no longer be used. Nothing was changed.".into(),
             },
+            // Erased since the code was mailed: there is no account to move.
+            RepoError::NotFound => AppError::Unauthenticated,
             e => e.into(),
         })?;
+        // Briefings and alerts to this member follow, in every organisation.
+        let recipients = tx.recipients();
+        recipients
+            .move_member_email(user_id, hit.new_email.as_str())
+            .await?;
         let target = Some(("user", user_id.to_string()));
         let entry = AuditEntry::member(None, user_id, "auth.email_changed", target);
         tx.audit().record(entry).await?;
@@ -329,7 +343,7 @@ mod tests {
         let f = fixture().await;
         let users: &dyn UsersRepo = &f.store;
         let taken = email("taken@example.com");
-        let other = users.find_or_create_by_email(&taken).await.unwrap();
+        let other = proven(&f.store, taken.as_str()).await;
         // The same answer as a free address.
         f.request
             .run(f.user.id, taken.as_str(), None)
@@ -347,12 +361,151 @@ mod tests {
         assert_eq!(users.get(other.id).await.unwrap().unwrap().email, taken);
     }
 
+    /// A proven account at `address`: it redeemed a sign-in link.
+    async fn proven(store: &MemStore, address: &str) -> User {
+        let users: &dyn UsersRepo = store;
+        let e = email(address);
+        let u = users.find_or_create_by_email(&e).await.unwrap();
+        let hash = hash_token(address);
+        let soon = Utc::now() + Duration::minutes(15);
+        let link = NewMagicLink::new(u.id, &e, &hash, "c", soon);
+        users.issue_magic_link(link).await.unwrap();
+        let spent = users.consume_magic_link(&hash, Utc::now()).await.unwrap();
+        assert!(spent.is_some());
+        u
+    }
+
+    #[tokio::test]
+    async fn an_address_that_only_asked_for_a_sign_in_link_is_free() {
+        let f = fixture().await;
+        let users: &dyn UsersRepo = &f.store;
+        // Somebody asked for a sign-in link for the address and never used it.
+        let ghost = users.find_or_create_by_email(&email(NEW)).await.unwrap();
+        let soon = Utc::now() + Duration::minutes(15);
+        let link = NewMagicLink::new(ghost.id, &ghost.email, "ghost", "c", soon);
+        users.issue_magic_link(link).await.unwrap();
+
+        let code = f.ask(NEW).await;
+        assert_eq!(
+            f.mail.sent()[0].subject.len(),
+            "Your OpsAgent email change code: 123456".len()
+        );
+        f.confirm().run(f.user.id, &code).await.unwrap();
+        assert_eq!(f.stored_email().await, NEW);
+        // The unproven row is gone with its link; the address is the account's alone.
+        assert!(users.get(ghost.id).await.unwrap().is_none());
+        assert!(users
+            .consume_magic_link("ghost", Utc::now())
+            .await
+            .unwrap()
+            .is_none());
+        let at_new = users.find_by_email(&email(NEW)).await.unwrap().unwrap();
+        assert_eq!(at_new.id, f.user.id);
+    }
+
+    /// The link is asked for at the old address while the change is being confirmed, so it is
+    /// stored after the change removed the user's unspent links.
+    #[tokio::test]
+    async fn a_sign_in_link_or_code_for_the_old_address_no_longer_signs_in() {
+        let f = fixture().await;
+        let code = f.ask(NEW).await;
+        f.confirm().run(f.user.id, &code).await.unwrap();
+        let users: &dyn UsersRepo = &f.store;
+        let (token, soon) = ("late-link", Utc::now() + Duration::minutes(15));
+        let token_hash = hash_token(token);
+        let late = code_hash(SECRET, &token_hash, "123456");
+        let link = NewMagicLink::new(f.user.id, &f.user.email, &token_hash, &late, soon);
+        users.issue_magic_link(link).await.unwrap();
+
+        let redeem = RedeemMagicLink::new(Arc::new(f.store.clone()), Arc::new(SystemClock));
+        let err = redeem.run(token).await.unwrap_err();
+        assert!(matches!(err, AppError::Gone("link_invalid")), "{err:?}");
+        let verify = crate::actions::auth::VerifyCode::new(
+            Arc::new(f.store.clone()),
+            Arc::new(MemRateLimiter::default()),
+            Arc::new(SystemClock),
+            SECRET.into(),
+        );
+        let input = crate::actions::auth::VerifyCodeInput {
+            email: OLD.into(),
+            code: "123456".into(),
+            client_ip: None,
+        };
+        assert_invalid(verify.run(input).await);
+        assert!(!f
+            .store
+            .audit_entries()
+            .iter()
+            .any(|e| e.action == "auth.sign_in"));
+    }
+
+    #[tokio::test]
+    async fn member_recipient_rows_follow_the_new_address() {
+        use opsagent_core::org::{NewOrganisation, OrganisationsRepo, Role};
+        use opsagent_deliver::repo::{NewRecipient, RecipientsRepo};
+        let f = fixture().await;
+        let orgs: &dyn OrganisationsRepo = &f.store;
+        let new_org = NewOrganisation {
+            id: Uuid::new_v4(),
+            slug: "acme".into(),
+            name: "Acme".into(),
+            timezone: "UTC".into(),
+            kek_version: 1,
+            wrapped_dek: vec![1],
+        };
+        let org = orgs.insert(new_org).await.unwrap().id;
+        let member = orgs.add_member(org, f.user.id, Role::Owner).await.unwrap();
+        let recipients: &dyn RecipientsRepo = &f.store;
+        let row = |address: &str, member_id| NewRecipient {
+            connection_id: None,
+            email: address.into(),
+            member_id,
+            confirm: None,
+        };
+        let mine = recipients
+            .insert(org, row(OLD, Some(member.id)))
+            .await
+            .unwrap();
+        let other = recipients
+            .insert(org, row("ext@example.com", None))
+            .await
+            .unwrap();
+
+        let code = f.ask(NEW).await;
+        f.confirm().run(f.user.id, &code).await.unwrap();
+        let sent_to = recipients.for_connection(org, None).await.unwrap();
+        let mut ids: Vec<_> = sent_to.iter().map(|r| (r.id, r.email.as_str())).collect();
+        ids.sort();
+        let mut want = vec![(mine.id, NEW), (other.id, "ext@example.com")];
+        want.sort();
+        assert_eq!(ids, want);
+    }
+
+    #[tokio::test]
+    async fn an_account_erased_before_the_code_is_entered_changes_and_tells_nothing() {
+        let f = fixture().await;
+        let code = f.ask(NEW).await;
+        let users: &dyn UsersRepo = &f.store;
+        let gone = users.set_email(Uuid::new_v4(), &email(NEW)).await;
+        assert!(matches!(gone, Err(RepoError::NotFound)), "{gone:?}");
+        users.erase(f.user.id, Utc::now()).await.unwrap();
+        let err = f.confirm().run(f.user.id, &code).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AppError::Gone("code_invalid") | AppError::Unauthenticated
+            ),
+            "{err:?}"
+        );
+        assert!(f.store.audit_entries().is_empty());
+        assert_eq!(f.mail.sent().len(), 1, "no notice");
+    }
+
     #[tokio::test]
     async fn an_address_taken_after_the_code_was_mailed_fails_cleanly() {
         let f = fixture().await;
         let code = f.ask(NEW).await;
-        let users: &dyn UsersRepo = &f.store;
-        users.find_or_create_by_email(&email(NEW)).await.unwrap();
+        proven(&f.store, NEW).await;
         let err = f.confirm().run(f.user.id, &code).await.unwrap_err();
         assert!(
             matches!(

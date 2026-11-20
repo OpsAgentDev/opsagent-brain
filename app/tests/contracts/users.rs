@@ -249,8 +249,60 @@ contract_suite! {
         // The provider id still finds the account; the old address is free for a new one.
         assert_eq!(s.users().find_or_create_github(42, &old, None, true).await.unwrap().id, u.id);
         assert_ne!(s.users().find_or_create_by_email(&old).await.unwrap().id, u.id);
-        // Setting the same address again, or an unknown user, is not an error.
+        // Setting the same address again is fine; an unknown or erased user is not there to move.
         s.users().set_email(u.id, &new).await.unwrap();
-        s.users().set_email(Uuid::new_v4(), &email("x@example.com")).await.unwrap();
+        let unknown = s.users().set_email(Uuid::new_v4(), &email("x@example.com")).await;
+        assert!(matches!(unknown, Err(RepoError::NotFound)), "{unknown:?}");
+        s.users().erase(u.id, now).await.unwrap();
+        let erased = s.users().set_email(u.id, &email("y@example.com")).await;
+        assert!(matches!(erased, Err(RepoError::NotFound)), "{erased:?}");
+    }
+
+    async fn a_link_for_a_former_address_signs_nobody_in(s) {
+        let (old, new) = (email("ada@example.com"), email("ada@new.example"));
+        let u = s.users().find_or_create_by_email(&old).await.unwrap();
+        let now = Utc::now();
+        let soon = now + Duration::minutes(15);
+        s.users().set_email(u.id, &new).await.unwrap();
+        // Stored after the move (a request that raced it), still naming the old address.
+        s.users().issue_magic_link(NewMagicLink::new(u.id, &old, "late", "lc", soon)).await.unwrap();
+        assert!(s.users().live_codes(&old, now).await.unwrap().is_empty());
+        assert!(s.users().consume_magic_link("late", now).await.unwrap().is_none());
+        // A pending change (no sign-in address at all) cannot be redeemed as a link either.
+        s.users().issue_email_change(u.id, &email("ada@third.example"), "chg", "cc", soon).await.unwrap();
+        assert!(s.users().consume_magic_link("chg", now).await.unwrap().is_none());
+        // A link for the current address works as before.
+        s.users().issue_magic_link(NewMagicLink::new(u.id, &new, "fresh", "fc", soon)).await.unwrap();
+        assert_eq!(s.users().live_codes(&new, now).await.unwrap().len(), 1);
+        assert!(s.users().consume_magic_link("fresh", now).await.unwrap().is_some());
+    }
+
+    async fn only_a_user_who_never_proved_their_email_is_unproven_and_deletable(s) {
+        let now = Utc::now();
+        let soon = now + Duration::minutes(15);
+        // Asked for a link and never used it: unproven, even while the link is live.
+        let ghost_mail = email("ghost@example.com");
+        let ghost = s.users().find_or_create_by_email(&ghost_mail).await.unwrap();
+        s.users().issue_magic_link(NewMagicLink::new(ghost.id, &ghost_mail, "g1", "gc", soon)).await.unwrap();
+        assert!(s.users().is_unproven(ghost.id).await.unwrap());
+        // Redeemed a link, or linked a provider: proven, and never deleted.
+        let ada_mail = email("ada@example.com");
+        let ada = s.users().find_or_create_by_email(&ada_mail).await.unwrap();
+        s.users().issue_magic_link(NewMagicLink::new(ada.id, &ada_mail, "a1", "ac", soon)).await.unwrap();
+        s.users().consume_magic_link("a1", now).await.unwrap().unwrap();
+        let bob = s.users().find_or_create_github(7, &email("bob@example.com"), None, true).await.unwrap();
+        for proven in [ada.id, bob.id] {
+            assert!(!s.users().is_unproven(proven).await.unwrap());
+            assert!(!s.users().delete_unproven(proven).await.unwrap());
+            assert!(s.users().get(proven).await.unwrap().is_some());
+        }
+        assert!(!s.users().is_unproven(Uuid::new_v4()).await.unwrap());
+        assert!(!s.users().delete_unproven(Uuid::new_v4()).await.unwrap());
+        // The unproven row goes with its link, once, and the address is free again.
+        assert!(s.users().delete_unproven(ghost.id).await.unwrap());
+        assert!(!s.users().delete_unproven(ghost.id).await.unwrap());
+        assert!(s.users().find_by_email(&ghost_mail).await.unwrap().is_none());
+        assert!(s.users().consume_magic_link("g1", now).await.unwrap().is_none());
+        s.users().set_email(ada.id, &ghost_mail).await.unwrap();
     }
 }

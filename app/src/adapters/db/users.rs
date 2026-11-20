@@ -9,15 +9,36 @@ use opsagent_core::{
 use sea_orm::{
     prelude::DateTimeWithTimeZone,
     sea_query::{Expr, OnConflict},
-    ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, ExprTrait, QueryFilter, Set, SqlErr,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DbErr, EntityTrait, ExprTrait, QueryFilter,
+    Set, SqlErr,
 };
 use uuid::Uuid;
 
-use super::{db_err, email, utc, Conn, Pg};
+use super::{db_err, email, ledger_storage::stmt, utc, Conn, Pg};
 use crate::models::{
     _entities::{magic_links, passkeys, users},
     now,
 };
+
+/// The link was mailed to the address its user still has: a link for a former address, and a
+/// pending email change (no `email`), never sign anyone in.
+const STILL_THEIR_ADDRESS: &str = "EXISTS (SELECT 1 FROM users u \
+    WHERE u.id = magic_links.user_id AND u.email = magic_links.email)";
+
+/// A redeemed link is proof; one still waiting to be redeemed is not.
+const IS_UNPROVEN: &str = concat!(
+    "SELECT 1 FROM users u WHERE u.id = $1 AND ",
+    never_proved!("l.used_at IS NOT NULL")
+);
+
+/// One statement, like the retention job's: the links' NO ACTION key is checked at its end.
+const DELETE_UNPROVEN: &str = concat!(
+    "WITH doomed AS (SELECT u.id FROM users u WHERE u.id = $1 AND ",
+    never_proved!("l.used_at IS NOT NULL"),
+    " FOR UPDATE), \
+  links AS (DELETE FROM magic_links WHERE user_id IN (SELECT id FROM doomed)) \
+  DELETE FROM users WHERE id IN (SELECT id FROM doomed)"
+);
 
 fn user(m: users::Model) -> RepoResult<User> {
     let github_id = m
@@ -299,6 +320,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
             .filter(magic_links::Column::TokenHash.eq(token_hash))
             .filter(magic_links::Column::UsedAt.is_null())
             .filter(magic_links::Column::ExpiresAt.gt(at))
+            .filter(Expr::cust(STILL_THEIR_ADDRESS))
             .exec(self.db())
             .await
             .map_err(db_err)?;
@@ -325,6 +347,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
             .filter(magic_links::Column::UsedAt.is_null())
             .filter(magic_links::Column::ExpiresAt.gt(DateTimeWithTimeZone::from(now)))
             .filter(magic_links::Column::CodeHash.is_not_null())
+            .filter(Expr::cust(STILL_THEIR_ADDRESS))
             .all(self.db())
             .await
             .map_err(db_err)?;
@@ -454,7 +477,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
                 _ => db_err(e),
             })?;
         if res.rows_affected == 0 {
-            return Ok(());
+            return Err(RepoError::NotFound);
         }
         magic_links::Entity::delete_many()
             .filter(magic_links::Column::UserId.eq(id))
@@ -463,5 +486,17 @@ impl<C: Conn> UsersRepo for Pg<C> {
             .await
             .map(|_| ())
             .map_err(db_err)
+    }
+
+    async fn is_unproven(&self, id: Uuid) -> RepoResult<bool> {
+        let row = self.db().query_one_raw(stmt(IS_UNPROVEN, vec![id.into()]));
+        Ok(row.await.map_err(db_err)?.is_some())
+    }
+
+    async fn delete_unproven(&self, id: Uuid) -> RepoResult<bool> {
+        let res = self
+            .db()
+            .execute_raw(stmt(DELETE_UNPROVEN, vec![id.into()]));
+        Ok(res.await.map_err(db_err)?.rows_affected() == 1)
     }
 }

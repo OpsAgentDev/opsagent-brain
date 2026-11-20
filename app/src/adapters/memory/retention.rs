@@ -209,19 +209,7 @@ impl RetentionRepo for MemStore {
         let doomed: Vec<Uuid> = s
             .users
             .iter()
-            .filter(|u| u.created_at < cutoff && u.github_id.is_none() && u.google_id.is_none())
-            .filter(|u| !s.members.iter().any(|m| m.user_id == u.id))
-            .filter(|u| !s.passkeys.iter().any(|p| p.user_id == u.id))
-            .filter(|u| {
-                !s.magic_links
-                    .iter()
-                    .any(|l| l.user_id == u.id && (l.used || l.expires_at > now))
-            })
-            .filter(|u| {
-                !s.audit
-                    .iter()
-                    .any(|a| a.action == "auth.sign_in" && a.actor == Actor::Member(u.id))
-            })
+            .filter(|u| u.created_at < cutoff && s.never_proved(u, Some(now)))
             .map(|u| u.id)
             .take(usize::try_from(batch).unwrap_or(usize::MAX))
             .collect();

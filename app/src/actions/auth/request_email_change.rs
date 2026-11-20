@@ -97,7 +97,12 @@ impl RequestEmailChange {
             ));
         }
         self.within_caps(user_id, &email, ip).await?;
-        let sent = if users.find_by_email(&email).await?.is_some() {
+        // An address that only ever asked for a sign-in link is not an account: it stays free.
+        let taken = match users.find_by_email(&email).await? {
+            Some(other) => !users.is_unproven(other.id).await?,
+            None => false,
+        };
+        let sent = if taken {
             self.mailer
                 .send(mail::email_change_taken(email.as_str()))
                 .await

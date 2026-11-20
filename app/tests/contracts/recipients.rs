@@ -97,4 +97,44 @@ contract_suite! {
         let got = s.recipients().ids_by_email(o, &["a@example.com".to_owned()]).await.unwrap();
         assert_eq!(got.get("a@example.com"), Some(&first.id), "{got:?}");
     }
+
+    async fn move_member_email_follows_the_user_in_every_organisation_only(s, seed) {
+        use opsagent_core::{org::Role, user::Email};
+        let mail = |e: &str| Email::parse(e).unwrap();
+        let ada = s.users().find_or_create_by_email(&mail("ada@example.com")).await.unwrap();
+        let eve = s.users().find_or_create_by_email(&mail("eve@example.com")).await.unwrap();
+        let (a, b) = (org_id(s, "acme").await, org_id(s, "other").await);
+        let conn = seed.connection(a).await;
+        let ada_a = s.orgs().add_member(a, ada.id, Role::Owner).await.unwrap().id;
+        let ada_b = s.orgs().add_member(b, ada.id, Role::Member).await.unwrap().id;
+        let eve_a = s.orgs().add_member(a, eve.id, Role::Member).await.unwrap().id;
+        let row = |address: &str, member: Option<uuid::Uuid>, connection_id| NewRecipient {
+            connection_id,
+            email: address.into(),
+            member_id: member,
+            confirm: None,
+        };
+        let r = s.recipients();
+        let wide = r.insert(a, row("ada@example.com", Some(ada_a), None)).await.unwrap();
+        let on_conn = r.insert(a, row("ada@example.com", Some(ada_a), Some(conn))).await.unwrap();
+        let in_b = r.insert(b, row("ada@example.com", Some(ada_b), None)).await.unwrap();
+        let eves = r.insert(a, row("eve@example.com", Some(eve_a), None)).await.unwrap();
+        // Not a member row: the same address typed in by hand in another organisation stays.
+        let c = org_id(s, "third").await;
+        let typed = r.insert(c, row("ada@example.com", None, None)).await.unwrap();
+        // The new address is already a recipient on the connection in `a`: that row wins there.
+        let held = r.insert(a, row("Ada@New.example", None, Some(conn))).await.unwrap();
+
+        r.move_member_email(ada.id, "ada@new.example").await.unwrap();
+        let at = |id| async move { r.by_id_unscoped(id).await.unwrap().map(|x| x.email) };
+        assert_eq!(at(wide.id).await.as_deref(), Some("ada@new.example"));
+        assert_eq!(at(in_b.id).await.as_deref(), Some("ada@new.example"));
+        assert_eq!(at(on_conn.id).await, None);
+        assert_eq!(at(held.id).await.as_deref(), Some("Ada@New.example"));
+        assert_eq!(at(eves.id).await.as_deref(), Some("eve@example.com"));
+        assert_eq!(at(typed.id).await.as_deref(), Some("ada@example.com"));
+        // Again is a no-op.
+        r.move_member_email(ada.id, "ada@new.example").await.unwrap();
+        assert_eq!(at(wide.id).await.as_deref(), Some("ada@new.example"));
+    }
 }

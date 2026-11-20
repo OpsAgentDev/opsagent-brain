@@ -11,6 +11,12 @@ use uuid::Uuid;
 use super::{MagicLinkRow, MemState, MemStore};
 
 impl MemState {
+    /// Every user's id with their current address.
+    fn current_addresses(&self) -> Vec<(Uuid, Email)> {
+        let pairs = self.users.iter().map(|u| (u.id, u.email.clone()));
+        pairs.collect()
+    }
+
     fn user_mut(&mut self, f: impl Fn(&User) -> bool) -> Option<&mut User> {
         self.users.iter_mut().find(|u| f(u))
     }
@@ -172,10 +178,15 @@ impl UsersRepo for MemStore {
         now: DateTime<Utc>,
     ) -> RepoResult<Option<SpentLink>> {
         let mut s = self.state();
-        let link = s
-            .magic_links
-            .iter_mut()
-            .find(|l| l.token_hash == token_hash && !l.used && l.expires_at > now);
+        let current = s.current_addresses();
+        let link = s.magic_links.iter_mut().find(|l| {
+            l.token_hash == token_hash
+                && !l.used
+                && l.expires_at > now
+                && l.email
+                    .as_ref()
+                    .is_some_and(|e| current.contains(&(l.user_id, e.clone())))
+        });
         Ok(link.map(|l| {
             l.used = true;
             SpentLink {
@@ -188,9 +199,11 @@ impl UsersRepo for MemStore {
 
     async fn live_codes(&self, email: &Email, now: DateTime<Utc>) -> RepoResult<Vec<LiveCode>> {
         let s = self.state();
+        let current = s.current_addresses();
         Ok(s.magic_links
             .iter()
             .filter(|l| l.email.as_ref() == Some(email) && !l.used && l.expires_at > now)
+            .filter(|l| current.contains(&(l.user_id, email.clone())))
             .filter_map(|l| {
                 Some(LiveCode {
                     id: l.id,
@@ -284,10 +297,27 @@ impl UsersRepo for MemStore {
             return Err(RepoError::Conflict("email_taken"));
         }
         let Some(u) = s.user_mut(|u| u.id == id) else {
-            return Ok(());
+            return Err(RepoError::NotFound);
         };
         u.email = email.clone();
         s.magic_links.retain(|l| l.user_id != id || l.used);
         Ok(())
+    }
+
+    async fn is_unproven(&self, id: Uuid) -> RepoResult<bool> {
+        let s = self.state();
+        Ok(s.users
+            .iter()
+            .any(|u| u.id == id && s.never_proved(u, None)))
+    }
+
+    async fn delete_unproven(&self, id: Uuid) -> RepoResult<bool> {
+        if !self.is_unproven(id).await? {
+            return Ok(false);
+        }
+        let mut s = self.state();
+        s.magic_links.retain(|l| l.user_id != id);
+        s.users.retain(|u| u.id != id);
+        Ok(true)
     }
 }
