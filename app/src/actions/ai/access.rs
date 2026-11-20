@@ -23,7 +23,7 @@ use zeroize::Zeroizing;
 
 use super::{
     daily_limit::DailyLimit, failures::AiCallError, host_of, notices::Notices, open_key, refused,
-    AiSettings, AI_DISABLED, AI_QUOTA_REACHED,
+    AiSettings, AI_DISABLED, AI_QUOTA_REACHED, AI_UNAVAILABLE,
 };
 use crate::{
     actions::{
@@ -34,6 +34,10 @@ use crate::{
     config::model_price,
     error::{AppError, AppResult},
 };
+
+/// What a customer reads when the daily ceiling refuses a call on OpsAgent's key.
+pub(super) const DAILY_LIMIT_DETAIL: &str =
+    "Dashboard AI is busy right now. Try again later, or use your own AI key in Settings > AI.";
 
 /// Who pays for one call: the connection serving it and, before its first call only, the
 /// same payer's backup (spec, Settled 3). No `Debug`: it holds keys.
@@ -114,7 +118,8 @@ struct Snapshot {
     quota: Quota,
     topup: Decimal,
     byok_month: Decimal,
-    /// OpsAgent's key is over its daily ceiling; never read for a BYOK organisation.
+    /// OpsAgent's key is over its daily ceiling; never read for a BYOK organisation, and
+    /// ignored once the included credits are used up and a top-up pays.
     over_daily_limit: bool,
 }
 
@@ -315,11 +320,18 @@ impl AiAccess {
             return Err(AiCallError::Unavailable.into());
         }
         let q = &snap.quota;
-        if (q.quota - q.used).max(Decimal::ZERO) + snap.topup <= Decimal::ZERO {
+        let included_left = (q.quota - q.used).max(Decimal::ZERO);
+        if included_left + snap.topup <= Decimal::ZERO {
             return Err(quota_reached("This period's AI credits are used up."));
         }
-        if snap.over_daily_limit {
-            return Err(AiCallError::Unavailable.into());
+        // The ceiling guards the included credits OpsAgent funds. With none left the call is
+        // paid from the top-up balance, which the customer bought: never stopped by it.
+        if snap.over_daily_limit && included_left > Decimal::ZERO {
+            return Err(refused(
+                StatusCode::SERVICE_UNAVAILABLE,
+                AI_UNAVAILABLE,
+                DAILY_LIMIT_DETAIL,
+            ));
         }
         Ok(Payer::OpsAgent)
     }

@@ -50,7 +50,7 @@ Abuse and spend caps (optional):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AI_DAILY_CREDIT_LIMIT` | `10000` (about $100) | credits per UTC day on OpsAgent's model key across all organisations; over it those calls answer `ai_unavailable` and an error is logged once. BYOK is unaffected. |
+| `AI_DAILY_CREDIT_LIMIT` | `10000` (about $100) | credits per UTC day on OpsAgent's model key across all organisations; over it those calls answer `ai_unavailable` and an error is logged once. BYOK is unaffected, and so are calls paid from a top-up balance (included credits used up), which are not counted either. |
 | `MAGIC_LINK_HOURLY_CAP` | `1000` | sign-in mails per hour across all clients; over it the API still answers 202, sends nothing and logs an error |
 
 ## Slack app

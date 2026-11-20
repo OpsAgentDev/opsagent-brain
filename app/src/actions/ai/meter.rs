@@ -69,7 +69,7 @@ impl AiAccess {
                 let left = (q.quota - q.used).max(Decimal::ZERO);
                 let debit = (credits - left).max(Decimal::ZERO);
                 tx.ai().record_usage(&row, debit).await?;
-                Some(q)
+                Some((q, credits - debit))
             }
         };
         let meta = json!({
@@ -80,8 +80,11 @@ impl AiAccess {
         let entry = AuditEntry::member(Some(org), scope.member.user_id, "ai.call", None);
         tx.audit().record(entry.with_meta(meta)).await?;
         tx.commit().await?;
-        if let Some(q) = quota {
-            self.daily_limit.add(credits).await;
+        if let Some((q, included)) = quota {
+            // The daily ceiling counts included credits only; the top-up part is the customer's.
+            if included > Decimal::ZERO {
+                self.daily_limit.add(included).await;
+            }
             // The call is answered and metered; a failed notice must not fail it.
             if self.quota_notices(org, &q, q.used + credits).await.is_err() {
                 tracing::warn!(error_code = "ai_notice_failed", "ai quota notice failed");
