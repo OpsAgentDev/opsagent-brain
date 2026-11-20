@@ -673,7 +673,9 @@ async fn alert_button_is_the_finding_link_never_text_from_the_finding() {
         let hrefs: Vec<_> = html.split("href=\"").skip(1).collect();
         assert_eq!(hrefs.len(), 1, "{html}");
         assert!(hrefs[0].contains(&format!("/findings/{id}\"")), "{html}");
-        assert!(html.contains("https://evil.example/x"), "shown as text");
+        // Shown as text that no mail client links (launch-readiness L2).
+        assert!(html.contains("Visit https evil[.]example x now"), "{html}");
+        assert!(!html.contains("evil.example"), "{html}");
     })
     .await;
 }
