@@ -354,7 +354,7 @@ mod tests {
             target_type target outcome metadata";
         let want: BTreeSet<String> = want.split_whitespace().map(str::to_owned).collect();
         assert_eq!(got, want);
-        for secret in [
+        for word in [
             "ciphertext",
             "nonce",
             "kek",
@@ -368,7 +368,7 @@ mod tests {
             "password",
             "config",
         ] {
-            assert!(got.iter().all(|k| !k.contains(secret)), "{secret}");
+            assert!(got.iter().all(|k| !k.contains(word)), "{word}");
         }
 
         // No sealed value, Stripe id, token, delivery address or Slack id, and nothing of the
