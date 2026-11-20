@@ -116,6 +116,15 @@ pub struct LiveCode {
     pub name: Option<String>,
 }
 
+/// A pending change of a user's sign-in address whose mailed code can still be tried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveEmailChange {
+    pub id: Uuid,
+    pub token_hash: String,
+    pub code_hash: String,
+    pub new_email: Email,
+}
+
 /// A link to store for `user_id`, sent to `email`.
 pub struct NewMagicLink<'a> {
     pub user_id: Uuid,
@@ -203,18 +212,48 @@ pub trait UsersRepo: Send + Sync {
     /// Stores a link; only the hashes of the token and of the mailed code are kept. The codes of
     /// the address's other links stop working (the links stay valid): one live code per address.
     async fn issue_magic_link(&self, link: NewMagicLink<'_>) -> RepoResult<()>;
-    /// Marks the link used, once; the link if it was unused and unexpired at `now`.
+    /// Marks the link used, once; the link if it was unused and unexpired at `now` and the
+    /// address it was mailed to is still its user's (a link for a former address signs nobody in).
     async fn consume_magic_link(
         &self,
         token_hash: &str,
         now: DateTime<Utc>,
     ) -> RepoResult<Option<SpentLink>>;
-    /// Unspent, unexpired links for `email` that still have a code.
+    /// Unspent, unexpired links for `email` that still have a code, while `email` is still
+    /// their user's address.
     async fn live_codes(&self, email: &Email, now: DateTime<Utc>) -> RepoResult<Vec<LiveCode>>;
     /// Marks the link used, once; `false` if it was already used or has expired at `now`.
     async fn spend_code(&self, id: Uuid, now: DateTime<Utc>) -> RepoResult<bool>;
     /// Counts a wrong guess on each link; at 5 the link's code is disabled (the link stays valid).
     async fn count_wrong_code(&self, ids: &[Uuid]) -> RepoResult<()>;
+    /// Stores the hash of a code mailed to `new_email` for moving `user_id` to that address; the
+    /// user's older pending changes stop working. It is not a sign-in link: `live_codes` never
+    /// returns it. `spend_code` and `count_wrong_code` work on it by id.
+    async fn issue_email_change(
+        &self,
+        user_id: Uuid,
+        new_email: &Email,
+        token_hash: &str,
+        code_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> RepoResult<()>;
+    /// The user's unspent, unexpired pending changes that still have a code.
+    async fn live_email_changes(
+        &self,
+        user_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<Vec<LiveEmailChange>>;
+    /// Moves the user to `email` and removes their unspent sign-in links and pending changes
+    /// (they were mailed to the old address). `RepoError::Conflict("email_taken")` when another
+    /// user has the address; `RepoError::NotFound` for an unknown or erased id.
+    async fn set_email(&self, id: Uuid, email: &Email) -> RepoResult<()>;
+    /// True while the user never proved their email, by the retention job's rule (see
+    /// `RetentionRepo::delete_unproven_users`): no membership, passkey, linked GitHub or Google
+    /// id, redeemed magic link or `auth.sign_in` audit entry. Unlike that job, neither the row's
+    /// age nor a link still waiting to be redeemed matters. False for an unknown id.
+    async fn is_unproven(&self, id: Uuid) -> RepoResult<bool>;
+    /// Deletes the user and their magic links if `is_unproven`; whether it did.
+    async fn delete_unproven(&self, id: Uuid) -> RepoResult<bool>;
 }
 
 #[cfg(test)]

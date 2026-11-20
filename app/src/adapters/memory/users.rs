@@ -2,13 +2,21 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     repo::{RepoError, RepoResult},
-    user::{Email, LiveCode, NewMagicLink, PersonName, SpentLink, User, UsersRepo},
+    user::{
+        Email, LiveCode, LiveEmailChange, NewMagicLink, PersonName, SpentLink, User, UsersRepo,
+    },
 };
 use uuid::Uuid;
 
 use super::{MagicLinkRow, MemState, MemStore};
 
 impl MemState {
+    /// Every user's id with their current address.
+    fn current_addresses(&self) -> Vec<(Uuid, Email)> {
+        let pairs = self.users.iter().map(|u| (u.id, u.email.clone()));
+        pairs.collect()
+    }
+
     fn user_mut(&mut self, f: impl Fn(&User) -> bool) -> Option<&mut User> {
         self.users.iter_mut().find(|u| f(u))
     }
@@ -141,13 +149,18 @@ impl UsersRepo for MemStore {
 
     async fn issue_magic_link(&self, link: NewMagicLink<'_>) -> RepoResult<()> {
         let mut s = self.state();
-        for old in s.magic_links.iter_mut().filter(|l| l.email == *link.email) {
+        for old in s
+            .magic_links
+            .iter_mut()
+            .filter(|l| l.email.as_ref() == Some(link.email))
+        {
             old.code_hash = None;
         }
         s.magic_links.push(MagicLinkRow {
             id: Uuid::new_v4(),
             user_id: link.user_id,
-            email: link.email.clone(),
+            email: Some(link.email.clone()),
+            new_email: None,
             code_hash: Some(link.code_hash.into()),
             code_attempts: 0,
             token_hash: link.token_hash.into(),
@@ -165,10 +178,15 @@ impl UsersRepo for MemStore {
         now: DateTime<Utc>,
     ) -> RepoResult<Option<SpentLink>> {
         let mut s = self.state();
-        let link = s
-            .magic_links
-            .iter_mut()
-            .find(|l| l.token_hash == token_hash && !l.used && l.expires_at > now);
+        let current = s.current_addresses();
+        let link = s.magic_links.iter_mut().find(|l| {
+            l.token_hash == token_hash
+                && !l.used
+                && l.expires_at > now
+                && l.email
+                    .as_ref()
+                    .is_some_and(|e| current.contains(&(l.user_id, e.clone())))
+        });
         Ok(link.map(|l| {
             l.used = true;
             SpentLink {
@@ -181,9 +199,11 @@ impl UsersRepo for MemStore {
 
     async fn live_codes(&self, email: &Email, now: DateTime<Utc>) -> RepoResult<Vec<LiveCode>> {
         let s = self.state();
+        let current = s.current_addresses();
         Ok(s.magic_links
             .iter()
-            .filter(|l| l.email == *email && !l.used && l.expires_at > now)
+            .filter(|l| l.email.as_ref() == Some(email) && !l.used && l.expires_at > now)
+            .filter(|l| current.contains(&(l.user_id, email.clone())))
             .filter_map(|l| {
                 Some(LiveCode {
                     id: l.id,
@@ -219,5 +239,85 @@ impl UsersRepo for MemStore {
             }
         }
         Ok(())
+    }
+
+    async fn issue_email_change(
+        &self,
+        user_id: Uuid,
+        new_email: &Email,
+        token_hash: &str,
+        code_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> RepoResult<()> {
+        let mut s = self.state();
+        for old in s.magic_links.iter_mut() {
+            if old.user_id == user_id && old.new_email.is_some() {
+                old.code_hash = None;
+            }
+        }
+        s.magic_links.push(MagicLinkRow {
+            id: Uuid::new_v4(),
+            user_id,
+            email: None,
+            new_email: Some(new_email.clone()),
+            code_hash: Some(code_hash.into()),
+            code_attempts: 0,
+            token_hash: token_hash.into(),
+            return_to: None,
+            name: None,
+            expires_at,
+            used: false,
+        });
+        Ok(())
+    }
+
+    async fn live_email_changes(
+        &self,
+        user_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<Vec<LiveEmailChange>> {
+        let s = self.state();
+        Ok(s.magic_links
+            .iter()
+            .filter(|l| l.user_id == user_id && !l.used && l.expires_at > now)
+            .filter_map(|l| {
+                Some(LiveEmailChange {
+                    id: l.id,
+                    token_hash: l.token_hash.clone(),
+                    code_hash: l.code_hash.clone()?,
+                    new_email: l.new_email.clone()?,
+                })
+            })
+            .collect())
+    }
+
+    async fn set_email(&self, id: Uuid, email: &Email) -> RepoResult<()> {
+        let mut s = self.state();
+        if s.users.iter().any(|u| u.id != id && u.email == *email) {
+            return Err(RepoError::Conflict("email_taken"));
+        }
+        let Some(u) = s.user_mut(|u| u.id == id) else {
+            return Err(RepoError::NotFound);
+        };
+        u.email = email.clone();
+        s.magic_links.retain(|l| l.user_id != id || l.used);
+        Ok(())
+    }
+
+    async fn is_unproven(&self, id: Uuid) -> RepoResult<bool> {
+        let s = self.state();
+        Ok(s.users
+            .iter()
+            .any(|u| u.id == id && s.never_proved(u, None)))
+    }
+
+    async fn delete_unproven(&self, id: Uuid) -> RepoResult<bool> {
+        if !self.is_unproven(id).await? {
+            return Ok(false);
+        }
+        let mut s = self.state();
+        s.magic_links.retain(|l| l.user_id != id);
+        s.users.retain(|u| u.id != id);
+        Ok(true)
     }
 }

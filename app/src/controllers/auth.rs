@@ -707,6 +707,65 @@ async fn update_me(
     me_view(&app, u).await
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct EmailChangeRequest {
+    /// The new sign-in address.
+    pub email: String,
+}
+
+/// Mails a 6-digit code to the new address; `POST /auth/me/email/confirm` with it makes the
+/// change. 202 whether or not the address already signs in to another account (that address
+/// then gets a notice instead of a code). The code works once, for 15 minutes; 5 requests per
+/// user per hour, and the sign-in mail caps per address, per client IP and overall.
+#[utoipa::path(post, path = "/auth/me/email", tag = "auth", request_body = EmailChangeRequest,
+    responses((status = 202, description = "A code was mailed if the address is free"),
+        (status = 401, body = Problem),
+        (status = 403, body = Problem, description = "`fresh_sign_in_required`: the sign-in is older than 15 minutes"),
+        (status = 422, body = Problem, description = "`validation`: not an email address; `email_unchanged`: already the sign-in email; `email_not_allowed`: the domain is not open for sign-up"),
+        (status = 429, body = Problem)))]
+async fn request_email_change(
+    State(app): State<AppState>,
+    session: Session,
+    ClientIp(ip): ClientIp,
+    AuthUser(id): AuthUser,
+    ApiJson(body): ApiJson<EmailChangeRequest>,
+) -> Result<StatusCode, ApiError> {
+    // Like adding a passkey: a stolen session must not give itself a way to sign in.
+    require_fresh_sign_in(&session).await?;
+    let request = &app.actions.auth.request_email_change;
+    request.run(id, &body.email, ip).await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct EmailChangeConfirm {
+    /// The 6-digit code mailed to the new address; spaces are ignored.
+    pub code: String,
+}
+
+/// Moves the account to the address the code was mailed to. This session stays; the user's
+/// other sessions end, and the old address is told. 10 attempts per user per 15 minutes and
+/// 20 per day; the fifth wrong code disables it.
+#[utoipa::path(post, path = "/auth/me/email/confirm", tag = "auth", request_body = EmailChangeConfirm,
+    responses((status = 200, body = Me), (status = 401, body = Problem),
+        (status = 409, body = Problem, description = "`email_taken`: another account took the address meanwhile"),
+        (status = 410, body = Problem, description = "`code_invalid`: wrong, used, expired or disabled"),
+        (status = 429, body = Problem)))]
+async fn confirm_email_change(
+    State(app): State<AppState>,
+    session: Session,
+    AuthUser(id): AuthUser,
+    ApiJson(body): ApiJson<EmailChangeConfirm>,
+) -> Result<Json<Me>, ApiError> {
+    let sid = session.id().ok_or_else(ApiError::unauthenticated)?;
+    let confirm = &app.actions.auth.confirm_email_change;
+    let u = confirm.run(id, &body.code).await?;
+    crate::middleware::session::delete_others_for(&app.db, id, &sid.to_string())
+        .await
+        .map_err(ApiError::internal)?;
+    me_view(&app, u).await
+}
+
 #[utoipa::path(post, path = "/auth/me/terms", tag = "auth",
     responses((status = 204, description = "Accepted; a repeat call keeps the first time"),
         (status = 401, body = Problem)))]
@@ -759,6 +818,8 @@ pub fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(sign_out_everywhere))
         .routes(routes!(me, update_me, delete_me))
         .routes(routes!(accept_terms))
+        .routes(routes!(request_email_change))
+        .routes(routes!(confirm_email_change))
 }
 
 #[cfg(test)]

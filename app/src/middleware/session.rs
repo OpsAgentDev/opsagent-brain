@@ -55,6 +55,20 @@ pub async fn delete_all_for(
         .map(|_| ())
 }
 
+/// Ends every session of `user` except the one with id `keep`.
+pub async fn delete_others_for(
+    db: &DatabaseConnection,
+    user: uuid::Uuid,
+    keep: &str,
+) -> Result<(), sea_orm::DbErr> {
+    sessions::Entity::delete_many()
+        .filter(sessions::Column::UserId.eq(user))
+        .filter(sessions::Column::Id.ne(keep))
+        .exec(db)
+        .await
+        .map(|_| ())
+}
+
 /// Holds the data as `load` read it, so `save` can tell what this request changed. Never stored.
 const LOADED_KEY: &str = "_loaded";
 

@@ -373,6 +373,22 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             current_user: auth::CurrentUser::new(d.uow.clone()),
             accept_terms: auth::AcceptTerms::new(d.uow.clone(), d.clock.clone()),
             update_name: auth::UpdateName::new(d.uow.clone()),
+            request_email_change: auth::RequestEmailChange::new(
+                d.uow.clone(),
+                (d.limiter.clone(), d.config.magic_link_hourly_cap),
+                d.mailer.clone(),
+                d.clock.clone(),
+                d.config.session_secret.clone(),
+                d.config.signup_allowed_domains.clone(),
+            ),
+            confirm_email_change: auth::ConfirmEmailChange::new(
+                d.uow.clone(),
+                d.limiter.clone(),
+                d.mailer.clone(),
+                d.config.web_base_url.clone(),
+                d.clock.clone(),
+                d.config.session_secret.clone(),
+            ),
             delete_account: auth::DeleteAccount::new(
                 d.uow.clone(),
                 d.clock.clone(),

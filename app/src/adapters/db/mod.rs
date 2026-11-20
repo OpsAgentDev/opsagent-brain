@@ -1,5 +1,24 @@
 //! SeaORM implementations of the repository traits. `Pg` wraps a pool, a transaction, or a
 //! borrowed handle to either.
+/// SQL: user `u` never proved their email (the retention rule, `RetentionRepo::
+/// delete_unproven_users`). `$link` says which of the user's magic links `l` count as proof.
+macro_rules! never_proved {
+    ($link:literal) => {
+        concat!(
+            "u.deleted_at IS NULL AND u.github_id IS NULL AND u.google_id IS NULL \
+             AND NOT EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = u.id) \
+             AND NOT EXISTS (SELECT 1 FROM magic_links l WHERE l.user_id = u.id AND ",
+            $link,
+            ") ",
+            // tenancy: users are global; members is only tested for any membership at all,
+            // and the audit entries are the user's own sign-ins, which belong to no organisation.
+            "AND NOT EXISTS (SELECT 1 FROM members m WHERE m.user_id = u.id) \
+             AND NOT EXISTS (SELECT 1 FROM audit_events a WHERE a.actor_type = 'member' \
+               AND a.actor_id = u.id::text AND a.action = 'auth.sign_in')"
+        )
+    };
+}
+
 mod ai;
 mod audit;
 mod billing;

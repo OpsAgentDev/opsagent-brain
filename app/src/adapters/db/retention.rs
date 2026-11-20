@@ -12,20 +12,13 @@ use super::{db_err, Conn, Pg};
 
 /// One statement: the magic links' NO ACTION key is checked at its end, after the CTE
 /// removed them. A user with a live link is mid-sign-in and is kept.
-// tenancy: users are global; members is only tested for any membership at all.
-const DELETE_UNPROVEN_USERS: &str = "WITH doomed AS ( \
-    SELECT u.id FROM users u \
-    WHERE u.created_at < $1 AND u.deleted_at IS NULL \
-      AND u.github_id IS NULL AND u.google_id IS NULL \
-      AND NOT EXISTS (SELECT 1 FROM members m WHERE m.user_id = u.id) \
-      AND NOT EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = u.id) \
-      AND NOT EXISTS (SELECT 1 FROM magic_links l WHERE l.user_id = u.id \
-        AND (l.used_at IS NOT NULL OR l.expires_at > now())) \
-      AND NOT EXISTS (SELECT 1 FROM audit_events a WHERE a.actor_type = 'member' \
-        AND a.actor_id = u.id::text AND a.action = 'auth.sign_in') \
-    ORDER BY u.created_at LIMIT $2 FOR UPDATE SKIP LOCKED), \
+const DELETE_UNPROVEN_USERS: &str = concat!(
+    "WITH doomed AS (SELECT u.id FROM users u WHERE u.created_at < $1 AND ",
+    never_proved!("(l.used_at IS NOT NULL OR l.expires_at > now())"),
+    " ORDER BY u.created_at LIMIT $2 FOR UPDATE SKIP LOCKED), \
   links AS (DELETE FROM magic_links WHERE user_id IN (SELECT id FROM doomed)) \
-  DELETE FROM users WHERE id IN (SELECT id FROM doomed)";
+  DELETE FROM users WHERE id IN (SELECT id FROM doomed)"
+);
 
 /// One statement: the clients' NO ACTION keys are checked at its end, after the sibling CTEs
 /// removed what pointed at them. A client with an unrevoked grant is still in use and is kept.

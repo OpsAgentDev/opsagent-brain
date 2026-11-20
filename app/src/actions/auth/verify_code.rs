@@ -13,10 +13,10 @@ use crate::{
 };
 
 /// Verify attempts per client IP and per address, per window.
-const CAP: i64 = 10;
-const WINDOW_SECS: i64 = 900;
+pub(super) const CAP: i64 = 10;
+pub(super) const WINDOW_SECS: i64 = 900;
 /// Verify attempts per address per day.
-const DAY_CAP: i64 = 20;
+pub(super) const DAY_CAP: i64 = 20;
 /// Verify attempts per hour across all clients: a brake on spraying guesses over many addresses.
 /// Past it codes are refused for the hour; the emailed link still signs in.
 const GLOBAL_HOURLY_CAP: i64 = 2000;

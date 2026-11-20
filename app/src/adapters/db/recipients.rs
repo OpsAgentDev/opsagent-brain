@@ -114,6 +114,24 @@ impl<C: Conn> RecipientsRepo for Pg<C> {
         Ok(gone.rows_affected == 1)
     }
 
+    async fn move_member_email(&self, user_id: Uuid, email: &str) -> RepoResult<()> {
+        // Each row is reached through the user's membership of the row's own organisation.
+        const DROP_HELD: &str = "DELETE FROM recipients r USING members m \
+             WHERE m.id = r.member_id AND m.organisation_id = r.organisation_id \
+             AND m.user_id = $1 AND r.email <> $2 AND EXISTS ( \
+               SELECT 1 FROM recipients o WHERE o.organisation_id = r.organisation_id \
+               AND o.connection_id IS NOT DISTINCT FROM r.connection_id AND lower(o.email) = $2)";
+        const MOVE: &str = "UPDATE recipients r SET email = $2, updated_at = now() FROM members m \
+             WHERE m.id = r.member_id AND m.organisation_id = r.organisation_id \
+             AND m.user_id = $1 AND r.email <> $2";
+        for sql in [DROP_HELD, MOVE] {
+            let args = vec![user_id.into(), email.into()];
+            let done = self.db().execute_raw(stmt(sql, args));
+            done.await.map_err(db_err)?;
+        }
+        Ok(())
+    }
+
     async fn confirm(
         &self,
         token_hash: &str,

@@ -22,6 +22,8 @@ pub struct Model {
     pub code_attempts: i32,
     #[sea_orm(column_type = "Text", nullable)]
     pub name: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub new_email: Option<String>,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }

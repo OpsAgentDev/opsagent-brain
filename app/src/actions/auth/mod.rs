@@ -1,9 +1,11 @@
 //! Sign-in use cases. Session, CSRF and OAuth state stay in the controller (transport).
 mod accept_terms;
+mod confirm_email_change;
 mod current_user;
 mod delete_account;
 mod passkeys;
 mod redeem_magic_link;
+mod request_email_change;
 mod request_magic_link;
 mod sign_in_github;
 mod sign_in_google;
@@ -11,11 +13,13 @@ mod update_name;
 mod verify_code;
 
 pub use accept_terms::AcceptTerms;
+pub use confirm_email_change::ConfirmEmailChange;
 pub use current_user::CurrentUser;
 pub use delete_account::DeleteAccount;
 pub(crate) use passkeys::passkey_invalid;
 pub use passkeys::Passkeys;
 pub use redeem_magic_link::RedeemMagicLink;
+pub use request_email_change::RequestEmailChange;
 pub use request_magic_link::{MagicLinkInput, RequestMagicLink, PER_EMAIL, PER_IP};
 pub use sign_in_github::{GithubProfile, SignInGithub};
 pub use sign_in_google::{GoogleProfile, SignInGoogle};
@@ -31,6 +35,8 @@ pub struct Auth {
     pub current_user: CurrentUser,
     pub accept_terms: AcceptTerms,
     pub update_name: UpdateName,
+    pub request_email_change: RequestEmailChange,
+    pub confirm_email_change: ConfirmEmailChange,
     pub delete_account: DeleteAccount,
     pub passkeys: Passkeys,
 }

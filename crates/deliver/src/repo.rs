@@ -88,6 +88,12 @@ pub trait RecipientsRepo: Send + Sync {
         token_hash: &str,
         now: DateTime<Utc>,
     ) -> RepoResult<Option<RecipientRow>>;
+    /// Points the member recipients of `user_id` at `email` (lowercased), in every organisation
+    /// they belong to. Where the organisation already has a recipient at `email` for the same
+    /// connection, the member's row is removed instead and that one stays as it is.
+    /// tenancy: a person's address is theirs in every organisation; each row is reached
+    /// through that person's own membership of the row's organisation.
+    async fn move_member_email(&self, user_id: Uuid, email: &str) -> RepoResult<()>;
     /// tenancy: a verified unsubscribe token names the row.
     async fn by_id_unscoped(&self, id: Uuid) -> RepoResult<Option<RecipientRow>>;
     /// Sets `unsubscribed_at`; false when already unsubscribed or gone.

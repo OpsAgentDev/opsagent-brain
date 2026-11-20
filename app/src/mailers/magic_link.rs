@@ -42,6 +42,80 @@ pub fn signup_closed(to: &str, web_base_url: &str) -> Mail {
     }
 }
 
+/// The code that proves the new sign-in address, mailed to that address. No link: the code is
+/// entered in the session that asked for it.
+pub fn email_change_code(to: &str, code: &str) -> Mail {
+    let text = format!(
+        "Enter this code in OpsAgent to make this address your sign-in email: {code}\n\nThe code works once and expires in 15 minutes. If you did not ask for this, ignore this email."
+    );
+    Mail {
+        to: to.into(),
+        subject: format!("Your OpsAgent email change code: {code}"),
+        html: Some(opsagent_deliver::render_notice(
+            &opsagent_deliver::NoticeEmail {
+                preheader: "Confirm your new sign-in email".into(),
+                heading: "Confirm your new sign-in email".into(),
+                paragraphs: vec![
+                    "Enter this code in OpsAgent to make this address your sign-in email.".into(),
+                ],
+                button: None,
+                footnote: Some(
+                    "The code works once and expires in 15 minutes. If you did not ask for this, ignore this email."
+                        .into(),
+                ),
+                unsubscribe_url: None,
+                code: Some(code.into()),
+            },
+        )),
+        text,
+        ..Default::default()
+    }
+}
+
+/// Sent instead of a code when the requested address already signs in to an account, so the
+/// request answers and takes as long either way.
+pub fn email_change_taken(to: &str) -> Mail {
+    let text = "Someone asked to make this address their OpsAgent sign-in email, but it already signs in to an OpsAgent account, so nothing was changed. If this was you, sign in with this address instead. If it was not, you can ignore this email.";
+    Mail {
+        to: to.into(),
+        subject: "This address already signs in to OpsAgent".into(),
+        html: Some(super::branded(
+            "This address already signs in to OpsAgent",
+            text,
+            None,
+        )),
+        text: text.into(),
+        ..Default::default()
+    }
+}
+
+/// `j***@example.com`: enough for the owner to recognise the address, not to learn it.
+fn masked(email: &str) -> String {
+    let (local, domain) = email.split_once('@').unwrap_or((email, ""));
+    let first: String = local.chars().take(1).collect();
+    format!("{first}***@{domain}")
+}
+
+/// Tells the old address that the account now signs in with `new_email` (shown masked).
+pub fn email_changed(to: &str, new_email: &str, web_base_url: &str) -> Mail {
+    let text = format!(
+        "Your OpsAgent sign-in email was changed to {}. If this was not you, contact us through {}/contact.",
+        masked(new_email),
+        web_base_url.trim_end_matches('/')
+    );
+    Mail {
+        to: to.into(),
+        subject: "Your OpsAgent sign-in email was changed".into(),
+        html: Some(super::branded(
+            "Your sign-in email was changed",
+            &text,
+            None,
+        )),
+        text,
+        ..Default::default()
+    }
+}
+
 /// `inviter` is `(name, email)`: the name when there is one, else the address they signed in with.
 pub fn invite(to: &str, org_name: &str, inviter: (Option<&str>, &str), link: &str) -> Mail {
     let org_name = &mail_safe_name(org_name);
@@ -92,6 +166,21 @@ mod tests {
             m.text,
             "Sign in to OpsAgent:\n\nhttps://x.test/l\n\nOr enter this code: 123456\n\nThe link and code work once and expire in 15 minutes."
         );
+    }
+
+    #[test]
+    fn email_changed_masks_the_new_address() {
+        let m = super::email_changed(
+            "old@example.com",
+            "jane.doe@new.example",
+            "https://opsagent.dev/",
+        );
+        assert_eq!(m.to, "old@example.com");
+        assert_eq!(
+            m.text,
+            "Your OpsAgent sign-in email was changed to j***@new.example. If this was not you, contact us through https://opsagent.dev/contact."
+        );
+        assert!(!m.html.unwrap().contains("jane.doe"));
     }
 
     #[test]
