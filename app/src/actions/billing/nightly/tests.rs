@@ -192,8 +192,8 @@ async fn trial_reminders_day_12_and_14_once() {
     assert_eq!(m[0].subject, "Your OpsAgent trial ends on 12 November 2026");
     assert_eq!(
         m[0].text.lines().next().unwrap(),
-        "Your free trial ends on 12 November 2026. After that you'll be charged $299 a month \
-         unless you change plan or cancel before then."
+        "Your free trial ends on 12 November 2026. After that you'll be charged $299 a month, \
+         plus tax where applicable, unless you change plan or cancel before then."
     );
     // Day 14 says it is the last reminder, in its own words.
     assert_eq!(m[2].subject, "Your OpsAgent trial ends today");

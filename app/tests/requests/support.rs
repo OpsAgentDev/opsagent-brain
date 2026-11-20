@@ -45,6 +45,7 @@ pub fn prepare(ctx: &TestApp) -> Arc<CaptureMailer> {
         "billing:failed:*",
         "payment:unmatched:*",
         "check:failed:*",
+        "watch:partial:*",
     ] {
         let found: Vec<String> = opsagent_ledger::redis::cmd("KEYS")
             .arg(pattern)

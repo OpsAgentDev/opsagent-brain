@@ -29,7 +29,11 @@ use super::{
 };
 use crate::{
     actions::runs::classify::{job_err, lerr, revoked},
-    actions::{day_counts::DayCounter, uow::UnitOfWork, ConnectorSource},
+    actions::{
+        day_counts::{Counted, DayCounter},
+        uow::UnitOfWork,
+        ConnectorSource,
+    },
     creds,
     models::enum_str,
 };
@@ -172,6 +176,7 @@ impl FullScan {
                 .is_ok_and(|r| r.partial_reason.as_deref() == Some("time_cap"))
         {
             tracing::warn!(connection = %c.id, run = %run_id, "watch_scan: time cap hit before finalize");
+            self.counter.add(Counted::PartialWatch, 1).await;
         }
         // A worker that took over this run's lease is still scanning: leave the claim to it.
         if !matches!(after.as_ref().map(|r| r.status), Ok(RunStatus::Running)) {

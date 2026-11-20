@@ -5,7 +5,10 @@ use opsagent_core::resource::Provider;
 
 pub struct PublicExposure;
 
-const ADMIN_PORTS: [u64; 7] = [22, 3389, 3306, 5432, 1433, 27017, 6379];
+/// SSH, RDP, databases, caches, Elasticsearch, Kibana and the Docker API.
+const ADMIN_PORTS: [u64; 11] = [
+    22, 3389, 3306, 5432, 1433, 27017, 6379, 9200, 5601, 11211, 2375,
+];
 
 impl Check for PublicExposure {
     fn id(&self) -> &'static str {

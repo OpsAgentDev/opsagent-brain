@@ -57,7 +57,8 @@ pub fn plan_alerts(
 pub fn render_alert(f: &Finding, at: &ConnectionInfo, web_base_url: &str) -> String {
     let mut place = vec![esc(&no_domain(&at.resource)), esc(&at.account)];
     place.extend(at.region.as_deref().map(esc));
-    let mut lines = vec![format!("🔴 Urgent: {}", esc(&f.title)), place.join(" · ")];
+    let title = esc(&no_domain(&f.title));
+    let mut lines = vec![format!("🔴 Urgent: {title}"), place.join(" · ")];
     lines.extend(f.next_step.as_deref().map(esc));
     lines.push(format!(
         "View finding: {}/findings/{}",
@@ -252,6 +253,21 @@ mod tests {
         assert!(got.contains("https[://]evil[.]test/aws"), "{got}");
         // Our own link stays one.
         assert!(got.ends_with(&format!("https://opsagent.dev/o/acme/findings/{}", f.id)));
+    }
+
+    #[test]
+    fn a_domain_or_address_in_the_title_is_not_a_link() {
+        let f = crit("Bucket evil.com is public, ask ops@evil.io");
+        let at = ConnectionInfo {
+            account: "Prod".into(),
+            resource: "b-1".into(),
+            region: None,
+        };
+        let got = render_alert(&f, &at, "https://opsagent.dev/o/acme");
+        assert!(
+            got.starts_with("🔴 Urgent: Bucket evil[.]com is public, ask ops@evil[.]io\n"),
+            "{got}"
+        );
     }
 
     #[test]

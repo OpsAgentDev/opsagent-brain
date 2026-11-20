@@ -9,8 +9,10 @@ use opsagent_core::finding::FindingDraft;
 /// The inventory services a watch scan reads.
 pub(super) const WATCH_SERVICES: [&str; 3] = ["sg", "rds", "cloudtrail"];
 
-/// The checks a watch scan runs, with every service each one reads.
-const WATCH_CHECKS: [(&str, &[&str]); 2] = [("03", &["sg", "rds"]), ("06", &["cloudtrail"])];
+/// The checks a watch scan runs, with the services each one must have read in full. Check 03
+/// needs none: its watch variants are each built from one resource that was read and a watch
+/// only opens findings, so a failed `sg` or `rds` read in one region must not hide the others.
+const WATCH_CHECKS: [(&str, &[&str]); 2] = [("03", &[]), ("06", &["cloudtrail"])];
 
 /// (check, variant) a watch scan keeps; every other draft is dropped. Check 06's are the two
 /// built only from `cloudtrail` resources (`detection_off` needs guardduty and
@@ -97,7 +99,7 @@ mod tests {
             (run.iter().map(|c| c.id()).collect::<Vec<_>>(), skipped)
         };
         assert_eq!(ids(&[]), (vec!["03", "06"], vec![]));
-        assert_eq!(ids(&["rds"]), (vec!["06"], vec!["03"]));
+        assert_eq!(ids(&["rds", "sg"]), (vec!["03", "06"], vec![]));
         assert_eq!(ids(&["cloudtrail", "s3"]), (vec!["03"], vec!["06"]));
     }
 }

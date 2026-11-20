@@ -227,11 +227,12 @@ async fn watch_scan_waits_for_first_full_scan() {
     .await;
 }
 
-/// `noisy` whose scoped inventory call for `service` fails.
+/// `noisy` whose scoped inventory call for `service` fails, in `region` only when one is set.
 #[derive(Clone)]
 struct Failing {
     inner: FakeConnector,
     service: &'static str,
+    region: Option<&'static str>,
 }
 
 #[async_trait]
@@ -250,7 +251,7 @@ impl Connector for Failing {
         c: &Credentials,
         s: &Scope,
     ) -> opsagent_connectors::Result<InventoryResult> {
-        if s.services == [self.service] {
+        if s.services == [self.service] && self.region.is_none_or(|r| s.regions == [r]) {
             return Err(ConnectorError::Api {
                 code: Some("ServiceUnavailable".into()),
                 message: "down".into(),
@@ -394,32 +395,74 @@ async fn watch_scan_skips_check_with_failed_chunk() {
         };
         assert!(!trail_off(ctx.clone()).await);
 
-        // SSH is open to the world, but the rds chunk fails: all of check 03 is skipped.
+        // SSH is open to the world and the rds chunk fails: check 03 still runs on what was
+        // read (it only opens findings).
         let k = Failing {
             inner: fixture(healthy),
             service: "rds",
+            region: None,
         };
         let r = watch_run(&ctx, conn, 0, &watch(&ctx, k)).await;
         assert_eq!(r.status, "partial");
         assert_eq!(
             r.checkpoint["stats"]["skipped_checks"],
-            serde_json::json!(["03"])
+            serde_json::json!([])
         );
-        assert!(finding(&ctx, conn, "sg-ssh").await.is_none());
+        assert!(finding(&ctx, conn, "sg-ssh").await.is_some());
 
         // The trail is off, but its chunk fails: no trail-off finding.
         let k = Failing {
             inner: noisy(),
             service: "cloudtrail",
+            region: None,
         };
         let r = watch_run(&ctx, conn, 1, &watch(&ctx, k)).await;
         assert_eq!(r.status, "partial");
+        assert_eq!(
+            r.checkpoint["stats"]["skipped_checks"],
+            serde_json::json!(["06"])
+        );
         assert!(!trail_off(ctx.clone()).await);
         assert!(finding(&ctx, conn, "sg-ssh").await.is_some());
 
         // With every chunk read, the next watch opens it.
         watch_run(&ctx, conn, 2, &watch(&ctx, noisy())).await;
         assert!(trail_off(ctx.clone()).await);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn watch_scan_opens_an_open_admin_port_although_another_region_failed() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx).await;
+        scan(&ctx, conn, 0, &noisy()).await;
+        // A group in a second region opens Elasticsearch to the world; the `sg` read of the
+        // first region fails.
+        let k = Failing {
+            inner: fixture(|v| {
+                let groups = v["resources"].as_array_mut().unwrap();
+                let mut sg = groups
+                    .iter()
+                    .find(|r| r["identity"] == "sg-ssh")
+                    .unwrap()
+                    .clone();
+                sg["identity"] = "sg-search".into();
+                sg["region"] = "local-2".into();
+                sg["attributes"]["open_world_ports"] = serde_json::json!([9200]);
+                groups.push(sg);
+            }),
+            service: "sg",
+            region: Some("local"),
+        };
+        let r = watch_run(&ctx, conn, 0, &watch(&ctx, k)).await;
+        assert_eq!(r.status, "partial");
+        let f = finding(&ctx, conn, "sg-search").await.unwrap();
+        assert_eq!(
+            (f.status.as_str(), f.variant.as_str()),
+            ("open", "sg_open_admin_port")
+        );
     })
     .await;
 }

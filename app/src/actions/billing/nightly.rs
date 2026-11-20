@@ -194,8 +194,8 @@ impl BillingSync {
         };
         let billing_url = self.billing_url(org).await?;
         let text = format!(
-            "{lead} After that you'll be charged {charge} unless you change plan or cancel \
-             before then.\n\nManage billing: {}",
+            "{lead} After that you'll be charged {charge}, plus tax where applicable, unless you \
+             change plan or cancel before then.\n\nManage billing: {}",
             billing_url,
         );
         let key = format!("billing:trial_reminder:{day}");
