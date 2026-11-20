@@ -109,7 +109,8 @@ impl DeliverBriefing {
             "OpsAgent morning briefing: {}",
             mail_safe_name(&connection_name(&c))
         );
-        let body = format!("{notice}{}", plain(&text));
+        // Mail reaches people who did not write the titles: none may become a link there.
+        let body = format!("{notice}{}", plain(&render_text(&b.mail_safe())));
         for o in r
             .recipients()
             .owners(c.organisation_id)

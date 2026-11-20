@@ -13,8 +13,8 @@ use opsagent_core::{
 };
 use opsagent_deliver::{
     alert::{
-        critical_findings, plan_alerts, render_alert, render_baseline, render_rollup,
-        ConnectionInfo,
+        critical_findings, plan_alerts, render_alert, render_alert_mail, render_baseline,
+        render_rollup, ConnectionInfo,
     },
     repo::{Integration, ALERT, FALLBACK_EMAIL, NO_CHANNEL, SLACK_FAILED, SLACK_NOT_CONNECTED},
 };
@@ -52,6 +52,8 @@ pub struct DeliverAlert {
 /// One message: Slack text (the email body is its plain form) and the email subject.
 struct Msg {
     text: String,
+    /// `text` as the email fallback says it; `None` when it holds no customer-set text.
+    mail_text: Option<String>,
     subject: String,
     /// Trusted web link built from the base and ids: the email button.
     link: String,
@@ -145,6 +147,7 @@ impl DeliverAlert {
             let n = candidates.len();
             let msg = (n > 0).then(|| Msg {
                 text: render_baseline(n, base),
+                mail_text: None,
                 link: format!("{base}/findings"),
                 subject: format!("First scan: {} ({account})", critical_findings(n)),
                 detail: vec![],
@@ -163,8 +166,10 @@ impl DeliverAlert {
             .iter()
             .filter(|f| plan.individual.contains(&f.id))
         {
+            let info = self.info(&c, f).await?;
             let msg = Msg {
-                text: render_alert(f, &self.info(&c, f).await?, base),
+                text: render_alert(f, &info, base),
+                mail_text: Some(render_alert_mail(f, &info, base)),
                 link: format!("{base}/findings/{}", f.id),
                 subject: format!("Urgent: {} ({account})", mail_safe_name(&f.title)),
                 detail: vec![],
@@ -179,6 +184,7 @@ impl DeliverAlert {
             let n = plan.rollup.len();
             let msg = Msg {
                 text: render_rollup(n, base),
+                mail_text: None,
                 link: format!("{base}/findings"),
                 subject: format!("Urgent: {n} more urgent findings ({account})"),
                 detail: candidates
@@ -294,7 +300,7 @@ impl Route<'_> {
             .detail
             .iter()
             .map(String::as_str)
-            .chain([plain(&m.text).as_str()])
+            .chain([plain(m.mail_text.as_deref().unwrap_or(&m.text)).as_str()])
             .collect::<Vec<_>>()
             .join("\n");
         // The heading is the subject, so the body's own "Urgent:" first line would repeat it.

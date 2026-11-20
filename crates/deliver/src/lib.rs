@@ -2,6 +2,7 @@
 //! delivery repository ports. No I/O, no logging.
 pub mod alert;
 pub mod briefing;
+pub mod mail_safe;
 pub mod model;
 pub mod notice;
 pub mod render_html;
@@ -11,6 +12,7 @@ pub mod route;
 pub mod schedule;
 pub mod weekly;
 
+pub use mail_safe::{mail_safe_name, mail_safe_text};
 pub use notice::{render_notice, NoticeEmail};
 pub use render_html::render_html;
 pub use render_text::{render_slack, render_text, RenderText, SLACK_MAX};
