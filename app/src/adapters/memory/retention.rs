@@ -422,7 +422,7 @@ impl RetentionRepo for MemStore {
         let n = super::purge::drain(&mut s.audit, |e| {
             e.organisation_id.is_none() && (e.actor == Actor::Member(user_id) || e.target == about)
         });
-        s.audit.push(AuditEntry {
+        s.push_audit(AuditEntry {
             organisation_id: None,
             actor: Actor::System,
             action: ACCOUNT_DELETED.into(),
