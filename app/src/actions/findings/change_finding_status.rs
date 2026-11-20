@@ -12,7 +12,7 @@ use opsagent_core::{
 use uuid::Uuid;
 
 use crate::{
-    actions::uow::UnitOfWork,
+    actions::{billing::BillingGate, uow::UnitOfWork},
     error::{AppError, AppResult},
 };
 
@@ -119,11 +119,13 @@ fn cas_miss(e: RepoError) -> AppError {
 pub struct ChangeFindingStatus {
     uow: Arc<dyn UnitOfWork>,
     clock: Arc<dyn Clock>,
+    /// REST meets the gate in middleware; the MCP triage tools reach this action directly.
+    gate: BillingGate,
 }
 
 impl ChangeFindingStatus {
-    pub fn new(uow: Arc<dyn UnitOfWork>, clock: Arc<dyn Clock>) -> Self {
-        Self { uow, clock }
+    pub fn new(uow: Arc<dyn UnitOfWork>, clock: Arc<dyn Clock>, gate: BillingGate) -> Self {
+        Self { uow, clock, gate }
     }
 
     pub async fn run(
@@ -135,6 +137,9 @@ impl ChangeFindingStatus {
     ) -> AppResult<Finding> {
         let now = self.clock.now();
         let tx = self.uow.begin().await?;
+        self.gate
+            .require_writable(tx.as_ref(), organisation_id)
+            .await?;
         let f = tx
             .findings()
             .get(organisation_id, id)
@@ -271,7 +276,11 @@ mod tests {
         f.resolve_unseen(org, conn, later, &[], Utc::now())
             .await
             .unwrap();
-        let act = ChangeFindingStatus::new(Arc::new(store.clone()), Arc::new(SystemClock));
+        let act = ChangeFindingStatus::new(
+            Arc::new(store.clone()),
+            Arc::new(SystemClock),
+            BillingGate::new(false, Arc::new(SystemClock)),
+        );
         let until = Utc::now() + Duration::days(1);
         let e = act
             .run(org, actor, id, FindingAction::Snooze { until })
@@ -290,7 +299,11 @@ mod tests {
         let store = MemStore::default();
         let (org, actor) = (Uuid::new_v4(), Uuid::new_v4());
         let (id, _) = seeded(&store, org, "x").await;
-        let act = ChangeFindingStatus::new(Arc::new(store.clone()), Arc::new(SystemClock));
+        let act = ChangeFindingStatus::new(
+            Arc::new(store.clone()),
+            Arc::new(SystemClock),
+            BillingGate::new(false, Arc::new(SystemClock)),
+        );
         let until = Utc::now() + Duration::days(1);
         let got = act
             .run(org, actor, id, FindingAction::Snooze { until })

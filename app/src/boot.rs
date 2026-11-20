@@ -417,6 +417,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             change_finding_status: findings::ChangeFindingStatus::new(
                 d.uow.clone(),
                 d.clock.clone(),
+                gate.clone(),
             ),
             report_explanation: findings::ReportExplanation::new(d.uow.clone()),
         },
