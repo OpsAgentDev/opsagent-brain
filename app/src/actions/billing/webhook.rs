@@ -22,9 +22,10 @@ use crate::{
     error::{AppError, AppResult},
 };
 
-const HANDLED: [&str; 10] = [
+const HANDLED: [&str; 11] = [
     "charge.dispute.closed",
     "charge.dispute.created",
+    "charge.dispute.funds_withdrawn",
     "charge.refunded",
     "checkout.session.completed",
     "checkout.session.async_payment_succeeded",
@@ -278,9 +279,11 @@ impl HandleWebhook {
     /// its own marker for the payment (`PAYMENT_MARKS`, a grant keyed `<mark>:<payment
     /// intent>`) carrying only the difference it makes, so whatever the order, the repeats
     /// and the mix of causes, one payment never gives back more than it granted or less than
-    /// its state requires. The balance may go below 0 (owed from the next top-up). A partial
-    /// refund, a dispute closed any other way than `won`, and any other charge (a
-    /// subscription's, a human review's) change nothing. The payment is matched through its
+    /// its state requires. The balance may go below 0 (owed from the next top-up). A dispute
+    /// is marked by its `created` (unless an inquiry), its `funds_withdrawn` or its `lost`
+    /// close, whichever comes first. A partial refund, an inquiry, a dispute closed any way
+    /// but `won` or `lost`, and any other charge (a subscription's, a human review's) change
+    /// nothing. The payment is matched through its
     /// Checkout session (the provider), so a failed lookup fails the webhook and Stripe sends
     /// the event again.
     /// True when a top-up's refund or dispute matched no organisation (counted for the
@@ -290,9 +293,12 @@ impl HandleWebhook {
         let (mark, reason) = match ev.kind.as_str() {
             // `refunded` is true only once all of the charge is refunded.
             "charge.refunded" if o["refunded"] == true => (0, "refund"),
-            // An inquiry (`warning_*`) moves no money and holds nothing back.
-            // shortcut: an inquiry that escalates arrives as `charge.dispute.updated`, which is not handled; subscribe and mark it there if that happens.
+            // An inquiry (`warning_*`) moves no money and holds nothing back. One that
+            // escalates is caught when its funds are withdrawn, or at the latest when it is
+            // lost (which also covers a dispute whose `created` never arrived).
             "charge.dispute.created" if !inquiry(o) => (1, "dispute"),
+            "charge.dispute.funds_withdrawn" => (1, "dispute"),
+            "charge.dispute.closed" if o["status"] == "lost" => (1, "dispute"),
             "charge.dispute.closed" if o["status"] == "won" => (2, "dispute_won"),
             _ => return Ok(false),
         };
@@ -311,8 +317,9 @@ impl HandleWebhook {
         };
         let Some(org) = org.filter(|_| known) else {
             warn_skip(ev, "top-up refund or dispute matches no organisation");
-            // Counted when credits could not be taken back; a won dispute takes none.
-            return Ok(mark != 2);
+            // Counted once per cause, on the event that first takes credits back.
+            let first = ["charge.refunded", "charge.dispute.created"];
+            return Ok(first.contains(&ev.kind.as_str()));
         };
         // One at a time per organisation: two events of one payment must see each other's mark.
         tx.orgs().lock(org).await?;
@@ -699,14 +706,18 @@ mod tests {
     /// or has a dispute that was not won.
     #[tokio::test]
     async fn every_order_of_refund_and_dispute_events_nets_to_the_payment_state() {
-        // (kind, fully refunded, status): refund in full, dispute opened, dispute won, dispute
-        // lost, and an inquiry opened, which moves no money and so changes nothing.
-        const EVENTS: [(&str, bool, &str); 5] = [
+        // (kind, fully refunded, status): 0 refund in full, 1 dispute opened, 2 dispute won,
+        // 3 dispute lost, 4 inquiry opened, 5 funds withdrawn (an inquiry escalated), 6 inquiry
+        // closed. An inquiry moves no money: 4 and 6 change nothing, so inquiry then closed
+        // (4, 6) keeps the credits and inquiry, withdrawn, lost (4, 5, 3) takes them once.
+        const EVENTS: [(&str, bool, &str); 7] = [
             ("charge.refunded", true, "won"),
             ("charge.dispute.created", false, "needs_response"),
             ("charge.dispute.closed", false, "won"),
             ("charge.dispute.closed", false, "lost"),
             ("charge.dispute.created", false, "warning_needs_response"),
+            ("charge.dispute.funds_withdrawn", false, "needs_response"),
+            ("charge.dispute.closed", false, "warning_closed"),
         ];
         let kinds = EVENTS.len();
         let now = Utc::now();
@@ -729,7 +740,8 @@ mod tests {
                     }
                 }
                 let has = |e: usize| seq.contains(&e);
-                let out = has(0) || (has(1) && !has(2));
+                let disputed = has(1) || has(3) || has(5);
+                let out = has(0) || (disputed && !has(2));
                 let want = if out { 0.into() } else { credits };
                 let got = store.topup_balance(org.id).await.unwrap();
                 assert_eq!(got, want, "events {seq:?}");
