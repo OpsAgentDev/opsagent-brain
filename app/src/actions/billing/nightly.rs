@@ -51,7 +51,7 @@ struct Night {
     notices: u64,
     /// Trial-ended and payment-failed notices.
     lifecycle: u64,
-    /// Reminders sent for connections left `pending` (`connection_reminders`).
+    /// Reminder mails tried for connections left `pending` (`connection_reminders`).
     connection_reminders: u64,
     /// Organisations whose pass failed (logged; retried the next night).
     failed: u64,
@@ -128,7 +128,8 @@ impl BillingSync {
         // shortcut: only subscribed organisations pass here, which is every writable one while
         // billing is enforced; list pending connections across organisations if it is ever off.
         if !self.settings.enforced || b.in_good_standing(now) {
-            night.connection_reminders += self.connection_reminders(org, now).await?;
+            let mails = &mut night.connection_reminders;
+            self.connection_reminders(org, now, mails).await?;
         }
         Ok(())
     }
@@ -210,7 +211,7 @@ impl BillingSync {
             billing_url,
         );
         let key = format!("billing:trial_reminder:{day}");
-        self.mail_billing(org, ends, &key, &subject, &text, &billing_url)
+        self.mail_owners(org, ends, &key, &subject, &text, &billing_url)
             .await
     }
 
@@ -241,7 +242,7 @@ impl BillingSync {
         );
         let subject = "Your OpsAgent trial has started";
         let key = "billing:trial_started";
-        self.mail_billing(org, ends, key, subject, &text, &billing_url)
+        self.mail_owners(org, ends, key, subject, &text, &billing_url)
             .await
     }
 
@@ -266,7 +267,7 @@ impl BillingSync {
         );
         let subject = "Your OpsAgent trial has ended";
         let key = "billing:trial_ended";
-        self.mail_billing(org, ends, key, subject, &text, &billing_url)
+        self.mail_owners(org, ends, key, subject, &text, &billing_url)
             .await
     }
 
@@ -284,7 +285,7 @@ impl BillingSync {
         );
         let key = format!("billing:payment_failed:{}", since.timestamp());
         let subject = "Your OpsAgent payment failed";
-        self.mail_billing(org, since, &key, subject, &text, &billing_url)
+        self.mail_owners(org, since, &key, subject, &text, &billing_url)
             .await
     }
 
@@ -300,7 +301,7 @@ impl BillingSync {
         );
         let key = format!("billing:paused:{}", period.timestamp());
         let subject = "OpsAgent is paused: payment overdue";
-        self.mail_billing(org, period, &key, subject, &text, &billing_url)
+        self.mail_owners(org, period, &key, subject, &text, &billing_url)
             .await
     }
 
@@ -313,21 +314,6 @@ impl BillingSync {
         Ok(format!("{base}/settings/billing"))
     }
 
-    /// `mail_owners` with the billing page as its button.
-    async fn mail_billing(
-        &self,
-        org: Uuid,
-        anchor: DateTime<Utc>,
-        key: &str,
-        subject: &str,
-        text: &str,
-        url: &str,
-    ) -> LResult<bool> {
-        let button = ("Manage billing", url);
-        self.mail_owners(org, anchor, key, subject, text, button)
-            .await
-    }
-
     /// Mails each owner once for ledger key `<key>:<owner id>` on the marker at `anchor`, so a
     /// failure part-way never resends to owners already mailed; `true` when this call sent
     /// any. A failed send is retried the next night (Resend dedupes on the key).
@@ -338,7 +324,7 @@ impl BillingSync {
         key: &str,
         subject: &str,
         text: &str,
-        button: (&str, &str),
+        link: &str,
     ) -> LResult<bool> {
         let marker = notice_marker(&*self.uow, Some(org), anchor).await?;
         let owners = self.uow.recipients().owners(org).await.map_err(lerr)?;
@@ -356,7 +342,7 @@ impl BillingSync {
             let mail = Mail {
                 to: o.email,
                 subject: subject.into(),
-                html: Some(branded(subject, text, Some(button))),
+                html: Some(branded(subject, text, Some(("Manage billing", link)))),
                 text: text.into(),
                 idempotency_key: Some(format!("{marker}:{key}")),
                 ..Default::default()

@@ -1,22 +1,28 @@
-//! Reminders for a cloud connection left `pending` (PRD 7.2, "Customer never clicks done"):
-//! the owners get one mail once it is 24 hours old and a last one once it is 72 hours old, on
-//! the first nightly pass after each mark. Each mail is one ledger effect
-//! (`connection:reminder:<connection>:<step>:<owner>`) on the marker run at the connection's
-//! creation, so a re-run or a resumed pass sends nothing twice.
+//! Reminders for cloud connections left `pending` (PRD 7.2, "Customer never clicks done"): a
+//! connection is due one once it is 24 hours old and a last one once it is 72 hours old, on the
+//! first nightly pass after each mark. An owner gets at most one mail a night for the
+//! organisation, covering every connection due. Each connection's step is one ledger effect
+//! per owner (`connection:reminder:<connection>:<step>:<owner>`) on the marker run at the
+//! connection's creation, begun before the mail and done after it, so a re-run or a resumed
+//! pass sends nothing twice and no connection gets more than two.
 use chrono::{DateTime, Duration, Utc};
 use opsagent_core::{
     connection::{Connection, ConnectionStatus as S},
     org::org_web_base,
 };
-use opsagent_ledger::LedgerError;
+use opsagent_deliver::route::Recipient;
+use opsagent_ledger::{EffectState, LedgerError};
 use uuid::Uuid;
 
 use crate::{
     actions::{
         billing::BillingSync,
-        runs::classify::{lerr, LResult},
+        runs::{
+            classify::{lerr, LResult},
+            notice_marker,
+        },
     },
-    mailers::magic_link::mail_safe_name,
+    mailers::{branded, magic_link::mail_safe_name, Mail},
 };
 
 const FIRST_AFTER_HOURS: i64 = 24;
@@ -26,6 +32,13 @@ const LAST_AFTER_HOURS: i64 = 72;
 const STOP_AFTER_HOURS: i64 = 7 * 24;
 /// `status_reason` of a pending connection whose first verify the cloud refused.
 const REFUSED: &str = "access_denied";
+/// Reminder mails one nightly pass may try, across all organisations; the rest wait for the
+/// next night (or are dropped once past their window).
+/// shortcut: a fixed share of the Resend free plan's 100 mails a day, which sign-in codes
+/// also need; make it a share of the day's remaining count if the plan or the volume changes.
+pub(super) const MAILS_A_NIGHT: u64 = 30;
+/// Connections named in one mail; the rest are "and N more".
+const NAMED: usize = 5;
 
 /// The reminder due for a connection pending for `age`: 1, then 2 (the last). A first one
 /// that was missed is not caught up once the last is due, so there are never more than two.
@@ -38,302 +51,229 @@ fn step(age: Duration) -> Option<u8> {
     }
 }
 
-/// `(subject, text)` of reminder `step` for `c`, whose page is `link`.
-fn mail(c: &Connection, step: u8, link: &str) -> (String, String) {
-    let name = c.display_name.as_deref().map(mail_safe_name);
-    let name = match name.filter(|n| !n.is_empty()) {
-        Some(n) => format!("The connection \"{n}\""),
-        None => "Your cloud connection".into(),
-    };
-    let (subject, lead, next) = if c.status_reason.as_deref() == Some(REFUSED) {
-        (
-            "OpsAgent could not verify your cloud connection",
-            format!(
-                "{name} is not finished: OpsAgent tried to verify it and your cloud provider \
-                 refused access, so OpsAgent is not scanning that account yet."
+/// A pending connection, the reminder it is due, and the marker run that records it.
+struct Due {
+    c: Connection,
+    step: u8,
+    marker: Uuid,
+}
+
+impl Due {
+    fn refused(&self) -> bool {
+        self.c.status_reason.as_deref() == Some(REFUSED)
+    }
+
+    /// The mail-safe display name in quotes, when there is one.
+    fn name(&self) -> Option<String> {
+        let name = self.c.display_name.as_deref().map(mail_safe_name);
+        name.filter(|n| !n.is_empty()).map(|n| format!("\"{n}\""))
+    }
+}
+
+/// One owner's mail; `open` is the text line before `link`, `label` its button.
+struct Reminder {
+    subject: String,
+    lead: String,
+    next: String,
+    open: &'static str,
+    label: &'static str,
+    link: String,
+}
+
+impl Reminder {
+    /// About the one connection `d`, linking to its page.
+    fn one(d: &Due, base: &str) -> Self {
+        let name = d.name().map(|n| format!("The connection {n}"));
+        let name = name.unwrap_or_else(|| "Your cloud connection".into());
+        let (subject, lead, next) = if d.refused() {
+            (
+                "OpsAgent could not verify your cloud connection",
+                format!(
+                    "{name} is not finished: OpsAgent tried to verify it and your cloud \
+                     provider refused access, so OpsAgent is not scanning that account yet."
+                ),
+                "Next step: check the role. It must be the read-only role created with the \
+                 link on the connection's page, in the account you want to connect. Then press \
+                 Verify connection.",
+            )
+        } else {
+            (
+                "Your OpsAgent cloud connection is not finished",
+                format!("{name} is not finished, so OpsAgent is not scanning that account yet."),
+                "Next step: create the read-only role in your cloud account with the link on \
+                 the connection's page, then press Verify connection.",
+            )
+        };
+        Self {
+            subject: subject.into(),
+            lead,
+            next: next.into(),
+            open: "Open the connection",
+            label: "Open connection",
+            link: format!("{base}/connections/{}", d.c.id),
+        }
+    }
+
+    /// Listing `due` (the first `NAMED` by name), linking to the connections list.
+    fn several(due: &[&Due], base: &str) -> Self {
+        let named = due.iter().take(NAMED);
+        let names: Vec<_> = named
+            .map(|d| d.name().unwrap_or_else(|| "an unnamed connection".into()))
+            .collect();
+        let mut names = names.join(", ");
+        if due.len() > NAMED {
+            names += &format!(" and {} more", due.len() - NAMED);
+        }
+        let mut next = "Next step for each: open it, create the read-only role in your cloud \
+                        account with the link on its page, then press Verify connection."
+            .to_owned();
+        if due.iter().any(|d| d.refused()) {
+            next += " Where OpsAgent already tried and your cloud provider refused access, \
+                     check the role first.";
+        }
+        Self {
+            subject: "Your OpsAgent cloud connections are not finished".into(),
+            lead: format!(
+                "These connections are not finished, so OpsAgent is not scanning those \
+                 accounts yet: {names}."
             ),
-            "Next step: check the role. It must be the read-only role created with the link \
-             OpsAgent gave you, in the account you want to connect. Then press Verify \
-             connection.",
-        )
-    } else {
-        (
-            "Your OpsAgent cloud connection is not finished",
-            format!("{name} is not finished, so OpsAgent is not scanning that account yet."),
-            "Next step: create the read-only role in your cloud account with the link OpsAgent \
-             gave you, then press Verify connection.",
-        )
-    };
-    let (subject, last) = match step {
-        1 => (subject.to_owned(), ""),
-        _ => (
-            format!("Last reminder: {subject}"),
-            " This is the last reminder.",
-        ),
-    };
-    let text = format!("{lead}{last}\n\n{next}\n\nOpen the connection: {link}");
-    (subject, text)
+            next,
+            open: "Open your connections",
+            label: "Open connections",
+            link: format!("{base}/connections"),
+        }
+    }
+
+    /// The mail for `due` (never empty) to `to`. "Last reminder" only when it is the last for
+    /// every connection in it.
+    fn mail(due: &[&Due], base: &str, to: String) -> Mail {
+        let r = match due {
+            [d] => Self::one(d, base),
+            _ => Self::several(due, base),
+        };
+        let (subject, last) = match due.iter().all(|d| d.step > 1) {
+            true => (
+                format!("Last reminder: {}", r.subject),
+                " This is the last reminder.",
+            ),
+            false => (r.subject, ""),
+        };
+        let text = format!("{}{last}\n\n{}\n\n{}: {}", r.lead, r.next, r.open, r.link);
+        Mail {
+            to,
+            html: Some(branded(&subject, &text, Some((r.label, &r.link)))),
+            subject,
+            text,
+            ..Default::default()
+        }
+    }
 }
 
 impl BillingSync {
-    /// Mails the owners of `org` the reminder due `now` for each of its pending connections;
-    /// returns how many reminders this call sent.
-    pub(super) async fn connection_reminders(&self, org: Uuid, now: DateTime<Utc>) -> LResult<u64> {
-        let all = self.uow.connections().list(org).await.map_err(lerr)?;
-        let due = all
-            .iter()
-            .filter(|c| c.status == S::Pending)
-            .filter_map(|c| Some((c, step(now - c.created_at)?)));
-        let mut sent = 0;
-        for (c, step) in due {
-            let o = self.uow.orgs().get(org).await.map_err(lerr)?;
-            let slug = o.ok_or(LedgerError::NotFound)?.slug;
-            let base = org_web_base(&self.settings.web_base_url, &slug);
-            let link = format!("{base}/connections/{}", c.id);
-            let (subject, text) = mail(c, step, &link);
-            let key = format!("connection:reminder:{}:{step}", c.id);
-            let button = ("Open connection", link.as_str());
-            let mailed = self.mail_owners(org, c.created_at, &key, &subject, &text, button);
-            sent += u64::from(mailed.await?);
+    /// Mails each owner of `org` one reminder for its pending connections due one `now`, while
+    /// `mails` (the pass's count of reminder mails tried) is under `MAILS_A_NIGHT`. A failed
+    /// send does not stop the other owners; it fails the organisation's pass, and the next
+    /// night sends what is still owed.
+    pub(super) async fn connection_reminders(
+        &self,
+        org: Uuid,
+        now: DateTime<Utc>,
+        mails: &mut u64,
+    ) -> LResult<()> {
+        if *mails >= MAILS_A_NIGHT {
+            return Ok(());
         }
-        Ok(sent)
+        let due = self.due_reminders(org, now).await?;
+        if due.is_empty() {
+            return Ok(());
+        }
+        let o = self.uow.orgs().get(org).await.map_err(lerr)?;
+        let slug = o.ok_or(LedgerError::NotFound)?.slug;
+        let base = org_web_base(&self.settings.web_base_url, &slug);
+        // One a night for an owner: a retry the same day is the same mail to Resend.
+        let night = format!("connection:reminders:{org}:{}", now.date_naive());
+        let mut failed = false;
+        for o in self.uow.recipients().owners(org).await.map_err(lerr)? {
+            if *mails >= MAILS_A_NIGHT {
+                break;
+            }
+            let sent = self.remind_owner(org, o, &due, (&base, &night), mails);
+            failed |= !sent.await?;
+        }
+        match failed {
+            true => Err(LedgerError::Job {
+                code: "mail_failed".into(),
+                retry: true,
+            }),
+            false => Ok(()),
+        }
+    }
+
+    /// The pending connections of `org` in a reminder window `now`, oldest first.
+    async fn due_reminders(&self, org: Uuid, now: DateTime<Utc>) -> LResult<Vec<Due>> {
+        let mut due = vec![];
+        for c in self.uow.connections().list(org).await.map_err(lerr)? {
+            let step = step(now - c.created_at).filter(|_| c.status == S::Pending);
+            if let Some(step) = step {
+                let marker = notice_marker(&*self.uow, Some(org), c.created_at).await?;
+                due.push(Due { c, step, marker });
+            }
+        }
+        Ok(due)
+    }
+
+    /// One mail to `o` for the connections in `due` it has not been reminded of at that step:
+    /// each effect is begun before the mail and done after it. `false` when the send failed
+    /// (the effects stay begun, so the next pass sends again).
+    async fn remind_owner(
+        &self,
+        org: Uuid,
+        o: Recipient,
+        due: &[Due],
+        (base, night): (&str, &str),
+        mails: &mut u64,
+    ) -> LResult<bool> {
+        let guard = &self.guard;
+        if !guard
+            .may_deliver(org, &o.email, o.member)
+            .await
+            .map_err(lerr)?
+        {
+            return Ok(true);
+        }
+        let ledger = self.uow.ledger();
+        let mut owed = vec![];
+        for d in due {
+            let key = format!("connection:reminder:{}:{}:{}", d.c.id, d.step, o.id);
+            if !matches!(
+                ledger.effect_begin(d.marker, &key).await?,
+                EffectState::Done(_)
+            ) {
+                owed.push((d, key));
+            }
+        }
+        if owed.is_empty() {
+            return Ok(true);
+        }
+        *mails += 1;
+        let about: Vec<&Due> = owed.iter().map(|(d, _)| *d).collect();
+        let mail = Mail {
+            idempotency_key: Some(format!("{night}:{}", o.id)),
+            ..Reminder::mail(&about, base, o.email)
+        };
+        if self.mailer.send(mail).await.is_err() {
+            tracing::warn!(
+                error_code = "mail_failed",
+                "connection reminder mail failed"
+            );
+            return Ok(false);
+        }
+        for (d, key) in owed {
+            ledger.effect_done(d.marker, &key, None).await?;
+        }
+        Ok(true)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use opsagent_core::{
-        billing::{BillingRepo, BillingStatus as B},
-        org::{OrganisationsRepo, Role},
-    };
-
-    use super::super::tests::{night, sub, sync, sync_with};
-    use super::*;
-    use crate::{
-        actions::{
-            orgs::test_support::{owned_org, user},
-            runs::test_support::{connected, pending},
-            uow::Repos,
-        },
-        adapters::memory::MemStore,
-        mailers::{CaptureMailer, FailingMailer},
-    };
-
-    /// An organisation "Acme" with an active subscription and one pending connection "Prod".
-    async fn world(store: &MemStore, owner: &str, name: &str) -> (Uuid, Connection) {
-        let (_, org) = owned_org(store, owner, name).await;
-        let c = pending(store, org.id).await;
-        let s = sub(B::Active, c.created_at + Duration::days(20));
-        store
-            .apply_subscription(org.id, &s, c.created_at)
-            .await
-            .unwrap();
-        (org.id, c)
-    }
-
-    #[test]
-    fn steps() {
-        let at = |h| step(Duration::hours(h));
-        assert_eq!(at(23), None);
-        assert_eq!((at(24), at(71)), (Some(1), Some(1)));
-        assert_eq!((at(72), at(167)), (Some(2), Some(2)));
-        assert_eq!(at(168), None); // abandoned long ago: not chased
-    }
-
-    #[tokio::test]
-    async fn each_owner_is_reminded_once_at_24_hours_and_once_more_at_72() {
-        let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
-        let (org, c) = world(&store, "o@example.com", "Acme").await;
-        for (email, role) in [
-            ("p@example.com", Role::Owner),
-            ("m@example.com", Role::Member),
-        ] {
-            let u = user(&store, email).await;
-            store.add_member(org, u.id, role).await.unwrap();
-        }
-        let mut sent = vec![];
-        for h in [23, 25, 26, 49, 73, 74, 97, 169] {
-            night(&store, &mail, c.created_at + Duration::hours(h)).await;
-            sent.push(mail.sent().len());
-        }
-        // Re-runs and later nights send nothing more; the member is never mailed.
-        assert_eq!(sent, [0, 2, 2, 2, 4, 4, 4, 4]);
-        let m = mail.sent();
-        let to: Vec<_> = m.iter().map(|m| m.to.as_str()).collect();
-        let owners = ["o@example.com", "p@example.com"];
-        assert_eq!(to, [owners, owners].concat());
-        let link = format!("https://opsagent.test/o/acme/connections/{}", c.id);
-        assert_eq!(
-            m[0].subject,
-            "Your OpsAgent cloud connection is not finished"
-        );
-        assert_eq!(
-            m[0].text,
-            format!(
-                "The connection \"Prod\" is not finished, so OpsAgent is not scanning that \
-                 account yet.\n\nNext step: create the read-only role in your cloud account \
-                 with the link OpsAgent gave you, then press Verify connection.\n\nOpen the \
-                 connection: {link}"
-            )
-        );
-        assert_eq!(
-            m[2].subject,
-            "Last reminder: Your OpsAgent cloud connection is not finished"
-        );
-        assert!(m[2].text.starts_with(
-            "The connection \"Prod\" is not finished, so OpsAgent is not scanning that account \
-             yet. This is the last reminder.\n\nNext step: create"
-        ));
-        let html = m[0].html.as_deref().unwrap();
-        assert!(html.contains(&format!("href=\"{link}\"")) && html.contains("Open connection"));
-        assert!(!html.contains("nsubscribe"));
-        let keys: std::collections::HashSet<_> = m.iter().map(|m| &m.idempotency_key).collect();
-        assert_eq!(keys.len(), 4);
-    }
-
-    #[tokio::test]
-    async fn only_a_pending_connection_of_a_live_organisation_is_reminded() {
-        let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
-        let (org, c) = world(&store, "o@example.com", "Acme").await;
-        // Finished, being verified, and removed.
-        let repo = store.connections();
-        assert!(repo
-            .cas_status(org, c.id, S::Pending, S::Verifying, None)
-            .await
-            .unwrap());
-        connected(&store, org).await;
-        let removed = pending(&store, org).await;
-        assert!(repo
-            .cas_status(org, removed.id, S::Pending, S::Disconnected, None)
-            .await
-            .unwrap());
-        // An organisation waiting to be purged.
-        let (gone, _) = world(&store, "g@example.com", "Gone").await;
-        store.soft_delete(gone, c.created_at).await.unwrap();
-        for h in [25, 73] {
-            night(&store, &mail, Utc::now() + Duration::hours(h)).await;
-        }
-        assert!(mail.sent().is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_read_only_organisation_is_not_reminded() {
-        let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
-        let (org, c) = world(&store, "o@example.com", "Acme").await;
-        let paused = sub(B::Paused, c.created_at + Duration::days(20));
-        store
-            .apply_subscription(org, &paused, c.created_at + Duration::hours(1))
-            .await
-            .unwrap();
-        let now = c.created_at + Duration::hours(25);
-        let mut enforced = sync(&store, &mail, now);
-        enforced.settings.enforced = true;
-        let st = enforced.nightly(Uuid::new_v4(), now).await.unwrap();
-        assert_eq!(st["failed"], 0, "{st}");
-        assert_eq!(st["connection_reminders"], 0);
-        // Only the paused notice went out.
-        let subjects: Vec<_> = mail.sent().into_iter().map(|m| m.subject).collect();
-        assert_eq!(subjects, ["OpsAgent is paused: payment overdue"]);
-    }
-
-    #[tokio::test]
-    async fn a_refused_first_connect_says_so() {
-        let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
-        let (org, c) = world(&store, "o@example.com", "Acme").await;
-        let repo = store.connections();
-        for (from, to, reason) in [
-            (S::Pending, S::Verifying, None),
-            (S::Verifying, S::Pending, Some(REFUSED)),
-        ] {
-            assert!(repo.cas_status(org, c.id, from, to, reason).await.unwrap());
-        }
-        for h in [25, 73] {
-            night(&store, &mail, c.created_at + Duration::hours(h)).await;
-        }
-        let m = mail.sent();
-        assert_eq!(m.len(), 2);
-        assert_eq!(
-            m[0].subject,
-            "OpsAgent could not verify your cloud connection"
-        );
-        assert_eq!(
-            m[0].text,
-            format!(
-                "The connection \"Prod\" is not finished: OpsAgent tried to verify it and your \
-                 cloud provider refused access, so OpsAgent is not scanning that account \
-                 yet.\n\nNext step: check the role. It must be the read-only role created with \
-                 the link OpsAgent gave you, in the account you want to connect. Then press \
-                 Verify connection.\n\nOpen the connection: \
-                 https://opsagent.test/o/acme/connections/{}",
-                c.id
-            )
-        );
-        assert_eq!(
-            m[1].subject,
-            "Last reminder: OpsAgent could not verify your cloud connection"
-        );
-        assert!(m[1]
-            .text
-            .contains("account yet. This is the last reminder.\n\n"));
-    }
-
-    /// Kill and resume: a pass that dies at the mail marks nothing sent, and the next one
-    /// sends each mail once.
-    #[tokio::test]
-    async fn a_failed_pass_is_retried_and_sends_once() {
-        let (store, mail) = (MemStore::default(), Arc::new(CaptureMailer::default()));
-        let (_, c) = world(&store, "o@example.com", "Acme").await;
-        let now = c.created_at + Duration::hours(25);
-        let down = sync_with(&store, Arc::new(FailingMailer), now);
-        let st = down.nightly(Uuid::new_v4(), now).await.unwrap();
-        assert_eq!(st["failed"], 1, "{st}");
-        for _ in 0..2 {
-            night(&store, &mail, now).await;
-        }
-        assert_eq!(mail.sent().len(), 1);
-    }
-
-    /// A name cannot put a link in the mail.
-    #[test]
-    fn the_name_is_mail_safe() {
-        let c = Connection {
-            display_name: Some("evil.example/x".into()),
-            ..blank()
-        };
-        let (_, text) = mail(&c, 1, "https://opsagent.test/o/acme/connections/1");
-        assert!(text.starts_with("The connection \"evil[.]example x\" is not finished"));
-        let unnamed = Connection {
-            display_name: None,
-            ..blank()
-        };
-        let (_, text) = mail(&unnamed, 1, "l");
-        assert!(text.starts_with("Your cloud connection is not finished"));
-    }
-
-    fn blank() -> Connection {
-        Connection {
-            id: Uuid::nil(),
-            organisation_id: Uuid::nil(),
-            provider: "aws".into(),
-            display_name: None,
-            status: S::Pending,
-            status_reason: None,
-            external_account_id: None,
-            template_version: None,
-            scan_time_local: None,
-            briefing_time_local: None,
-            api_rate_ceiling: None,
-            slack_channel_id: None,
-            first_connected_at: None,
-            billable_from: None,
-            verify_denied_streak: 0,
-            verify_denied_first_at: None,
-            urgent_alerts: true,
-            disconnected_at: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        }
-    }
-}
+mod tests;
