@@ -3012,7 +3012,7 @@
         "tags": [
           "connections"
         ],
-        "summary": "Owner only, for a `revoked` connection (409 `connection_not_revoked` otherwise). The owner\nlaunches the stack again and calls `verify`; the connection and its findings are kept.",
+        "summary": "Owner only, for a `revoked` connection or one still `pending` (409 `connection_not_revoked`\notherwise). The owner launches the stack (again) and calls `verify`; the connection and its\nfindings are kept.",
         "operationId": "connections_reconnect",
         "parameters": [
           {

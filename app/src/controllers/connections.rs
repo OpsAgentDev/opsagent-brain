@@ -154,8 +154,9 @@ pub struct ReconnectLink {
     pub stack_name: String,
 }
 
-/// Owner only, for a `revoked` connection (409 `connection_not_revoked` otherwise). The owner
-/// launches the stack again and calls `verify`; the connection and its findings are kept.
+/// Owner only, for a `revoked` connection or one still `pending` (409 `connection_not_revoked`
+/// otherwise). The owner launches the stack (again) and calls `verify`; the connection and its
+/// findings are kept.
 #[utoipa::path(post, path = "/orgs/{org}/connections/{id}/reconnect", tag = "connections", params(OrgIdPath),
     responses((status = 200, body = ReconnectLink), (status = 403, body = Problem), (status = 404, body = Problem),
         (status = 409, body = Problem)))]
