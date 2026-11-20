@@ -88,6 +88,8 @@ contract_suite! {
         let c = connection(s, o, "Prod").await;
         let repo = s.connections();
         assert!(repo.cas_status(o, c.id, S::Pending, S::Verifying, None).await.unwrap());
+        // The table refuses connected or degraded without a cloud account id.
+        repo.record_verified(o, c.id, verified("111111111111")).await.unwrap();
         assert!(repo.cas_status(o, c.id, S::Verifying, S::Degraded, Some("policy_subset")).await.unwrap());
         let state = || async {
             let c = repo.get(o, c.id).await.unwrap().unwrap();
