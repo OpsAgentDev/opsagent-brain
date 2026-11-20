@@ -673,7 +673,11 @@ pub struct Me {
     responses((status = 200, body = Me), (status = 401, body = Problem)))]
 async fn me(State(app): State<AppState>, AuthUser(id): AuthUser) -> Result<Json<Me>, ApiError> {
     let u = app.actions.auth.current_user.run(id).await?;
-    let has_passkey = !app.actions.auth.passkeys.list(id).await?.is_empty();
+    me_view(&app, u).await
+}
+
+async fn me_view(app: &AppState, u: opsagent_core::user::User) -> Result<Json<Me>, ApiError> {
+    let has_passkey = !app.actions.auth.passkeys.list(u.id).await?.is_empty();
     Ok(Json(Me {
         id: u.id,
         email: u.email.as_str().into(),
@@ -681,6 +685,26 @@ async fn me(State(app): State<AppState>, AuthUser(id): AuthUser) -> Result<Json<
         has_passkey,
         terms_accepted_at: u.terms_accepted_at,
     }))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct MePatch {
+    /// The new display name: 1 to 80 characters after trimming, no control characters (the
+    /// sign-up rules).
+    pub name: String,
+}
+
+/// Changes the signed-in user's name; nothing else is changeable here.
+#[utoipa::path(patch, path = "/auth/me", tag = "auth", request_body = MePatch,
+    responses((status = 200, body = Me), (status = 401, body = Problem),
+        (status = 422, body = Problem, description = "`validation`: not a usable name")))]
+async fn update_me(
+    State(app): State<AppState>,
+    AuthUser(id): AuthUser,
+    ApiJson(body): ApiJson<MePatch>,
+) -> Result<Json<Me>, ApiError> {
+    let u = app.actions.auth.update_name.run(id, &body.name).await?;
+    me_view(&app, u).await
 }
 
 #[utoipa::path(post, path = "/auth/me/terms", tag = "auth",
@@ -733,7 +757,7 @@ pub fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(csrf_token))
         .routes(routes!(sign_out))
         .routes(routes!(sign_out_everywhere))
-        .routes(routes!(me, delete_me))
+        .routes(routes!(me, update_me, delete_me))
         .routes(routes!(accept_terms))
 }
 

@@ -292,6 +292,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
         ai: build_ai(d, guard.clone()),
         human_reviews: human_reviews::HumanReviews {
             request: human_reviews::RequestReview::new(
+                d.config.human_review_enabled,
                 d.uow.clone(),
                 d.mailer.clone(),
                 d.billing.clone(),
@@ -371,6 +372,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             ),
             current_user: auth::CurrentUser::new(d.uow.clone()),
             accept_terms: auth::AcceptTerms::new(d.uow.clone(), d.clock.clone()),
+            update_name: auth::UpdateName::new(d.uow.clone()),
             delete_account: auth::DeleteAccount::new(
                 d.uow.clone(),
                 d.clock.clone(),
@@ -704,6 +706,7 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
         clock: d.clock.clone(),
         web_base_url: d.config.web_base_url.clone(),
         unsubscribe_key: d.config.unsubscribe_key().to_owned(),
+        human_review_enabled: d.config.human_review_enabled,
     };
     deliveries::Deliveries {
         list_deliveries: deliveries::ListDeliveries::new(d.uow.clone()),
@@ -720,7 +723,7 @@ fn deliveries(d: &Deps, guard: Arc<recipients::MailGuard>) -> deliveries::Delive
     }
 }
 
-/// The job runner with the eleven job handlers, the only registry of job kinds. The queue and
+/// The job runner with every job handler, the only registry of job kinds. The queue and
 /// the job work share the state's one pool (`pool_size` with a worker).
 pub fn worker(state: &AppState) -> WorkerRunner {
     let (runs, deliveries) = (&state.actions.runs, &state.actions.deliveries);
@@ -757,6 +760,10 @@ pub fn worker(state: &AppState) -> WorkerRunner {
         Arc::new(DeliverRevokedNoticeJob(
             Arc::new(runs.deliver_revoked_notice.clone()),
             JobKind::DeliverClaimedNotice,
+        )),
+        Arc::new(DeliverRevokedNoticeJob(
+            Arc::new(runs.deliver_revoked_notice.clone()),
+            JobKind::DeliverScansFailingNotice,
         )),
         Arc::new(OperatorNoticeJob(Arc::new(runs.operator_notice.clone()))),
     ];

@@ -100,6 +100,9 @@ pub struct Config {
     pub stripe_automatic_tax: bool,
     /// Off: nothing is gated on billing state (the alpha organisations keep working).
     pub billing_enforced: bool,
+    /// Off (the launch default): no new human review request or checkout (`not_found`); existing
+    /// requests stay readable and a paid one is still applied.
+    pub human_review_enabled: bool,
     /// Email domains that may sign up; `*` or empty is open (`SIGNUP_ALLOWED_DOMAINS`, required in production).
     pub signup_allowed_domains: opsagent_core::user::SignupAllowlist,
     /// Cloudflare Turnstile secret; required in production. `None` outside it checks nothing.
@@ -241,6 +244,7 @@ impl Config {
             stripe_api_version: s("STRIPE_API_VERSION", "2025-09-30.clover"),
             stripe_automatic_tax: p(&get, "STRIPE_AUTOMATIC_TAX", "false")?,
             billing_enforced: p(&get, "BILLING_ENFORCED", "false")?,
+            human_review_enabled: p(&get, "HUMAN_REVIEW_ENABLED", "false")?,
             signup_allowed_domains: opsagent_core::user::SignupAllowlist::parse(&s(
                 "SIGNUP_ALLOWED_DOMAINS",
                 "",
@@ -559,6 +563,8 @@ mod tests {
         ]);
         assert!(on.billing_enforced && on.stripe_automatic_tax);
         assert!(vars(&[("BILLING_ENFORCED", "yes")]).is_err());
+        assert!(!c.human_review_enabled);
+        assert!(cfg(&[("HUMAN_REVIEW_ENABLED", "true")]).human_review_enabled);
         assert!(!c.stripe_configured() && !c.webhook_configured());
         let key = cfg(&[("STRIPE_SECRET_KEY", "sk_test_x")]);
         assert!(key.stripe_configured() && !key.webhook_configured());

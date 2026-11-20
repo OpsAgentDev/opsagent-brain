@@ -7,6 +7,7 @@ mod redeem_magic_link;
 mod request_magic_link;
 mod sign_in_github;
 mod sign_in_google;
+mod update_name;
 mod verify_code;
 
 pub use accept_terms::AcceptTerms;
@@ -18,6 +19,7 @@ pub use redeem_magic_link::RedeemMagicLink;
 pub use request_magic_link::{MagicLinkInput, RequestMagicLink, PER_EMAIL, PER_IP};
 pub use sign_in_github::{GithubProfile, SignInGithub};
 pub use sign_in_google::{GoogleProfile, SignInGoogle};
+pub use update_name::UpdateName;
 pub use verify_code::{VerifyCode, VerifyCodeInput};
 
 pub struct Auth {
@@ -28,6 +30,7 @@ pub struct Auth {
     pub sign_in_google: SignInGoogle,
     pub current_user: CurrentUser,
     pub accept_terms: AcceptTerms,
+    pub update_name: UpdateName,
     pub delete_account: DeleteAccount,
     pub passkeys: Passkeys,
 }

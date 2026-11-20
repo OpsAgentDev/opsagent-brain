@@ -83,6 +83,30 @@ contract_suite! {
         assert!(!repo.cas_status(other, c.id, S::Disconnected, S::Pending, None).await.unwrap());
     }
 
+    async fn cas_status_clearing_needs_the_status_and_the_reason(s) {
+        let (o, other) = (org(s).await, org(s).await);
+        let c = connection(s, o, "Prod").await;
+        let repo = s.connections();
+        assert!(repo.cas_status(o, c.id, S::Pending, S::Verifying, None).await.unwrap());
+        assert!(repo.cas_status(o, c.id, S::Verifying, S::Degraded, Some("policy_subset")).await.unwrap());
+        let state = || async {
+            let c = repo.get(o, c.id).await.unwrap().unwrap();
+            (c.status, c.status_reason)
+        };
+        // Another reason, another status, another organisation: nothing moves.
+        let failing = (S::Degraded, "scans_failing");
+        assert!(!repo.cas_status_clearing(o, c.id, failing, S::Connected).await.unwrap());
+        let wrong_status = (S::Connected, "policy_subset");
+        assert!(!repo.cas_status_clearing(o, c.id, wrong_status, S::Connected).await.unwrap());
+        let subset = (S::Degraded, "policy_subset");
+        assert!(!repo.cas_status_clearing(other, c.id, subset, S::Connected).await.unwrap());
+        assert_eq!(state().await, (S::Degraded, Some("policy_subset".into())));
+        assert!(repo.cas_status_clearing(o, c.id, subset, S::Connected).await.unwrap());
+        assert_eq!(state().await, (S::Connected, None));
+        // No reason left to match.
+        assert!(!repo.cas_status_clearing(o, c.id, (S::Connected, "policy_subset"), S::Degraded).await.unwrap());
+    }
+
     async fn last_verification_is_none_without_one_or_in_other_org(s) {
         let (o, other) = (org(s).await, org(s).await);
         let c = connection(s, o, "Prod").await;

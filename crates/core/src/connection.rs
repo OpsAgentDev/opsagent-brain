@@ -35,7 +35,14 @@ pub enum ConnectionEvent {
     AccessDeniedThrice,
     RoleReturned,
     Disconnect,
+    /// Three nightly full scans in a row ended `failed` (`SCANS_FAILING`).
+    ScansFailedThrice,
+    /// A nightly full scan ended `done` while the connection was `SCANS_FAILING`.
+    ScanDone,
 }
+
+/// `status_reason` of a connection degraded because its nightly scans keep failing (PRD 7.3).
+pub const SCANS_FAILING: &str = "scans_failing";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("invalid connection transition: {from:?} on {event:?}")]
@@ -63,6 +70,8 @@ pub fn transition(
         (_, E::Disconnect) if open => Ok(S::Disconnected),
         // Full re-verification (policy diff, ExternalId guard) before scanning resumes.
         (S::Revoked, E::RoleReturned) => Ok(S::Verifying),
+        (S::Connected, E::ScansFailedThrice) => Ok(S::Degraded),
+        (S::Degraded, E::ScanDone) => Ok(S::Connected),
         _ => Err(InvalidTransition { from, event }),
     }
 }
@@ -194,6 +203,15 @@ pub trait ConnectionsRepo: Send + Sync {
         from: ConnectionStatus,
         to: ConnectionStatus,
         reason: Option<&str>,
+    ) -> RepoResult<bool>;
+    /// `cas_status` that also needs the current `status_reason` to be `from_reason`, and clears
+    /// the reason; false when the row was not in that state.
+    async fn cas_status_clearing(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        from: (ConnectionStatus, &str),
+        to: ConnectionStatus,
     ) -> RepoResult<bool>;
     /// Records `v` (its `at` is the record time) for verify run `run_id`; `NotFound` when the
     /// connection is not in the organisation.

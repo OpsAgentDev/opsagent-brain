@@ -141,6 +141,18 @@ impl<C: Conn> UsersRepo for Pg<C> {
         Ok(())
     }
 
+    async fn set_name(&self, id: Uuid, name: &PersonName) -> RepoResult<()> {
+        users::Entity::update_many()
+            .col_expr(users::Column::Name, Expr::value(name.as_str()))
+            .col_expr(users::Column::UpdatedAt, Expr::value(now()))
+            .filter(users::Column::Id.eq(id))
+            .filter(users::Column::DeletedAt.is_null())
+            .exec(self.db())
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
     async fn accept_terms(&self, id: Uuid, at: DateTime<Utc>) -> RepoResult<()> {
         users::Entity::update_many()
             .col_expr(

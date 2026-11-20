@@ -135,6 +135,9 @@ impl DeliverWeekly {
     fn weekly_mail(&self, w: &Weekly, to: &Recipient) -> Mail {
         let k = &self.kit;
         let mut w = w.clone();
+        if !k.human_review_enabled {
+            w.human_review_url = None;
+        }
         if to.member {
             w.unsubscribe_url = None;
         } else {

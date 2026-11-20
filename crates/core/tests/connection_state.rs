@@ -18,6 +18,8 @@ fn listed_transitions() {
         (S::Degraded, E::VerifySuperset, S::Blocked),
         (S::Revoked, E::RoleReturned, S::Verifying),
         (S::Blocked, E::VerifyOk, S::Connected),
+        (S::Connected, E::ScansFailedThrice, S::Degraded),
+        (S::Degraded, E::ScanDone, S::Connected),
     ];
     for (from, ev, to) in cases {
         assert_eq!(transition(from, ev), Ok(to), "{from:?} + {ev:?}");
@@ -27,6 +29,26 @@ fn listed_transitions() {
 #[test]
 fn invalid_transition_is_err() {
     assert!(transition(S::Pending, E::VerifyOk).is_err());
+}
+
+/// Failing scans degrade only a connected connection, and a finished scan restores only a
+/// degraded one: every other status is left alone.
+#[test]
+fn scan_events_touch_only_connected_and_degraded() {
+    use S::*;
+    for from in [Pending, Verifying, Degraded, Revoked, Blocked, Disconnected] {
+        assert!(transition(from, E::ScansFailedThrice).is_err(), "{from:?}");
+    }
+    for from in [
+        Pending,
+        Verifying,
+        Connected,
+        Revoked,
+        Blocked,
+        Disconnected,
+    ] {
+        assert!(transition(from, E::ScanDone).is_err(), "{from:?}");
+    }
 }
 
 #[test]
@@ -41,6 +63,8 @@ fn disconnected_is_terminal() {
         AccessDeniedThrice,
         RoleReturned,
         Disconnect,
+        ScansFailedThrice,
+        ScanDone,
     ] {
         assert!(transition(S::Disconnected, ev).is_err(), "{ev:?}");
     }

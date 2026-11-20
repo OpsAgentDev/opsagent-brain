@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -23,6 +23,14 @@ pub struct RunKey {
     pub connection_id: Option<Uuid>,
     pub job_type: String,
     pub scheduled_at: DateTime<Utc>,
+}
+
+/// True for a run the scheduler created (a nightly scan): schedule slots are whole minutes,
+/// while manual, first and operator scans are keyed at the instant they were asked for.
+/// shortcut: a scan asked for on an exact minute, to the microsecond, counts as scheduled; give
+/// `runs` a trigger column if that ever matters.
+pub fn on_schedule_slot(scheduled_at: DateTime<Utc>) -> bool {
+    scheduled_at.second() == 0 && scheduled_at.timestamp_subsec_micros() == 0
 }
 
 /// A run as read back; runs are written through `opsagent_ledger::Storage`.
@@ -50,12 +58,13 @@ pub struct RunFilter {
 
 /// The read side of runs.
 /// Internal billing runs, not shown in an organisation's run history.
-pub const HIDDEN_JOB_TYPES: [&str; 5] = [
+pub const HIDDEN_JOB_TYPES: [&str; 6] = [
     "billing_sync",
     "billing_notice",
     "deliver_review_notice",
     "deliver_revoked_notice",
     "deliver_claimed_notice",
+    "deliver_scans_failing_notice",
 ];
 
 #[async_trait]
@@ -75,6 +84,15 @@ pub trait RunsRepo: Send + Sync {
         organisation_id: Uuid,
         connection_id: Uuid,
     ) -> RepoResult<Option<DateTime<Utc>>>;
+    /// The connection's unbroken streak of `failed` nightly `full_scan` runs, newest first: how
+    /// many, and the `scheduled_at` of the first of them. Nightly runs are those on a schedule
+    /// slot (`on_schedule_slot`); one that ended `done` or `partial` ends the streak, and
+    /// skipped or unfinished runs are ignored. `None` without a streak.
+    async fn failed_scan_streak(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+    ) -> RepoResult<Option<(u64, DateTime<Utc>)>>;
     /// True once the connection has a `full_scan` run that ended `done` or `partial`.
     async fn completed_full_scan(
         &self,

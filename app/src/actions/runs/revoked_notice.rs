@@ -1,12 +1,13 @@
 //! The owners' connection notices: the revoked-connection mail (PRD: "owners are emailed
-//! once") and the account-already-claimed mail (launch readiness H, 17b). An outbox run
+//! once"), the account-already-claimed mail (launch readiness H, 17b) and the scans-failing
+//! mail (launch readiness K3). An outbox run
 //! committed with the outcome, so an outcome that commits always mails and one that rolls back
 //! never does; each owner's mail is one ledger effect, so a resumed run does not resend.
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use opsagent_core::{
-    connection::{Connection, ConnectionStatus as S},
+    connection::{Connection, ConnectionStatus as S, SCANS_FAILING},
     org::org_web_base,
     run::{RunKey, RunStatus},
 };
@@ -35,6 +36,7 @@ use crate::{
 enum Notice {
     Revoked,
     Claimed,
+    ScansFailing,
 }
 
 impl Notice {
@@ -42,6 +44,7 @@ impl Notice {
         match JobKind::parse(&run.key.job_type) {
             Some(JobKind::DeliverRevokedNotice) => Ok(Self::Revoked),
             Some(JobKind::DeliverClaimedNotice) => Ok(Self::Claimed),
+            Some(JobKind::DeliverScansFailingNotice) => Ok(Self::ScansFailing),
             _ => Err(LedgerError::NotFound),
         }
     }
@@ -50,6 +53,7 @@ impl Notice {
         match self {
             Self::Revoked => "OpsAgent has lost access to a connected account",
             Self::Claimed => "Another organisation tried to connect your cloud account",
+            Self::ScansFailing => "OpsAgent could not finish its last three nightly scans",
         }
     }
 
@@ -58,6 +62,7 @@ impl Notice {
         match self {
             Self::Revoked => "connection_revoked",
             Self::Claimed => "account_claimed",
+            Self::ScansFailing => SCANS_FAILING,
         }
     }
 
@@ -68,8 +73,42 @@ impl Notice {
             Self::Revoked => Err("no_longer_revoked"),
             Self::Claimed if matches!(c.status, S::Connected | S::Degraded | S::Revoked) => Ok(()),
             Self::Claimed => Err("no_longer_claimed"),
+            Self::ScansFailing
+                if c.status == S::Degraded && c.status_reason.as_deref() == Some(SCANS_FAILING) =>
+            {
+                Ok(())
+            }
+            Self::ScansFailing => Err("no_longer_failing"),
         }
     }
+}
+
+/// Creates the run of notice `kind` for `c` at `scheduled_at` and, when the run is new, its
+/// job due at `run_at`: the run key is what makes a notice go out once.
+async fn enqueue(
+    tx: &dyn Tx,
+    kind: JobKind,
+    c: &Connection,
+    scheduled_at: DateTime<Utc>,
+    run_at: DateTime<Utc>,
+) -> AppResult<()> {
+    let key = RunKey {
+        organisation_id: Some(c.organisation_id),
+        connection_id: Some(c.id),
+        job_type: kind.as_str().into(),
+        scheduled_at,
+    };
+    let out = tx.ledger().create_run(key).await?;
+    if out.created {
+        let run_id = out.run.id;
+        let job = NewJob {
+            kind,
+            run_id,
+            run_at,
+        };
+        tx.queue().enqueue(job).await?;
+    }
+    Ok(())
 }
 
 /// Creates the notice run and job for `c`, on the transaction that revokes it. `at` is the
@@ -79,23 +118,7 @@ pub async fn enqueue_revoked_notice(
     c: &Connection,
     at: DateTime<Utc>,
 ) -> AppResult<()> {
-    let kind = JobKind::DeliverRevokedNotice;
-    let key = RunKey {
-        organisation_id: Some(c.organisation_id),
-        connection_id: Some(c.id),
-        job_type: kind.as_str().into(),
-        scheduled_at: at,
-    };
-    let out = tx.ledger().create_run(key).await?;
-    if out.created {
-        let job = NewJob {
-            kind,
-            run_id: out.run.id,
-            run_at: at,
-        };
-        tx.queue().enqueue(job).await?;
-    }
-    Ok(())
+    enqueue(tx, JobKind::DeliverRevokedNotice, c, at, at).await
 }
 
 /// Creates the notice run and job for `holder`, whose account `attempting` (another
@@ -111,26 +134,24 @@ pub async fn enqueue_claimed_notice(
     now: DateTime<Utc>,
 ) -> AppResult<()> {
     let kind = JobKind::DeliverClaimedNotice;
-    let key = RunKey {
-        organisation_id: Some(holder.organisation_id),
-        connection_id: Some(holder.id),
-        job_type: kind.as_str().into(),
-        scheduled_at: attempting.created_at,
-    };
-    let out = tx.ledger().create_run(key).await?;
-    if out.created {
-        let job = NewJob {
-            kind,
-            run_id: out.run.id,
-            run_at: now,
-        };
-        tx.queue().enqueue(job).await?;
-    }
-    Ok(())
+    enqueue(tx, kind, holder, attempting.created_at, now).await
 }
 
-/// `deliver_revoked_notice` and `deliver_claimed_notice`: mails each owner once under the
-/// run's ledger lease.
+/// Creates the notice run and job for `c`, on the transaction that degrades it for failing
+/// scans. Keyed to `streak_from`, the first failed scan of the streak, so one streak has one
+/// run however often it degrades the connection.
+pub async fn enqueue_scans_failing_notice(
+    tx: &dyn Tx,
+    c: &Connection,
+    streak_from: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> AppResult<()> {
+    let kind = JobKind::DeliverScansFailingNotice;
+    enqueue(tx, kind, c, streak_from, now).await
+}
+
+/// `deliver_revoked_notice`, `deliver_claimed_notice` and `deliver_scans_failing_notice`: mails
+/// each owner once under the run's ledger lease.
 #[derive(Clone)]
 pub struct DeliverRevokedNotice {
     uow: Arc<dyn UnitOfWork>,
@@ -255,6 +276,14 @@ impl DeliverRevokedNotice {
         let name = name
             .or(account)
             .unwrap_or_else(|| "your connected account".into());
+        if notice == Notice::ScansFailing {
+            return format!(
+                "OpsAgent could not finish its last three nightly scans of {name}. Your findings \
+                 may be out of date. We are looking into it; you do not need to do anything.\n\n\
+                 Open the connection: {}",
+                self.link(slug, c)
+            );
+        }
         format!(
             "OpsAgent can no longer reach {name}: its role denied access on repeated checks, so \
              scans for it have stopped.\n\nRestore the role and OpsAgent will reconnect it \

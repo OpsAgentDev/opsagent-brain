@@ -300,3 +300,26 @@ async fn other_suppressions_still_block_a_member() {
     })
     .await;
 }
+
+/// Launch readiness K1: with human review switched off the weekly never offers one.
+#[tokio::test]
+#[serial]
+async fn weekly_offers_no_human_review_while_it_is_switched_off() {
+    serve_with(
+        |c| c.human_review_enabled = false,
+        |req, ctx| async move {
+            let w = world(&req, &ctx, "lead@example.com").await;
+            let mail = prepare(&ctx);
+            scan(&ctx, &w, Utc::now()).await;
+            weekly(&ctx, &w, Some(w.conn)).await;
+            let sent = mail.sent();
+            assert_eq!(sent.len(), 1, "{sent:?}");
+            for out in [&sent[0].text, sent[0].html.as_ref().unwrap()] {
+                assert!(out.contains("/o/"), "{out}");
+                assert!(!out.contains("human review"), "{out}");
+                assert!(!out.contains("/settings/human-review"), "{out}");
+            }
+        },
+    )
+    .await;
+}

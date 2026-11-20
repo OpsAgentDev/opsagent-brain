@@ -9,6 +9,7 @@ pub mod full_scan;
 mod operator_notice;
 mod retention;
 mod runner;
+mod scan_streak;
 mod takeover;
 mod verify;
 mod watch_scan;

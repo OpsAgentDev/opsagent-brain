@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     repo::{PageOf, PageRequest, RepoResult},
-    run::{Run, RunFilter, RunKey, RunStatus, RunsRepo},
+    run::{on_schedule_slot, Run, RunFilter, RunKey, RunStatus, RunsRepo},
 };
 use opsagent_ledger::{
     Checkpoint, CreateRunOutcome, EffectState, JobKind, LedgerError, Result, RunRow, Storage,
@@ -133,6 +133,35 @@ impl RunsRepo for MemStore {
                 && r.row.key.job_type == JobKind::FullScan.as_str()
         });
         Ok(scans.map(|r| r.row.key.scheduled_at).max())
+    }
+
+    async fn failed_scan_streak(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+    ) -> RepoResult<Option<(u64, DateTime<Utc>)>> {
+        let s = self.state();
+        let mut nightly: Vec<_> = s
+            .runs
+            .iter()
+            .filter(|r| {
+                r.in_org(organisation_id)
+                    && r.row.key.connection_id == Some(connection_id)
+                    && r.row.key.job_type == JobKind::FullScan.as_str()
+                    && on_schedule_slot(r.row.key.scheduled_at)
+                    && matches!(
+                        r.row.status,
+                        RunStatus::Done | RunStatus::Partial | RunStatus::Failed
+                    )
+            })
+            .map(|r| (r.row.key.scheduled_at, r.row.status))
+            .collect();
+        nightly.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+        let failed = nightly
+            .iter()
+            .take_while(|(_, status)| *status == RunStatus::Failed);
+        let first = failed.clone().last().map(|(at, _)| *at);
+        Ok(first.map(|at| (failed.count() as u64, at)))
     }
 
     async fn completed_full_scan(

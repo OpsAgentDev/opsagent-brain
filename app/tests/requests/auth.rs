@@ -1016,3 +1016,67 @@ async fn a_deleted_accounts_other_session_can_sign_in_again() {
     })
     .await;
 }
+
+/// Launch readiness K2: `PATCH /v1/auth/me` changes the name and nothing else.
+#[tokio::test]
+#[serial]
+async fn the_signed_in_user_can_change_their_name() {
+    use opsagent_brain::models::_entities::audit_events;
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let patch = |body: Value| req.patch("/v1/auth/me").json(&body);
+        let res = patch(json!({ "name": "Pat" })).await;
+        assert_eq!(res.status_code(), 401, "{}", res.text());
+
+        let token = sign_in(&req, &mail, "pat@example.com").await;
+        // CSRF as other writes.
+        let res = patch(json!({ "name": "Pat" })).await;
+        assert_eq!(res.status_code(), 403, "{}", res.text());
+        assert_eq!(res.json::<Value>()["code"], "csrf");
+        assert_eq!(name_of(&ctx, "pat@example.com").await, None);
+
+        let res = patch(json!({ "name": "  Pat Smith " }))
+            .add_header("X-CSRF-Token", &token)
+            .await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        // The same body as GET /v1/auth/me.
+        let me = req.get("/v1/auth/me").await.json::<Value>();
+        assert_eq!(res.json::<Value>(), me);
+        assert_eq!(me["name"], "Pat Smith");
+        assert_eq!(me["email"], "pat@example.com");
+
+        // The sign-up name rules; an email in the body changes nothing.
+        let long = "x".repeat(81);
+        for bad in [
+            json!({ "name": "   " }),
+            json!({ "name": "a\u{7}b" }),
+            json!({ "name": long }),
+        ] {
+            let res = patch(bad).add_header("X-CSRF-Token", &token).await;
+            assert_eq!(res.status_code(), 422, "{}", res.text());
+            assert_eq!(res.json::<Value>()["code"], "validation");
+        }
+        let res = patch(json!({ "name": "Pat S", "email": "other@example.com" }))
+            .add_header("X-CSRF-Token", &token)
+            .await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        assert_eq!(res.json::<Value>()["email"], "pat@example.com");
+        assert_eq!(
+            name_of(&ctx, "pat@example.com").await.as_deref(),
+            Some("Pat S")
+        );
+
+        // One audit row per change, by and about the user.
+        let id: uuid::Uuid = me["id"].as_str().unwrap().parse().unwrap();
+        let audit = audit_events::Entity::find()
+            .filter(audit_events::Column::Action.eq("user.update_name"))
+            .all(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(audit.len(), 2, "{audit:?}");
+        assert_eq!(audit[0].target_type.as_deref(), Some("user"));
+        assert_eq!(audit[0].target_id.as_deref(), Some(id.to_string().as_str()));
+        assert_eq!(audit[0].organisation_id, None);
+    })
+    .await;
+}

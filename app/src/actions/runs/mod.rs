@@ -11,6 +11,7 @@ mod operator_notice;
 mod request_manual_scan;
 mod revoked_notice;
 mod scan_now;
+mod scan_streak;
 mod scheduler_tick;
 mod verify_connection;
 mod verify_outcome;
