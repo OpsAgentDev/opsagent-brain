@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: OpsAgent read-only role, template version 3. Allowlist of exactly the reads OpsAgent makes, plus an explicit data-plane deny.
+
+Parameters:
+  ExternalId:
+    Type: String
+    NoEcho: true
+    MinLength: 1
+    Description: ExternalId issued by OpsAgent for this connection.
+  OpsAgentPrincipal:
+    Type: String
+    Description: ARN of the OpsAgent outbound role allowed to assume this role.
+  OrgShortId:
+    Type: String
+    AllowedPattern: "[a-z0-9]{8}"
+    Description: Short OpsAgent organisation id, used in the role name.
+  TemplateVersion:
+    Type: String
+    Default: "3"
+    AllowedValues: ["3"]
+  TerraformStateBucket:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+    Description: Optional. Bucket holding Terraform state OpsAgent may read.
+  TerraformStatePrefix:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[^*$]*/$"
+    Description: Optional. Key prefix of the Terraform state objects; no "*" or "$", ends with "/".
+
+Conditions:
+  HasTerraformState: !And
+    - !Not [!Equals [!Ref TerraformStateBucket, ""]]
+    - !Not [!Equals [!Ref TerraformStatePrefix, ""]]
+
+Resources:
+  OpsAgentReadRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "OpsAgentReadRole-${OrgShortId}"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref OpsAgentPrincipal
+            Action:
+              - sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+          # sts:ExternalId is not in the TagSession request context, so tagging needs its own statement.
+          - Effect: Allow
+            Principal:
+              AWS: !Ref OpsAgentPrincipal
+            Action:
+              - sts:TagSession
+      Policies:
+        - PolicyName: OpsAgentReadAllowlist
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # One line per call the connector makes; tests/aws_template.rs fails when the two drift.
+              - Sid: ReadMetadata
+                Effect: Allow
+                Action:
+                  - ec2:DescribeRegions
+                  - ec2:DescribeInstances
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeSnapshots
+                  - ec2:DescribeAddresses
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeNetworkInterfaces
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - rds:DescribeDBInstances
+                  - rds:DescribeDBClusters
+                  - rds:DescribeDBSnapshots
+                  - rds:DescribeDBSnapshotAttributes
+                  - rds:DescribeDBClusterSnapshots
+                  # Who may restore a cluster snapshot: public when it includes "all". Names no data.
+                  - rds:DescribeDBClusterSnapshotAttributes
+                  - s3:ListAllMyBuckets
+                  - s3:GetBucketLocation
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetBucketPolicyStatus
+                  - iam:GenerateCredentialReport
+                  - iam:GetCredentialReport
+                  - iam:ListAttachedUserPolicies
+                  - iam:SimulatePrincipalPolicy
+                  - cloudtrail:DescribeTrails
+                  - cloudtrail:GetTrailStatus
+                  - guardduty:ListDetectors
+                  - guardduty:GetDetector
+                  - backup:ListBackupPlans
+                  - backup:GetBackupPlan
+                  - backup:ListBackupSelections
+                  - backup:GetBackupSelection
+                  - backup:ListBackupJobs
+                  - backup:ListBackupVaults
+                  - acm:ListCertificates
+                  - acm:DescribeCertificate
+                  - logs:DescribeLogGroups
+                  - cloudwatch:GetMetricData
+                  # Metric names only; the GPU read is a GetMetricData SEARCH expression.
+                  - cloudwatch:ListMetrics
+                  - sagemaker:ListTrainingJobs
+                  - ce:GetCostAndUsage
+                  - sts:GetCallerIdentity
+                Resource: "*"
+              - Sid: ReadOwnRolePolicy
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/OpsAgentReadRole-*"
+        - PolicyName: OpsAgentDenyDataPlane
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DenyDataPlane
+                Effect: Deny
+                Action:
+                  - ssm:GetParameter*
+                  - secretsmanager:GetSecretValue
+                  - kms:Decrypt
+                  - sqs:ReceiveMessage
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:BatchGetItem
+                  - lambda:GetFunction
+                  - ec2:GetPasswordData
+                  - ec2:GetConsoleOutput
+                  - ec2:GetConsoleScreenshot
+                  - rds:DownloadDBLogFilePortion
+                  # Reads that return user data, container environment or hyperparameters.
+                  - ec2:GetLaunchTemplateData
+                  - ec2:DescribeLaunchTemplateVersions
+                  - ec2:DescribeInstanceAttribute
+                  - autoscaling:DescribeLaunchConfigurations
+                  - lambda:GetLayerVersion
+                  - lambda:GetLayerVersionByArn
+                  - ecs:DescribeTasks
+                  - sagemaker:DescribeModel
+                  - sagemaker:DescribeEndpointConfig
+                  - sagemaker:DescribeTrainingJob
+                  - sagemaker:DescribeProcessingJob
+                  - sagemaker:DescribeTransformJob
+                Resource: "*"
+              # Explicit Deny beats Allow, so the Terraform state prefix is carved out of the deny when set.
+              - !If
+                - HasTerraformState
+                - Sid: DenyObjectReads
+                  Effect: Deny
+                  Action:
+                    - s3:GetObject*
+                  NotResource: !Sub "arn:${AWS::Partition}:s3:::${TerraformStateBucket}/${TerraformStatePrefix}*"
+                - Sid: DenyObjectReads
+                  Effect: Deny
+                  Action:
+                    - s3:GetObject*
+                  Resource: "*"
+              - Sid: DenyUntaggedLogEvents
+                Effect: Deny
+                Action:
+                  - logs:GetLogEvents
+                Resource: "*"
+                Condition:
+                  StringNotEquals:
+                    aws:ResourceTag/opsagent:logs: allow
+        - !If
+          - HasTerraformState
+          - PolicyName: OpsAgentTerraformState
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Sid: ReadTerraformState
+                  Effect: Allow
+                  Action:
+                    - s3:GetObject
+                  Resource: !Sub "arn:${AWS::Partition}:s3:::${TerraformStateBucket}/${TerraformStatePrefix}*"
+          - !Ref AWS::NoValue
+
+Outputs:
+  RoleArn:
+    Value: !GetAtt OpsAgentReadRole.Arn
+  TemplateVersion:
+    Value: !Ref TemplateVersion

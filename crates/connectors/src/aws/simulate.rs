@@ -14,6 +14,28 @@ pub const RESTORE_ACTIONS: &[&str] = &[
     "ec2:RunInstances",
 ];
 
+/// The one read of who an Aurora cluster snapshot is shared with, which roles made before
+/// template version 3 do not hold.
+pub const SHARING_ACTION: &str = "rds:DescribeDBClusterSnapshotAttributes";
+
+/// True when `role_arn`'s own policies allow `SHARING_ACTION`. A simulation, not a call that
+/// fails: a role that lacks it leaves no denied request in the customer's CloudTrail. A role
+/// that cannot be simulated, or any error, answers false: those snapshots go unread rather
+/// than failing the scan.
+pub async fn allows_cluster_snapshot_sharing(iam: &aws_sdk_iam::Client, role_arn: &str) -> bool {
+    let sent = iam
+        .simulate_principal_policy()
+        .policy_source_arn(role_arn)
+        .action_names(SHARING_ACTION)
+        .send()
+        .await;
+    sent.is_ok_and(|out| {
+        out.evaluation_results()
+            .iter()
+            .any(|e| *e.eval_decision() == PolicyEvaluationDecisionType::Allowed)
+    })
+}
+
 /// Sorted `allowed`, `denied` and `unknown` actions for `role_arn`, simulated from a session in
 /// `own_account`. See `Connector::simulate_restore` for the contract.
 pub async fn simulate_restore(

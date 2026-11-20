@@ -56,12 +56,22 @@ impl Check for CostAndIdle {
                     "AWS bills public IPv4 addresses even when they point at nothing. Release it unless it is kept on purpose: EC2 console > Elastic IPs > Actions > Release, or `aws ec2 release-address --allocation-id <allocation-id>`.",
                     "associated=false".to_owned(),
                 ),
-                "elb" if a["request_count_7d"].as_u64() == Some(0) => (
-                    "idle_load_balancer",
-                    format!("Idle load balancer {n}"),
-                    "A load balancer with no requests is billed by the hour for nothing. Confirm nothing routes to it, then delete it: EC2 console > Load balancers > Actions > Delete, or `aws elbv2 delete-load-balancer --load-balancer-arn <arn>`.",
-                    "request_count_7d=0".to_owned(),
-                ),
+                // Application balancers count requests, network ones bytes; null is unknown, never idle.
+                "elb" if a["request_count_7d"].as_u64() == Some(0)
+                    || a["processed_bytes_7d"].as_u64() == Some(0) =>
+                {
+                    let key = if a["request_count_7d"].is_null() {
+                        "processed_bytes_7d"
+                    } else {
+                        "request_count_7d"
+                    };
+                    (
+                        "idle_load_balancer",
+                        format!("Idle load balancer {n}"),
+                        "A load balancer with no traffic for a week is billed by the hour for nothing. Confirm nothing routes to it, then delete it: EC2 console > Load balancers > Actions > Delete, or `aws elbv2 delete-load-balancer --load-balancer-arn <arn>`.",
+                        format!("{key}=0"),
+                    )
+                }
                 "ec2"
                     if a["state"] == "running"
                         && a["cpu_avg_7d"].as_f64().is_some_and(|c| c < 5.0) =>

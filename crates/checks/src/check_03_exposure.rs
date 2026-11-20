@@ -10,6 +10,32 @@ const ADMIN_PORTS: [u64; 11] = [
     22, 3389, 3306, 5432, 1433, 27017, 6379, 9200, 5601, 11211, 2375,
 ];
 
+/// Snapshot kinds that can be shared with every AWS account: (service, variant, label, what a
+/// copy gives, how to make it private). Each is critical, and a 15-minute watch scan covers all.
+const PUBLIC_SNAPSHOTS: [(&str, &str, &str, &str, &str); 3] = [
+    (
+        "rds",
+        "public_snapshot",
+        "Snapshot",
+        "restore its data",
+        "A public snapshot hands every AWS account a copy of the database. RDS console > Snapshots > Actions > Share snapshot > DB snapshot visibility: Private, or `aws rds modify-db-snapshot-attribute --db-snapshot-identifier <id> --attribute-name restore --values-to-remove all`.",
+    ),
+    (
+        "rds_cluster_snapshot",
+        "public_cluster_snapshot",
+        "Cluster snapshot",
+        "restore its data",
+        "A public cluster snapshot hands every AWS account a copy of the database. RDS console > Snapshots > Manual > the snapshot > Actions > Share snapshot > DB snapshot visibility: Private, or `aws rds modify-db-cluster-snapshot-attribute --db-cluster-snapshot-identifier <id> --attribute-name restore --values-to-remove all`.",
+    ),
+    (
+        "ebs_snapshot",
+        "public_disk_snapshot",
+        "Disk snapshot",
+        "create a volume from its data",
+        "A public disk snapshot hands every AWS account a copy of the disk. EC2 console > Snapshots > Actions > Modify permissions > Private, or `aws ec2 modify-snapshot-attribute --snapshot-id <snapshot-id> --attribute createVolumePermission --operation-type remove --group-names all`.",
+    ),
+];
+
 impl Check for PublicExposure {
     fn id(&self) -> &'static str {
         "03"
@@ -21,22 +47,33 @@ impl Check for PublicExposure {
         &[Capability::PublicAccess]
     }
 
-    // shortcut: ~76 lines, one match arm per exposure kind (snapshot, bucket, SG); split into a fn per service when a fourth appears.
+    // shortcut: ~75 lines, one match arm per exposure kind (database, bucket, SG; snapshots are a table); split into a fn per service when another appears.
     fn run(&self, ctx: &CheckCtx) -> Vec<FindingDraft> {
         let mut out = vec![];
         for r in ctx.resources {
             let a = &r.attributes;
             let (n, id) = (short(r), &r.identity);
+            let snapshot = PUBLIC_SNAPSHOTS.iter().find(|k| k.0 == r.service());
+            if let (Some(&(_, variant, label, gives, step)), true) = (snapshot, a["public"] == true)
+            {
+                let (title, s) = (
+                    format!("{label} {n} is public"),
+                    format!("Any AWS account can copy {id} and {gives}."),
+                );
+                let ex = "snapshot=true public=true".into();
+                out.push(draft(
+                    ctx,
+                    "03",
+                    r,
+                    variant,
+                    Severity::Critical,
+                    (title, s, step),
+                    ex,
+                ));
+                continue;
+            }
             let (variant, sev, title, s, step, ex): (&str, _, String, String, &str, String) =
                 match r.service() {
-                    "rds" if a["snapshot"] == true && a["public"] == true => (
-                        "public_snapshot",
-                        Severity::Critical,
-                        format!("Snapshot {n} is public"),
-                        format!("Any AWS account can copy {id} and restore its data."),
-                        "A public snapshot hands every AWS account a copy of the database. RDS console > Snapshots > Actions > Share snapshot > DB snapshot visibility: Private, or `aws rds modify-db-snapshot-attribute --db-snapshot-identifier <id> --attribute-name restore --values-to-remove all`.",
-                        "snapshot=true public=true".into(),
-                    ),
                     "rds" if a["publicly_accessible"] == true => (
                         "public_database",
                         Severity::Critical,

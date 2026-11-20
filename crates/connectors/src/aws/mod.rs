@@ -137,12 +137,21 @@ impl Connector for AwsConnector {
     }
 
     async fn inventory(&self, creds: &Credentials, scope: &Scope) -> Result<InventoryResult> {
-        let (arn, ext, _, ctx, _) = aws_role(creds)?;
+        let (arn, ext, _, ctx, version) = aws_role(creds)?;
         let role = client::parse_role_arn(arn)?;
         let session = self
             .session(arn, ext, ctx, inventory::INVENTORY_ACTIONS)
             .await?;
-        inventory::inventory(&session, &role.partition, &role.account, scope).await
+        // Roles made before version 3 are asked, once, whether a stack update has since given
+        // them the cluster snapshot sharing read: a simulation, so a role without them sees no denied call.
+        let sharing = policy_diff::reads_cluster_snapshot_sharing(version)
+            || (inventory::reads_cluster_snapshots(scope)
+                && simulate::allows_cluster_snapshot_sharing(
+                    &aws_sdk_iam::Client::new(&session),
+                    arn,
+                )
+                .await);
+        inventory::inventory(&session, &role.partition, &role.account, scope, sharing).await
     }
 
     async fn cost_daily(&self, creds: &Credentials, days: u32) -> Result<Vec<CostRow>> {

@@ -10,6 +10,7 @@ mod logging;
 mod logs;
 mod rds;
 mod s3;
+pub mod usage;
 
 pub use acm::certificates;
 pub use backup::{backups, mark_backup_coverage};
@@ -44,6 +45,7 @@ pub const INVENTORY_ACTIONS: &[&str] = &[
     "rds:DescribeDBInstances",
     "rds:DescribeDBClusters",
     "rds:DescribeDBClusterSnapshots",
+    "rds:DescribeDBClusterSnapshotAttributes",
     "rds:DescribeDBSnapshots",
     "rds:DescribeDBSnapshotAttributes",
     "s3:ListAllMyBuckets",
@@ -53,6 +55,7 @@ pub const INVENTORY_ACTIONS: &[&str] = &[
     "iam:GenerateCredentialReport",
     "iam:GetCredentialReport",
     "iam:ListAttachedUserPolicies",
+    "iam:SimulatePrincipalPolicy",
     "cloudtrail:DescribeTrails",
     "cloudtrail:GetTrailStatus",
     "guardduty:ListDetectors",
@@ -70,6 +73,11 @@ pub const INVENTORY_ACTIONS: &[&str] = &[
     "cloudwatch:ListMetrics",
     "sagemaker:ListTrainingJobs",
 ];
+
+/// True when `scope` includes the cluster snapshots, whose sharing needs the v3 read.
+pub fn reads_cluster_snapshots(scope: &Scope) -> bool {
+    scope.services.is_empty() || scope.services.iter().any(|s| s == "rds_cluster_snapshot")
+}
 
 /// Account and region a call is made in; builds ARNs and `Resource`s.
 #[derive(Debug, Clone, Copy)]
@@ -248,6 +256,7 @@ async fn regional(
     session: &SdkConfig,
     t: &Target<'_>,
     want: &impl Fn(&str) -> bool,
+    sharing: bool,
     out: &mut Collect,
 ) {
     let cfg = session
@@ -259,7 +268,7 @@ async fn regional(
     let rds = aws_sdk_rds::Client::new(&cfg);
     let ct = aws_sdk_cloudtrail::Client::new(&cfg);
     let gd = aws_sdk_guardduty::Client::new(&cfg);
-    let (mut a, mut b, c, d, e, mut f, g, h, i, j, k, l) = tokio::join!(
+    let (mut a, mut b, c, d, mut e, mut f, g, h, i, j, k, l) = tokio::join!(
         gate(want("ec2"), ec2_instances(&ec2, t)),
         gate(want("ebs"), ec2_volumes(&ec2, t)),
         gate(want("eip"), ec2_addresses(&ec2, t)),
@@ -271,9 +280,23 @@ async fn regional(
         gate(want("guardduty"), guardduty(&gd, t)),
         gate(want("ebs_snapshot"), ec2_snapshots(&ec2, t)),
         gate(want("rds_cluster"), rds_clusters(&rds, t)),
-        gate(want("rds_cluster_snapshot"), rds_cluster_snapshots(&rds, t)),
+        gate(
+            want("rds_cluster_snapshot"),
+            rds_cluster_snapshots(&rds, t, sharing)
+        ),
     );
     protection_and_ml(&cfg, t, want, out, &mut a, &mut b, &mut f).await;
+    let cw = aws_sdk_cloudwatch::Client::new(&cfg);
+    let now = Utc::now();
+    for failure in [
+        usage::ec2_cpu(&cw, &mut a, now).await,
+        usage::lb_traffic(&cw, &mut e, now).await,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        out.record("cloudwatch", t.region, Some(Err(failure)));
+    }
     for (svc, r) in [
         ("ec2", a),
         ("ebs", b),
@@ -351,13 +374,15 @@ async fn protection_and_ml(
     out.result.partial_errors.extend(cert_errs);
 }
 
-/// Full inventory for a session. Per-service failures land in `partial_errors`; see
+/// Full inventory for a session. `sharing`: the role may read who cluster snapshots are shared with
+/// (`policy_diff::reads_cluster_snapshot_sharing`). Per-service failures land in `partial_errors`; see
 /// `auth_failure` for when the whole call fails with `ConnectorError::Auth`.
 pub async fn inventory(
     session: &SdkConfig,
     partition: &str,
     account: &str,
     scope: &Scope,
+    sharing: bool,
 ) -> Result<InventoryResult> {
     let want = |s: &str| scope.services.is_empty() || scope.services.iter().any(|x| x == s);
     let mut out = Collect::default();
@@ -367,7 +392,7 @@ pub async fn inventory(
             account,
             region,
         };
-        regional(session, &t, &want, &mut out).await;
+        regional(session, &t, &want, sharing, &mut out).await;
     }
     let global = Target {
         partition,

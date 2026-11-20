@@ -87,8 +87,12 @@ async fn describe_volumes_maps_encrypted_flag() {
 async fn describe_snapshots_maps_encrypted_owner_self() {
     use aws_sdk_ec2::operation::describe_snapshots::DescribeSnapshotsOutput;
     use aws_sdk_ec2::types::Snapshot;
+    // The first call is the public listing (restorable by all): none is public here.
+    let public = mock!(aws_sdk_ec2::Client::describe_snapshots)
+        .match_requests(|r| r.owner_ids() == ["self"] && r.restorable_by_user_ids() == ["all"])
+        .then_output(|| DescribeSnapshotsOutput::builder().build());
     let rule = mock!(aws_sdk_ec2::Client::describe_snapshots)
-        .match_requests(|r| r.owner_ids() == ["self"])
+        .match_requests(|r| r.owner_ids() == ["self"] && r.restorable_by_user_ids().is_empty())
         .then_output(|| {
             DescribeSnapshotsOutput::builder()
                 .snapshots(
@@ -100,7 +104,7 @@ async fn describe_snapshots_maps_encrypted_owner_self() {
                 .snapshots(Snapshot::builder().snapshot_id("snap-2").build())
                 .build()
         });
-    let ec2 = mock_client!(aws_sdk_ec2, RuleMode::Sequential, [&rule]);
+    let ec2 = mock_client!(aws_sdk_ec2, RuleMode::MatchAny, [&public, &rule]);
     let r = ec2_snapshots(&ec2, &T).await.unwrap();
     assert_eq!(
         r[0].identity,
@@ -108,7 +112,7 @@ async fn describe_snapshots_maps_encrypted_owner_self() {
     );
     assert_eq!(
         r[0].attributes,
-        json!({"service": "ebs_snapshot", "encrypted": false})
+        json!({"service": "ebs_snapshot", "public": false, "encrypted": false})
     );
     assert_eq!(r[1].attributes["encrypted"], serde_json::Value::Null);
 }
@@ -208,10 +212,10 @@ async fn describe_db_cluster_snapshots_maps_storage_encrypted_manual_only() {
                 .build()
         });
     let rds = mock_client!(aws_sdk_rds, RuleMode::Sequential, [&rule]);
-    let r = rds_cluster_snapshots(&rds, &T).await.unwrap();
+    let r = rds_cluster_snapshots(&rds, &T, false).await.unwrap();
     assert_eq!(r[0].name, "aurora-snap");
     assert_eq!(
         r[0].attributes,
-        json!({"service": "rds_cluster_snapshot", "encrypted": false})
+        json!({"service": "rds_cluster_snapshot", "public": null, "encrypted": false})
     );
 }
