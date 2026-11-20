@@ -370,6 +370,78 @@ async fn daily_limit_does_not_touch_byok() {
     assert_eq!(spent.unwrap(), dec(0), "BYOK credits are not counted");
 }
 
+async fn spent_today(e: &Env) -> Decimal {
+    let day = Utc::now().format("%Y-%m-%d");
+    let spent = e.tally.total(&format!("ai:opsagent_credits:{day}")).await;
+    spent.unwrap()
+}
+
+#[tokio::test]
+async fn daily_limit_refusal_tells_the_customer_what_to_do() {
+    let e = env(vec![], true).await;
+    e.enable().await;
+    *e.daily_limit.lock().unwrap() = 0;
+    // Included credits left and no top-up: OpsAgent would pay, so the ceiling refuses.
+    let err = e.access().plan(e.org(), ModelRole::Chat).await.err();
+    match err.expect("refused") {
+        AppError::Refused { code, detail, .. } => {
+            assert_eq!(code, AI_UNAVAILABLE);
+            assert_eq!(
+                detail,
+                "Dashboard AI is busy right now. Try again later, or use your own AI key in \
+                 Settings > AI."
+            );
+        }
+        e => panic!("{e:?}"),
+    }
+    // A top-up does not lift the ceiling while included credits would still pay.
+    e.store
+        .grant_topup(e.org(), dec(1000), "evt_1")
+        .await
+        .unwrap();
+    assert_eq!(refused_with(&e.access(), e.org()).await, AI_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn daily_limit_does_not_stop_or_count_topup_credits() {
+    let e = env(vec![text()], true).await;
+    e.enable().await;
+    e.used(KeySource::OpsAgent, 1000).await;
+    *e.daily_limit.lock().unwrap() = 0;
+    let a = e.access();
+    // Included credits used up, no top-up: the quota refuses, as without a ceiling.
+    assert_eq!(refused_with(&a, e.org()).await, AI_QUOTA_REACHED);
+    e.store
+        .grant_topup(e.org(), dec(1000), "evt_1")
+        .await
+        .unwrap();
+    assert_eq!(a.status(&e.scope).await.unwrap().state, "ready");
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    e.call(&a, &mut plan).await.unwrap();
+    assert_eq!(e.store.topup_balance(e.org()).await.unwrap(), dec(980));
+    assert_eq!(
+        spent_today(&e).await,
+        dec(0),
+        "top-up credits are not counted"
+    );
+}
+
+#[tokio::test]
+async fn daily_limit_counts_only_the_included_part_of_a_call() {
+    let e = env(vec![text()], true).await;
+    e.enable().await;
+    e.store
+        .grant_topup(e.org(), dec(100), "evt_1")
+        .await
+        .unwrap();
+    e.used(KeySource::OpsAgent, 990).await;
+    let a = e.access();
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    // 20 credits: 10 included, 10 from the top-up.
+    e.call(&a, &mut plan).await.unwrap();
+    assert_eq!(spent_today(&e).await, dec(10));
+}
+
 struct BrokenTally;
 
 #[async_trait]

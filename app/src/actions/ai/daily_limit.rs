@@ -1,5 +1,6 @@
 //! The daily ceiling on OpsAgent's own model key across every organisation: a Redis tally of
-//! credits, read before a call and added to where usage is metered. BYOK never touches it.
+//! credits, read before a call and added to where usage is metered. BYOK never touches it,
+//! and neither do credits paid from a top-up balance: it counts included credits only.
 use std::sync::Arc;
 
 use async_trait::async_trait;
