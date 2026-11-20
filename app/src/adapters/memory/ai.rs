@@ -192,7 +192,7 @@ impl AiRepo for MemStore {
         s.org_mut(row.organisation_id)?;
         s.ai.usage.push((row.clone(), Utc::now()));
         let balance = s.ai.topup.entry(row.organisation_id).or_default();
-        *balance -= topup_debit;
+        *balance = (*balance - topup_debit).max(Decimal::ZERO);
         Ok(())
     }
 

@@ -217,11 +217,11 @@ contract_suite! {
         assert_eq!(s.ai().topup_balance(o).await.unwrap(), dec("997.75"));
         s.ai().record_usage(&usage(o, KeySource::OpsAgent, "1"), Decimal::ZERO).await.unwrap();
         assert_eq!(s.ai().topup_balance(o).await.unwrap(), dec("997.75"));
-        // An overshoot goes below zero: it is owed from the next top-up.
+        // An overshoot stops at zero: nothing is owed from the next top-up.
         s.ai().record_usage(&usage(o, KeySource::OpsAgent, "2000"), dec("1500")).await.unwrap();
-        assert_eq!(s.ai().topup_balance(o).await.unwrap(), dec("-502.25"));
+        assert_eq!(s.ai().topup_balance(o).await.unwrap(), Decimal::ZERO);
         assert!(s.ai().grant_topup(o, dec("1000"), "evt_3").await.unwrap());
-        assert_eq!(s.ai().topup_balance(o).await.unwrap(), dec("497.75"));
+        assert_eq!(s.ai().topup_balance(o).await.unwrap(), dec("1000"));
         assert_eq!(s.ai().topup_balance(other).await.unwrap(), dec("1000"));
         let day = (now() - Duration::days(1), now() + Duration::days(1));
         let used = s.ai().credits_used(o, KeySource::OpsAgent, day.0, day.1).await.unwrap();

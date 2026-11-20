@@ -69,6 +69,28 @@ fn public_db_and_prefix_bucket() {
 }
 
 #[test]
+fn search_cache_and_docker_ports_are_admin_ports() {
+    let sg = |ports: &[u16]| serde_json::json!({"service":"sg","open_world_ports":ports,"attached_to":"instance"});
+    let rs = [
+        res("sg-es", sg(&[9200])),
+        res("sg-kibana", sg(&[443, 5601])),
+        res("sg-memcached", sg(&[11211])),
+        res("sg-docker", sg(&[2375])),
+        // Not an admin port: an app port alone is not flagged.
+        res("sg-app", sg(&[8080])),
+    ];
+    assert_eq!(
+        set(&run(&PublicExposure, &rs, &[])),
+        vec![
+            t("sg-docker", "sg_open_admin_port", Critical),
+            t("sg-es", "sg_open_admin_port", Critical),
+            t("sg-kibana", "sg_open_admin_port", Critical),
+            t("sg-memcached", "sg_open_admin_port", Critical),
+        ]
+    );
+}
+
+#[test]
 fn public_bucket_and_group_on_a_task() {
     let sg = |to: &str, ports: &[u16]| serde_json::json!({"service":"sg","open_world_ports":ports,"attached_to":to});
     let s3 = |bpa: bool, prefix: Option<&str>| serde_json::json!({"service":"s3","block_public_access":bpa,"public_policy_prefix":prefix});

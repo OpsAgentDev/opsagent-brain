@@ -21,12 +21,15 @@ pub enum Counted {
     UnmatchedPayment,
     /// A check that panicked or could not read its input in a scan.
     FailedCheck,
+    /// A watch scan stopped by its time cap before it ran its checks.
+    PartialWatch,
 }
 
-const ALL: [Counted; 3] = [
+const ALL: [Counted; 4] = [
     Counted::BillingOrg,
     Counted::UnmatchedPayment,
     Counted::FailedCheck,
+    Counted::PartialWatch,
 ];
 
 impl Counted {
@@ -35,6 +38,7 @@ impl Counted {
             Self::BillingOrg => "billing:failed",
             Self::UnmatchedPayment => "payment:unmatched",
             Self::FailedCheck => "check:failed",
+            Self::PartialWatch => "watch:partial",
         };
         format!("{kind}:{day}")
     }
@@ -49,6 +53,9 @@ impl Counted {
             }
             Self::FailedCheck => {
                 format!("Checks on {day}: {n} checks panicked or could not read their input.")
+            }
+            Self::PartialWatch => {
+                format!("Watch scans on {day}: {n} hit the time cap before running their checks.")
             }
         }
     }
@@ -126,16 +133,24 @@ pub(crate) mod tests {
         counter(tally.clone(), 19)
             .add(Counted::FailedCheck, 3)
             .await;
+        counter(tally.clone(), 19)
+            .add(Counted::PartialWatch, 4)
+            .await;
         assert_eq!(
             lines(&*tally, day(19)).await.unwrap(),
             [
                 "Billing on 2026-11-18: 2 organisations could not be processed.",
                 "Payments on 2026-11-18: 1 paid events matched no organisation or request.",
                 "Checks on 2026-11-19: 3 checks panicked or could not read their input.",
+                "Watch scans on 2026-11-19: 4 hit the time cap before running their checks.",
             ]
         );
         // Two days on, the 18th is no longer reported.
-        assert!(lines(&*tally, day(20)).await.unwrap().len() == 1);
+        assert!(lines(&*tally, day(20)).await.unwrap().len() == 2);
+        assert_eq!(
+            tally.total("watch:partial:2026-11-19").await.unwrap(),
+            Decimal::from(4)
+        );
         assert_eq!(
             tally.total("billing:failed:2026-11-18").await.unwrap(),
             Decimal::from(2)

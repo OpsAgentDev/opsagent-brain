@@ -149,6 +149,7 @@ async fn mails_one_line_per_counted_failure() {
             ("billing:failed", 2),
             ("payment:unmatched", 1),
             ("check:failed", 3),
+            ("watch:partial", 4),
         ] {
             let _: i64 = opsagent_ledger::redis::cmd("INCRBY")
                 .arg(format!("{kind}:{day}"))
@@ -164,7 +165,8 @@ async fn mails_one_line_per_counted_failure() {
         let lines = format!(
             "Billing on {day}: 2 organisations could not be processed.\n\
              Payments on {day}: 1 paid events matched no organisation or request.\n\
-             Checks on {day}: 3 checks panicked or could not read their input.\n"
+             Checks on {day}: 3 checks panicked or could not read their input.\n\
+             Watch scans on {day}: 4 hit the time cap before running their checks.\n"
         );
         assert!(sent[0].text.contains(&lines), "{}", sent[0].text);
     })
