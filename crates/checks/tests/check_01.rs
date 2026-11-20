@@ -82,3 +82,64 @@ async fn unknown_cost_prints_no_amount() {
         assert_eq!(f.severity, Low);
     }
 }
+
+/// Real usage numbers decide idle; an unknown (`null`) number never does.
+#[test]
+fn idle_rules_fire_on_usage_and_stay_silent_on_unknown() {
+    use opsagent_core::resource::{Provider, Resource, ResourceKind};
+    let res = |id: &str, attrs: serde_json::Value| Resource {
+        provider: Provider::Aws,
+        account: "1".into(),
+        region: "r".into(),
+        kind: ResourceKind::Compute,
+        identity: id.into(),
+        name: id.into(),
+        tags: Default::default(),
+        attributes: attrs,
+        observed_at: "2026-10-01T00:00:00Z".parse().unwrap(),
+    };
+    let vm = |cpu: serde_json::Value, state: &str| serde_json::json!({"service": "ec2", "state": state, "cpu_avg_7d": cpu});
+    let lb = |req: serde_json::Value, bytes: serde_json::Value| serde_json::json!({"service": "elb", "request_count_7d": req, "processed_bytes_7d": bytes});
+    let rs = [
+        res("vm-idle", vm(serde_json::json!(3.2), "running")),
+        res("vm-busy", vm(serde_json::json!(5.0), "running")),
+        res("vm-unknown", vm(serde_json::Value::Null, "running")),
+        res("vm-stopped", vm(serde_json::json!(0.0), "stopped")),
+        res(
+            "alb-idle",
+            lb(serde_json::json!(0), serde_json::Value::Null),
+        ),
+        res(
+            "alb-used",
+            lb(serde_json::json!(12), serde_json::Value::Null),
+        ),
+        res(
+            "alb-unknown",
+            lb(serde_json::Value::Null, serde_json::Value::Null),
+        ),
+        res(
+            "nlb-idle",
+            lb(serde_json::Value::Null, serde_json::json!(0)),
+        ),
+        res(
+            "nlb-used",
+            lb(serde_json::Value::Null, serde_json::json!(4096)),
+        ),
+    ];
+    let d = run(&CostAndIdle, &rs, &[]);
+    assert_eq!(
+        set(&d),
+        vec![
+            t("alb-idle", "idle_load_balancer", Low),
+            t("nlb-idle", "idle_load_balancer", Low),
+            t("vm-idle", "idle_instance", Low),
+        ]
+    );
+    let ex = |id: &str| {
+        let f = d.iter().find(|d| d.key.resource_identity == id).unwrap();
+        f.evidence[0].excerpt.clone()
+    };
+    assert_eq!(ex("alb-idle"), "request_count_7d=0");
+    assert_eq!(ex("nlb-idle"), "processed_bytes_7d=0");
+    assert_eq!(ex("vm-idle"), "state=running cpu_avg_7d=3.2");
+}

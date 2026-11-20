@@ -199,6 +199,9 @@ fn judged(deployed: &DeployedRole, recorded: &str) -> (String, Vec<String>, Vec<
 fn a_role_is_judged_by_the_template_its_connection_was_made_with() {
     // Version 1 grants more than version 2: clean for a version 1 connection, never "extra".
     assert_eq!(judged(&role("1"), "1"), ("1".into(), vec![], vec![]));
+    // Version 3 grants two reads more than version 2, and a version 2 connection is never
+    // "missing" them: its role is clean against its own template.
+    assert_eq!(judged(&role("3"), "3"), ("3".into(), vec![], vec![]));
     assert_eq!(judged(&role("2"), "2"), ("2".into(), vec![], vec![]));
     // The same wide role on a connection made with version 2 is a superset.
     let (version, extra, _) = judged(&role("1"), "2");
@@ -207,7 +210,23 @@ fn a_role_is_judged_by_the_template_its_connection_was_made_with() {
 }
 
 #[test]
-fn a_version_1_connection_moved_to_the_current_template_is_judged_by_that() {
+fn a_version_2_connection_moved_to_version_3_is_judged_by_that() {
+    assert_eq!(judged(&role("3"), "2"), ("3".into(), vec![], vec![]));
+    assert_eq!(judged(&role("3"), "1"), ("3".into(), vec![], vec![]));
+    // A role that is still version 2 stays judged by version 2: nothing missing.
+    assert_eq!(judged(&role("2"), "2"), ("2".into(), vec![], vec![]));
+    // Held to it: a grant added to the moved role is reported.
+    let mut moved = role("3");
+    stmt(&mut moved.policies, "ReadMetadata")["Action"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("ec2:TerminateInstances"));
+    let want = vec!["ec2:TerminateInstances".to_owned()];
+    assert_eq!(judged(&moved, "2"), ("3".into(), want, vec![]));
+}
+
+#[test]
+fn a_version_1_connection_moved_to_a_newer_template_is_judged_by_that() {
     assert_eq!(judged(&role("2"), "1"), ("2".into(), vec![], vec![]));
     // Still held to it: an added grant is reported against the template the role now follows.
     let mut moved = role("2");

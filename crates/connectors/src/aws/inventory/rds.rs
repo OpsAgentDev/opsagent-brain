@@ -58,6 +58,11 @@ pub async fn rds_clusters(rds: &aws_sdk_rds::Client, t: &Target<'_>) -> Result<V
     Ok(out)
 }
 
+/// A snapshot attribute that lets every AWS account restore it: `restore` includes `all`.
+fn restores_to_all(name: Option<&str>, values: &[String]) -> bool {
+    name == Some("restore") && values.iter().any(|v| v == "all")
+}
+
 /// Manual snapshots (only those can be shared); `public` when `restore` includes `all`.
 pub async fn rds_snapshots(rds: &aws_sdk_rds::Client, t: &Target<'_>) -> Result<Vec<Resource>> {
     let mut out = vec![];
@@ -90,10 +95,7 @@ pub async fn rds_snapshots(rds: &aws_sdk_rds::Client, t: &Target<'_>) -> Result<
                 .map(|r| r.db_snapshot_attributes())
                 .unwrap_or_default()
                 .iter()
-                .any(|a| {
-                    a.attribute_name() == Some("restore")
-                        && a.attribute_values().iter().any(|v| v == "all")
-                });
+                .any(|a| restores_to_all(a.attribute_name(), a.attribute_values()));
             out.push(t.resource(
                 ResourceKind::Database,
                 s.db_snapshot_arn().unwrap_or_default().to_owned(),
@@ -106,10 +108,13 @@ pub async fn rds_snapshots(rds: &aws_sdk_rds::Client, t: &Target<'_>) -> Result<
     Ok(out)
 }
 
-/// Manual Aurora and Multi-AZ cluster snapshots; own service, only their encryption flag is read.
+/// Manual Aurora and Multi-AZ cluster snapshots; own service. `public` (as for instance
+/// snapshots) is read when `sharing`, i.e. the connection's role may call
+/// `DescribeDBClusterSnapshotAttributes`; it is `null` otherwise, and a check says nothing.
 pub async fn rds_cluster_snapshots(
     rds: &aws_sdk_rds::Client,
     t: &Target<'_>,
+    sharing: bool,
 ) -> Result<Vec<Resource>> {
     let mut out = vec![];
     let mut pages = rds
@@ -119,12 +124,38 @@ pub async fn rds_cluster_snapshots(
         .send();
     while let Some(page) = pages.next().await {
         for s in page.map_err(provider_err)?.db_cluster_snapshots() {
+            let id = s.db_cluster_snapshot_identifier().unwrap_or_default();
+            let mut public = None;
+            if sharing {
+                let got = rds
+                    .describe_db_cluster_snapshot_attributes()
+                    .db_cluster_snapshot_identifier(id)
+                    .send()
+                    .await;
+                public = match got {
+                    Ok(a) => Some(
+                        a.db_cluster_snapshot_attributes_result()
+                            .map(|r| r.db_cluster_snapshot_attributes())
+                            .unwrap_or_default()
+                            .iter()
+                            .any(|a| restores_to_all(a.attribute_name(), a.attribute_values())),
+                    ),
+                    // Deleted between the listing and this call: it no longer exists to expose.
+                    Err(e)
+                        if e.as_service_error()
+                            .is_some_and(|se| se.is_db_cluster_snapshot_not_found_fault()) =>
+                    {
+                        continue;
+                    }
+                    Err(e) => return Err(provider_err(e)),
+                };
+            }
             out.push(t.resource(
                 ResourceKind::Database,
                 s.db_cluster_snapshot_arn().unwrap_or_default().to_owned(),
-                s.db_cluster_snapshot_identifier().unwrap_or_default(),
+                id,
                 BTreeMap::new(),
-                json!({"service": "rds_cluster_snapshot", "encrypted": s.storage_encrypted()}),
+                json!({"service": "rds_cluster_snapshot", "public": public, "encrypted": s.storage_encrypted()}),
             ));
         }
     }

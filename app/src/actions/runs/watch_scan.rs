@@ -8,7 +8,13 @@ use opsagent_checks::Check;
 use opsagent_core::finding::{FindingDraft, FindingKey};
 
 /// The inventory services a watch scan reads.
-pub(super) const WATCH_SERVICES: [&str; 3] = ["sg", "rds", "cloudtrail"];
+pub(super) const WATCH_SERVICES: [&str; 5] = [
+    "sg",
+    "rds",
+    "cloudtrail",
+    "rds_cluster_snapshot",
+    "ebs_snapshot",
+];
 
 /// The checks a watch scan runs, with the services each one must have read in full. Check 03
 /// needs none: its watch variants are each built from one resource that was read, and a
@@ -19,8 +25,10 @@ const WATCH_CHECKS: [(&str, &[&str]); 2] = [("03", &[]), ("06", &["cloudtrail"])
 /// (check, variant, service) a watch scan keeps, with the service its resource is read from;
 /// every other draft is dropped. Check 06's are the two built only from `cloudtrail` resources
 /// (`detection_off` needs guardduty and `no_retention` needs logs).
-pub(super) const WATCH_VARIANTS: [(&str, &str, &str); 7] = [
+pub(super) const WATCH_VARIANTS: [(&str, &str, &str); 9] = [
     ("03", "public_snapshot", "rds"),
+    ("03", "public_cluster_snapshot", "rds_cluster_snapshot"),
+    ("03", "public_disk_snapshot", "ebs_snapshot"),
     ("03", "public_database", "rds"),
     ("03", "sg_open_admin_port", "sg"),
     ("03", "sg_open_unused", "sg"),
@@ -90,6 +98,8 @@ mod tests {
     #[test]
     fn only_watch_variants_are_allowed() {
         assert!(allowed(&draft("03", "public_snapshot")));
+        assert!(allowed(&draft("03", "public_cluster_snapshot")));
+        assert!(allowed(&draft("03", "public_disk_snapshot")));
         assert!(allowed(&draft("06", "trail_effectively_off")));
         for (c, v) in [
             ("03", "bucket_no_bpa"),
@@ -98,6 +108,13 @@ mod tests {
             ("02", "public_snapshot"),
         ] {
             assert!(!allowed(&draft(c, v)), "{c} {v}");
+        }
+    }
+
+    #[test]
+    fn every_watch_variant_reads_a_watch_service() {
+        for (check, variant, service) in WATCH_VARIANTS {
+            assert!(WATCH_SERVICES.contains(&service), "{check} {variant}");
         }
     }
 

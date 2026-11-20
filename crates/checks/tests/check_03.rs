@@ -111,3 +111,47 @@ fn public_bucket_and_group_on_a_task() {
         ]
     );
 }
+
+#[test]
+fn public_cluster_and_disk_snapshots_are_critical_like_instance_snapshots() {
+    let snap = |service: &str, public: serde_json::Value| serde_json::json!({"service": service, "public": public, "encrypted": true});
+    let rs = [
+        res("c-open", snap("rds_cluster_snapshot", true.into())),
+        res("c-private", snap("rds_cluster_snapshot", false.into())),
+        // Read without the sharing permission: unknown, never public.
+        res(
+            "c-unknown",
+            snap("rds_cluster_snapshot", serde_json::Value::Null),
+        ),
+        res("d-open", snap("ebs_snapshot", true.into())),
+        res("d-private", snap("ebs_snapshot", false.into())),
+        res("d-unknown", snap("ebs_snapshot", serde_json::Value::Null)),
+    ];
+    let d = run(&PublicExposure, &rs, &[]);
+    assert_eq!(
+        set(&d),
+        vec![
+            t("c-open", "public_cluster_snapshot", Critical),
+            t("d-open", "public_disk_snapshot", Critical),
+        ]
+    );
+    let f = |v: &str| d.iter().find(|d| d.key.variant == v).unwrap();
+    assert_eq!(
+        f("public_cluster_snapshot").title,
+        "Cluster snapshot c-open is public"
+    );
+    assert_eq!(
+        f("public_disk_snapshot").title,
+        "Disk snapshot d-open is public"
+    );
+    assert_eq!(
+        f("public_disk_snapshot").summary,
+        "Any AWS account can copy d-open and create a volume from its data."
+    );
+    assert!(f("public_cluster_snapshot")
+        .next_step
+        .contains("modify-db-cluster-snapshot-attribute"));
+    assert!(f("public_disk_snapshot")
+        .next_step
+        .contains("modify-snapshot-attribute"));
+}

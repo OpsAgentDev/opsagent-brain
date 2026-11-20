@@ -1,7 +1,9 @@
 //! EC2 family: instances, volumes, Elastic IPs, security groups, load balancers.
-use super::{name_or, Target};
+use super::{name_or, rfc3339_aws, Target};
 use crate::aws::client::provider_err;
 use crate::Result;
+use aws_sdk_ec2::error::ProvideErrorMetadata;
+use aws_sdk_ec2::types::{PermissionGroup, SnapshotAttributeName};
 use opsagent_core::resource::{Resource, ResourceKind};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -85,8 +87,14 @@ pub async fn ec2_volumes(ec2: &aws_sdk_ec2::Client, t: &Target<'_>) -> Result<Ve
     Ok(out)
 }
 
-/// Snapshots the account owns (`OwnerIds=self`); only their encryption flag is read.
-pub async fn ec2_snapshots(ec2: &aws_sdk_ec2::Client, t: &Target<'_>) -> Result<Vec<Resource>> {
+/// Snapshots the account owns (`OwnerIds=self`). `public` (a create-volume permission for
+/// `all`) is read when `sharing`, i.e. the connection's role may call `DescribeSnapshotAttribute`;
+/// it is `null` otherwise, and a check says nothing.
+pub async fn ec2_snapshots(
+    ec2: &aws_sdk_ec2::Client,
+    t: &Target<'_>,
+    sharing: bool,
+) -> Result<Vec<Resource>> {
     let mut out = vec![];
     let mut pages = ec2
         .describe_snapshots()
@@ -96,8 +104,28 @@ pub async fn ec2_snapshots(ec2: &aws_sdk_ec2::Client, t: &Target<'_>) -> Result<
     while let Some(page) = pages.next().await {
         for s in page.map_err(provider_err)?.snapshots() {
             let id = s.snapshot_id().unwrap_or_default();
+            let mut public = None;
+            if sharing {
+                let got = ec2
+                    .describe_snapshot_attribute()
+                    .snapshot_id(id)
+                    .attribute(SnapshotAttributeName::CreateVolumePermission)
+                    .send()
+                    .await;
+                public = match got {
+                    Ok(a) => Some(
+                        a.create_volume_permissions()
+                            .iter()
+                            .any(|p| p.group() == Some(&PermissionGroup::All)),
+                    ),
+                    // Deleted between the listing and this call: it no longer exists to expose.
+                    Err(e) if e.code() == Some("InvalidSnapshot.NotFound") => continue,
+                    Err(e) => return Err(provider_err(e)),
+                };
+            }
             let tags = ec2_tags(s.tags());
-            let attrs = json!({"service": "ebs_snapshot", "encrypted": s.encrypted()});
+            let attrs =
+                json!({"service": "ebs_snapshot", "public": public, "encrypted": s.encrypted()});
             let arn = t.arn("ec2", &format!("snapshot/{id}"));
             out.push(t.resource(
                 ResourceKind::Storage,
@@ -222,7 +250,13 @@ pub async fn load_balancers(
     let mut pages = elb.describe_load_balancers().into_paginator().send();
     while let Some(page) = pages.next().await {
         for lb in page.map_err(provider_err)?.load_balancers() {
-            let attrs = json!({"service": "elb", "request_count_7d": null});
+            let attrs = json!({
+                "service": "elb",
+                "lb_type": lb.r#type().map(|t| t.as_str()),
+                "created_at": lb.created_time().and_then(rfc3339_aws),
+                "request_count_7d": null,
+                "processed_bytes_7d": null,
+            });
             out.push(t.resource(
                 ResourceKind::Network,
                 lb.load_balancer_arn().unwrap_or_default().to_owned(),

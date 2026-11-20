@@ -101,14 +101,14 @@ async fn describe_snapshots_maps_encrypted_owner_self() {
                 .build()
         });
     let ec2 = mock_client!(aws_sdk_ec2, RuleMode::Sequential, [&rule]);
-    let r = ec2_snapshots(&ec2, &T).await.unwrap();
+    let r = ec2_snapshots(&ec2, &T, false).await.unwrap();
     assert_eq!(
         r[0].identity,
         "arn:aws:ec2:eu-west-1:123456789012:snapshot/snap-1"
     );
     assert_eq!(
         r[0].attributes,
-        json!({"service": "ebs_snapshot", "encrypted": false})
+        json!({"service": "ebs_snapshot", "public": null, "encrypted": false})
     );
     assert_eq!(r[1].attributes["encrypted"], serde_json::Value::Null);
 }
@@ -208,10 +208,10 @@ async fn describe_db_cluster_snapshots_maps_storage_encrypted_manual_only() {
                 .build()
         });
     let rds = mock_client!(aws_sdk_rds, RuleMode::Sequential, [&rule]);
-    let r = rds_cluster_snapshots(&rds, &T).await.unwrap();
+    let r = rds_cluster_snapshots(&rds, &T, false).await.unwrap();
     assert_eq!(r[0].name, "aurora-snap");
     assert_eq!(
         r[0].attributes,
-        json!({"service": "rds_cluster_snapshot", "encrypted": false})
+        json!({"service": "rds_cluster_snapshot", "public": null, "encrypted": false})
     );
 }

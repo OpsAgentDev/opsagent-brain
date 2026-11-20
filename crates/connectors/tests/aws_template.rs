@@ -1,6 +1,6 @@
 use opsagent_connectors::aws::policy_diff::{
     render_template, substitute, RenderedRole, TemplateParams, TEMPLATE_V1_YAML, TEMPLATE_V2_YAML,
-    TEMPLATE_VERSION,
+    TEMPLATE_V3_YAML, TEMPLATE_VERSION,
 };
 use opsagent_connectors::ConnectorError;
 use serde_json::{json, Value};
@@ -10,7 +10,11 @@ use std::collections::BTreeSet;
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../templates/aws");
 
 /// Every version stays in the repo and in the bucket; the last is the current one.
-const VERSIONS: [(&str, &str); 2] = [("1", TEMPLATE_V1_YAML), ("2", TEMPLATE_V2_YAML)];
+const VERSIONS: [(&str, &str); 3] = [
+    ("1", TEMPLATE_V1_YAML),
+    ("2", TEMPLATE_V2_YAML),
+    ("3", TEMPLATE_V3_YAML),
+];
 
 fn file(version: &str, ext: &str) -> String {
     std::fs::read_to_string(format!("{DIR}/opsagent-read-role-v{version}.{ext}")).unwrap()
@@ -57,7 +61,7 @@ fn embedded_templates_are_the_files_and_the_last_is_current() {
     }
     assert_eq!(VERSIONS[VERSIONS.len() - 1].0, TEMPLATE_VERSION);
     assert!(matches!(
-        render_template("3", &params(None)),
+        render_template("4", &params(None)),
         Err(ConnectorError::Template(_))
     ));
 }
@@ -82,8 +86,10 @@ fn versions_share_parameters_outputs_trust_and_denies() {
     };
     for key in ["Parameters", "Conditions", "Outputs"] {
         assert_eq!(part(TEMPLATE_V1_YAML, key), part(TEMPLATE_V2_YAML, key));
+        assert_eq!(part(TEMPLATE_V2_YAML, key), part(TEMPLATE_V3_YAML, key));
     }
     assert_eq!(rendered("1"), rendered("2"));
+    assert_eq!(rendered("2"), rendered("3"));
 }
 
 #[test]
@@ -338,6 +344,48 @@ fn version_1_still_allows_every_connector_call() {
             "{a} not allowed"
         );
         assert!(!deny.iter().any(|p| action_matches(p, a)), "{a} denied");
+    }
+}
+
+/// The two reads version 3 adds, and nothing else (MVP live list 12.1): who a snapshot is
+/// shared with. CPU and traffic need no new action, `cloudwatch:GetMetricData` is in version 2.
+const SNAPSHOT_SHARING: [&str; 2] = [
+    "ec2:DescribeSnapshotAttribute",
+    "rds:DescribeDBClusterSnapshotAttributes",
+];
+
+#[test]
+fn version_3_adds_only_the_snapshot_sharing_reads_to_version_2() {
+    let allow = |v: &str| {
+        actions(
+            &stmts(&render_template(v, &params(None)).unwrap().policies),
+            "Allow",
+        )
+    };
+    let (two, three) = (allow("2"), allow("3"));
+    assert!(two.is_subset(&three));
+    let added: Vec<_> = three.difference(&two).map(String::as_str).collect();
+    assert_eq!(added, SNAPSHOT_SHARING);
+    assert!(three.contains("cloudwatch:GetMetricData") && two.contains("cloudwatch:GetMetricData"));
+    assert!(
+        !three.iter().any(|a| a.starts_with("logs:Get")),
+        "no log reads"
+    );
+}
+
+/// A connection made with version 1 or 2 keeps working: its role holds every call the
+/// connector makes for it, which is every call but the two snapshot-sharing reads (which it
+/// never makes: `reads_snapshot_sharing`).
+#[test]
+fn version_2_allows_every_connector_call_but_the_snapshot_sharing_reads() {
+    let s = stmts(&render_template("2", &params(None)).unwrap().policies);
+    let allow = actions(&s, "Allow");
+    for a in opsagent_connectors::aws::session_actions() {
+        assert_eq!(allow.contains(a), !SNAPSHOT_SHARING.contains(&a), "{a}");
+    }
+    for v in ["1", "2", "3", "10"] {
+        let reads = opsagent_connectors::aws::policy_diff::reads_snapshot_sharing(v);
+        assert_eq!(reads, v == "3" || v == "10", "{v}");
     }
 }
 

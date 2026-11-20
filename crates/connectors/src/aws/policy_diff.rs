@@ -13,15 +13,29 @@ pub const TEMPLATE_V1_YAML: &str =
     include_str!("../../../../templates/aws/opsagent-read-role-v1.yaml");
 pub const TEMPLATE_V2_YAML: &str =
     include_str!("../../../../templates/aws/opsagent-read-role-v2.yaml");
+pub const TEMPLATE_V3_YAML: &str =
+    include_str!("../../../../templates/aws/opsagent-read-role-v3.yaml");
 
 /// The version new connections and Reconnect launch. Older ones stay valid for the
 /// connections made with them.
-pub const TEMPLATE_VERSION: &str = "2";
+pub const TEMPLATE_VERSION: &str = "3";
+
+/// Every version, oldest first; the last is `TEMPLATE_VERSION`.
+const VERSIONS: [&str; 3] = ["1", "2", "3"];
+
+/// First version whose role holds the two reads of who a snapshot is shared with
+/// (`ec2:DescribeSnapshotAttribute`, `rds:DescribeDBClusterSnapshotAttributes`). A connection
+/// made with an older one is asked by simulation instead (`simulate::allows_snapshot_sharing`),
+/// never by a call that may be denied.
+pub fn reads_snapshot_sharing(template_version: &str) -> bool {
+    template_version.parse::<u32>().is_ok_and(|v| v >= 3)
+}
 
 fn template_yaml(version: &str) -> Result<&'static str> {
     match version {
         "1" => Ok(TEMPLATE_V1_YAML),
         "2" => Ok(TEMPLATE_V2_YAML),
+        "3" => Ok(TEMPLATE_V3_YAML),
         other => Err(tpl_err(format!("unknown template version {other:?}"))),
     }
 }
@@ -396,21 +410,24 @@ pub fn diff_role(
 }
 
 /// `diff_role` against the template the connection was made with (`recorded`), so an older
-/// role is never judged by a newer template's list. A role since moved to the current template
-/// (stack update, Reconnect) is nearer to that one and is judged by it.
-/// Returns the version judged against with its `(extra, missing)`.
+/// role is never judged by a newer template's list. A role since moved to a newer template
+/// (stack update, Reconnect) is nearer to that one and is judged by it: the closest wins,
+/// the older on a tie. Returns the version judged against with its `(extra, missing)`.
 pub fn diff_role_for(
     deployed: &DeployedRole,
     params: &TemplateParams,
     recorded: &str,
 ) -> Result<(String, Vec<String>, Vec<String>)> {
     let (extra, missing) = diff_role(deployed, params, recorded)?;
-    let size = extra.len() + missing.len();
-    if size > 0 && recorded != TEMPLATE_VERSION {
-        let (e, m) = diff_role(deployed, params, TEMPLATE_VERSION)?;
-        if e.len() + m.len() < size {
-            return Ok((TEMPLATE_VERSION.into(), e, m));
+    let mut best = (recorded.to_owned(), extra, missing);
+    for newer in VERSIONS.iter().skip_while(|v| **v != recorded).skip(1) {
+        if best.1.len() + best.2.len() == 0 {
+            break;
+        }
+        let (e, m) = diff_role(deployed, params, newer)?;
+        if e.len() + m.len() < best.1.len() + best.2.len() {
+            best = ((*newer).to_owned(), e, m);
         }
     }
-    Ok((recorded.into(), extra, missing))
+    Ok(best)
 }
