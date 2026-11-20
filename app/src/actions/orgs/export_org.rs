@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use opsagent_core::{
     audit::AuditEntry,
-    repo::{Clock, PageRequest},
+    repo::{Clock, PageRequest, RepoError},
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -76,26 +76,43 @@ impl ExportOrg {
         }
     }
 
-    /// The document's bytes. An export that fails or is refused as too large does not count
-    /// against the hour: the owner may try again.
+    /// The document's bytes.
     pub async fn run(&self, scope: &OrgScope) -> AppResult<Vec<u8>> {
         scope.require_owner()?;
         let key = format!("ratelimit:org_export:org:{}", scope.organisation.id);
-        if !self.limiter.hit(&key, 1, HOUR_SECS).await? {
+        self.hourly(&key, self.build(scope)).await
+    }
+
+    /// `work`, at most once per hour for `key`. A refusal (too large included: gathering it
+    /// again would cost the same and end the same) keeps the hour spent; only a failure of
+    /// ours gives the attempt back.
+    async fn hourly<T>(
+        &self,
+        key: &str,
+        work: impl std::future::Future<Output = AppResult<T>>,
+    ) -> AppResult<T> {
+        if !self.limiter.hit(key, 1, HOUR_SECS).await? {
             // shortcut: Retry-After is the window length, an upper bound; read the key TTL if exactness matters.
             return Err(AppError::RateLimited {
                 detail: "An organisation's data can be exported once per hour.".into(),
                 retry_after_secs: HOUR_SECS.unsigned_abs(),
             });
         }
-        let built = self.build(scope).await;
-        if built.is_err() {
-            // The export's own error is the one to report, whatever the limiter says.
-            if let Err(e) = self.limiter.clear(&key).await {
+        let done = work.await;
+        let ours = matches!(
+            &done,
+            Err(AppError::Repo(RepoError::Storage(_))
+                | AppError::Ledger(_)
+                | AppError::Internal(_))
+        );
+        if ours {
+            // The key holds this organisation's one attempt and nothing else, so dropping it
+            // is giving that attempt back. The export's own error is the one to report.
+            if let Err(e) = self.limiter.clear(key).await {
                 tracing::warn!(error = %e, "export rate limit not released");
             }
         }
-        built
+        done
     }
 
     async fn build(&self, scope: &OrgScope) -> AppResult<Vec<u8>> {
@@ -433,7 +450,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn export_is_owner_only_hourly_and_audited_and_a_refused_one_can_be_retried() {
+    async fn export_is_owner_only_hourly_and_audited() {
         let store = MemStore::default();
         let (owner, org) = owned_org(&store, "o@example.com", "Mine").await;
         let mate = user(&store, "m@example.com").await;
@@ -450,40 +467,61 @@ mod tests {
             all.iter().filter(|e| e.action == "org.exported").count()
         };
 
-        // Too large: refused with the 413 each time, never the hourly refusal, and not audited.
+        // The member's refusal did not use up the hour; a served export does.
         let as_owner = scope(&store, &org, &owner).await;
-        let small = ExportOrg {
-            max_bytes: 64,
-            limiter: export.limiter.clone(),
-            ..action(&store)
-        };
-        for _ in 0..2 {
-            let err = small.run(&as_owner).await.unwrap_err();
-            assert!(
-                matches!(&err, AppError::Refused { status, code, .. }
-                    if status.as_u16() == 413 && *code == "export_too_large"),
-                "{err:?}"
-            );
-        }
-        assert_eq!(exported(&store), 0);
-
-        // Neither the member nor the refusals used up the hour; a served export does.
         export.run(&as_owner).await.unwrap();
         assert_eq!(exported(&store), 1);
-        for _ in 0..2 {
-            let err = export.run(&as_owner).await.unwrap_err();
-            assert!(
-                matches!(
-                    &err,
-                    AppError::RateLimited {
-                        retry_after_secs: 3600,
-                        ..
-                    }
-                ),
-                "{err:?}"
-            );
-        }
+        let err = export.run(&as_owner).await.unwrap_err();
+        assert!(limited(&err), "{err:?}");
         assert_eq!(exported(&store), 1);
+    }
+
+    fn limited(e: &AppError) -> bool {
+        let hour = |secs: &u64| *secs == 3600;
+        matches!(e, AppError::RateLimited { retry_after_secs, .. } if hour(retry_after_secs))
+    }
+
+    #[tokio::test]
+    async fn too_large_is_told_once_and_keeps_the_hour_spent() {
+        let store = MemStore::default();
+        let (owner, org) = owned_org(&store, "o@example.com", "Mine").await;
+        let scope = scope(&store, &org, &owner).await;
+        let small = ExportOrg {
+            max_bytes: 64,
+            ..action(&store)
+        };
+        let err = small.run(&scope).await.unwrap_err();
+        assert!(
+            matches!(&err, AppError::Refused { status, code, detail }
+                if status.as_u16() == 413 && *code == "export_too_large"
+                    && detail.contains("Contact support")),
+            "{err:?}"
+        );
+        // The expensive gather is not repeated within the hour, and nothing was audited.
+        let err = small.run(&scope).await.unwrap_err();
+        assert!(limited(&err), "{err:?}");
+        let all = store.audit_entries();
+        assert!(all.iter().all(|e| e.action != "org.exported"));
+    }
+
+    #[tokio::test]
+    async fn only_a_failure_of_ours_gives_the_attempt_back() {
+        let export = action(&MemStore::default());
+        let fail = |e: AppError| export.hourly("k", async move { Err::<(), _>(e) });
+        // A storage or internal error, twice: each is reported as itself, never as the limit.
+        let err = fail(AppError::Internal("gather".into())).await.unwrap_err();
+        assert!(matches!(err, AppError::Internal(_)), "{err:?}");
+        let storage = AppError::Repo(RepoError::Storage("db down".into()));
+        let err = fail(storage).await.unwrap_err();
+        assert!(matches!(err, AppError::Repo(_)), "{err:?}");
+        // A refusal is reported and spends the hour, as a success does.
+        let err = fail(AppError::Forbidden).await.unwrap_err();
+        assert!(matches!(err, AppError::Forbidden), "{err:?}");
+        let err = fail(AppError::Internal("again".into())).await.unwrap_err();
+        assert!(limited(&err), "{err:?}");
+        export.hourly("other", async { Ok(()) }).await.unwrap();
+        let err = export.hourly("other", async { Ok(()) }).await.unwrap_err();
+        assert!(limited(&err), "{err:?}");
     }
 
     #[tokio::test]
