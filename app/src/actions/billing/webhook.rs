@@ -77,6 +77,12 @@ fn held_back([refunded, disputed, won]: [bool; 3]) -> bool {
     refunded || (disputed && !won)
 }
 
+/// True for a dispute object that is only an inquiry: its status starts with `warning_`.
+fn inquiry(dispute: &Value) -> bool {
+    let status = dispute["status"].as_str();
+    status.is_some_and(|s| s.starts_with("warning_"))
+}
+
 /// A paid top-up session adds its credits to the organisation named by
 /// `client_reference_id`, once per event (`grant_topup` is keyed on it, like `record_event`).
 /// True when a paid session matched no organisation (counted for the operator notice).
@@ -284,7 +290,9 @@ impl HandleWebhook {
         let (mark, reason) = match ev.kind.as_str() {
             // `refunded` is true only once all of the charge is refunded.
             "charge.refunded" if o["refunded"] == true => (0, "refund"),
-            "charge.dispute.created" => (1, "dispute"),
+            // An inquiry (`warning_*`) moves no money and holds nothing back.
+            // shortcut: an inquiry that escalates arrives as `charge.dispute.updated`, which is not handled; subscribe and mark it there if that happens.
+            "charge.dispute.created" if !inquiry(o) => (1, "dispute"),
             "charge.dispute.closed" if o["status"] == "won" => (2, "dispute_won"),
             _ => return Ok(false),
         };
@@ -598,9 +606,20 @@ mod tests {
 
     /// Delivers a charge event about payment `pi`: a refund (fully, when `full`) or a dispute.
     async fn charge(h: &HandleWebhook, id: &str, kind: &str, pi: &str, full: bool) {
-        let now = h.clock.now();
-        // `status` is read on a closed dispute only: won when `full`, else lost.
+        // A dispute's status: won when `full`, else lost (neither is an inquiry).
         let status = if full { "won" } else { "lost" };
+        charge_as(h, id, kind, pi, (full, status)).await;
+    }
+
+    /// `charge` with the dispute's status given.
+    async fn charge_as(
+        h: &HandleWebhook,
+        id: &str,
+        kind: &str,
+        pi: &str,
+        (full, status): (bool, &str),
+    ) {
+        let now = h.clock.now();
         let object = json!({ "customer": "cus_1", "payment_intent": pi, "refunded": full,
             "status": status });
         let body = json!({ "id": id, "type": kind, "created": now.timestamp(),
@@ -680,18 +699,21 @@ mod tests {
     /// or has a dispute that was not won.
     #[tokio::test]
     async fn every_order_of_refund_and_dispute_events_nets_to_the_payment_state() {
-        // (kind, `charge`'s flag): refund in full, dispute opened, dispute won, dispute lost.
-        const EVENTS: [(&str, bool); 4] = [
-            ("charge.refunded", true),
-            ("charge.dispute.created", false),
-            ("charge.dispute.closed", true),
-            ("charge.dispute.closed", false),
+        // (kind, fully refunded, status): refund in full, dispute opened, dispute won, dispute
+        // lost, and an inquiry opened, which moves no money and so changes nothing.
+        const EVENTS: [(&str, bool, &str); 5] = [
+            ("charge.refunded", true, "won"),
+            ("charge.dispute.created", false, "needs_response"),
+            ("charge.dispute.closed", false, "won"),
+            ("charge.dispute.closed", false, "lost"),
+            ("charge.dispute.created", false, "warning_needs_response"),
         ];
+        let kinds = EVENTS.len();
         let now = Utc::now();
         let credits = sea_orm::prelude::Decimal::from(TOPUP_CREDITS);
         for len in 1..=4u32 {
-            for code in 0..4usize.pow(len) {
-                let seq: Vec<usize> = (0..len).map(|i| code / 4usize.pow(i) % 4).collect();
+            for code in 0..kinds.pow(len) {
+                let seq: Vec<usize> = (0..len).map(|i| code / kinds.pow(i) % kinds).collect();
                 let store = MemStore::default();
                 let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
                 let tally = Arc::new(MemRateLimiter::default());
@@ -701,9 +723,9 @@ mod tests {
                     .await
                     .unwrap());
                 for (i, e) in seq.iter().enumerate() {
-                    let (kind, flag) = EVENTS[*e];
+                    let (kind, full, status) = EVENTS[*e];
                     for _ in 0..2 {
-                        charge(&h, &format!("evt_{i}"), kind, "pi_1", flag).await;
+                        charge_as(&h, &format!("evt_{i}"), kind, "pi_1", (full, status)).await;
                     }
                 }
                 let has = |e: usize| seq.contains(&e);
