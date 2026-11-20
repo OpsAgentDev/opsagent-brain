@@ -2,12 +2,14 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     repo::{RepoError, RepoResult},
-    user::{Email, LiveCode, NewMagicLink, PersonName, SpentLink, User, UsersRepo},
+    user::{
+        Email, LiveCode, LiveEmailChange, NewMagicLink, PersonName, SpentLink, User, UsersRepo,
+    },
 };
 use sea_orm::{
     prelude::DateTimeWithTimeZone,
     sea_query::{Expr, OnConflict},
-    ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, ExprTrait, QueryFilter, Set,
+    ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, ExprTrait, QueryFilter, Set, SqlErr,
 };
 use uuid::Uuid;
 
@@ -264,6 +266,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
             code_hash: Set(Some(link.code_hash.into())),
             code_attempts: Set(0),
             name: Set(link.name.map(|n| n.as_str().into())),
+            new_email: Set(None),
             created_at: Set(now()),
             updated_at: Set(now()),
         }
@@ -362,6 +365,100 @@ impl<C: Conn> UsersRepo for Pg<C> {
                 Expr::cust("CASE WHEN code_attempts + 1 >= 5 THEN NULL ELSE code_hash END"),
             )
             .filter(magic_links::Column::Id.is_in(ids.iter().copied()))
+            .exec(self.db())
+            .await
+            .map(|_| ())
+            .map_err(db_err)
+    }
+
+    async fn issue_email_change(
+        &self,
+        user_id: Uuid,
+        new_email: &Email,
+        token_hash: &str,
+        code_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> RepoResult<()> {
+        let id = Uuid::new_v4();
+        magic_links::ActiveModel {
+            id: Set(id),
+            user_id: Set(Some(user_id)),
+            email: Set(None),
+            token_hash: Set(token_hash.into()),
+            return_to: Set(None),
+            expires_at: Set(expires_at.into()),
+            used_at: Set(None),
+            code_hash: Set(Some(code_hash.into())),
+            code_attempts: Set(0),
+            name: Set(None),
+            new_email: Set(Some(new_email.as_str().into())),
+            created_at: Set(now()),
+            updated_at: Set(now()),
+        }
+        .insert(self.db())
+        .await
+        .map_err(db_err)?;
+        // After the insert, like `issue_magic_link`: of two racing requests one retires the other.
+        magic_links::Entity::update_many()
+            .col_expr(
+                magic_links::Column::CodeHash,
+                Expr::value(Option::<String>::None),
+            )
+            .filter(magic_links::Column::UserId.eq(user_id))
+            .filter(magic_links::Column::NewEmail.is_not_null())
+            .filter(magic_links::Column::Id.ne(id))
+            .filter(magic_links::Column::CodeHash.is_not_null())
+            .exec(self.db())
+            .await
+            .map(|_| ())
+            .map_err(db_err)
+    }
+
+    async fn live_email_changes(
+        &self,
+        user_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<Vec<LiveEmailChange>> {
+        let rows = magic_links::Entity::find()
+            .filter(magic_links::Column::UserId.eq(user_id))
+            .filter(magic_links::Column::NewEmail.is_not_null())
+            .filter(magic_links::Column::UsedAt.is_null())
+            .filter(magic_links::Column::ExpiresAt.gt(DateTimeWithTimeZone::from(now)))
+            .filter(magic_links::Column::CodeHash.is_not_null())
+            .all(self.db())
+            .await
+            .map_err(db_err)?;
+        rows.into_iter()
+            .filter_map(|l| Some((l.id, l.token_hash, l.code_hash?, l.new_email?)))
+            .map(|(id, token_hash, code_hash, new_email)| {
+                Ok(LiveEmailChange {
+                    id,
+                    token_hash,
+                    code_hash,
+                    new_email: email(&new_email)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn set_email(&self, id: Uuid, email: &Email) -> RepoResult<()> {
+        let res = users::Entity::update_many()
+            .col_expr(users::Column::Email, Expr::value(email.as_str()))
+            .col_expr(users::Column::UpdatedAt, Expr::value(now()))
+            .filter(users::Column::Id.eq(id))
+            .filter(users::Column::DeletedAt.is_null())
+            .exec(self.db())
+            .await
+            .map_err(|e| match e.sql_err() {
+                Some(SqlErr::UniqueConstraintViolation(_)) => RepoError::Conflict("email_taken"),
+                _ => db_err(e),
+            })?;
+        if res.rows_affected == 0 {
+            return Ok(());
+        }
+        magic_links::Entity::delete_many()
+            .filter(magic_links::Column::UserId.eq(id))
+            .filter(magic_links::Column::UsedAt.is_null())
             .exec(self.db())
             .await
             .map(|_| ())

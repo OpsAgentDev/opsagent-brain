@@ -188,4 +188,69 @@ contract_suite! {
         // An unknown user is a no-op, not an error.
         s.users().accept_terms(Uuid::new_v4(), first).await.unwrap();
     }
+
+    async fn email_change_is_no_sign_in_link_and_set_email_respects_other_users(s) {
+        let (old, new) = (email("ada@example.com"), email("ada@new.example"));
+        let u = s.users().find_or_create_by_email(&old).await.unwrap();
+        let now = Utc::now();
+        let soon = now + Duration::minutes(15);
+        s.users().issue_magic_link(NewMagicLink::new(u.id, &old, "l1", "lc1", soon)).await.unwrap();
+        s.users().issue_email_change(u.id, &new, "e1", "ec1", soon).await.unwrap();
+        // Not a sign-in code for either address, and the sign-in code stays live.
+        assert!(s.users().live_codes(&new, now).await.unwrap().is_empty());
+        assert_eq!(s.users().live_codes(&old, now).await.unwrap().len(), 1);
+        let live = s.users().live_email_changes(u.id, now).await.unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!((live[0].token_hash.as_str(), live[0].code_hash.as_str(), &live[0].new_email), ("e1", "ec1", &new));
+        // Only the owner's, only until expiry, and a newer one retires the older.
+        assert!(s.users().live_email_changes(Uuid::new_v4(), now).await.unwrap().is_empty());
+        assert!(s.users().live_email_changes(u.id, soon).await.unwrap().is_empty());
+        s.users().issue_email_change(u.id, &new, "e2", "ec2", soon).await.unwrap();
+        let live = s.users().live_email_changes(u.id, now).await.unwrap();
+        assert_eq!(live.iter().map(|l| l.token_hash.as_str()).collect::<Vec<_>>(), ["e2"]);
+        assert_eq!(s.users().live_codes(&old, now).await.unwrap().len(), 1);
+        // The fifth wrong guess disables it.
+        for _ in 0..5 {
+            s.users().count_wrong_code(&[live[0].id]).await.unwrap();
+        }
+        assert!(s.users().live_email_changes(u.id, now).await.unwrap().is_empty());
+        // Spent once.
+        s.users().issue_email_change(u.id, &new, "e3", "ec3", soon).await.unwrap();
+        let id = s.users().live_email_changes(u.id, now).await.unwrap()[0].id;
+        assert!(s.users().spend_code(id, now).await.unwrap());
+        assert!(!s.users().spend_code(id, now).await.unwrap());
+        assert!(s.users().live_email_changes(u.id, now).await.unwrap().is_empty());
+
+        // Another user's address is refused and nothing moves.
+        let other = s.users().find_or_create_by_email(&email("eve@example.com")).await.unwrap();
+        let taken = s.users().set_email(u.id, &other.email).await;
+        assert!(matches!(taken, Err(RepoError::Conflict("email_taken"))), "{taken:?}");
+    }
+
+    async fn set_email_moves_the_user_and_drops_their_unspent_links(s) {
+        let (old, new) = (email("ada@example.com"), email("ada@new.example"));
+        let u = s.users().find_or_create_by_email(&old).await.unwrap();
+        s.users().find_or_create_github(42, &old, None, true).await.unwrap();
+        let other = s.users().find_or_create_by_email(&email("eve@example.com")).await.unwrap();
+        let now = Utc::now();
+        let soon = now + Duration::minutes(15);
+        s.users().issue_magic_link(NewMagicLink::new(u.id, &old, "l1", "lc1", soon)).await.unwrap();
+        s.users().issue_magic_link(NewMagicLink::new(other.id, &other.email, "o1", "oc1", soon)).await.unwrap();
+        s.users().issue_email_change(u.id, &new, "e1", "ec1", soon).await.unwrap();
+        s.users().set_email(u.id, &new).await.unwrap();
+        let got = s.users().get(u.id).await.unwrap().unwrap();
+        assert_eq!((&got.email, got.github_id), (&new, Some(42)));
+        assert_eq!(s.users().find_by_email(&new).await.unwrap().map(|x| x.id), Some(u.id));
+        assert!(s.users().find_by_email(&old).await.unwrap().is_none());
+        // What was mailed to the old address, and the pending change, are gone; others' stay.
+        assert!(s.users().consume_magic_link("l1", now).await.unwrap().is_none());
+        assert!(s.users().live_email_changes(u.id, now).await.unwrap().is_empty());
+        assert!(s.users().consume_magic_link("o1", now).await.unwrap().is_some());
+        // The provider id still finds the account; the old address is free for a new one.
+        assert_eq!(s.users().find_or_create_github(42, &old, None, true).await.unwrap().id, u.id);
+        assert_ne!(s.users().find_or_create_by_email(&old).await.unwrap().id, u.id);
+        // Setting the same address again, or an unknown user, is not an error.
+        s.users().set_email(u.id, &new).await.unwrap();
+        s.users().set_email(Uuid::new_v4(), &email("x@example.com")).await.unwrap();
+    }
 }

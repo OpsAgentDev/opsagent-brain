@@ -89,7 +89,10 @@ struct InviteRow {
 struct MagicLinkRow {
     id: Uuid,
     user_id: Uuid,
-    email: Email,
+    /// The address a sign-in link was mailed to; `None` on a pending email change.
+    email: Option<Email>,
+    /// The address a pending email change moves the user to.
+    new_email: Option<Email>,
     code_hash: Option<String>,
     code_attempts: u32,
     token_hash: String,

@@ -321,6 +321,136 @@
         }
       }
     },
+    "/auth/me/email": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Mails a 6-digit code to the new address; `POST /auth/me/email/confirm` with it makes the\nchange. 202 whether or not the address already signs in to another account (that address\nthen gets a notice instead of a code). The code works once, for 15 minutes; 5 requests per\nuser per hour, and the sign-in mail caps per address, per client IP and overall.",
+        "operationId": "auth_request_email_change",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "A code was mailed if the address is free"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`fresh_sign_in_required`: the sign-in is older than 15 minutes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation`: not an email address; `email_unchanged`: already the sign-in email; `email_not_allowed`: the domain is not open for sign-up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/me/email/confirm": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Moves the account to the address the code was mailed to. This session stays; the user's\nother sessions end, and the old address is told. 10 attempts per user per 15 minutes and\n20 per day; the fifth wrong code disables it.",
+        "operationId": "auth_confirm_email_change",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailChangeConfirm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`email_taken`: another account took the address meanwhile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "`code_invalid`: wrong, used, expired or disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/me/terms": {
       "post": {
         "tags": [
@@ -6204,6 +6334,30 @@
           "status": {
             "type": "string",
             "description": "Always `disconnected`."
+          }
+        }
+      },
+      "EmailChangeConfirm": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The 6-digit code mailed to the new address; spaces are ignored."
+          }
+        }
+      },
+      "EmailChangeRequest": {
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The new sign-in address."
           }
         }
       },

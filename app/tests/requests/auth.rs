@@ -1080,3 +1080,132 @@ async fn the_signed_in_user_can_change_their_name() {
     })
     .await;
 }
+
+/// The code mailed last (the subject's last word).
+fn last_code(mail: &opsagent_brain::mailers::CaptureMailer) -> String {
+    let m = mail.sent().pop().expect("no mail sent");
+    m.subject.rsplit(' ').next().unwrap().to_owned()
+}
+
+#[tokio::test]
+#[serial]
+async fn changing_the_sign_in_email_keeps_this_session_and_ends_the_others() {
+    use opsagent_brain::models::_entities::audit_events;
+    serve(|mut req, ctx| async move {
+        let mail = prepare(&ctx);
+        // Two sessions of one person, one of somebody else; the last one asks.
+        sign_in(&req, &mail, "old@example.com").await;
+        req.clear_cookies();
+        sign_in(&req, &mail, "other@example.com").await;
+        req.clear_cookies();
+        let token = sign_in(&req, &mail, "old@example.com").await;
+        let id = req.get("/v1/auth/me").await.json::<Value>()["id"].clone();
+        let ask = |email: &str| {
+            req.post("/v1/auth/me/email")
+                .json(&json!({ "email": email }))
+        };
+        let confirm = |code: &str| {
+            req.post("/v1/auth/me/email/confirm")
+                .json(&json!({ "code": code }))
+                .add_header("X-CSRF-Token", &token)
+        };
+
+        // CSRF as other writes.
+        let res = ask("new@example.com").await;
+        assert_eq!(res.status_code(), 403, "{}", res.text());
+        assert_eq!(res.json::<Value>()["code"], "csrf");
+
+        for (bad, code) in [
+            ("old@example.com", "email_unchanged"),
+            ("not-an-email", "validation"),
+        ] {
+            let res = ask(bad).add_header("X-CSRF-Token", &token).await;
+            assert_eq!(res.status_code(), 422, "{}", res.text());
+            assert_eq!(res.json::<Value>()["code"], code);
+        }
+
+        // An address that has an account answers exactly like a free one, and gets no code.
+        let before = mail.sent().len();
+        let taken = ask("other@example.com")
+            .add_header("X-CSRF-Token", &token)
+            .await;
+        let free = ask(" New@Example.com ")
+            .add_header("X-CSRF-Token", &token)
+            .await;
+        assert_eq!(taken.status_code(), 202, "{}", taken.text());
+        assert_eq!(free.status_code(), 202, "{}", free.text());
+        assert_eq!(taken.text(), free.text());
+        let sent = mail.sent();
+        assert_eq!(sent.len(), before + 2);
+        assert_eq!(sent[before].to, "other@example.com");
+        assert_eq!(
+            sent[before].subject,
+            "This address already signs in to OpsAgent"
+        );
+        assert_eq!(sent[before + 1].to, "new@example.com");
+        let code = last_code(&mail);
+
+        let wrong = if code == "000000" { "000001" } else { "000000" };
+        let res = confirm(wrong).await;
+        assert_eq!(res.status_code(), 410, "{}", res.text());
+        assert_eq!(res.json::<Value>()["code"], "code_invalid");
+
+        let res = confirm(&code).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        // The same body as GET /v1/auth/me, on the session that asked.
+        let me = req.get("/v1/auth/me").await.json::<Value>();
+        assert_eq!(res.json::<Value>(), me);
+        assert_eq!((&me["email"], &me["id"]), (&json!("new@example.com"), &id));
+        assert_eq!(confirm(&code).await.status_code(), 410, "single use");
+
+        // The person's other session is gone; somebody else's is not.
+        let owned = sessions::Entity::find()
+            .filter(sessions::Column::UserId.is_not_null())
+            .count(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(owned, 2);
+
+        // The old address is told, with the new one masked.
+        let notice = mail.sent().pop().unwrap();
+        assert_eq!(notice.to, "old@example.com");
+        assert!(notice.text.contains("n***@example.com"), "{}", notice.text);
+        assert!(!notice.text.contains("new@example.com"));
+
+        // One audit row about the user, with no address in it.
+        let audit = audit_events::Entity::find()
+            .filter(audit_events::Column::Action.eq("auth.email_changed"))
+            .all(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(audit.len(), 1, "{audit:?}");
+        assert_eq!(audit[0].target_id.as_deref(), id.as_str());
+        assert_eq!(audit[0].metadata, json!({}));
+
+        // The new address signs in to the same account.
+        req.clear_cookies();
+        sign_in(&req, &mail, "new@example.com").await;
+        assert_eq!(req.get("/v1/auth/me").await.json::<Value>()["id"], id);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn changing_the_sign_in_email_needs_a_fresh_sign_in() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let token = sign_in(&req, &mail, "stale@example.com").await;
+        age_sign_in(&ctx.db).await;
+        let before = mail.sent().len();
+        let res = req
+            .post("/v1/auth/me/email")
+            .add_header("X-CSRF-Token", &token)
+            .json(&json!({ "email": "new@example.com" }))
+            .await;
+        assert_eq!(res.status_code(), 403, "{}", res.text());
+        assert_eq!(res.json::<Value>()["code"], "fresh_sign_in_required");
+        assert_eq!(mail.sent().len(), before);
+    })
+    .await;
+}

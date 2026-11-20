@@ -32,45 +32,26 @@ pub struct MagicLinkInput {
     pub name: Option<String>,
 }
 
-pub struct RequestMagicLink {
-    users: Arc<dyn UnitOfWork>,
+/// The caps on mail to an address the sender has not proven: per client IP, per address, then
+/// across all clients. Sign-in mail and email-change codes count against the same budgets.
+pub(super) struct MailCaps {
     limiter: Arc<dyn RateLimiter>,
-    /// Sign-in mails per hour across all clients (`MAGIC_LINK_HOURLY_CAP`).
+    /// Mails per hour across all clients (`MAGIC_LINK_HOURLY_CAP`).
     hourly_cap: i64,
-    mailer: Arc<dyn Mailer>,
-    web_base_url: String,
-    clock: Arc<dyn Clock>,
-    /// Keys the stored code hashes (`SESSION_SECRET`).
-    secret: String,
-    signup: SignupAllowlist,
 }
 
-impl RequestMagicLink {
-    pub fn new(
-        users: Arc<dyn UnitOfWork>,
-        (limiter, hourly_cap): (Arc<dyn RateLimiter>, i64),
-        mailer: Arc<dyn Mailer>,
-        web_base_url: String,
-        clock: Arc<dyn Clock>,
-        secret: String,
-        signup: SignupAllowlist,
-    ) -> Self {
+impl MailCaps {
+    pub(super) fn new((limiter, hourly_cap): (Arc<dyn RateLimiter>, i64)) -> Self {
         Self {
-            users,
             limiter,
             hourly_cap,
-            mailer,
-            web_base_url,
-            clock,
-            secret,
-            signup,
         }
     }
 
     /// Counts this request against the IP (when known), the normalised address, then the
     /// global hourly cap, in that order so requests the per-client caps refuse do not use up
     /// everyone's budget. `false` once any hour's cap is passed.
-    async fn under_cap(&self, email: &Email, ip: Option<IpAddr>) -> AppResult<bool> {
+    pub(super) async fn under(&self, email: &Email, ip: Option<IpAddr>) -> AppResult<bool> {
         if let Some(ip) = ip {
             let key = format!("ratelimit:magic_link:ip:{}", ip_bucket(ip));
             if !self.limiter.hit(&key, PER_IP, HOUR_SECS).await? {
@@ -94,13 +75,46 @@ impl RequestMagicLink {
         }
         Ok(under)
     }
+}
+
+pub struct RequestMagicLink {
+    users: Arc<dyn UnitOfWork>,
+    caps: MailCaps,
+    mailer: Arc<dyn Mailer>,
+    web_base_url: String,
+    clock: Arc<dyn Clock>,
+    /// Keys the stored code hashes (`SESSION_SECRET`).
+    secret: String,
+    signup: SignupAllowlist,
+}
+
+impl RequestMagicLink {
+    pub fn new(
+        users: Arc<dyn UnitOfWork>,
+        caps: (Arc<dyn RateLimiter>, i64),
+        mailer: Arc<dyn Mailer>,
+        web_base_url: String,
+        clock: Arc<dyn Clock>,
+        secret: String,
+        signup: SignupAllowlist,
+    ) -> Self {
+        Self {
+            users,
+            caps: MailCaps::new(caps),
+            mailer,
+            web_base_url,
+            clock,
+            secret,
+            signup,
+        }
+    }
 
     /// Sends a sign-in link unless the address is invalid or a cap is passed.
     pub async fn run(&self, input: MagicLinkInput) -> AppResult<()> {
         let Some(email) = Email::parse(&input.email) else {
             return Ok(());
         };
-        match self.under_cap(&email, input.client_ip).await {
+        match self.caps.under(&email, input.client_ip).await {
             Ok(true) => {}
             Ok(false) => return Ok(()),
             // Fail closed: no mail rather than an unlimited one.

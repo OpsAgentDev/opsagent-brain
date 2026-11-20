@@ -116,6 +116,15 @@ pub struct LiveCode {
     pub name: Option<String>,
 }
 
+/// A pending change of a user's sign-in address whose mailed code can still be tried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveEmailChange {
+    pub id: Uuid,
+    pub token_hash: String,
+    pub code_hash: String,
+    pub new_email: Email,
+}
+
 /// A link to store for `user_id`, sent to `email`.
 pub struct NewMagicLink<'a> {
     pub user_id: Uuid,
@@ -215,6 +224,27 @@ pub trait UsersRepo: Send + Sync {
     async fn spend_code(&self, id: Uuid, now: DateTime<Utc>) -> RepoResult<bool>;
     /// Counts a wrong guess on each link; at 5 the link's code is disabled (the link stays valid).
     async fn count_wrong_code(&self, ids: &[Uuid]) -> RepoResult<()>;
+    /// Stores the hash of a code mailed to `new_email` for moving `user_id` to that address; the
+    /// user's older pending changes stop working. It is not a sign-in link: `live_codes` never
+    /// returns it. `spend_code` and `count_wrong_code` work on it by id.
+    async fn issue_email_change(
+        &self,
+        user_id: Uuid,
+        new_email: &Email,
+        token_hash: &str,
+        code_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> RepoResult<()>;
+    /// The user's unspent, unexpired pending changes that still have a code.
+    async fn live_email_changes(
+        &self,
+        user_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> RepoResult<Vec<LiveEmailChange>>;
+    /// Moves the user to `email` and removes their unspent sign-in links and pending changes
+    /// (they were mailed to the old address). `RepoError::Conflict("email_taken")` when another
+    /// user has the address; an unknown id is a no-op.
+    async fn set_email(&self, id: Uuid, email: &Email) -> RepoResult<()>;
 }
 
 #[cfg(test)]
