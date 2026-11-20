@@ -28,12 +28,11 @@ const PUT_KEY: &str = "INSERT INTO model_keys (id, organisation_id, provider, la
   base_url = EXCLUDED.base_url, status = 'ok', status_since = now(), \
   created_at = now(), updated_at = now() RETURNING ";
 
-/// One statement, so the row and the debit commit together. The balance stops at zero: an
-/// overshoot is not owed.
+/// One statement, so the row and the debit commit together.
 const USAGE: &str = "WITH u AS (INSERT INTO ai_usage (id, organisation_id, member_id, purpose, \
   provider, model, key_source, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, \
   credits, estimated, slot, base_host) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, \
-  $13, $15, $16)) UPDATE organisations SET ai_topup_balance = GREATEST(ai_topup_balance - $14, 0) WHERE id = $2";
+  $13, $15, $16)) UPDATE organisations SET ai_topup_balance = ai_topup_balance - $14 WHERE id = $2";
 
 const GRANT: &str = "WITH g AS (INSERT INTO ai_credit_grants (id, organisation_id, credits, \
   stripe_event_id) VALUES ($1, $2, $3, $4) ON CONFLICT (stripe_event_id) DO NOTHING \
