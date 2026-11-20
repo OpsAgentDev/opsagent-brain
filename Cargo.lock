@@ -717,9 +717,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-cloudwatchlogs"
-version = "1.159.0"
+version = "1.160.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20f6a822d5aa208af15881ad127b1fe6af4ce5a4a62f0091b8ba71e21d140cee"
+checksum = "b9ffb5aa6c64847b66ef776046bdf7e131c538395a626c25b947d10b753bec1b"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -743,9 +743,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-costexplorer"
-version = "1.135.0"
+version = "1.136.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2df697c22facb88b4987fe5e3a151e739e2639cf5baf4ccae4656bd465b89013"
+checksum = "36f5b29dbd5d557c0d2e71f0be6023423ba5c21ff50541d6bb0dab420d893c8f"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -3306,7 +3306,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.21.7",
  "chrono",
  "getrandom 0.2.17",
  "http 1.5.0",
@@ -3397,7 +3397,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-test",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "chrono-tz",
  "clap",
@@ -3433,7 +3433,7 @@ dependencies = [
  "time",
  "tokio",
  "tower",
- "tower-http",
+ "tower-http 0.7.1",
  "tower-sessions",
  "tracing",
  "tracing-subscriber",
@@ -3504,7 +3504,7 @@ name = "opsagent-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "rust_decimal",
  "serde",
@@ -3554,7 +3554,7 @@ name = "opsagent-secrets"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
- "base64 0.22.1",
+ "base64 0.23.1",
  "hkdf",
  "rand 0.8.8",
  "serde",
@@ -4113,7 +4113,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tower",
- "tower-http",
+ "tower-http 0.6.11",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -5356,13 +5356,30 @@ dependencies = [
  "futures-util",
  "http 1.5.0",
  "http-body 1.1.0",
- "http-body-util",
  "pin-project-lite",
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
  "url",
+]
+
+[[package]]
+name = "tower-http"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08a05a66a4fdd61cbbe0a1d755ffe0ca6aba159dd4820936a0ff8a8278245b9c"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytes",
+ "futures-util",
+ "http 1.5.0",
+ "http-body 1.1.0",
+ "http-body-util",
+ "percent-encoding",
+ "pin-project-lite",
+ "tower-layer",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -5640,9 +5657,9 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.28.0"
+version = "1.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+checksum = "bed99139f7dac9b5cfe5f17be4d66dc7079a34dee1d74bcc77217119240e267c"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
