@@ -169,7 +169,12 @@ impl VerifyConnection {
             run_id,
             trigger: "verify".into(),
         };
-        let cr = match providers::credentials(&c.provider, &creds, context) {
+        let cr = match providers::credentials(
+            &c.provider,
+            &creds,
+            c.template_version.as_deref(),
+            context,
+        ) {
             Ok(cr) => cr,
             Err(e) => return Ok(Err(e)),
         };

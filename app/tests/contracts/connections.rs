@@ -141,6 +141,7 @@ contract_suite! {
         let v = Verified {
             reason: Some("missing_grants: ec2:Describe*".into()),
             first_connected_at: Some(at(5)),
+            template_version: Some("2".into()),
             ..verified("111111111111")
         };
         repo.record_verified(o, c.id, v).await.unwrap();
@@ -148,6 +149,9 @@ contract_suite! {
         assert_eq!((g.verify_denied_streak, g.verify_denied_first_at), (0, None));
         assert_eq!(g.external_account_id.as_deref(), Some("111111111111"));
         assert_eq!(g.status_reason.as_deref(), Some("missing_grants: ec2:Describe*"));
+        // Made with version 1 (the fixture), moved to the version the verify judged against.
+        assert_eq!(c.template_version.as_deref(), Some("1"));
+        assert_eq!(g.template_version.as_deref(), Some("2"));
         assert_eq!((g.first_connected_at, g.billable_from), (Some(at(5)), Some(at(5))));
         // No account and no reason: the account stays, the reason is cleared.
         repo.record_verified(o, c.id, Verified::default()).await.unwrap();

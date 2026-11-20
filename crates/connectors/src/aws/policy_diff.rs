@@ -1,7 +1,8 @@
-//! Template v1 as data, and the statement-level diff `verify` runs against the deployed role.
+//! The role templates as data, and the statement-level diff `verify` runs against the deployed
+//! role.
 //!
-//! The expected policy is rendered from the embedded template itself (`TEMPLATE_V1_YAML`), so
-//! the Rust side cannot drift from the YAML; `tests/aws_template.rs` checks the rendering.
+//! The expected policy is rendered from the embedded template itself, so the Rust side cannot
+//! drift from the YAML; `tests/aws_template.rs` checks the rendering.
 
 use crate::{ConnectorError, Result};
 use serde_json::Value;
@@ -10,6 +11,20 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const TEMPLATE_V1_YAML: &str =
     include_str!("../../../../templates/aws/opsagent-read-role-v1.yaml");
+pub const TEMPLATE_V2_YAML: &str =
+    include_str!("../../../../templates/aws/opsagent-read-role-v2.yaml");
+
+/// The version new connections and Reconnect launch. Older ones stay valid for the
+/// connections made with them.
+pub const TEMPLATE_VERSION: &str = "2";
+
+fn template_yaml(version: &str) -> Result<&'static str> {
+    match version {
+        "1" => Ok(TEMPLATE_V1_YAML),
+        "2" => Ok(TEMPLATE_V2_YAML),
+        other => Err(tpl_err(format!("unknown template version {other:?}"))),
+    }
+}
 
 /// Parameter values the stack was launched with (`terraform`: bucket and prefix, both set).
 #[derive(Debug, Clone, Copy)]
@@ -32,7 +47,6 @@ impl TemplateParams<'_> {
             "OpsAgentPrincipal" => self.principal.into(),
             "TerraformStateBucket" => bucket.into(),
             "TerraformStatePrefix" => prefix.into(),
-            "TemplateVersion" => "1".into(),
             other => other.into(),
         })
     }
@@ -135,9 +149,10 @@ fn resolve(v: &Yaml, p: &TemplateParams) -> Result<Option<Value>> {
     }))
 }
 
-pub fn render_template_v1(p: &TemplateParams) -> Result<RenderedRole> {
+pub fn render_template(version: &str, p: &TemplateParams) -> Result<RenderedRole> {
     p.validate()?;
-    let y: Yaml = serde_norway::from_str(TEMPLATE_V1_YAML).map_err(|e| tpl_err(e.to_string()))?;
+    let y: Yaml =
+        serde_norway::from_str(template_yaml(version)?).map_err(|e| tpl_err(e.to_string()))?;
     let props = &y["Resources"]["OpsAgentReadRole"]["Properties"];
     let trust = resolve(&props["AssumeRolePolicyDocument"], p)?
         .ok_or_else(|| tpl_err("template has no trust policy".into()))?;
@@ -354,13 +369,14 @@ pub struct DeployedRole {
     pub attached_policy_arns: Vec<String>,
 }
 
-/// Full role diff: inline statements, trust policy, attached managed policies (never part of
-/// the template, so each is extra) and `MaxSessionDuration`.
+/// Full role diff against template `version`: inline statements, trust policy, attached managed
+/// policies (never part of the template, so each is extra) and `MaxSessionDuration`.
 pub fn diff_role(
     deployed: &DeployedRole,
     params: &TemplateParams,
+    version: &str,
 ) -> Result<(Vec<String>, Vec<String>)> {
-    let t = render_template_v1(params)?;
+    let t = render_template(version, params)?;
     let (mut extra, missing) = policy_diff(
         &PolicyStatements::from_documents(&deployed.policies),
         &PolicyStatements::from_documents(&t.policies),
@@ -377,4 +393,24 @@ pub fn diff_role(
     }
     extra.sort();
     Ok((extra, missing))
+}
+
+/// `diff_role` against the template the connection was made with (`recorded`), so an older
+/// role is never judged by a newer template's list. A role since moved to the current template
+/// (stack update, Reconnect) is nearer to that one and is judged by it.
+/// Returns the version judged against with its `(extra, missing)`.
+pub fn diff_role_for(
+    deployed: &DeployedRole,
+    params: &TemplateParams,
+    recorded: &str,
+) -> Result<(String, Vec<String>, Vec<String>)> {
+    let (extra, missing) = diff_role(deployed, params, recorded)?;
+    let size = extra.len() + missing.len();
+    if size > 0 && recorded != TEMPLATE_VERSION {
+        let (e, m) = diff_role(deployed, params, TEMPLATE_VERSION)?;
+        if e.len() + m.len() < size {
+            return Ok((TEMPLATE_VERSION.into(), e, m));
+        }
+    }
+    Ok((recorded.into(), extra, missing))
 }

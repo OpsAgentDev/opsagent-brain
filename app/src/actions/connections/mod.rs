@@ -10,6 +10,7 @@ mod update_connection;
 
 use axum::http::StatusCode;
 use opsagent_connectors::aws::client::short_id;
+pub use opsagent_connectors::aws::policy_diff::TEMPLATE_VERSION;
 use uuid::Uuid;
 
 pub use create_connection::{CreateConnection, Created};
@@ -25,8 +26,6 @@ use crate::{
     config::Config,
     error::{AppError, AppResult},
 };
-
-pub const TEMPLATE_VERSION: &str = "1";
 
 pub struct Connections {
     pub create_connection: CreateConnection,

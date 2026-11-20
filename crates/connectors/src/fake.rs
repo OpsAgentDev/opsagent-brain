@@ -108,6 +108,7 @@ impl Connector for FakeConnector {
                 account_matches: true,
                 extra_grants: vec!["ec2:TerminateInstances".into()],
                 missing_grants: vec![],
+                template_version: None,
             });
         }
         Ok(self.fixture(creds)?.verify.clone())

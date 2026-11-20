@@ -69,7 +69,7 @@ for _ in $(seq 1 30); do PRINCIPAL=$(aws sts get-caller-identity --query Arn --o
 
 deploy() {
   aws cloudformation create-stack --stack-name "$STACK" --capabilities CAPABILITY_NAMED_IAM \
-    --template-body file://templates/aws/opsagent-read-role-v1.yaml --parameters \
+    --template-body file://templates/aws/opsagent-read-role-v2.yaml --parameters \
     "ParameterKey=ExternalId,ParameterValue=$OPSAGENT_EMULATOR_EXTERNAL_ID" \
     "ParameterKey=OpsAgentPrincipal,ParameterValue=$PRINCIPAL" \
     "ParameterKey=OrgShortId,ParameterValue=$SHORT" >/dev/null

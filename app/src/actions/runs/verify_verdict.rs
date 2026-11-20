@@ -47,6 +47,7 @@ mod tests {
             account_matches: true,
             extra_grants: vec![],
             missing_grants: vec![],
+            template_version: None,
         }
     }
 

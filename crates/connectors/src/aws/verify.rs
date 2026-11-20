@@ -1,10 +1,10 @@
 use super::client::{assume, is_access_denied, parse_role_arn, provider_err, session_policy};
-use super::policy_diff::{diff_role, DeployedRole, TemplateParams};
+use super::policy_diff::{diff_role_for, DeployedRole, TemplateParams};
 use super::AwsConnector;
 use crate::{CallContext, ConnectorError, Result, TerraformState, VerifyOutcome};
 use serde_json::Value;
 
-const VERIFY_ACTIONS: &[&str] = &[
+pub const VERIFY_ACTIONS: &[&str] = &[
     "sts:GetCallerIdentity",
     "iam:GetRole",
     "iam:ListRolePolicies",
@@ -97,6 +97,7 @@ pub(crate) async fn verify(
     role_arn: &str,
     external_id: &str,
     terraform_state: Option<&TerraformState>,
+    template_version: &str,
     ctx: &CallContext,
 ) -> Result<VerifyOutcome> {
     let arn = parse_role_arn(role_arn)?;
@@ -129,6 +130,7 @@ pub(crate) async fn verify(
                 account_matches: false,
                 extra_grants: vec![],
                 missing_grants: vec![],
+                template_version: None,
             })
         }
         Err(e) => return Err(e),
@@ -146,12 +148,14 @@ pub(crate) async fn verify(
         principal: &principal,
         terraform: terraform_state.map(|t| (t.bucket.as_str(), t.prefix.as_str())),
     };
-    let (extra_grants, missing_grants) = diff_role(&deployed, &params)?;
+    let (version, extra_grants, missing_grants) =
+        diff_role_for(&deployed, &params, template_version)?;
     Ok(VerifyOutcome {
         assume_with_ok: true,
         assume_without_denied,
         account_matches: ident.account.as_deref() == Some(arn.account.as_str()),
         extra_grants,
         missing_grants,
+        template_version: Some(version),
     })
 }
