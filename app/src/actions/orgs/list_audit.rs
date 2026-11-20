@@ -23,10 +23,7 @@ impl ListAudit {
         let org = scope.organisation.id;
         let got = self.uow.audit().list(org, page).await?;
         let mut describe = Describe::new(&*self.uow, org).await?;
-        let mut items = Vec::with_capacity(got.items.len());
-        for r in got.items {
-            items.push(describe.item(r).await?);
-        }
+        let items = describe.page(got.items).await?;
         Ok(PageOf {
             items,
             next: got.next,

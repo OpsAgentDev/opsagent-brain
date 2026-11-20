@@ -8,12 +8,12 @@ use opsagent_core::{
     repo::{RepoError, RepoResult},
 };
 use sea_orm::{
-    prelude::DateTimeWithTimeZone, sea_query::OnConflict, ColumnTrait, Condition, EntityTrait,
-    PaginatorTrait, QueryFilter, QueryOrder, Set,
+    prelude::DateTimeWithTimeZone, sea_query::OnConflict, ColumnTrait, Condition, ConnectionTrait,
+    EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
 };
 use uuid::Uuid;
 
-use super::{db_err, utc, Conn, Pg};
+use super::{db_err, ledger_storage::stmt, utc, Conn, Pg};
 use crate::models::_entities::{
     oauth_access_tokens as access, oauth_clients as clients, oauth_consent_requests as consents,
     oauth_grants as grants, oauth_refresh_tokens as refresh,
@@ -320,6 +320,31 @@ impl<C: Conn> OAuthRepo for Pg<C> {
             .await
             .map_err(db_err)?;
         Ok(rows.into_iter().map(grant).collect())
+    }
+
+    async fn client_names(
+        &self,
+        organisation_id: Uuid,
+        grant_ids: &[Uuid],
+    ) -> RepoResult<std::collections::HashMap<Uuid, String>> {
+        let mut out = std::collections::HashMap::new();
+        if grant_ids.is_empty() {
+            return Ok(out);
+        }
+        let rows = self
+            .db()
+            .query_all_raw(stmt(
+                "SELECT g.id, c.name FROM oauth_grants g JOIN oauth_clients c \
+                 ON c.client_id = g.client_id WHERE g.organisation_id = $1 AND g.id = ANY($2)",
+                vec![organisation_id.into(), grant_ids.to_vec().into()],
+            ))
+            .await
+            .map_err(db_err)?;
+        for r in rows {
+            let id: Uuid = r.try_get("", "id").map_err(db_err)?;
+            out.insert(id, r.try_get("", "name").map_err(db_err)?);
+        }
+        Ok(out)
     }
 
     async fn insert_refresh(&self, t: &RefreshToken) -> RepoResult<()> {

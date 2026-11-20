@@ -3,6 +3,8 @@
 mod order;
 mod seen;
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
@@ -296,6 +298,57 @@ impl<C: Conn> FindingsRepo for Pg<C> {
             .into_iter()
             .map(finding)
             .collect()
+    }
+
+    async fn evidence_of(
+        &self,
+        organisation_id: Uuid,
+        ids: &[Uuid],
+    ) -> RepoResult<HashMap<Uuid, Vec<StoredEvidence>>> {
+        let mut out: HashMap<Uuid, Vec<StoredEvidence>> = HashMap::new();
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        let own = Query::select()
+            .column(findings::Column::Id)
+            .from(findings::Entity)
+            .and_where(findings::Column::OrganisationId.eq(organisation_id))
+            .and_where(findings::Column::Id.is_in(ids.iter().copied()))
+            .to_owned();
+        let rows = evidence::Entity::find()
+            .filter(evidence::Column::FindingId.in_subquery(own))
+            .filter(evidence::Column::ExpiresAt.gt(Utc::now()))
+            .order_by_desc(evidence::Column::CreatedAt)
+            .all(self.db())
+            .await
+            .map_err(db_err)?;
+        for e in rows {
+            out.entry(e.finding_id).or_default().push(StoredEvidence {
+                source: e.source,
+                excerpt: e.excerpt,
+                redacted: e.redacted,
+                run_id: e.run_id,
+                created_at: utc(e.created_at),
+            });
+        }
+        Ok(out)
+    }
+
+    async fn titles(
+        &self,
+        organisation_id: Uuid,
+        ids: &[Uuid],
+    ) -> RepoResult<HashMap<Uuid, String>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = findings::Entity::find()
+            .filter(findings::Column::OrganisationId.eq(organisation_id))
+            .filter(findings::Column::Id.is_in(ids.iter().copied()))
+            .all(self.db())
+            .await
+            .map_err(db_err)?;
+        Ok(rows.into_iter().map(|f| (f.id, f.title)).collect())
     }
 
     async fn mark_alerted(

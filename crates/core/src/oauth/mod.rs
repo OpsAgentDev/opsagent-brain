@@ -151,6 +151,13 @@ pub trait OAuthRepo: Send + Sync {
     async fn grant(&self, organisation_id: Uuid, id: Uuid) -> RepoResult<Option<Grant>>;
     /// Unrevoked grants, oldest first.
     async fn grants_for_org(&self, organisation_id: Uuid) -> RepoResult<Vec<Grant>>;
+    /// The client name behind each of the organisation's grants among `grant_ids` (revoked
+    /// ones too), in one query.
+    async fn client_names(
+        &self,
+        organisation_id: Uuid,
+        grant_ids: &[Uuid],
+    ) -> RepoResult<std::collections::HashMap<Uuid, String>>;
     async fn insert_refresh(&self, token: &RefreshToken) -> RepoResult<()>;
     /// Looked up by hash alone: the presented token names its organisation.
     async fn refresh_by_hash(&self, token_hash: &str) -> RepoResult<Option<RefreshToken>>;
