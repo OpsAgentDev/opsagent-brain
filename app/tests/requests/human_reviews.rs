@@ -679,3 +679,76 @@ async fn read_only_org_can_still_request() {
     })
     .await;
 }
+
+/// Launch readiness K1: human review switched off (the product default).
+fn review_off(api: String) -> impl FnOnce(&mut opsagent_brain::config::Config) {
+    move |c| {
+        stripe_on(api)(c);
+        c.human_review_enabled = false;
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn switched_off_refuses_new_requests_and_keeps_existing_ones() {
+    let api = MockServer::start().await;
+    serve_with(review_off(api.uri()), |mut req, ctx| async move {
+        let (t, org, conn, fid) = fixture(&mut req, &ctx, "o@example.com").await;
+        // Creating a request, and with it its checkout, is not found; nothing is stored or sent.
+        for body in [
+            json!({"kind":"finding","finding_id":fid}),
+            json!({"kind":"account","connection_id":conn}),
+        ] {
+            let res = post(&req, &t, &org, body).await;
+            assert_eq!(res.status_code(), 404, "{}", res.text());
+            assert_eq!(res.json::<Value>()["code"], "not_found");
+        }
+        assert!(rows(&ctx, &org).await.is_empty());
+        let seen = api.received_requests().await.unwrap();
+        assert!(seen.iter().all(|r| r.url.path() != "/v1/checkout/sessions"));
+        // A request made while it was on stays readable.
+        let c = connections::Entity::find_by_id(conn)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        let me = req.get("/v1/auth/me").await.json::<Value>();
+        let id = Uuid::new_v4();
+        human_review_requests::ActiveModel {
+            id: Set(id),
+            organisation_id: Set(c.organisation_id),
+            kind: Set("finding".into()),
+            finding_id: Set(Some(fid)),
+            connection_id: Set(None),
+            target_label: Set("Old finding".into()),
+            note: Set(None),
+            price_cents: Set(9900),
+            requested_by: Set(me["id"].as_str().unwrap().parse().unwrap()),
+            requester_email: Set("o@example.com".into()),
+            created_at: Set(chrono::Utc::now().into()),
+            payment: Set("pending".into()),
+            paid_at: Set(None),
+        }
+        .insert(&ctx.db)
+        .await
+        .unwrap();
+        let list = req.get(&format!("/v1/orgs/{org}/human-reviews")).await;
+        assert_eq!(list.status_code(), 200, "{}", list.text());
+        let list = list.json::<Value>();
+        assert_eq!(list["requests"][0]["id"], id.to_string());
+        assert_eq!(list["requests"][0]["payment"], "pending");
+        // Its payment still lands: marked paid, both mails sent.
+        let mail = prepare(&ctx);
+        let done = "checkout.session.completed";
+        deliver(
+            &req,
+            &paid_event("evt_off", done, "paid", c.organisation_id, id),
+        )
+        .await;
+        let row = rows(&ctx, &org).await.remove(0);
+        assert_eq!(row.payment, "paid");
+        assert!(row.paid_at.is_some());
+        assert_eq!(mail.sent().len(), 2, "{:?}", mail.sent());
+    })
+    .await;
+}

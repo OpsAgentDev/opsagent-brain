@@ -272,6 +272,53 @@
             }
           }
         }
+      },
+      "patch": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Changes the signed-in user's name; nothing else is changeable here.",
+        "operationId": "auth_update_me",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation`: not a usable name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/auth/me/terms": {
@@ -3981,7 +4028,7 @@
         "tags": [
           "human-reviews"
         ],
-        "summary": "Owner only. Allowed while the organisation is read-only: it is paid separately. 502\n`billing_unavailable` when Stripe fails.",
+        "summary": "Owner only. Allowed while the organisation is read-only: it is paid separately. 502\n`billing_unavailable` when Stripe fails. 404 `not_found` while human review is switched off\n(`HUMAN_REVIEW_ENABLED`); existing requests stay listed.",
         "operationId": "human-reviews_create",
         "parameters": [
           {
@@ -6869,6 +6916,18 @@
             ],
             "format": "date-time",
             "description": "When the user agreed to the Terms and the Privacy Policy; null until they do."
+          }
+        }
+      },
+      "MePatch": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The new display name: 1 to 80 characters after trimming, no control characters (the\nsign-up rules)."
           }
         }
       },

@@ -24,6 +24,7 @@ use uuid::Uuid;
 use super::{
     denied_scan::enqueue_verify_after_denied_scan,
     full_scan_chunks::{Scan, FINALIZE, SIMULATE},
+    scan_streak::ScanStreak,
     watch_scan::WATCH_SERVICES,
 };
 use crate::{
@@ -59,6 +60,8 @@ pub struct FullScan {
     connector: Option<Arc<dyn Connector>>,
     pub(super) checks: fn() -> Vec<Box<dyn Check>>,
     pub(super) profile: ScanProfile,
+    /// What a nightly scan's end means for the connection (`scan_streak`).
+    streak: ScanStreak,
 }
 
 /// How a run ends without (more) chunks.
@@ -80,6 +83,7 @@ impl FullScan {
         counter: DayCounter,
     ) -> Self {
         Self {
+            streak: ScanStreak::new(uow.clone(), clock.clone()),
             uow,
             redis,
             kek,
@@ -170,8 +174,14 @@ impl FullScan {
             tracing::warn!(connection = %c.id, run = %run_id, "watch_scan: time cap hit before finalize");
         }
         // A worker that took over this run's lease is still scanning: leave the claim to it.
-        if !matches!(after.map(|r| r.status), Ok(RunStatus::Running)) {
+        if !matches!(after.as_ref().map(|r| r.status), Ok(RunStatus::Running)) {
             unclaim(&self.redis, &key, &owner).await;
+        }
+        if let (ScanProfile::Full, Ok(ended)) = (self.profile, &after) {
+            // The scan's own result stands whatever becomes of the rule.
+            if self.streak.run(ended).await.is_err() {
+                tracing::warn!(connection = %c.id, run = %run_id, error_code = "scan_streak_failed", "scan streak not applied");
+            }
         }
         res
     }

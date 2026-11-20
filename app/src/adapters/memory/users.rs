@@ -68,6 +68,13 @@ impl UsersRepo for MemStore {
         Ok(())
     }
 
+    async fn set_name(&self, id: Uuid, name: &PersonName) -> RepoResult<()> {
+        if let Some(u) = self.state().user_mut(|u| u.id == id) {
+            u.name = Some(name.as_str().to_owned());
+        }
+        Ok(())
+    }
+
     async fn accept_terms(&self, id: Uuid, at: DateTime<Utc>) -> RepoResult<()> {
         if let Some(u) = self
             .state()

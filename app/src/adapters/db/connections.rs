@@ -249,6 +249,28 @@ impl<C: Conn> ConnectionsRepo for Pg<C> {
         Ok(r.rows_affected == 1)
     }
 
+    async fn cas_status_clearing(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        (from, from_reason): (ConnectionStatus, &str),
+        to: ConnectionStatus,
+    ) -> RepoResult<bool> {
+        use connections::Column as Col;
+        let r = connections::Entity::update_many()
+            .col_expr(Col::Status, enum_str(to).into())
+            .col_expr(Col::StatusReason, Option::<String>::None.into())
+            .col_expr(Col::UpdatedAt, now().into())
+            .filter(Col::OrganisationId.eq(organisation_id))
+            .filter(Col::Id.eq(id))
+            .filter(Col::Status.eq(enum_str(from)))
+            .filter(Col::StatusReason.eq(from_reason))
+            .exec(self.db())
+            .await
+            .map_err(claim_err)?;
+        Ok(r.rows_affected == 1)
+    }
+
     async fn record_verification(
         &self,
         organisation_id: Uuid,

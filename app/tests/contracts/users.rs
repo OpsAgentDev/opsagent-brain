@@ -164,6 +164,18 @@ contract_suite! {
         s.users().set_name_if_missing(Uuid::new_v4(), &eve).await.unwrap();
     }
 
+    async fn set_name_renames_a_named_user(s) {
+        let u = s.users().find_or_create_by_email(&email("ada@example.com")).await.unwrap();
+        let other = s.users().find_or_create_by_email(&email("eve@example.com")).await.unwrap();
+        for name in ["Ada", "Ada Lovelace"] {
+            s.users().set_name(u.id, &PersonName::parse(name).unwrap()).await.unwrap();
+            assert_eq!(s.users().get(u.id).await.unwrap().unwrap().name.as_deref(), Some(name));
+        }
+        assert_eq!(s.users().get(other.id).await.unwrap().unwrap().name, None);
+        // An unknown user is a no-op, not an error.
+        s.users().set_name(Uuid::new_v4(), &PersonName::parse("Eve").unwrap()).await.unwrap();
+    }
+
     async fn accept_terms_keeps_the_first_time(s) {
         let u = s.users().find_or_create_by_email(&email("ada@example.com")).await.unwrap();
         assert_eq!(u.terms_accepted_at, None);

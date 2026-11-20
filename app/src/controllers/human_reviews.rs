@@ -107,7 +107,8 @@ pub struct HumanReviewCreated {
 }
 
 /// Owner only. Allowed while the organisation is read-only: it is paid separately. 502
-/// `billing_unavailable` when Stripe fails.
+/// `billing_unavailable` when Stripe fails. 404 `not_found` while human review is switched off
+/// (`HUMAN_REVIEW_ENABLED`); existing requests stay listed.
 #[utoipa::path(post, path = "/orgs/{org}/human-reviews", tag = "human-reviews", params(OrgPath),
     request_body = HumanReviewIn,
     responses((status = 201, body = HumanReviewCreated), (status = 403, body = Problem), (status = 404, body = Problem),

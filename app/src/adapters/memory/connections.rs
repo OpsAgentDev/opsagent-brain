@@ -177,6 +177,27 @@ impl ConnectionsRepo for MemStore {
         Ok(true)
     }
 
+    async fn cas_status_clearing(
+        &self,
+        organisation_id: Uuid,
+        id: Uuid,
+        (from, from_reason): (ConnectionStatus, &str),
+        to: ConnectionStatus,
+    ) -> RepoResult<bool> {
+        let mut s = self.state();
+        let Ok((c, _)) = s.connection_mut(organisation_id, id) else {
+            return Ok(false);
+        };
+        if c.status != from || c.status_reason.as_deref() != Some(from_reason) {
+            return Ok(false);
+        }
+        let account = c.external_account_id.clone();
+        s.check_claim(id, to, account.as_deref())?;
+        let (c, _) = s.connection_mut(organisation_id, id)?;
+        (c.status, c.status_reason, c.updated_at) = (to, None, Utc::now());
+        Ok(true)
+    }
+
     async fn record_verification(
         &self,
         organisation_id: Uuid,

@@ -29,6 +29,8 @@ fn test_config() -> Config {
     crate::requests::support::test_env();
     Config::from_vars(|k| match k {
         "APP_ENV" => Some("test".into()),
+        // Off by default in the product (launch readiness K1); the suite exercises it on.
+        "HUMAN_REVIEW_ENABLED" => Some("true".into()),
         _ => std::env::var(k).ok(),
     })
     .expect("test config")

@@ -5,7 +5,9 @@ use opsagent_core::{
     run::{Run, RunFilter, RunStatus, RunsRepo},
 };
 use opsagent_ledger::JobKind;
-use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QueryTrait};
+use sea_orm::{
+    sea_query::Expr, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QueryTrait,
+};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -76,6 +78,43 @@ impl<C: Conn> RunsRepo for Pg<C> {
             .await
             .map_err(db_err)?
             .map(|r| utc(r.scheduled_at)))
+    }
+
+    async fn failed_scan_streak(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+    ) -> RepoResult<Option<(u64, DateTime<Utc>)>> {
+        use runs::Column as Col;
+        // `on_schedule_slot`, in SQL.
+        let nightly = || {
+            runs::Entity::find()
+                .filter(Col::OrganisationId.eq(organisation_id))
+                .filter(Col::ConnectionId.eq(connection_id))
+                .filter(Col::JobType.eq(JobKind::FullScan.as_str()))
+                .filter(Expr::cust(
+                    "date_trunc('minute', scheduled_at) = scheduled_at",
+                ))
+        };
+        let ended = [RunStatus::Done, RunStatus::Partial].map(enum_str);
+        let last_ended = nightly()
+            .filter(Col::Status.is_in(ended))
+            .order_by_desc(Col::ScheduledAt)
+            .one(self.db())
+            .await
+            .map_err(db_err)?;
+        // Bounded by retention: runs older than it are deleted.
+        let failed = nightly()
+            .filter(Col::Status.eq(enum_str(RunStatus::Failed)))
+            .apply_if(last_ended, |q, r| {
+                q.filter(Col::ScheduledAt.gt(r.scheduled_at))
+            })
+            .order_by_asc(Col::ScheduledAt)
+            .all(self.db())
+            .await
+            .map_err(db_err)?;
+        let first = failed.first().map(|r| utc(r.scheduled_at));
+        Ok(first.map(|at| (failed.len() as u64, at)))
     }
 
     async fn completed_full_scan(

@@ -10,8 +10,9 @@ use crate::{
     error::AppResult,
 };
 
-/// `deliver_revoked_notice` or `deliver_claimed_notice` (the `JobKind`): the owners' mail when
-/// a connection becomes revoked, or when another organisation tried to claim its account.
+/// `deliver_revoked_notice`, `deliver_claimed_notice` or `deliver_scans_failing_notice` (the
+/// `JobKind`): the owners' mail when a connection becomes revoked, when another organisation
+/// tried to claim its account, or when its nightly scans keep failing.
 pub struct DeliverRevokedNoticeJob(pub Arc<DeliverRevokedNotice>, pub JobKind);
 
 #[async_trait]

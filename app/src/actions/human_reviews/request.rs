@@ -51,8 +51,10 @@ struct Stored {
 /// Records a review request for the scope's owner. With Stripe configured it is `pending` and
 /// the caller gets a Checkout URL (the webhook mails once paid; 502 `billing_unavailable` if
 /// Stripe fails). Without Stripe it is `invoice` and the founder and requester are mailed now;
-/// a failed send is logged and does not fail the request.
+/// a failed send is logged and does not fail the request. Switched off (`HUMAN_REVIEW_ENABLED`),
+/// it records nothing and answers `NotFound`.
 pub struct RequestReview {
+    enabled: bool,
     uow: Arc<dyn UnitOfWork>,
     mailer: Arc<dyn Mailer>,
     provider: Arc<dyn BillingProvider>,
@@ -67,6 +69,7 @@ fn invalid(detail: &str) -> AppError {
 
 impl RequestReview {
     pub fn new(
+        enabled: bool,
         uow: Arc<dyn UnitOfWork>,
         mailer: Arc<dyn Mailer>,
         provider: Arc<dyn BillingProvider>,
@@ -75,6 +78,7 @@ impl RequestReview {
         contact_to: String,
     ) -> Self {
         Self {
+            enabled,
             uow,
             mailer,
             provider,
@@ -90,6 +94,9 @@ impl RequestReview {
         scope: &OrgScope,
         input: ReviewInput,
     ) -> AppResult<(Uuid, Option<String>)> {
+        if !self.enabled {
+            return Err(AppError::NotFound);
+        }
         if self.settings.stripe_configured {
             let r = self.record(scope, input, Payment::Pending).await?;
             let url = self.checkout(scope, &r).await?;

@@ -123,6 +123,43 @@ contract_suite! {
         assert!(!s.runs().completed_full_scan(org(s).await, c1).await.unwrap());
     }
 
+    async fn failed_scan_streak_counts_failed_nightly_full_scans_since_the_last_ended_one(s) {
+        let o = org(s).await;
+        let (c1, c2) = (connection(s, o, "A").await.id, connection(s, o, "B").await.id);
+        let end = |job: &'static str, c: Uuid, at: DateTime<Utc>, status: RunStatus| async move {
+            let id = run(s, key(o, c, job, at)).await;
+            let fence = s.ledger().bump_fence(id).await.unwrap();
+            s.ledger().set_status(id, fence, status, None).await.unwrap();
+        };
+        let night = |n: i64| t0() + Duration::days(n);
+        // Asked for by hand: never on a whole minute.
+        let manual = |n: i64| night(n) + Duration::microseconds(41_000_001);
+        let streak = || async { s.runs().failed_scan_streak(o, c1).await.unwrap() };
+        assert_eq!(streak().await, None);
+        end("full_scan", c1, night(0), RunStatus::Done).await;
+        assert_eq!(streak().await, None);
+        end("full_scan", c1, night(1), RunStatus::Failed).await;
+        assert_eq!(streak().await, Some((1, night(1))));
+        // Not this connection's nightly full scans: manual, skipped, queued, other job, other connection.
+        end("full_scan", c1, manual(1), RunStatus::Failed).await;
+        end("full_scan", c1, manual(2), RunStatus::Done).await;
+        end("full_scan", c1, night(2), RunStatus::Skipped).await;
+        run(s, key(o, c1, "full_scan", night(3))).await;
+        end("watch_scan", c1, night(4), RunStatus::Done).await;
+        end("full_scan", c2, night(4), RunStatus::Done).await;
+        assert_eq!(streak().await, Some((1, night(1))));
+        end("full_scan", c1, night(5), RunStatus::Failed).await;
+        end("full_scan", c1, night(6), RunStatus::Failed).await;
+        assert_eq!(streak().await, Some((3, night(1))));
+        assert_eq!(s.runs().failed_scan_streak(org(s).await, c1).await.unwrap(), None);
+        assert_eq!(s.runs().failed_scan_streak(o, c2).await.unwrap(), None);
+        // A partial night ends the streak, as a done one does.
+        end("full_scan", c1, night(7), RunStatus::Partial).await;
+        assert_eq!(streak().await, None);
+        end("full_scan", c1, night(8), RunStatus::Failed).await;
+        assert_eq!(streak().await, Some((1, night(8))));
+    }
+
     async fn last_manual_scan_counts_only_this_connections_full_scans(s) {
         let o = org(s).await;
         let (c1, c2) = (connection(s, o, "A").await.id, connection(s, o, "B").await.id);

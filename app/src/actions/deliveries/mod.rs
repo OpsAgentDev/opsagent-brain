@@ -55,6 +55,8 @@ pub struct Kit {
     pub web_base_url: String,
     /// `Config::unsubscribe_key`, for unsubscribe links in the weekly digest.
     pub unsubscribe_key: String,
+    /// `Config::human_review_enabled`: off, the weekly digest offers no human review.
+    pub human_review_enabled: bool,
 }
 
 /// A delivery row with the id of the recipient it went to (email rows only; owner fallback

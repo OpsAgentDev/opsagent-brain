@@ -172,6 +172,8 @@ pub trait UsersRepo: Send + Sync {
     /// Stores `name` only while the user's name is unset; a named user is never renamed and an
     /// unknown id is a no-op.
     async fn set_name_if_missing(&self, id: Uuid, name: &PersonName) -> RepoResult<()>;
+    /// Renames the user; an unknown id is a no-op.
+    async fn set_name(&self, id: Uuid, name: &PersonName) -> RepoResult<()>;
     /// Stores `at` only while the user has not accepted the Terms; a later call keeps the first
     /// time and an unknown id is a no-op.
     // shortcut: no terms version stored, add terms_version when the Terms change materially
