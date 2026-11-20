@@ -951,8 +951,8 @@ async fn topup_refund_and_dispute_take_the_credits_back_once() {
                 .await;
         }
         let charge = |event_id: &str, kind: &str, payment: &str| {
-            let object =
-                json!({ "customer": "cus_1", "payment_intent": payment, "refunded": true });
+            let object = json!({ "customer": "cus_1", "payment_intent": payment, "refunded": true,
+                "status": "won" });
             event(event_id, kind, 20, object)
         };
         let repo = Pg::new(&ctx.db);
@@ -982,6 +982,11 @@ async fn topup_refund_and_dispute_take_the_credits_back_once() {
             .unwrap();
         assert_eq!(reversed.len(), 1);
         assert_eq!(reversed[0].metadata["reason"], "refund");
+        // The dispute is won: the credits come back once, its redelivery adds nothing.
+        for _ in 0..2 {
+            deliver(&req, &charge("evt_r5", "charge.dispute.closed", "pi_t1")).await;
+            assert_eq!(repo.topup_balance(id).await.unwrap(), Decimal::from(1000));
+        }
     })
     .await;
 }

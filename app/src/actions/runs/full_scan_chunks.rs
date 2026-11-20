@@ -16,7 +16,7 @@ use opsagent_core::{
     finding::FindingDraft,
     resource::{CallCount, Resource},
 };
-use opsagent_ledger::{ChunkOutcome, JobKind, LedgerError, Result, RunRow};
+use opsagent_ledger::{ChunkOutcome, EffectState, JobKind, LedgerError, Result, RunRow};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -33,6 +33,8 @@ use crate::{
 
 pub(super) const SIMULATE: &str = "simulate";
 pub(super) const FINALIZE: &str = "finalize";
+/// The side effect a watch scan's finalize records with its writes, holding its stats.
+const WATCH_APPLIED: &str = "watch:applied";
 
 /// The check fed by the daily cost read.
 const COST_CHECK: &str = "01";
@@ -267,6 +269,12 @@ impl Scan<'_> {
     async fn finalize(&self, fence: u64) -> Result<ChunkOutcome> {
         let (run_id, c, k) = (self.run_id, self.c, self.k);
         let watch = self.fs.profile == ScanProfile::Watch;
+        if let Some(stats) = self.watch_applied(watch).await? {
+            return Ok(ChunkOutcome {
+                stats,
+                ..Default::default()
+            });
+        }
         let run = self.fs.uow.ledger().load_run(run_id).await?;
         let cp = run.checkpoint.clone();
         let so_far = cp.stats;
@@ -311,9 +319,14 @@ impl Scan<'_> {
         if watch && self.fs.full_scan_held(c).await? {
             let forget = tx.resources().forget_run(c.organisation_id, c.id, run_id);
             forget.await.map_err(lerr)?;
+            let stats = json!({ "skip_reason": "overlap" });
+            let applied = Some(stats.to_string());
+            tx.ledger()
+                .effect_done(run_id, WATCH_APPLIED, applied)
+                .await?;
             tx.commit().await.map_err(lerr)?;
             return Ok(ChunkOutcome {
-                stats: json!({ "skip_reason": "overlap" }),
+                stats,
                 ..Default::default()
             });
         }
@@ -357,6 +370,12 @@ impl Scan<'_> {
             enqueue_verify_after_denied_scan(&*tx, &run.key, now).await?;
         }
         self.enqueue_alert(&*tx, &run, now).await?;
+        if watch {
+            let applied = Some(stats.to_string());
+            tx.ledger()
+                .effect_done(run_id, WATCH_APPLIED, applied)
+                .await?;
+        }
         tx.commit().await.map_err(lerr)?;
         // shortcut: a finalize re-run after a crash here counts again; the notice is a prompt to read the logs, not a ledger.
         let failed = stats["check_errors"].as_array().map_or(0, Vec::len);
@@ -370,6 +389,23 @@ impl Scan<'_> {
 }
 
 impl Scan<'_> {
+    /// The stats of this watch run's finalize when an earlier attempt already committed it
+    /// (the worker died before its checkpoint). Its transaction forgot the run's resource
+    /// history, so running it again would see no resource and resolve every watch finding:
+    /// the redelivered finalize writes nothing and reports what the first one did.
+    async fn watch_applied(&self, watch: bool) -> Result<Option<Value>> {
+        if !watch {
+            return Ok(None);
+        }
+        let ledger = self.fs.uow.ledger();
+        let EffectState::Done(stats) = ledger.effect_begin(self.run_id, WATCH_APPLIED).await?
+        else {
+            return Ok(None);
+        };
+        let stats = stats.and_then(|s| serde_json::from_str(&s).ok());
+        Ok(Some(stats.unwrap_or_else(|| json!({}))))
+    }
+
     /// This scan's one `deliver_alert` run and job, on the finalize transaction (urgent-alerts
     /// spec), when the connection takes alerts and there may be something to send: unalerted
     /// criticals, or (any full scan) the connection's first-scan baseline. Keyed to the scan's

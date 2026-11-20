@@ -129,6 +129,20 @@ pub(super) struct Quota {
     pub used: Decimal,
 }
 
+impl Quota {
+    /// What is left of the period's included credits.
+    pub fn included_left(&self) -> Decimal {
+        (self.quota - self.used).max(Decimal::ZERO)
+    }
+
+    /// Credits a call may still draw: the included credits left, plus the top-up balance when
+    /// it is above zero. A top-up debt (an overshoot, a refunded or disputed top-up) never
+    /// blocks the included credits; it is owed from the next top-up.
+    pub fn left(&self, topup: Decimal) -> Decimal {
+        self.included_left() + topup.max(Decimal::ZERO)
+    }
+}
+
 enum Payer<'a> {
     /// `serving` is the backup when the primary is `failing`, which `plan` tells the owners.
     Byok {
@@ -320,8 +334,8 @@ impl AiAccess {
             return Err(AiCallError::Unavailable.into());
         }
         let q = &snap.quota;
-        let included_left = (q.quota - q.used).max(Decimal::ZERO);
-        if included_left + snap.topup <= Decimal::ZERO {
+        let included_left = q.included_left();
+        if q.left(snap.topup) <= Decimal::ZERO {
             return Err(quota_reached("This period's AI credits are used up."));
         }
         // The ceiling guards the included credits OpsAgent funds. With none left the call is

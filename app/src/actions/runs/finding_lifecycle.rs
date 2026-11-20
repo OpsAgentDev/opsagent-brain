@@ -106,7 +106,8 @@ pub(super) async fn apply_watch(
 /// True when this watch run read the finding's resource: a watch variant whose stored
 /// resource has a region, and that region's read of its service did not fail
 /// (`failed_reads` holds each failed `service@region`). A watch scan that ends at its time
-/// cap never gets here.
+/// cap never gets here. Check 06's trail findings name the account (`cloudtrail:<account>`),
+/// not a stored resource, so they never resolve here: they stay the full scan's.
 async fn was_read(
     repos: &dyn Repos,
     c: &Connection,

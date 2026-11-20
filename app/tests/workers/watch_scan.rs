@@ -172,6 +172,49 @@ async fn watch_scan_never_marks_resources_gone() {
     .await;
 }
 
+/// Kill-and-resume between finalize's commit and its checkpoint: that transaction forgot the
+/// run's resource history, so the redelivered finalize must not read "no resources" as
+/// "everything is fixed".
+#[tokio::test]
+#[serial]
+async fn watch_finalize_delivered_again_after_its_commit_resolves_nothing() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx).await;
+        scan(&ctx, conn, 0, &without_snapshot()).await;
+        let ws = watch(&ctx, noisy());
+        let first = watch_run(&ctx, conn, 0, &ws).await;
+        assert_eq!(outcome(&first), ("done", None));
+        let state = || async {
+            let mut all: Vec<_> = all_findings(&ctx, conn)
+                .await
+                .into_iter()
+                .map(|f| (f.id, f.status, f.last_seen_run_id))
+                .collect();
+            all.sort();
+            (all, deliveries(&ctx, conn).await.len())
+        };
+        let before = state().await;
+        // The worker died after the commit: the run is still running, finalize not checkpointed.
+        let undo = "UPDATE runs SET status = 'running', checkpoint = jsonb_set(checkpoint, \
+             '{chunks_done}', (checkpoint->'chunks_done') - 'finalize') WHERE id = $1";
+        let st = opsagent_brain::adapters::db::ledger_storage::stmt(undo, vec![first.id.into()]);
+        ctx.db.execute_raw(st).await.unwrap();
+        ws.run(first.id, RunChunkedOptions::default())
+            .await
+            .unwrap();
+        let again = runs::Entity::find_by_id(first.id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome(&again), ("done", None));
+        assert_eq!(again.checkpoint["stats"], first.checkpoint["stats"]);
+        assert_eq!(state().await, before);
+        assert_eq!(finding(&ctx, conn, "sg-ssh").await.unwrap().status, "open");
+    })
+    .await;
+}
+
 /// Runs the connection's `deliver_alert` runs (a finished one is a no-op).
 async fn deliver(ctx: &TestApp, conn: Uuid) {
     for d in deliveries(ctx, conn).await {
