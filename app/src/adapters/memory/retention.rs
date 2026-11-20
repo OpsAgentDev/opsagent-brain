@@ -8,7 +8,7 @@ use opsagent_core::{
     model::{AiProvider, Usage},
     oauth::ClientKind,
     repo::{RepoError, RepoResult},
-    retention::{DueOrg, PurgeCounts, RetentionRepo, TtlTable, ORG_PURGED},
+    retention::{DueOrg, PurgeCounts, RetentionRepo, TtlTable, ACCOUNT_DELETED, ORG_PURGED},
     run::{RunKey, RunStatus},
 };
 use opsagent_ledger::Storage;
@@ -402,8 +402,35 @@ impl RetentionRepo for MemStore {
             .map(|p| p.0.to_string())
             .collect();
         s.purged_at.retain(|p| p.1 >= before);
-        Ok(super::purge::drain(&mut s.audit, |e| {
-            e.action == ORG_PURGED && e.target.as_ref().is_some_and(|t| old.contains(&t.1))
-        }))
+        // Entries carry no time here: the oldest `user.delete` records go, as many as are old.
+        let mut accounts = s.account_deleted_at.iter().filter(|t| **t < before).count();
+        s.account_deleted_at.retain(|t| *t >= before);
+        let n = s.audit.len();
+        s.audit.retain(|e| {
+            if e.action == ACCOUNT_DELETED && e.organisation_id.is_none() && accounts > 0 {
+                accounts -= 1;
+                return false;
+            }
+            !(e.action == ORG_PURGED && e.target.as_ref().is_some_and(|t| old.contains(&t.1)))
+        });
+        Ok((n - s.audit.len()) as u64)
+    }
+
+    async fn erase_account_audit(&self, user_id: Uuid, at: DateTime<Utc>) -> RepoResult<u64> {
+        let s = &mut *self.state();
+        let about = Some(("user", user_id.to_string()));
+        let n = super::purge::drain(&mut s.audit, |e| {
+            e.organisation_id.is_none() && (e.actor == Actor::Member(user_id) || e.target == about)
+        });
+        s.audit.push(AuditEntry {
+            organisation_id: None,
+            actor: Actor::System,
+            action: ACCOUNT_DELETED.into(),
+            target: None,
+            outcome: "success".into(),
+            meta: serde_json::json!({}),
+        });
+        s.account_deleted_at.push(at);
+        Ok(n)
     }
 }

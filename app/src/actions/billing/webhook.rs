@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
+    audit::AuditEntry,
     billing::{BillingError, BillingProvider, BillingStatus as B, SubscriptionState},
     repo::{Clock, RepoError},
 };
@@ -21,7 +22,9 @@ use crate::{
     error::{AppError, AppResult},
 };
 
-const HANDLED: [&str; 7] = [
+const HANDLED: [&str; 9] = [
+    "charge.dispute.created",
+    "charge.refunded",
     "checkout.session.completed",
     "checkout.session.async_payment_succeeded",
     "customer.subscription.created",
@@ -151,7 +154,8 @@ fn status_of(stripe: &str) -> Option<B> {
 /// `bad_signature`), then applies each event once (`stripe_events`), in one transaction with
 /// its writes, so a failed write is retried by Stripe rather than lost. Unhandled types and
 /// unknown customers are acknowledged and ignored. A paid human review commits with its
-/// notice job, which sends the mails (never the webhook).
+/// notice job, which sends the mails (never the webhook). A refunded or disputed top-up
+/// gives its credits back (`topup_taken_back`).
 /// 503 until the webhook secret is set.
 pub struct HandleWebhook {
     uow: Arc<dyn UnitOfWork>,
@@ -226,6 +230,8 @@ impl HandleWebhook {
             self.checkout_completed(tx.as_ref(), &ev).await?;
         } else if paid_event {
             // A subscription's delayed payment: its subscription events carry the state.
+        } else if ev.kind.starts_with("charge.") {
+            unmatched = self.topup_taken_back(tx.as_ref(), &ev).await?;
         } else {
             let customer = ev.data.object["customer"].as_str();
             match customer {
@@ -248,6 +254,49 @@ impl HandleWebhook {
             .add(Counted::UnmatchedPayment, u64::from(unmatched))
             .await;
         Ok(())
+    }
+
+    /// A fully refunded (`charge.refunded`) or disputed (`charge.dispute.created`) top-up
+    /// payment gives its credits back, once per payment: the reversal is a negative grant
+    /// keyed on the payment intent, so the other event and any redelivery add nothing. The
+    /// balance may go below 0 (owed from the next top-up). Any other charge (a subscription's,
+    /// a human review's) changes nothing. The payment is matched through its Checkout session
+    /// (the provider), so a failed lookup fails the webhook and Stripe sends the event again.
+    /// True when a top-up's charge matched no organisation (counted for the operator notice).
+    async fn topup_taken_back(&self, tx: &dyn Tx, ev: &Event) -> AppResult<bool> {
+        let o = &ev.data.object;
+        let dispute = ev.kind == "charge.dispute.created";
+        // A partial refund keeps the credits: `refunded` is true only once all is refunded.
+        if !dispute && o["refunded"] != true {
+            return Ok(false);
+        }
+        let Some(payment) = o["payment_intent"].as_str() else {
+            return Ok(false);
+        };
+        let reference = match self.provider.topup_of_payment(payment).await {
+            Ok(Some(r)) => r,
+            Ok(None) | Err(BillingError::NotFound) => return Ok(false),
+            Err(e) => return Err(provider_failed(e)),
+        };
+        let org = reference.parse::<Uuid>().ok();
+        let known = match org {
+            Some(org) => !matches!(tx.billing().billing(org).await, Err(RepoError::NotFound)),
+            None => false,
+        };
+        let Some(org) = org.filter(|_| known) else {
+            warn_skip(ev, "refunded or disputed top-up matches no organisation");
+            return Ok(true);
+        };
+        let credits = -sea_orm::prelude::Decimal::from(TOPUP_CREDITS);
+        let key = format!("reversal:{payment}");
+        if tx.ai().grant_topup(org, credits, &key).await? {
+            let reason = if dispute { "dispute" } else { "refund" };
+            let target = ("payment", payment.to_owned());
+            let entry = AuditEntry::system(org, "ai.topup_reversed", target, "success")
+                .with_meta(serde_json::json!({ "credits": TOPUP_CREDITS, "reason": reason }));
+            tx.audit().record(entry).await?;
+        }
+        Ok(false)
     }
 
     /// The customer is saved before Checkout, so this only fills a gap. A session whose
@@ -391,7 +440,7 @@ impl HandleWebhook {
 #[cfg(test)]
 mod tests {
     use hmac::{Hmac, KeyInit, Mac};
-    use opsagent_core::billing::BillingRepo;
+    use opsagent_core::{ai::AiRepo, billing::BillingRepo};
     use serde_json::json;
     use sha2::Sha256;
 
@@ -430,18 +479,20 @@ mod tests {
     }
 
     fn hook(store: &MemStore, now: DateTime<Utc>) -> HandleWebhook {
-        hook_counting(store, now, Arc::new(MemRateLimiter::default()))
+        let tally = Arc::new(MemRateLimiter::default());
+        hook_counting(store, now, tally, NoStripe::default())
     }
 
     fn hook_counting(
         store: &MemStore,
         now: DateTime<Utc>,
         tally: Arc<MemRateLimiter>,
+        stripe: NoStripe,
     ) -> HandleWebhook {
         let clock = Arc::new(FixedClock(now));
         HandleWebhook::new(
             Arc::new(store.clone()),
-            Arc::new(NoStripe),
+            Arc::new(stripe),
             clock.clone(),
             settings(),
             DayCounter::new(tally, clock),
@@ -452,7 +503,7 @@ mod tests {
     async fn a_paid_session_that_matches_nothing_is_counted_for_the_operator() {
         let (store, now) = (MemStore::default(), Utc::now());
         let tally = Arc::new(MemRateLimiter::default());
-        let h = hook_counting(&store, now, tally.clone());
+        let h = hook_counting(&store, now, tally.clone(), NoStripe::default());
         let nobody = Uuid::new_v4().to_string();
         let session = |id: &str, purpose: &str, paid: &str| {
             let object = json!({ "mode": "payment", "payment_status": paid,
@@ -512,5 +563,87 @@ mod tests {
         assert_eq!(jobs.len(), 1, "{jobs:?}");
         assert_eq!(jobs[0].kind, opsagent_ledger::JobKind::BillingSync);
         assert_eq!(store.billing(org.id).await.unwrap().status, B::Trialing);
+    }
+
+    /// Delivers a charge event about payment `pi`: a refund (fully, when `full`) or a dispute.
+    async fn charge(h: &HandleWebhook, id: &str, kind: &str, pi: &str, full: bool) {
+        let now = h.clock.now();
+        let object = json!({ "customer": "cus_1", "payment_intent": pi, "refunded": full });
+        let body = json!({ "id": id, "type": kind, "created": now.timestamp(),
+            "data": { "object": object } })
+        .to_string();
+        h.run(Some(&sign(&body, now)), body.as_bytes())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refunded_or_disputed_topup_gives_its_credits_back_once() {
+        let (store, now) = (MemStore::default(), Utc::now());
+        let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+        let tally = Arc::new(MemRateLimiter::default());
+        let paid_by = NoStripe(Some(org.id.to_string()));
+        let h = hook_counting(&store, now, tally.clone(), paid_by);
+        let credits = sea_orm::prelude::Decimal::from(TOPUP_CREDITS);
+        let granted = store.grant_topup(org.id, credits, "evt_grant");
+        assert!(granted.await.unwrap());
+        let balance = || async { store.topup_balance(org.id).await.unwrap() };
+        // A partial refund keeps the credits.
+        charge(&h, "evt_1", "charge.refunded", "pi_1", false).await;
+        assert_eq!(balance().await, credits);
+        // The full refund, its redelivery, then a dispute of the same payment: taken back once.
+        for (id, kind) in [
+            ("evt_2", "charge.refunded"),
+            ("evt_2", "charge.refunded"),
+            ("evt_3", "charge.dispute.created"),
+        ] {
+            charge(&h, id, kind, "pi_1", true).await;
+            assert_eq!(balance().await, 0.into(), "{id}");
+        }
+        // Credits already spent are owed: another payment's dispute takes the balance below 0.
+        charge(&h, "evt_4", "charge.dispute.created", "pi_2", false).await;
+        assert_eq!(balance().await, -credits);
+        let all = store.audit_entries();
+        let reversed = all.iter().filter(|e| e.action == "ai.topup_reversed");
+        let seen: Vec<_> = reversed
+            .map(|e| (e.organisation_id, e.meta["reason"].as_str()))
+            .collect();
+        let org = Some(org.id);
+        assert_eq!(seen, [(org, Some("refund")), (org, Some("dispute"))]);
+        let key = format!("payment:unmatched:{}", now.date_naive());
+        assert_eq!(tally.total(&key).await.unwrap(), 0.into());
+    }
+
+    #[tokio::test]
+    async fn only_a_topup_that_matches_no_organisation_is_counted() {
+        let (store, now) = (MemStore::default(), Utc::now());
+        let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+        store.set_customer(org.id, "cus_1").await.unwrap();
+        let before = store.billing(org.id).await.unwrap();
+        let tally = Arc::new(MemRateLimiter::default());
+        let key = format!("payment:unmatched:{}", now.date_naive());
+        // A subscription's (or a human review's) charge: accepted, nothing changes.
+        let h = hook_counting(&store, now, tally.clone(), NoStripe(None));
+        for kind in ["charge.refunded", "charge.dispute.created"] {
+            charge(&h, kind, kind, "pi_sub", true).await;
+        }
+        assert_eq!(store.billing(org.id).await.unwrap(), before);
+        assert_eq!(store.topup_balance(org.id).await.unwrap(), 0.into());
+        assert_eq!(tally.total(&key).await.unwrap(), 0.into());
+        // A top-up whose organisation is gone: accepted and counted once, its repeat too.
+        for reference in [Uuid::new_v4().to_string(), String::new()] {
+            let h = hook_counting(
+                &store,
+                now,
+                tally.clone(),
+                NoStripe(Some(reference.clone())),
+            );
+            let id = format!("evt_{reference}");
+            charge(&h, &id, "charge.refunded", "pi_gone", true).await;
+            charge(&h, &id, "charge.refunded", "pi_gone", true).await;
+        }
+        assert_eq!(tally.total(&key).await.unwrap(), 2.into());
+        let all = store.audit_entries();
+        assert!(all.iter().all(|e| e.action != "ai.topup_reversed"));
     }
 }

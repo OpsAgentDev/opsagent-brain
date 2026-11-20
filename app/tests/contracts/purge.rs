@@ -217,6 +217,28 @@ contract_suite! {
         assert_eq!(seed.purge_records().await.len(), 1);
         assert_eq!(seed.audit_count(None).await, 2);
     }
+
+    async fn account_audit_erased_and_its_record_deleted_after_a_year(s, seed) {
+        let t = now();
+        let (pat, sam) = (Uuid::now_v7(), Uuid::now_v7());
+        let about = Some(("user", pat.to_string()));
+        for (who, target) in [(pat, None), (pat, about.clone()), (sam, about), (sam, None)] {
+            s.audit().record(AuditEntry::member(None, who, "auth.sign_in", target)).await.unwrap();
+        }
+        // An entry in an organisation's trail is not the account's.
+        let o = org_id(s, "acme").await;
+        s.audit().record(AuditEntry::member(Some(o), pat, "member.remove", None)).await.unwrap();
+        let tx = s.begin().await.unwrap();
+        assert_eq!(tx.retention().erase_account_audit(pat, t - Duration::days(400)).await.unwrap(), 3);
+        tx.commit().await.unwrap();
+        // Sam's own entry and the deletion record.
+        assert_eq!(seed.audit_count(None).await, 2);
+        assert_eq!(seed.audit_count(Some(o)).await, 1);
+        let tx = s.begin().await.unwrap();
+        assert_eq!(tx.retention().delete_old_purge_records(t - Duration::days(365)).await.unwrap(), 1);
+        tx.commit().await.unwrap();
+        assert_eq!(seed.audit_count(None).await, 1);
+    }
 }
 
 /// Pg only: one row in every table that hangs off organisation `o` (its user `email` too),

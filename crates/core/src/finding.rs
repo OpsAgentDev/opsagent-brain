@@ -214,6 +214,16 @@ pub trait FindingsRepo: Send + Sync {
         except_check_ids: &[String],
         now: DateTime<Utc>,
     ) -> RepoResult<u64>;
+    /// Resolve these findings of the connection, those open or flapping, the way
+    /// `resolve_unseen` does (a watch scan that read their resource); returns how many.
+    async fn resolve(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        ids: &[Uuid],
+        now: DateTime<Utc>,
+    ) -> RepoResult<u64>;
     async fn posture_rows(
         &self,
         organisation_id: Uuid,

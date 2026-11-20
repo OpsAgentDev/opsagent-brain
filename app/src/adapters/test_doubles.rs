@@ -113,6 +113,10 @@ impl BillingProvider for Swappable<dyn BillingProvider> {
             .await
     }
 
+    async fn topup_of_payment(&self, payment_intent_id: &str) -> BillingResult<Option<String>> {
+        self.get().topup_of_payment(payment_intent_id).await
+    }
+
     async fn set_quantity(
         &self,
         subscription_id: &str,

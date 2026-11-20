@@ -166,9 +166,9 @@ impl Scan<'_> {
             Ok(inv) => inv
                 .partial_errors
                 .iter()
-                .map(|e| e.service.clone())
+                .map(|e| (e.service.clone(), e.region.clone()))
                 .collect(),
-            Err(_) => BTreeSet::from([svc.to_owned()]),
+            Err(_) => BTreeSet::from([(svc.to_owned(), region.to_owned())]),
         };
         self.unavailable(&mut stats, down).await?;
         Ok(ChunkOutcome {
@@ -177,9 +177,10 @@ impl Scan<'_> {
         })
     }
 
-    /// Adds `down` to the run's `stats.unavailable` (the services whose reads failed so far).
+    /// Adds `down` (service, region) to the run's `stats.unavailable` (the services whose
+    /// reads failed so far) and `stats.failed_reads` (each failed read, as `service@region`).
     /// Stats merge by key, so the chunk writes the union.
-    async fn unavailable(&self, stats: &mut Value, mut down: BTreeSet<String>) -> Result<()> {
+    async fn unavailable(&self, stats: &mut Value, down: BTreeSet<(String, String)>) -> Result<()> {
         if down.is_empty() {
             return Ok(());
         }
@@ -191,8 +192,14 @@ impl Scan<'_> {
             .await?
             .checkpoint
             .stats;
-        down.extend(parse::<BTreeSet<String>>(&so_far["unavailable"])?);
-        stats["unavailable"] = json!(down);
+        let mut services: BTreeSet<String> = parse(&so_far["unavailable"])?;
+        let mut reads: BTreeSet<String> = parse(&so_far["failed_reads"])?;
+        for (service, region) in down {
+            reads.insert(format!("{service}@{region}"));
+            services.insert(service);
+        }
+        stats["unavailable"] = json!(services);
+        stats["failed_reads"] = json!(reads);
         Ok(())
     }
 
@@ -256,7 +263,7 @@ impl Scan<'_> {
     }
 
     /// Gone-marking, checks, lifecycle and posture, in one fenced transaction. A watch scan
-    /// only runs its checks and opens what they find.
+    /// only runs its checks, opens what they find and resolves what it read as fixed.
     async fn finalize(&self, fence: u64) -> Result<ChunkOutcome> {
         let (run_id, c, k) = (self.run_id, self.c, self.k);
         let watch = self.fs.profile == ScanProfile::Watch;
@@ -311,10 +318,17 @@ impl Scan<'_> {
             });
         }
         let mut stats = if watch {
-            let (checks, skipped) = watch_scan::checks((self.fs.checks)(), &unavailable);
-            let (mut drafts, check_errors) = run_checks(checks, k, &cx, run_id);
+            // A block: the checks are not `Send`, so they must be gone before the next await.
+            let (mut drafts, ran, check_errors, skipped) = {
+                let (checks, skipped) = watch_scan::checks((self.fs.checks)(), &unavailable);
+                let mut ran: Vec<&str> = checks.iter().map(|ch| ch.id()).collect();
+                let (drafts, check_errors) = run_checks(checks, k, &cx, run_id);
+                ran.retain(|id| !check_errors.contains(id));
+                (drafts, ran, check_errors, skipped)
+            };
             drafts.retain(watch_scan::allowed);
-            finding_lifecycle::apply_watch(&*tx, c, run_id, &drafts, now)
+            let failed_reads: BTreeSet<String> = parse(&so_far["failed_reads"])?;
+            finding_lifecycle::apply_watch(&*tx, c, run_id, &drafts, &ran, &failed_reads, now)
                 .await
                 .map_err(lerr)?;
             // A watch keeps no history: nothing after finalize reads this run's rows.

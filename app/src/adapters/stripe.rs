@@ -227,6 +227,17 @@ impl BillingProvider for StripeBilling {
         field(&self.post("checkout/sessions", form, idem).await?, "url")
     }
 
+    async fn topup_of_payment(&self, payment_intent_id: &str) -> BillingResult<Option<String>> {
+        let path = format!(
+            "checkout/sessions?limit=1&payment_intent={}",
+            urlencoding::encode(payment_intent_id)
+        );
+        let list = self.call(Method::GET, &path, None, None).await?;
+        let s = &list["data"][0];
+        let topup = s["metadata"]["purpose"] == TOPUP_PURPOSE && s["payment_status"] == "paid";
+        Ok(topup.then(|| s["client_reference_id"].as_str().unwrap_or("").to_owned()))
+    }
+
     async fn human_review_session(&self, r: &ReviewCheckout, idem: &str) -> BillingResult<String> {
         let mut form = self.payment_form(
             &r.customer_id,

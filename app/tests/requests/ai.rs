@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use serial_test::serial;
 use uuid::Uuid;
 use wiremock::{
-    matchers::{body_string_contains, header, header_regex, method, path},
+    matchers::{body_string_contains, header, header_regex, method, path, query_param},
     Mock, MockServer, ResponseTemplate,
 };
 
@@ -929,6 +929,60 @@ async fn topup_webhook_grants_once() {
             assert_eq!(repo.topup_balance(id).await.unwrap(), Decimal::from(2000));
         },
     )
+    .await;
+}
+
+/// A refunded or disputed top-up is matched through Stripe's Checkout session of its payment
+/// intent and gives its credits back once; a charge that paid anything else changes nothing.
+#[tokio::test]
+#[serial]
+async fn topup_refund_and_dispute_take_the_credits_back_once() {
+    let api = MockServer::start().await;
+    serve_with(stripe_on(api.uri()), |req, ctx| async move {
+        let (_, _, id) = org_with_customer(&req, &ctx).await;
+        let topup = json!({ "mode": "payment", "payment_status": "paid",
+            "client_reference_id": id.to_string(), "metadata": { "purpose": "ai_topup" } });
+        for (payment, sessions) in [("pi_t1", json!([topup])), ("pi_sub", json!([]))] {
+            Mock::given(method("GET"))
+                .and(path("/v1/checkout/sessions"))
+                .and(query_param("payment_intent", payment))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": sessions })))
+                .mount(&api)
+                .await;
+        }
+        let charge = |event_id: &str, kind: &str, payment: &str| {
+            let object =
+                json!({ "customer": "cus_1", "payment_intent": payment, "refunded": true });
+            event(event_id, kind, 20, object)
+        };
+        let repo = Pg::new(&ctx.db);
+        deliver(&req, &topup_event("evt_r0", id)).await;
+        // A subscription's refund and dispute: accepted, nothing changes.
+        deliver(&req, &charge("evt_r1", "charge.refunded", "pi_sub")).await;
+        deliver(&req, &charge("evt_r2", "charge.dispute.created", "pi_sub")).await;
+        assert_eq!(repo.topup_balance(id).await.unwrap(), Decimal::from(1000));
+        // The top-up's refund, its redelivery, then its dispute: taken back once.
+        for (event_id, kind) in [
+            ("evt_r3", "charge.refunded"),
+            ("evt_r3", "charge.refunded"),
+            ("evt_r4", "charge.dispute.created"),
+        ] {
+            deliver(&req, &charge(event_id, kind, "pi_t1")).await;
+            assert_eq!(
+                repo.topup_balance(id).await.unwrap(),
+                Decimal::ZERO,
+                "{event_id}"
+            );
+        }
+        let reversed = audit_events::Entity::find()
+            .filter(audit_events::Column::OrganisationId.eq(id))
+            .filter(audit_events::Column::Action.eq("ai.topup_reversed"))
+            .all(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(reversed.len(), 1);
+        assert_eq!(reversed[0].metadata["reason"], "refund");
+    })
     .await;
 }
 

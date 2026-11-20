@@ -82,10 +82,9 @@ impl DeleteAccount {
             tx.audit().record(entry).await?;
         }
         tx.users().erase(user_id, now).await?;
-        let target = Some(("user", user_id.to_string()));
-        tx.audit()
-            .record(AuditEntry::member(None, user_id, "user.delete", target))
-            .await?;
+        // Their account-level trail (sign-ins, passkeys, name, consents) goes with them; one
+        // record that names nobody stays (retention removes it after a year).
+        tx.retention().erase_account_audit(user_id, now).await?;
         tx.commit().await?;
         // To the address read before the erase.
         let mail = account_deleted(user.email.as_str().to_owned());
@@ -236,5 +235,34 @@ mod tests {
             .collect();
         assert_eq!(actions.iter().filter(|a| *a == "member.remove").count(), 2);
         assert!(actions.iter().any(|a| a == "user.delete"));
+    }
+
+    #[tokio::test]
+    async fn account_level_audit_entries_are_erased_with_the_account() {
+        use opsagent_core::audit::{Actor, AuditLog};
+        let store = MemStore::default();
+        let pat = user(&store, "pat@example.com").await;
+        let sam = user(&store, "sam@example.com").await;
+        let about = Some(("user", pat.id.to_string()));
+        for (who, action, target) in [
+            (pat.id, "auth.sign_in", about.clone()),
+            (pat.id, "auth.passkey_added", Some(("passkey", "p".into()))),
+            (pat.id, "user.update_name", about),
+            (sam.id, "auth.sign_in", Some(("user", sam.id.to_string()))),
+        ] {
+            let entry = AuditEntry::member(None, who, action, target);
+            store.record(entry).await.unwrap();
+        }
+
+        action(&store).run(pat.id, "pat@example.com").await.unwrap();
+
+        // Sam's entry stays; Pat's are gone but for one record that names nobody.
+        let left = store.audit_entries();
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert_eq!(left[0].actor, Actor::Member(sam.id));
+        let record = &left[1];
+        assert_eq!(record.action, "user.delete");
+        assert_eq!((record.actor, &record.target), (Actor::System, &None));
+        assert!(!format!("{record:?}").contains(&pat.id.to_string()));
     }
 }

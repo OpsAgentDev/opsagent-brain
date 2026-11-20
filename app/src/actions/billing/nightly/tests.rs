@@ -23,8 +23,10 @@ use crate::{
     mailers::{CaptureMailer, FailingMailer, Mailer},
 };
 
-/// The nightly pass makes no Stripe calls.
-pub(in crate::actions::billing) struct NoStripe;
+/// The nightly pass makes no Stripe calls. The webhook's one read answers with `0`: the
+/// reference of the top-up session a refunded or disputed payment paid.
+#[derive(Default)]
+pub(in crate::actions::billing) struct NoStripe(pub Option<String>);
 
 #[async_trait]
 impl BillingProvider for NoStripe {
@@ -49,6 +51,9 @@ impl BillingProvider for NoStripe {
         _: &str,
     ) -> BillingResult<String> {
         unreachable!()
+    }
+    async fn topup_of_payment(&self, _: &str) -> BillingResult<Option<String>> {
+        Ok(self.0.clone())
     }
     async fn set_quantity(&self, _: &str, _: i32, _: bool, _: &str) -> BillingResult<()> {
         unreachable!()
@@ -98,7 +103,7 @@ fn sync_counting(
     BillingSync::new(
         uow,
         redis::Client::open("redis://localhost:1").unwrap(),
-        Arc::new(NoStripe),
+        Arc::new(NoStripe::default()),
         (mail, guard),
         Arc::new(FixedClock(now)),
         settings(),

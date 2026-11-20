@@ -1,5 +1,6 @@
 //! `watch_scan`: the 15-minute subset of the full scan (urgent-alerts spec). It opens findings
-//! from `sg`, `rds` and `cloudtrail` only, and never resolves, marks gone or waits on a full scan.
+//! from `sg`, `rds` and `cloudtrail` only, resolves only its own findings whose resource it
+//! read as fixed, and never marks gone or waits on a full scan.
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
@@ -159,9 +160,98 @@ async fn watch_scan_never_marks_resources_gone() {
                 .unwrap();
             assert!(res.gone_at.is_none(), "{id} marked gone");
         }
+        // Both services were read in full, so the two exposure findings resolve as the full
+        // scan would resolve them; every other finding is the full scan's.
         for f in all_findings(&ctx, conn).await {
-            assert_eq!(f.status, "open", "{}", f.resource_identity);
+            let id = f.resource_identity.as_str();
+            let fixed = f.check_id == "03" && (id == "sg-ssh" || id == "snap-public");
+            let want = if fixed { "resolved" } else { "open" };
+            assert_eq!(f.status, want, "{id} {}", f.variant);
         }
+    })
+    .await;
+}
+
+/// Runs the connection's `deliver_alert` runs (a finished one is a no-op).
+async fn deliver(ctx: &TestApp, conn: Uuid) {
+    for d in deliveries(ctx, conn).await {
+        perform(ctx, opsagent_ledger::JobKind::DeliverAlert, d.id)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn a_critical_fixed_and_reopened_the_same_day_alerts_twice() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx).await;
+        let mail = prepare(&ctx);
+        // The first full scan is the baseline: its criticals get one summary, not an alert each.
+        scan(&ctx, conn, 0, &without_snapshot()).await;
+        deliver(&ctx, conn).await;
+        let mut sent = mail.sent().len();
+        // The snapshot goes public, is made private, and goes public again, 15 minutes apart.
+        for (n, public) in [(1, true), (2, false), (3, true)] {
+            let k = if public { noisy() } else { without_snapshot() };
+            let r = watch_run(&ctx, conn, n, &watch(&ctx, k)).await;
+            assert_eq!(outcome(&r), ("done", None));
+            let snap = finding(&ctx, conn, "snap-public").await.unwrap();
+            let want = if public { "open" } else { "resolved" };
+            assert_eq!(snap.status, want, "watch {n}");
+            assert!(snap.alerted_at.is_none(), "watch {n}");
+            deliver(&ctx, conn).await;
+            let snap = finding(&ctx, conn, "snap-public").await.unwrap();
+            assert_eq!(snap.alerted_at.is_some(), public, "watch {n}");
+            let now = mail.sent().len();
+            assert_eq!(now > sent, public, "watch {n}: {sent} then {now} mails");
+            sent = now;
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn watch_scan_resolves_nothing_in_a_region_whose_read_failed() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx).await;
+        scan(&ctx, conn, 0, &noisy()).await;
+        // The SSH group is closed and the snapshot made private.
+        let fixed = || {
+            fixture(|v| {
+                let all = v["resources"].as_array_mut().unwrap();
+                all.retain(|r| r["identity"] != "snap-public");
+                for r in all.iter_mut().filter(|r| r["identity"] == "sg-ssh") {
+                    r["attributes"]["open_world_ports"] = serde_json::json!([]);
+                }
+            })
+        };
+        let status = |identity: &'static str| {
+            let ctx = ctx.clone();
+            async move {
+                let all = all_findings(&ctx, conn).await;
+                let f = all
+                    .into_iter()
+                    .find(|f| f.check_id == "03" && f.resource_identity == identity);
+                f.unwrap().status
+            }
+        };
+        // The `sg` read of the group's region fails: the group was not read, so its finding
+        // stays; `rds` was read there, so the snapshot's resolves.
+        let k = Failing {
+            inner: fixed(),
+            service: "sg",
+            region: Some("local"),
+        };
+        let r = watch_run(&ctx, conn, 0, &watch(&ctx, k)).await;
+        assert_eq!(r.status, "partial");
+        assert_eq!(status("sg-ssh").await, "open");
+        assert_eq!(status("snap-public").await, "resolved");
+        // Read in full, the group's finding resolves too.
+        let r = watch_run(&ctx, conn, 1, &watch(&ctx, fixed())).await;
+        assert_eq!(outcome(&r), ("done", None));
+        assert_eq!(status("sg-ssh").await, "resolved");
     })
     .await;
 }

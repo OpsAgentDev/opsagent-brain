@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
     repo::{RepoError, RepoResult},
-    retention::{DueOrg, PurgeCounts, RetentionRepo, TtlTable, ORG_PURGED},
+    retention::{DueOrg, PurgeCounts, RetentionRepo, TtlTable, ACCOUNT_DELETED, ORG_PURGED},
 };
 use sea_orm::ConnectionTrait;
 use uuid::Uuid;
@@ -290,22 +290,26 @@ impl<C: Conn> RetentionRepo for Pg<C> {
         ));
         counts.insert("organisations", done.await.map_err(db_err)?.rows_affected());
         let meta = serde_json::json!({ "counts": counts });
-        self.db()
+        let target = Some(("organisation", org.to_string()));
+        self.record(ORG_PURGED, target, meta, at).await?;
+        Ok(Some(counts))
+    }
+
+    async fn erase_account_audit(&self, user_id: Uuid, at: DateTime<Utc>) -> RepoResult<u64> {
+        self.purge_mode().await?;
+        let done = self
+            .db()
             .execute_raw(stmt(
-                "INSERT INTO audit_events (id, organisation_id, actor_type, action, target_type, \
-                 target_id, outcome, metadata, created_at, updated_at) \
-                 VALUES ($1, NULL, 'system', $2, 'organisation', $3, 'success', $4, $5, $5)",
-                vec![
-                    Uuid::new_v4().into(),
-                    ORG_PURGED.into(),
-                    org.to_string().into(),
-                    meta.into(),
-                    at.into(),
-                ],
+                "DELETE FROM audit_events WHERE organisation_id IS NULL \
+                 AND ((actor_type = 'member' AND actor_id = $1) \
+                   OR (target_type = 'user' AND target_id = $1))",
+                vec![user_id.to_string().into()],
             ))
             .await
             .map_err(db_err)?;
-        Ok(Some(counts))
+        self.record(ACCOUNT_DELETED, None, serde_json::json!({}), at)
+            .await?;
+        Ok(done.rows_affected())
     }
 
     async fn delete_old_purge_records(&self, before: DateTime<Utc>) -> RepoResult<u64> {
@@ -313,9 +317,9 @@ impl<C: Conn> RetentionRepo for Pg<C> {
         let done = self
             .db()
             .execute_raw(stmt(
-                "DELETE FROM audit_events WHERE organisation_id IS NULL AND action = $1 \
-                 AND created_at < $2",
-                vec![ORG_PURGED.into(), before.into()],
+                "DELETE FROM audit_events WHERE organisation_id IS NULL AND action IN ($1, $2) \
+                 AND created_at < $3",
+                vec![ORG_PURGED.into(), ACCOUNT_DELETED.into(), before.into()],
             ))
             .await
             .map_err(db_err)?;
@@ -324,6 +328,34 @@ impl<C: Conn> RetentionRepo for Pg<C> {
 }
 
 impl<C: Conn> Pg<C> {
+    /// One organisation-less system record (`org.purged`, `user.delete`) made at `at`.
+    async fn record(
+        &self,
+        action: &str,
+        target: Option<(&str, String)>,
+        meta: serde_json::Value,
+        at: DateTime<Utc>,
+    ) -> RepoResult<()> {
+        let (kind, id) = target.map(|(k, id)| (k.to_owned(), id)).unzip();
+        self.db()
+            .execute_raw(stmt(
+                "INSERT INTO audit_events (id, organisation_id, actor_type, action, target_type, \
+                 target_id, outcome, metadata, created_at, updated_at) \
+                 VALUES ($1, NULL, 'system', $2, $3, $4, 'success', $5, $6, $6)",
+                vec![
+                    Uuid::new_v4().into(),
+                    action.into(),
+                    kind.into(),
+                    id.into(),
+                    meta.into(),
+                    at.into(),
+                ],
+            ))
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
     /// Lets this transaction delete audit rows (the trigger checks the setting). Outside a
     /// transaction SET LOCAL does nothing, so the purge stops here before deleting anything.
     async fn purge_mode(&self) -> RepoResult<()> {
