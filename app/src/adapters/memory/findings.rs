@@ -96,6 +96,42 @@ fn key(f: &FindingRow) -> FindingCursor {
 }
 
 impl MemStore {
+    /// Resolves the connection's open or flapping findings that `which` picks; how many.
+    fn resolve_where(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        now: DateTime<Utc>,
+        which: impl Fn(&Finding) -> bool,
+    ) -> u64 {
+        let mut n = 0;
+        let mut s = self.state();
+        let gone = s.gone_identities(organisation_id, connection_id);
+        for row in s.findings.iter_mut().filter(|r| {
+            let f = &r.finding;
+            f.organisation_id == organisation_id
+                && f.connection_id == connection_id
+                && matches!(f.status.as_str(), "open" | "flapping")
+                && which(f)
+        }) {
+            if row.finding.status != "flapping" {
+                row.event("resolved", Some(run_id), now);
+            }
+            let reason = if gone.contains(&row.finding.key.resource_identity) {
+                "resource_gone"
+            } else {
+                "check_passed"
+            };
+            let f = &mut row.finding;
+            (f.status, f.resolved_at) = ("resolved".into(), Some(now));
+            f.resolved_reason = Some(reason.into());
+            f.alerted_at = None;
+            n += 1;
+        }
+        n
+    }
+
     fn finding_row<T>(&self, org: Uuid, id: Uuid, read: impl Fn(&FindingRow) -> T) -> Option<T> {
         let s = self.state();
         let f = s
@@ -298,32 +334,22 @@ impl FindingsRepo for MemStore {
         except_check_ids: &[String],
         now: DateTime<Utc>,
     ) -> RepoResult<u64> {
-        let mut n = 0;
-        let mut s = self.state();
-        let gone = s.gone_identities(organisation_id, connection_id);
-        for row in s.findings.iter_mut().filter(|r| {
-            let f = &r.finding;
-            f.organisation_id == organisation_id
-                && f.connection_id == connection_id
-                && !except_check_ids.contains(&f.key.check_id)
-                && matches!(f.status.as_str(), "open" | "flapping")
-                && f.last_seen_run_id != Some(run_id)
-        }) {
-            if row.finding.status != "flapping" {
-                row.event("resolved", Some(run_id), now);
-            }
-            let reason = if gone.contains(&row.finding.key.resource_identity) {
-                "resource_gone"
-            } else {
-                "check_passed"
-            };
-            let f = &mut row.finding;
-            (f.status, f.resolved_at) = ("resolved".into(), Some(now));
-            f.resolved_reason = Some(reason.into());
-            f.alerted_at = None;
-            n += 1;
-        }
-        Ok(n)
+        let unseen = |f: &Finding| {
+            !except_check_ids.contains(&f.key.check_id) && f.last_seen_run_id != Some(run_id)
+        };
+        Ok(self.resolve_where(organisation_id, connection_id, run_id, now, unseen))
+    }
+
+    async fn resolve(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        ids: &[Uuid],
+        now: DateTime<Utc>,
+    ) -> RepoResult<u64> {
+        let named = |f: &Finding| ids.contains(&f.id);
+        Ok(self.resolve_where(organisation_id, connection_id, run_id, now, named))
     }
 
     async fn alert_candidates(

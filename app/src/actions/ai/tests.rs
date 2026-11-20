@@ -699,6 +699,38 @@ async fn overshoot_goes_below_zero_and_is_owed_from_the_next_topup() {
 }
 
 #[tokio::test]
+async fn a_topup_debt_never_blocks_the_included_credits() {
+    let e = env(vec![text(), text()], true).await;
+    e.enable().await;
+    // A top-up was spent, then refunded: 800 credits are owed.
+    e.store
+        .grant_topup(e.org(), dec(-800), "reversal:refund:pi_1")
+        .await
+        .unwrap();
+    e.used(KeySource::OpsAgent, 500).await;
+    let a = e.access();
+    assert_eq!(a.status(&e.scope).await.unwrap().state, "ready");
+    // The included credits pay (and count towards the daily ceiling); the debt stays as it is.
+    let mut plan = a.plan(e.org(), ModelRole::Chat).await.unwrap();
+    e.call(&a, &mut plan).await.unwrap();
+    assert_eq!(e.store.topup_balance(e.org()).await.unwrap(), dec(-800));
+    assert_eq!(spent_today(&e).await, dec(20));
+    *e.daily_limit.lock().unwrap() = 0;
+    assert_eq!(refused_with(&e.access(), e.org()).await, AI_UNAVAILABLE);
+    *e.daily_limit.lock().unwrap() = 10_000;
+    let a = e.access();
+    // Included credits used up: refused until a top-up clears the debt and leaves some over.
+    e.used(KeySource::OpsAgent, 480).await;
+    assert_eq!(refused_with(&a, e.org()).await, AI_QUOTA_REACHED);
+    e.store
+        .grant_topup(e.org(), dec(1000), "evt_1")
+        .await
+        .unwrap();
+    assert_eq!(e.store.topup_balance(e.org()).await.unwrap(), dec(200));
+    assert!(a.plan(e.org(), ModelRole::Chat).await.is_ok());
+}
+
+#[tokio::test]
 async fn topup_survives_period_rollover() {
     let e = env(vec![], true).await;
     e.enable().await;

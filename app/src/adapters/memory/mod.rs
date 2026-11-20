@@ -182,6 +182,8 @@ pub struct MemState {
     expiring: Vec<(TtlTable, DateTime<Utc>)>,
     /// When each `org.purged` record (by organisation) was made.
     purged_at: Vec<(Uuid, DateTime<Utc>)>,
+    /// When each `user.delete` record was made.
+    account_deleted_at: Vec<DateTime<Utc>>,
     billing: HashMap<Uuid, billing::BillingRow>,
     /// Recorded Stripe event ids.
     stripe_events: HashSet<String>,

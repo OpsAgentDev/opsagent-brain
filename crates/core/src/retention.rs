@@ -74,6 +74,8 @@ pub struct DueOrg {
 
 /// The purge record's audit action.
 pub const ORG_PURGED: &str = "org.purged";
+/// The account-deletion record's audit action.
+pub const ACCOUNT_DELETED: &str = "user.delete";
 
 #[async_trait]
 pub trait RetentionRepo: Send + Sync {
@@ -126,6 +128,12 @@ pub trait RetentionRepo: Send + Sync {
         at: DateTime<Utc>,
     ) -> RepoResult<Option<PurgeCounts>>;
 
-    /// Within the caller's transaction: deletes `org.purged` records made before `before`.
+    /// Within the caller's transaction: deletes the organisation-less audit entries by or
+    /// about user `user_id` (sign-ins, passkey, name and consent changes), then records one
+    /// `user.delete` entry at `at` that names nobody. Returns how many entries were deleted.
+    async fn erase_account_audit(&self, user_id: Uuid, at: DateTime<Utc>) -> RepoResult<u64>;
+
+    /// Within the caller's transaction: deletes `org.purged` and `user.delete` records made
+    /// before `before`.
     async fn delete_old_purge_records(&self, before: DateTime<Utc>) -> RepoResult<u64>;
 }

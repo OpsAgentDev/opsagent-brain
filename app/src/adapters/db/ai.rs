@@ -302,6 +302,13 @@ impl<C: Conn> AiRepo for Pg<C> {
         Ok(self.rows_changed(GRANT, values).await? == 1)
     }
 
+    async fn has_grant(&self, organisation_id: Uuid, key: &str) -> RepoResult<bool> {
+        let sql = "SELECT 1 FROM ai_credit_grants WHERE organisation_id = $1 \
+                   AND stripe_event_id = $2";
+        let values = vec![organisation_id.into(), key.into()];
+        Ok(self.query_row(sql, values).await?.is_some())
+    }
+
     async fn explanation(
         &self,
         organisation_id: Uuid,

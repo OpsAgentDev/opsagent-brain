@@ -278,6 +278,30 @@ contract_suite! {
         assert_eq!(s.findings().resolve_unseen(org, a, r2, &["old_key".into()], t(1)).await.unwrap(), 0);
     }
 
+    async fn resolve_takes_only_the_named_open_findings_of_the_connection(s, seed) {
+        let (org, a) = world(s, seed).await;
+        let b = seed.connection(org).await;
+        scan(s, seed, org, a, &[draft(a, "c", "x", Severity::Critical), draft(a, "c", "y", Severity::Critical)]).await;
+        scan(s, seed, org, b, &[draft(b, "c", "x", Severity::Critical)]).await;
+        let id = |conn: Uuid, identity: &'static str| async move {
+            let all = s.findings().list(org, FindingFilter { connection_id: Some(conn), ..Default::default() }, all()).await.unwrap();
+            all.items.into_iter().find(|f| f.key.resource_identity == identity).unwrap().id
+        };
+        let (ax, ay, bx) = (id(a, "x").await, id(a, "y").await, id(b, "x").await);
+        s.findings().mark_alerted(org, &[ax], t(0)).await.unwrap();
+        let run = seed.run(org, a).await;
+        // Another connection's finding is not this one's to resolve.
+        assert_eq!(s.findings().resolve(org, a, run, &[ax, bx], t(1)).await.unwrap(), 1);
+        let f = s.findings().get(org, ax).await.unwrap().unwrap();
+        assert_eq!((f.status.as_str(), f.alerted_at, f.resolved_reason.as_deref()), ("resolved", None, Some("check_passed")));
+        assert_eq!(s.findings().events(org, ax).await.unwrap()[0].kind, "resolved");
+        for other in [ay, bx] {
+            assert_eq!(s.findings().get(org, other).await.unwrap().unwrap().status, "open");
+        }
+        // Already resolved: nothing more to do.
+        assert_eq!(s.findings().resolve(org, a, run, &[ax], t(1)).await.unwrap(), 0);
+    }
+
     async fn upsert_seen_dedupes_drafts_by_key(s, seed) {
         let (org, conn) = world(s, seed).await;
         let low = draft(conn, "no_mfa", "u", Severity::Low);

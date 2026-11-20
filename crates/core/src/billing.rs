@@ -237,6 +237,11 @@ pub trait BillingProvider: Send + Sync {
         idem: &str,
     ) -> BillingResult<String>;
 
+    /// The `client_reference_id` (our organisation id; empty when it has none) of the paid AI
+    /// top-up Checkout session that payment intent `payment_intent_id` paid. `None` when the
+    /// payment is anything else (a subscription invoice, a human review).
+    async fn topup_of_payment(&self, payment_intent_id: &str) -> BillingResult<Option<String>>;
+
     /// Returns the hosted Checkout URL for one human review (one-time payment,
     /// `metadata[purpose]=human_review`, `metadata[review_request_id]`).
     async fn human_review_session(&self, req: &ReviewCheckout, idem: &str)

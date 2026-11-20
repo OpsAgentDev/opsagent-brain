@@ -278,6 +278,29 @@ impl<C: Conn> FindingsRepo for Pg<C> {
         Ok(unseen.len() as u64)
     }
 
+    async fn resolve(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        run_id: Uuid,
+        ids: &[Uuid],
+        now: DateTime<Utc>,
+    ) -> RepoResult<u64> {
+        use findings::Column as F;
+        let fixed = findings::Entity::find()
+            .filter(F::OrganisationId.eq(organisation_id))
+            .filter(F::ConnectionId.eq(connection_id))
+            .filter(F::Id.is_in(ids.iter().copied()))
+            .filter(F::Status.is_in(["open", "flapping"]))
+            .all(self.db())
+            .await
+            .map_err(db_err)?;
+        for f in &fixed {
+            seen::resolve(self.db(), f, run_id, now).await?;
+        }
+        Ok(fixed.len() as u64)
+    }
+
     async fn alert_candidates(
         &self,
         organisation_id: Uuid,

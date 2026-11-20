@@ -253,6 +253,11 @@ contract_suite! {
         assert_eq!(s.ai().topup_balance(o).await.unwrap(), dec("1000"));
         assert!(s.ai().grant_topup(o, dec("1000"), "evt_b").await.unwrap());
         assert_eq!(s.ai().topup_balance(o).await.unwrap(), dec("2000"));
+        // A grant is found under its key, by its own organisation only.
+        let other = org(s).await;
+        assert!(s.ai().has_grant(o, "evt_a").await.unwrap());
+        assert!(!s.ai().has_grant(o, "evt_c").await.unwrap());
+        assert!(!s.ai().has_grant(other, "evt_a").await.unwrap());
     }
 
     async fn put_explanation_keeps_first(s) {

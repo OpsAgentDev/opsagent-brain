@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use opsagent_core::{
+    audit::AuditEntry,
     billing::{BillingError, BillingProvider, BillingStatus as B, SubscriptionState},
     repo::{Clock, RepoError},
 };
@@ -21,7 +22,11 @@ use crate::{
     error::{AppError, AppResult},
 };
 
-const HANDLED: [&str; 7] = [
+const HANDLED: [&str; 11] = [
+    "charge.dispute.closed",
+    "charge.dispute.created",
+    "charge.dispute.funds_withdrawn",
+    "charge.refunded",
     "checkout.session.completed",
     "checkout.session.async_payment_succeeded",
     "customer.subscription.created",
@@ -62,6 +67,22 @@ fn warn_skip(ev: &Event, msg: &str) {
 
 /// Credits one top-up buys (dashboard-ai.md, Top-ups).
 const TOPUP_CREDITS: i64 = 1000;
+
+/// What a top-up payment's refund and dispute events record, in `held_back`'s order: fully
+/// refunded, disputed, dispute won.
+const PAYMENT_MARKS: [&str; 3] = ["reversal:refund", "reversal:dispute", "restore:dispute"];
+
+/// Whether a top-up payment's credits are taken back: it is fully refunded, or it has a
+/// dispute that is not won.
+fn held_back([refunded, disputed, won]: [bool; 3]) -> bool {
+    refunded || (disputed && !won)
+}
+
+/// True for a dispute object that is only an inquiry: its status starts with `warning_`.
+fn inquiry(dispute: &Value) -> bool {
+    let status = dispute["status"].as_str();
+    status.is_some_and(|s| s.starts_with("warning_"))
+}
 
 /// A paid top-up session adds its credits to the organisation named by
 /// `client_reference_id`, once per event (`grant_topup` is keyed on it, like `record_event`).
@@ -151,7 +172,8 @@ fn status_of(stripe: &str) -> Option<B> {
 /// `bad_signature`), then applies each event once (`stripe_events`), in one transaction with
 /// its writes, so a failed write is retried by Stripe rather than lost. Unhandled types and
 /// unknown customers are acknowledged and ignored. A paid human review commits with its
-/// notice job, which sends the mails (never the webhook).
+/// notice job, which sends the mails (never the webhook). A refunded or disputed top-up
+/// gives its credits back, and a dispute won restores them (`topup_charge`).
 /// 503 until the webhook secret is set.
 pub struct HandleWebhook {
     uow: Arc<dyn UnitOfWork>,
@@ -226,6 +248,8 @@ impl HandleWebhook {
             self.checkout_completed(tx.as_ref(), &ev).await?;
         } else if paid_event {
             // A subscription's delayed payment: its subscription events carry the state.
+        } else if ev.kind.starts_with("charge.") {
+            unmatched = self.topup_charge(tx.as_ref(), &ev).await?;
         } else {
             let customer = ev.data.object["customer"].as_str();
             match customer {
@@ -248,6 +272,77 @@ impl HandleWebhook {
             .add(Counted::UnmatchedPayment, u64::from(unmatched))
             .await;
         Ok(())
+    }
+
+    /// Refunds and disputes of a top-up payment. Its credits are held back while the payment
+    /// is fully refunded or has a dispute that is not won (`held_back`). Each event records
+    /// its own marker for the payment (`PAYMENT_MARKS`, a grant keyed `<mark>:<payment
+    /// intent>`) carrying only the difference it makes, so whatever the order, the repeats
+    /// and the mix of causes, one payment never gives back more than it granted or less than
+    /// its state requires. The balance may go below 0 (owed from the next top-up). A dispute
+    /// is marked by its `created` (unless an inquiry), its `funds_withdrawn` or its `lost`
+    /// close, whichever comes first. A partial refund, an inquiry, a dispute closed any way
+    /// but `won` or `lost`, and any other charge (a subscription's, a human review's) change
+    /// nothing. The payment is matched through its
+    /// Checkout session (the provider), so a failed lookup fails the webhook and Stripe sends
+    /// the event again.
+    /// True when a top-up's refund or dispute matched no organisation (counted for the
+    /// operator notice).
+    async fn topup_charge(&self, tx: &dyn Tx, ev: &Event) -> AppResult<bool> {
+        let o = &ev.data.object;
+        let (mark, reason) = match ev.kind.as_str() {
+            // `refunded` is true only once all of the charge is refunded.
+            "charge.refunded" if o["refunded"] == true => (0, "refund"),
+            // An inquiry (`warning_*`) moves no money and holds nothing back. One that
+            // escalates is caught when its funds are withdrawn, or at the latest when it is
+            // lost (which also covers a dispute whose `created` never arrived).
+            "charge.dispute.created" if !inquiry(o) => (1, "dispute"),
+            "charge.dispute.funds_withdrawn" => (1, "dispute"),
+            "charge.dispute.closed" if o["status"] == "lost" => (1, "dispute"),
+            "charge.dispute.closed" if o["status"] == "won" => (2, "dispute_won"),
+            _ => return Ok(false),
+        };
+        let Some(payment) = o["payment_intent"].as_str() else {
+            return Ok(false);
+        };
+        let reference = match self.provider.topup_of_payment(payment).await {
+            Ok(Some(r)) => r,
+            Ok(None) | Err(BillingError::NotFound) => return Ok(false),
+            Err(e) => return Err(provider_failed(e)),
+        };
+        let org = reference.parse::<Uuid>().ok();
+        let known = match org {
+            Some(org) => !matches!(tx.billing().billing(org).await, Err(RepoError::NotFound)),
+            None => false,
+        };
+        let Some(org) = org.filter(|_| known) else {
+            warn_skip(ev, "top-up refund or dispute matches no organisation");
+            // Counted once per cause, on the event that first takes credits back.
+            let first = ["charge.refunded", "charge.dispute.created"];
+            return Ok(first.contains(&ev.kind.as_str()));
+        };
+        // One at a time per organisation: two events of one payment must see each other's mark.
+        tx.orgs().lock(org).await?;
+        let key = |m: usize| format!("{}:{payment}", PAYMENT_MARKS[m]);
+        let mut marks = [false; 3];
+        for (m, set) in marks.iter_mut().enumerate() {
+            *set = tx.ai().has_grant(org, &key(m)).await?;
+        }
+        let before = held_back(marks);
+        marks[mark] = true;
+        let credits = sea_orm::prelude::Decimal::from(TOPUP_CREDITS);
+        let (change, action) = match (before, held_back(marks)) {
+            (false, true) => (-credits, "ai.topup_reversed"),
+            (true, false) => (credits, "ai.topup_restored"),
+            _ => (0.into(), ""),
+        };
+        if tx.ai().grant_topup(org, change, &key(mark)).await? && !change.is_zero() {
+            let target = ("payment", payment.to_owned());
+            let entry = AuditEntry::system(org, action, target, "success")
+                .with_meta(serde_json::json!({ "credits": TOPUP_CREDITS, "reason": reason }));
+            tx.audit().record(entry).await?;
+        }
+        Ok(false)
     }
 
     /// The customer is saved before Checkout, so this only fills a gap. A session whose
@@ -391,7 +486,7 @@ impl HandleWebhook {
 #[cfg(test)]
 mod tests {
     use hmac::{Hmac, KeyInit, Mac};
-    use opsagent_core::billing::BillingRepo;
+    use opsagent_core::{ai::AiRepo, billing::BillingRepo};
     use serde_json::json;
     use sha2::Sha256;
 
@@ -430,18 +525,20 @@ mod tests {
     }
 
     fn hook(store: &MemStore, now: DateTime<Utc>) -> HandleWebhook {
-        hook_counting(store, now, Arc::new(MemRateLimiter::default()))
+        let tally = Arc::new(MemRateLimiter::default());
+        hook_counting(store, now, tally, NoStripe::default())
     }
 
     fn hook_counting(
         store: &MemStore,
         now: DateTime<Utc>,
         tally: Arc<MemRateLimiter>,
+        stripe: NoStripe,
     ) -> HandleWebhook {
         let clock = Arc::new(FixedClock(now));
         HandleWebhook::new(
             Arc::new(store.clone()),
-            Arc::new(NoStripe),
+            Arc::new(stripe),
             clock.clone(),
             settings(),
             DayCounter::new(tally, clock),
@@ -452,7 +549,7 @@ mod tests {
     async fn a_paid_session_that_matches_nothing_is_counted_for_the_operator() {
         let (store, now) = (MemStore::default(), Utc::now());
         let tally = Arc::new(MemRateLimiter::default());
-        let h = hook_counting(&store, now, tally.clone());
+        let h = hook_counting(&store, now, tally.clone(), NoStripe::default());
         let nobody = Uuid::new_v4().to_string();
         let session = |id: &str, purpose: &str, paid: &str| {
             let object = json!({ "mode": "payment", "payment_status": paid,
@@ -512,5 +609,176 @@ mod tests {
         assert_eq!(jobs.len(), 1, "{jobs:?}");
         assert_eq!(jobs[0].kind, opsagent_ledger::JobKind::BillingSync);
         assert_eq!(store.billing(org.id).await.unwrap().status, B::Trialing);
+    }
+
+    /// Delivers a charge event about payment `pi`: a refund (fully, when `full`) or a dispute.
+    async fn charge(h: &HandleWebhook, id: &str, kind: &str, pi: &str, full: bool) {
+        // A dispute's status: won when `full`, else lost (neither is an inquiry).
+        let status = if full { "won" } else { "lost" };
+        charge_as(h, id, kind, pi, (full, status)).await;
+    }
+
+    /// `charge` with the dispute's status given.
+    async fn charge_as(
+        h: &HandleWebhook,
+        id: &str,
+        kind: &str,
+        pi: &str,
+        (full, status): (bool, &str),
+    ) {
+        let now = h.clock.now();
+        let object = json!({ "customer": "cus_1", "payment_intent": pi, "refunded": full,
+            "status": status });
+        let body = json!({ "id": id, "type": kind, "created": now.timestamp(),
+            "data": { "object": object } })
+        .to_string();
+        h.run(Some(&sign(&body, now)), body.as_bytes())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refunded_or_disputed_topup_gives_its_credits_back_once() {
+        let (store, now) = (MemStore::default(), Utc::now());
+        let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+        let tally = Arc::new(MemRateLimiter::default());
+        let paid_by = NoStripe(Some(org.id.to_string()));
+        let h = hook_counting(&store, now, tally.clone(), paid_by);
+        let credits = sea_orm::prelude::Decimal::from(TOPUP_CREDITS);
+        let granted = store.grant_topup(org.id, credits, "evt_grant");
+        assert!(granted.await.unwrap());
+        let balance = || async { store.topup_balance(org.id).await.unwrap() };
+        // A partial refund keeps the credits.
+        charge(&h, "evt_1", "charge.refunded", "pi_1", false).await;
+        assert_eq!(balance().await, credits);
+        // The full refund, its redelivery, then a dispute of the same payment: taken back once.
+        for (id, kind) in [
+            ("evt_2", "charge.refunded"),
+            ("evt_2", "charge.refunded"),
+            ("evt_3", "charge.dispute.created"),
+        ] {
+            charge(&h, id, kind, "pi_1", true).await;
+            assert_eq!(balance().await, 0.into(), "{id}");
+        }
+        // Credits already spent are owed: another payment's dispute takes the balance below 0.
+        charge(&h, "evt_4", "charge.dispute.created", "pi_2", false).await;
+        assert_eq!(balance().await, -credits);
+        let all = store.audit_entries();
+        let reversed = all.iter().filter(|e| e.action == "ai.topup_reversed");
+        let seen: Vec<_> = reversed
+            .map(|e| (e.organisation_id, e.meta["reason"].as_str()))
+            .collect();
+        let org = Some(org.id);
+        assert_eq!(seen, [(org, Some("refund")), (org, Some("dispute"))]);
+        let key = format!("payment:unmatched:{}", now.date_naive());
+        assert_eq!(tally.total(&key).await.unwrap(), 0.into());
+    }
+
+    #[tokio::test]
+    async fn a_dispute_won_restores_the_reversed_credits_once() {
+        let (store, now) = (MemStore::default(), Utc::now());
+        let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+        let tally = Arc::new(MemRateLimiter::default());
+        let h = hook_counting(&store, now, tally, NoStripe(Some(org.id.to_string())));
+        let credits = sea_orm::prelude::Decimal::from(TOPUP_CREDITS);
+        let balance = || async { store.topup_balance(org.id).await.unwrap() };
+        const CLOSED: &str = "charge.dispute.closed";
+        charge(&h, "evt_1", "charge.dispute.created", "pi_1", false).await;
+        assert_eq!(balance().await, -credits);
+        // Lost: the credits stay taken back.
+        charge(&h, "evt_2", CLOSED, "pi_1", false).await;
+        assert_eq!(balance().await, -credits);
+        // Won, its redelivery, and a second won event: restored once.
+        for id in ["evt_3", "evt_3", "evt_4"] {
+            charge(&h, id, CLOSED, "pi_1", true).await;
+            assert_eq!(balance().await, 0.into(), "{id}");
+        }
+        let all = store.audit_entries();
+        let restored: Vec<_> = (all.iter())
+            .filter(|e| e.action == "ai.topup_restored")
+            .map(|e| (e.organisation_id, e.meta["reason"].as_str()))
+            .collect();
+        assert_eq!(restored, [(Some(org.id), Some("dispute_won"))]);
+    }
+
+    /// Every sequence of up to four of a payment's events, each delivered twice: whatever the
+    /// order and the repeats, the credits are out exactly when the payment is fully refunded
+    /// or has a dispute that was not won.
+    #[tokio::test]
+    async fn every_order_of_refund_and_dispute_events_nets_to_the_payment_state() {
+        // (kind, fully refunded, status): 0 refund in full, 1 dispute opened, 2 dispute won,
+        // 3 dispute lost, 4 inquiry opened, 5 funds withdrawn (an inquiry escalated), 6 inquiry
+        // closed. An inquiry moves no money: 4 and 6 change nothing, so inquiry then closed
+        // (4, 6) keeps the credits and inquiry, withdrawn, lost (4, 5, 3) takes them once.
+        const EVENTS: [(&str, bool, &str); 7] = [
+            ("charge.refunded", true, "won"),
+            ("charge.dispute.created", false, "needs_response"),
+            ("charge.dispute.closed", false, "won"),
+            ("charge.dispute.closed", false, "lost"),
+            ("charge.dispute.created", false, "warning_needs_response"),
+            ("charge.dispute.funds_withdrawn", false, "needs_response"),
+            ("charge.dispute.closed", false, "warning_closed"),
+        ];
+        let kinds = EVENTS.len();
+        let now = Utc::now();
+        let credits = sea_orm::prelude::Decimal::from(TOPUP_CREDITS);
+        for len in 1..=4u32 {
+            for code in 0..kinds.pow(len) {
+                let seq: Vec<usize> = (0..len).map(|i| code / kinds.pow(i) % kinds).collect();
+                let store = MemStore::default();
+                let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+                let tally = Arc::new(MemRateLimiter::default());
+                let h = hook_counting(&store, now, tally, NoStripe(Some(org.id.to_string())));
+                assert!(store
+                    .grant_topup(org.id, credits, "evt_grant")
+                    .await
+                    .unwrap());
+                for (i, e) in seq.iter().enumerate() {
+                    let (kind, full, status) = EVENTS[*e];
+                    for _ in 0..2 {
+                        charge_as(&h, &format!("evt_{i}"), kind, "pi_1", (full, status)).await;
+                    }
+                }
+                let has = |e: usize| seq.contains(&e);
+                let disputed = has(1) || has(3) || has(5);
+                let out = has(0) || (disputed && !has(2));
+                let want = if out { 0.into() } else { credits };
+                let got = store.topup_balance(org.id).await.unwrap();
+                assert_eq!(got, want, "events {seq:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_topup_that_matches_no_organisation_is_counted() {
+        let (store, now) = (MemStore::default(), Utc::now());
+        let (_, org) = owned_org(&store, "o@example.com", "Acme").await;
+        store.set_customer(org.id, "cus_1").await.unwrap();
+        let before = store.billing(org.id).await.unwrap();
+        let tally = Arc::new(MemRateLimiter::default());
+        let key = format!("payment:unmatched:{}", now.date_naive());
+        // A subscription's (or a human review's) charge: accepted, nothing changes.
+        let h = hook_counting(&store, now, tally.clone(), NoStripe(None));
+        for kind in ["charge.refunded", "charge.dispute.created"] {
+            charge(&h, kind, kind, "pi_sub", true).await;
+        }
+        assert_eq!(store.billing(org.id).await.unwrap(), before);
+        assert_eq!(store.topup_balance(org.id).await.unwrap(), 0.into());
+        assert_eq!(tally.total(&key).await.unwrap(), 0.into());
+        // A top-up whose organisation is gone: accepted and counted once, its repeat too.
+        for reference in [Uuid::new_v4().to_string(), String::new()] {
+            let h = hook_counting(
+                &store,
+                now,
+                tally.clone(),
+                NoStripe(Some(reference.clone())),
+            );
+            let id = format!("evt_{reference}");
+            charge(&h, &id, "charge.refunded", "pi_gone", true).await;
+            charge(&h, &id, "charge.refunded", "pi_gone", true).await;
+        }
+        assert_eq!(tally.total(&key).await.unwrap(), 2.into());
+        let all = store.audit_entries();
+        assert!(all.iter().all(|e| e.action != "ai.topup_reversed"));
     }
 }

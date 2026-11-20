@@ -156,6 +156,9 @@ mod tests {
         ) -> BillingResult<String> {
             unreachable!()
         }
+        async fn topup_of_payment(&self, _: &str) -> BillingResult<Option<String>> {
+            unreachable!()
+        }
         async fn set_quantity(&self, _: &str, _: i32, _: bool, _: &str) -> BillingResult<()> {
             unreachable!()
         }

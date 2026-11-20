@@ -172,7 +172,7 @@ impl AiAccess {
             }
             KeySource::OpsAgent => {
                 let q = self.quota(&*self.uow, org).await?;
-                (q.quota - q.used).max(Decimal::ZERO) + ai.topup_balance(org).await?
+                q.left(ai.topup_balance(org).await?)
             }
         };
         match left > Decimal::ZERO {

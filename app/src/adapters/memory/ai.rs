@@ -239,6 +239,12 @@ impl AiRepo for MemStore {
         Ok(true)
     }
 
+    async fn has_grant(&self, organisation_id: Uuid, key: &str) -> RepoResult<bool> {
+        let s = self.state();
+        let mut grants = s.ai.grants.iter();
+        Ok(grants.any(|g| g.0 == organisation_id && g.1 == key))
+    }
+
     async fn explanation(
         &self,
         organisation_id: Uuid,

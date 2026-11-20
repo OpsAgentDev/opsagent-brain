@@ -1,30 +1,32 @@
 //! `watch_scan` (urgent-alerts spec): the 15-minute subset of `full_scan`. It reads only the
-//! services below, keeps only the variants built entirely from them, and never resolves
-//! findings, marks resources gone or scores the connection.
+//! services below, keeps only the variants built entirely from them, and never marks
+//! resources gone or scores the connection. It resolves only an open finding of one of its
+//! variants whose resource it read (`finding_lifecycle::apply_watch`).
 use std::collections::BTreeSet;
 
 use opsagent_checks::Check;
-use opsagent_core::finding::FindingDraft;
+use opsagent_core::finding::{FindingDraft, FindingKey};
 
 /// The inventory services a watch scan reads.
 pub(super) const WATCH_SERVICES: [&str; 3] = ["sg", "rds", "cloudtrail"];
 
 /// The checks a watch scan runs, with the services each one must have read in full. Check 03
-/// needs none: its watch variants are each built from one resource that was read and a watch
-/// only opens findings, so a failed `sg` or `rds` read in one region must not hide the others.
+/// needs none: its watch variants are each built from one resource that was read, and a
+/// finding resolves only when its own service and region were read, so a failed `sg` or `rds`
+/// read in one region must not hide the others.
 const WATCH_CHECKS: [(&str, &[&str]); 2] = [("03", &[]), ("06", &["cloudtrail"])];
 
-/// (check, variant) a watch scan keeps; every other draft is dropped. Check 06's are the two
-/// built only from `cloudtrail` resources (`detection_off` needs guardduty and
-/// `no_retention` needs logs).
-pub(super) const WATCH_VARIANTS: [(&str, &str); 7] = [
-    ("03", "public_snapshot"),
-    ("03", "public_database"),
-    ("03", "sg_open_admin_port"),
-    ("03", "sg_open_unused"),
-    ("03", "sg_open_web_on_lb"),
-    ("06", "trail_effectively_off"),
-    ("06", "trail_status_unknown"),
+/// (check, variant, service) a watch scan keeps, with the service its resource is read from;
+/// every other draft is dropped. Check 06's are the two built only from `cloudtrail` resources
+/// (`detection_off` needs guardduty and `no_retention` needs logs).
+pub(super) const WATCH_VARIANTS: [(&str, &str, &str); 7] = [
+    ("03", "public_snapshot", "rds"),
+    ("03", "public_database", "rds"),
+    ("03", "sg_open_admin_port", "sg"),
+    ("03", "sg_open_unused", "sg"),
+    ("03", "sg_open_web_on_lb", "sg"),
+    ("06", "trail_effectively_off", "cloudtrail"),
+    ("06", "trail_status_unknown", "cloudtrail"),
 ];
 
 /// The watch checks of `all`, minus any that needs a service whose read failed this run
@@ -48,9 +50,17 @@ pub(super) fn checks(
     (run, skipped)
 }
 
+/// The service a watch variant's resource is read from; `None` for any other finding.
+pub(super) fn service(key: &FindingKey) -> Option<&'static str> {
+    let of = |(check, variant, service): &(&str, &str, &'static str)| {
+        (*check == key.check_id && *variant == key.variant).then_some(*service)
+    };
+    WATCH_VARIANTS.iter().find_map(of)
+}
+
 /// True for a draft in `WATCH_VARIANTS`.
 pub(super) fn allowed(d: &FindingDraft) -> bool {
-    WATCH_VARIANTS.contains(&(d.key.check_id.as_str(), d.key.variant.as_str()))
+    service(&d.key).is_some()
 }
 
 #[cfg(test)]
