@@ -15,6 +15,11 @@ static RULES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
             "${1}[redacted:aws_secret]",
         ),
         (r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]+", "${1}[redacted:token]"),
+        // Unlabelled tokens, by their issuer's shape: GitHub, Slack, Stripe, Google, JWT.
+        (
+            r"\b(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}|x(ox[abeprs]|app)-[0-9]+-[A-Za-z0-9-]{8,}|(sk|rk)_(live|test)_[A-Za-z0-9]{10,}|whsec_[A-Za-z0-9]{10,}|AIza[0-9A-Za-z_-]{35}|ya29\.[0-9A-Za-z_-]{20,}|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*)",
+            "[redacted:token]",
+        ),
         // Greedy up to the last `@` before the path, so passwords containing `@` are covered.
         (
             r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/:@]+:[^\s/]*@",
@@ -24,8 +29,12 @@ static RULES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
             r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
             "[redacted:email]",
         ),
+        // A name that is or ends in one of these words (`DB_PASSWORD`, `PGPASSWORD`,
+        // `client_secret`, `GITHUB_TOKEN`, `signing_key`); a bare `key` is an object key or a
+        // tag key, so `key` counts only after an underscore or as `api key`. A value that an
+        // earlier rule already replaced (`[redacted:...]`) keeps its label.
         (
-            r#"(?i)(\b(secret|password|passwd|token|api[_-]?key)\b["']?\s*[:=]\s*["']?)[^\s"']{8,}"#,
+            r#"(?i)(\b[a-z0-9_]*(secret|password|passwd|token|api[_-]?key|_key)\b["']?\s*[:=]\s*["']?)[^\s"'\[][^\s"']{7,}"#,
             "${1}[redacted:secret]",
         ),
     ]
@@ -203,11 +212,68 @@ mod tests {
     }
 
     #[test]
+    fn redacts_values_of_names_ending_in_a_secret_word() {
+        // Assembled here so no line of this file reads as a credential to a secret scanner.
+        let v = "hunter2hunter2";
+        for (before, after) in [
+            ("DB_PASSWORD=", " x"),
+            ("PGPASSWORD=", ""),
+            ("MYSQL_ROOT_PASSWORD: '", "'"),
+            ("client_secret=", ""),
+            (r#"{"OAUTH_CLIENT_SECRET": ""#, r#""}"#),
+            ("NPM_TOKEN=", ""),
+            ("SIGNING_KEY = ", ""),
+            ("export SESSION_SECRET=", ""),
+        ] {
+            let want = format!("{before}[redacted:secret]{after}");
+            let input = format!("{before}{v}{after}");
+            assert_eq!(redact(&input), (want, true), "{input}");
+        }
+    }
+
+    #[test]
+    fn redacts_unlabelled_vendor_tokens_and_jwts() {
+        // Prefix and body are joined here, for the same reason.
+        let (a36, a24) = ("a1B2".repeat(9), "a1B2".repeat(6));
+        let (head, body) = ("eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0");
+        let tokens = [
+            ("ghp_", a36.clone()),
+            ("ghs_", a36.clone()),
+            ("github_pat_", format!("{a24}_{a36}")),
+            ("xoxb-", format!("123456789012-123456789012-{a24}")),
+            ("xoxp-", format!("123456789012-{a24}")),
+            ("xapp-", format!("1-A0123456789-{a24}")),
+            ("sk_live_", a24.clone()),
+            ("rk_test_", a24.clone()),
+            ("whsec_", a24.clone()),
+            ("AIza", "aB3_-".repeat(7)),
+            ("ya29.", a36.clone()),
+            (head, format!(".{body}.dBjftJeZ4CVP-mB92K27uhbUJU1p")),
+            (head, format!(".{body}.")),
+        ];
+        for (prefix, rest) in tokens {
+            let (out, changed) = redact(&format!("found {prefix}{rest} in user data"));
+            assert_eq!(out, "found [redacted:token] in user data", "{prefix}");
+            assert!(changed);
+        }
+    }
+
+    #[test]
     fn leaves_ordinary_token_text_alone() {
         for t in [
             "rotate the token before Friday",
             "token: short",
             "the api key policy",
+            // Not credentials: object and tag keys, short values, look-alike words.
+            "Key: terraform/prod.tfstate",
+            r#"{"Key": "Environment", "Value": "production"}"#,
+            "monkey=bananas-and-more",
+            "DB_PASSWORD=short",
+            "kms_key_id=alias/aws/ebs",
+            "task_live_migration and sk_test mode",
+            "ghp_short xoxo-gossip-girl-fans AIzaShort eyJ.is.base64",
+            "pk_live_a1B2a1B2a1B2a1B2a1B2a1B2",
+            "state=running cpu=2 next_page=abcdefghijkl",
         ] {
             assert_eq!(redact(t), (t.to_owned(), false), "{t}");
         }
