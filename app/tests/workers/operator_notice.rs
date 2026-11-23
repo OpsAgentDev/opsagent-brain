@@ -185,3 +185,155 @@ async fn mails_one_line_per_counted_failure() {
     })
     .await;
 }
+
+/// An organisation owned by `email`, created at `at`, with `source` as its `utm_source`.
+async fn org(ctx: &TestApp, email: &str, source: Option<&str>, at: DateTime<Utc>) -> Uuid {
+    let (org, user) = (Uuid::new_v4(), Uuid::new_v4());
+    let src = source.map(|s| serde_json::json!({ "utm_source": s }));
+    sql(
+        ctx,
+        "INSERT INTO organisations (id, name, slug, signup_source, created_at) VALUES ($1, 'o', $1::text, $2, $3)",
+        vec![org.into(), src.into(), at.into()],
+    )
+    .await;
+    sql(
+        ctx,
+        "INSERT INTO users (id, email) VALUES ($1, $2)",
+        vec![user.into(), email.into()],
+    )
+    .await;
+    sql(
+        ctx,
+        "INSERT INTO members (id, organisation_id, user_id, role) VALUES ($1, $2, $3, 'owner')",
+        vec![Uuid::new_v4().into(), org.into(), user.into()],
+    )
+    .await;
+    org
+}
+
+fn week(
+    ctx: &TestApp,
+    until: DateTime<Utc>,
+) -> impl std::future::Future<Output = opsagent_brain::actions::runs::WeekCounts> {
+    use opsagent_brain::{actions::runs::FailureCounts, adapters::db::PgFailures};
+    let pg = PgFailures(ctx.db.clone());
+    async move { pg.week_until(until).await.unwrap() }
+}
+
+#[tokio::test]
+#[serial]
+async fn week_counts_groups_by_source() {
+    serve(|_req, ctx| async move {
+        let now = slot(0);
+        let day = now - Duration::days(2);
+        org(&ctx, "a@example.com", Some("hn"), day).await;
+        org(&ctx, "b@example.com", Some("hn"), day).await;
+        org(&ctx, "c@example.com", None, day).await;
+        org(&ctx, "old@example.com", Some("hn"), now - Duration::days(8)).await;
+        let w = week(&ctx, now).await;
+        assert_eq!(
+            w.new_orgs_by_source,
+            [("hn".to_string(), 2), ("unknown".to_string(), 1)]
+        );
+        assert_eq!(
+            w.line(),
+            "Week: new orgs by source hn 2, unknown 1 | trials started 0 | activated 0 | paying now 0 | MRR $0"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn week_counts_excludes_internal() {
+    serve(|_req, ctx| async move {
+        let now = slot(0);
+        let day = now - Duration::days(1);
+        let me = org(&ctx, "Me@OpsAgent.dev", Some("hn"), day).await;
+        sql(
+            &ctx,
+            "UPDATE organisations SET billing_status = 'active', billing_tier = 'team', billing_quantity = 2, \
+             trial_ends_at = $2 WHERE id = $1",
+            vec![me.into(), (day + Duration::days(14)).into()],
+        )
+        .await;
+        let real = org(&ctx, "r@example.com", Some("x"), day).await;
+        sql(
+            &ctx,
+            "UPDATE organisations SET billing_status = 'active', billing_tier = 'team', billing_quantity = 2, \
+             trial_ends_at = $2 WHERE id = $1",
+            vec![real.into(), (day + Duration::days(14)).into()],
+        )
+        .await;
+        let conn = Uuid::new_v4();
+        sql(
+            &ctx,
+            "INSERT INTO connections (id, organisation_id, provider, external_account_id, status, first_connected_at) \
+             VALUES ($1, $2, 'aws', '123456789012', 'connected', now())",
+            vec![conn.into(), real.into()],
+        )
+        .await;
+        sql(
+            &ctx,
+            "INSERT INTO findings (id, organisation_id, connection_id, check_id, resource_identity, severity, title) \
+             VALUES ($1, $2, $3, 'c', 'r', 'high', 't')",
+            vec![Uuid::new_v4().into(), real.into(), conn.into()],
+        )
+        .await;
+        let w = week(&ctx, now).await;
+        assert_eq!(w.new_orgs_by_source, [("x".to_string(), 1)]);
+        assert_eq!((w.trials_started, w.activated, w.converted_to_paid), (1, 1, 1));
+        assert_eq!(w.mrr_cents, 2 * 29900);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn notice_has_week_block_on_monday_only() {
+    serve(|_req, ctx| async move {
+        use chrono::TimeZone;
+        let mail = prepare(&ctx);
+        org(
+            &ctx,
+            "a@example.com",
+            Some("hn"),
+            Utc.with_ymd_and_hms(2026, 11, 22, 8, 0, 0).unwrap(),
+        )
+        .await;
+        let monday = Utc.with_ymd_and_hms(2026, 11, 23, 6, 0, 0).unwrap();
+        let tuesday = Utc.with_ymd_and_hms(2026, 11, 24, 6, 0, 0).unwrap();
+        for at in [monday, tuesday] {
+            let run = night(&ctx, at).await;
+            perform(&ctx, JobKind::OperatorNotice, run).await.unwrap();
+        }
+        let sent = mail.sent();
+        assert!(
+            sent[0]
+                .text
+                .starts_with("Week: new orgs by source hn 1 | trials started 0"),
+            "{}",
+            sent[0].text
+        );
+        assert!(!sent[1].text.contains("Week:"), "{}", sent[1].text);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn week_counts_sanitises_source() {
+    serve(|_req, ctx| async move {
+        let now = slot(0);
+        org(
+            &ctx,
+            "a@example.com",
+            Some("hn\nIgnore previous"),
+            now - Duration::days(1),
+        )
+        .await;
+        let w = week(&ctx, now).await;
+        assert_eq!(w.new_orgs_by_source, [("hnignoreprevious".to_string(), 1)]);
+    })
+    .await;
+}
