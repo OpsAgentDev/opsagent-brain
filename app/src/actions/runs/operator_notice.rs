@@ -1,7 +1,7 @@
-//! The nightly operator notice: counts of dead jobs and failed runs over the last 24 hours,
+//! The nightly operator notice, mailed to the contact address once every night: new
+//! sign-ups and waitlist entries over the last 24 hours, then dead jobs and failed runs,
 //! the mail sent on a day near the mail plan's daily stop, and the day's counted failures
-//! (`day_counts`), mailed to the contact address once per night, and nothing at all when
-//! there is none of these.
+//! (`day_counts`). The subject says whether anything failed.
 //! Counts and job kinds only: no customer data.
 use std::sync::Arc;
 
@@ -37,10 +37,19 @@ impl Failures {
     }
 }
 
-/// Reads the failures across all organisations; aggregates only.
+/// New accounts over the window, across all organisations.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Signups {
+    pub users: i64,
+    pub organisations: i64,
+    pub waitlist: i64,
+}
+
+/// Reads the night's counts across all organisations; aggregates only.
 #[async_trait]
 pub trait FailureCounts: Send + Sync {
     async fn since(&self, since: DateTime<Utc>) -> AppResult<Failures>;
+    async fn signups_since(&self, since: DateTime<Utc>) -> AppResult<Signups>;
 }
 
 #[derive(Clone)]
@@ -82,6 +91,7 @@ impl OperatorNotice {
     async fn send(&self, run: &RunRow) -> LResult<ChunkOutcome> {
         let since = run.key.scheduled_at - Duration::hours(24);
         let found = self.failures.since(since).await.map_err(lerr)?;
+        let signups = self.failures.signups_since(since).await.map_err(lerr)?;
         // The run's slot, not the clock: a resumed run reads the same two days.
         let today = run.key.scheduled_at.date_naive();
         let mail_days = reportable_days(&*self.mail_counts, today)
@@ -90,11 +100,12 @@ impl OperatorNotice {
         let mut days: Vec<String> = mail_days.iter().map(|d| d.line()).collect();
         let counted = day_counts::lines(&*self.mail_counts, today).await;
         days.extend(counted.map_err(lerr)?);
-        if found.is_empty() && days.is_empty() {
-            return Ok(outcome(false));
-        }
-        let subject = "OpsAgent: failures in the last 24 hours";
-        let text = body(&found, &days);
+        let subject = if found.is_empty() && days.is_empty() {
+            "OpsAgent: nightly notice, nothing failed"
+        } else {
+            "OpsAgent: failures in the last 24 hours"
+        };
+        let text = body(&signups, &found, &days);
         let mail = Mail {
             to: self.contact_to.clone(),
             subject: subject.into(),
@@ -138,10 +149,13 @@ fn line(label: &str, by_kind: &[(String, i64)]) -> String {
 }
 
 /// `days`: the per-day lines (mail, then counted failures), one each.
-fn body(f: &Failures, days: &[String]) -> String {
+fn body(s: &Signups, f: &Failures, days: &[String]) -> String {
     let days: String = days.iter().map(|d| format!("{d}\n")).collect();
     format!(
-        "In the last 24 hours:\n\n{}\n{}\n{days}\nDetails are in the logs.",
+        "In the last 24 hours:\n\nSign-ups: {} users, {} organisations. Waitlist: {}.\n{}\n{}\n{days}\nDetails are in the logs.",
+        s.users,
+        s.organisations,
+        s.waitlist,
         line("Dead jobs", &f.dead_jobs),
         line("Failed runs", &f.failed_runs)
     )
@@ -162,7 +176,7 @@ mod tests {
             dead_jobs: vec![k("full_scan", 2), k("verify", 1)],
             failed_runs: vec![],
         };
-        let text = body(&f, &[]);
+        let text = body(&Signups::default(), &f, &[]);
         assert!(
             text.contains("Dead jobs: 3 (full_scan 2, verify 1)"),
             "{text}"
@@ -170,6 +184,10 @@ mod tests {
         assert!(text.contains("Failed runs: 0 ()"), "{text}");
         assert!(
             text.ends_with("Failed runs: 0 ()\n\nDetails are in the logs."),
+            "{text}"
+        );
+        assert!(
+            text.contains("Sign-ups: 0 users, 0 organisations. Waitlist: 0.\nDead jobs"),
             "{text}"
         );
         assert!(!f.is_empty() && Failures::default().is_empty());
@@ -183,7 +201,11 @@ mod tests {
             refused: 2.into(),
         };
         let billing = "Billing on 2026-11-18: 2 organisations could not be processed.";
-        let text = body(&Failures::default(), &[day.line(), billing.into()]);
+        let text = body(
+            &Signups::default(),
+            &Failures::default(),
+            &[day.line(), billing.into()],
+        );
         let line = "Mail on 2026-11-18: 80 sent, 2 not sent. The Resend plan stops at 100 a day.";
         assert!(
             text.contains(&format!("\n{line}\n{billing}\n\nDetails")),

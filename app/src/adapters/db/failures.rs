@@ -1,11 +1,11 @@
-//! The operator notice's read of the last day's failures across all organisations.
+//! The operator notice's read of the last day's failures and sign-ups across all organisations.
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sea_orm::{DatabaseConnection, FromQueryResult};
 
 use super::{db_err, ledger_storage::stmt};
 use crate::{
-    actions::runs::{FailureCounts, Failures},
+    actions::runs::{FailureCounts, Failures, Signups},
     error::AppResult,
 };
 
@@ -17,7 +17,20 @@ struct KindCount {
     n: i64,
 }
 
+#[derive(FromQueryResult)]
+struct Count {
+    n: i64,
+}
+
 impl PgFailures {
+    async fn count(&self, sql: &str, since: DateTime<Utc>) -> AppResult<i64> {
+        let row = Count::find_by_statement(stmt(sql, vec![since.into()]))
+            .one(&self.0)
+            .await
+            .map_err(db_err)?;
+        Ok(row.map_or(0, |r| r.n))
+    }
+
     async fn counts(&self, sql: &str, since: DateTime<Utc>) -> AppResult<Vec<(String, i64)>> {
         let rows = KindCount::find_by_statement(stmt(sql, vec![since.into()]))
             .all(&self.0)
@@ -40,6 +53,20 @@ impl FailureCounts for PgFailures {
         Ok(Failures {
             dead_jobs: self.counts(dead, since).await?,
             failed_runs: self.counts(failed, since).await?,
+        })
+    }
+
+    async fn signups_since(&self, since: DateTime<Utc>) -> AppResult<Signups> {
+        // tenancy: the operator's aggregate across all organisations; counts only.
+        let users = "SELECT count(*) AS n FROM users WHERE created_at >= $1";
+        // tenancy: the operator's aggregate across all organisations; counts only.
+        let orgs = "SELECT count(*) AS n FROM organisations WHERE created_at >= $1";
+        // tenancy: the waitlist belongs to no organisation; counts only.
+        let waitlist = "SELECT count(*) AS n FROM waitlist_entries WHERE created_at >= $1";
+        Ok(Signups {
+            users: self.count(users, since).await?,
+            organisations: self.count(orgs, since).await?,
+            waitlist: self.count(waitlist, since).await?,
         })
     }
 }
