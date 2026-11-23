@@ -57,6 +57,7 @@ fn user(m: users::Model) -> RepoResult<User> {
         google_id: m.google_id,
         created_at: utc(m.created_at),
         terms_accepted_at: m.terms_accepted_at.map(utc),
+        marketing_ok: m.marketing_ok,
     })
 }
 
@@ -76,6 +77,7 @@ fn new_user(
         updated_at: Set(now()),
         deleted_at: Set(None),
         terms_accepted_at: Set(None),
+        marketing_ok: Set(false),
     }
 }
 
@@ -126,6 +128,7 @@ impl<C: Conn> UsersRepo for Pg<C> {
             .col_expr(users::Column::Name, Expr::value(Option::<String>::None))
             .col_expr(users::Column::GithubId, Expr::value(Option::<String>::None))
             .col_expr(users::Column::GoogleId, Expr::value(Option::<String>::None))
+            .col_expr(users::Column::MarketingOk, Expr::value(false))
             .col_expr(users::Column::DeletedAt, Expr::value(at.fixed_offset()))
             .col_expr(users::Column::UpdatedAt, Expr::value(now()))
             .filter(users::Column::Id.eq(id))
@@ -167,6 +170,18 @@ impl<C: Conn> UsersRepo for Pg<C> {
     async fn set_name(&self, id: Uuid, name: &PersonName) -> RepoResult<()> {
         users::Entity::update_many()
             .col_expr(users::Column::Name, Expr::value(name.as_str()))
+            .col_expr(users::Column::UpdatedAt, Expr::value(now()))
+            .filter(users::Column::Id.eq(id))
+            .filter(users::Column::DeletedAt.is_null())
+            .exec(self.db())
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    async fn set_marketing_ok(&self, id: Uuid, marketing_ok: bool) -> RepoResult<()> {
+        users::Entity::update_many()
+            .col_expr(users::Column::MarketingOk, Expr::value(marketing_ok))
             .col_expr(users::Column::UpdatedAt, Expr::value(now()))
             .filter(users::Column::Id.eq(id))
             .filter(users::Column::DeletedAt.is_null())

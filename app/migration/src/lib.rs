@@ -40,6 +40,7 @@ mod m20261118_000035_oauth_grant_scope;
 mod m20261121_000038_audit_org_time_index;
 mod m20261121_000039_magic_link_new_email;
 mod m20261123_000040_org_signup_source;
+mod m20261123_000041_user_marketing_ok;
 
 pub struct Migrator;
 
@@ -85,6 +86,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261121_000038_audit_org_time_index::Migration),
             Box::new(m20261121_000039_magic_link_new_email::Migration),
             Box::new(m20261123_000040_org_signup_source::Migration),
+            Box::new(m20261123_000041_user_marketing_ok::Migration),
             // inject-above (do not remove this comment)
         ]
     }

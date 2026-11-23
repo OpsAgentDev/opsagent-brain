@@ -36,6 +36,7 @@ impl MemState {
             google_id,
             created_at: Utc::now(),
             terms_accepted_at: None,
+            marketing_ok: false,
         };
         self.users.push(u.clone());
         u
@@ -79,6 +80,13 @@ impl UsersRepo for MemStore {
     async fn set_name(&self, id: Uuid, name: &PersonName) -> RepoResult<()> {
         if let Some(u) = self.state().user_mut(|u| u.id == id) {
             u.name = Some(name.as_str().to_owned());
+        }
+        Ok(())
+    }
+
+    async fn set_marketing_ok(&self, id: Uuid, marketing_ok: bool) -> RepoResult<()> {
+        if let Some(u) = self.state().user_mut(|u| u.id == id) {
+            u.marketing_ok = marketing_ok;
         }
         Ok(())
     }

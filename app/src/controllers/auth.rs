@@ -25,6 +25,7 @@ use crate::{
     adapters::client_ip::ClientIp,
     api_error::{ApiError, ApiJson, Problem},
     config::Config,
+    error::AppError,
     middleware::{
         csrf,
         org_scope::AuthUser,
@@ -667,6 +668,8 @@ pub struct Me {
     pub has_passkey: bool,
     /// When the user agreed to the Terms and the Privacy Policy; null until they do.
     pub terms_accepted_at: Option<DateTime<Utc>>,
+    /// Whether the user opted in to hear about other Binary Labs products (off by default).
+    pub marketing_ok: bool,
 }
 
 #[utoipa::path(get, path = "/auth/me", tag = "auth",
@@ -684,6 +687,7 @@ async fn me_view(app: &AppState, u: opsagent_core::user::User) -> Result<Json<Me
         name: u.name,
         has_passkey,
         terms_accepted_at: u.terms_accepted_at,
+        marketing_ok: u.marketing_ok,
     }))
 }
 
@@ -691,19 +695,28 @@ async fn me_view(app: &AppState, u: opsagent_core::user::User) -> Result<Json<Me
 pub struct MePatch {
     /// The new display name: 1 to 80 characters after trimming, no control characters (the
     /// sign-up rules).
-    pub name: String,
+    pub name: Option<String>,
+    /// Opt in (true) or out (false) of hearing about other Binary Labs products.
+    pub marketing_ok: Option<bool>,
 }
 
-/// Changes the signed-in user's name; nothing else is changeable here.
+/// Changes the signed-in user's name and/or marketing opt-in; nothing else is changeable here.
 #[utoipa::path(patch, path = "/auth/me", tag = "auth", request_body = MePatch,
     responses((status = 200, body = Me), (status = 401, body = Problem),
-        (status = 422, body = Problem, description = "`validation`: not a usable name")))]
+        (status = 422, body = Problem, description = "`validation`: not a usable name, or nothing to change")))]
 async fn update_me(
     State(app): State<AppState>,
     AuthUser(id): AuthUser,
     ApiJson(body): ApiJson<MePatch>,
 ) -> Result<Json<Me>, ApiError> {
-    let u = app.actions.auth.update_name.run(id, &body.name).await?;
+    let mut updated = None;
+    if let Some(name) = &body.name {
+        updated = Some(app.actions.auth.update_name.run(id, name).await?);
+    }
+    if let Some(ok) = body.marketing_ok {
+        updated = Some(app.actions.auth.update_marketing_ok.run(id, ok).await?);
+    }
+    let u = updated.ok_or_else(|| ApiError::from(AppError::Invalid("nothing to change".into())))?;
     me_view(&app, u).await
 }
 

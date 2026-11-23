@@ -9,6 +9,7 @@ mod request_email_change;
 mod request_magic_link;
 mod sign_in_github;
 mod sign_in_google;
+mod update_marketing_ok;
 mod update_name;
 mod verify_code;
 
@@ -23,6 +24,7 @@ pub use request_email_change::RequestEmailChange;
 pub use request_magic_link::{MagicLinkInput, RequestMagicLink, PER_EMAIL, PER_IP};
 pub use sign_in_github::{GithubProfile, SignInGithub};
 pub use sign_in_google::{GoogleProfile, SignInGoogle};
+pub use update_marketing_ok::UpdateMarketingOk;
 pub use update_name::UpdateName;
 pub use verify_code::{VerifyCode, VerifyCodeInput};
 
@@ -35,6 +37,7 @@ pub struct Auth {
     pub current_user: CurrentUser,
     pub accept_terms: AcceptTerms,
     pub update_name: UpdateName,
+    pub update_marketing_ok: UpdateMarketingOk,
     pub request_email_change: RequestEmailChange,
     pub confirm_email_change: ConfirmEmailChange,
     pub delete_account: DeleteAccount,
