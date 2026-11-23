@@ -503,3 +503,79 @@ async fn orgs_list_is_oldest_membership_first() {
     })
     .await;
 }
+
+async fn source_of(ctx: &TestApp) -> Value {
+    organisations::Entity::find()
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .signup_source
+        .unwrap_or(Value::Null)
+}
+
+#[tokio::test]
+#[serial]
+async fn create_org_stores_source() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let token = sign_in(&req, &mail, "owner@example.com").await;
+        let res = req
+            .post("/v1/orgs")
+            .add_header("X-CSRF-Token", &token)
+            .json(&json!({"name": "Acme", "source": {"utm_source": "hn", "landing_path": "/pricing"}}))
+            .await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        let src = source_of(&ctx).await;
+        assert_eq!(src["utm_source"], "hn");
+        assert_eq!(src["landing_path"], "/pricing");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn create_org_with_nul_source() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let token = sign_in(&req, &mail, "owner@example.com").await;
+        let res = req
+            .post("/v1/orgs")
+            .add_header("X-CSRF-Token", &token)
+            .json(&json!({"name": "Acme", "source": {"utm_source": "a\u{0}b"}}))
+            .await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        assert_eq!(source_of(&ctx).await["utm_source"], "ab");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn truncates_long_source() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let token = sign_in(&req, &mail, "owner@example.com").await;
+        let res = req
+            .post("/v1/orgs")
+            .add_header("X-CSRF-Token", &token)
+            .json(&json!({"name": "Acme", "source": {"utm_campaign": "x".repeat(500)}}))
+            .await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        let src = source_of(&ctx).await;
+        assert_eq!(src["utm_campaign"].as_str().unwrap().len(), 200);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn create_org_without_source() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let token = sign_in(&req, &mail, "owner@example.com").await;
+        create_org(&req, &token, "Acme").await;
+        assert_eq!(source_of(&ctx).await, Value::Null);
+    })
+    .await;
+}

@@ -17,6 +17,7 @@ fn new_org(slug: &str) -> NewOrganisation {
         timezone: "UTC".into(),
         kek_version: 1,
         wrapped_dek: vec![1, 2, 3],
+        signup_source: None,
     }
 }
 

@@ -66,6 +66,7 @@ pub(crate) mod test_support {
             timezone: "UTC".into(),
             kek_version: wrapped.version as i32,
             wrapped_dek: wrapped.blob,
+            signup_source: None,
         };
         store.insert(new).await.unwrap().id
     }
