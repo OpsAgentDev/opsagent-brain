@@ -40,6 +40,9 @@ opsagent-core = { path = "../crates/core" }
 opsagent-ledger = { path = "../crates/ledger" }
 opsagent-connectors = { path = "../crates/connectors" }
 opsagent-deliver = { path = "../crates/deliver" }
+# The contacts export's S3 write; the same versions the connectors crate uses.
+aws-config = { version = "1.13.0", features = ["behavior-version-latest"] }
+aws-sdk-s3 = { version = "1.154.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 urlencoding = "2"
 zeroize = "1"
 cron = "0.17.0"

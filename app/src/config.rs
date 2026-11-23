@@ -103,6 +103,10 @@ pub struct Config {
     /// Off (the launch default): no new human review request or checkout (`not_found`); existing
     /// requests stay readable and a paid one is still applied.
     pub human_review_enabled: bool,
+    /// Off (the default): the weekly `contacts_export` job writes nothing.
+    pub crm_export_enabled: bool,
+    /// The private bucket `contacts/contacts-v1.csv` goes to; required when the export is on.
+    pub crm_export_bucket: String,
     /// Email domains that may sign up; `*` or empty is open (`SIGNUP_ALLOWED_DOMAINS`, required in production).
     pub signup_allowed_domains: opsagent_core::user::SignupAllowlist,
     /// Cloudflare Turnstile secret; required in production. `None` outside it checks nothing.
@@ -171,6 +175,10 @@ impl Config {
             AppEnv::Production => p,
         };
         let s = |k: &str, default: &str| get(k).unwrap_or_else(|| default.to_owned());
+        let crm_enabled: bool = p(&get, "CRM_EXPORT_ENABLED", "false")?;
+        if crm_enabled && get("CRM_EXPORT_BUCKET").is_none() {
+            return Err(ConfigError::Missing(vec!["CRM_EXPORT_BUCKET"]));
+        }
         let db_dev = "postgres://loco:loco@localhost:5432/opsagent_brain_development";
         let db_test = "postgres://loco:loco@localhost:5432/opsagent_brain_test";
         let allow_private: bool = p(&get, "AI_ENDPOINT_ALLOW_PRIVATE", "false")?;
@@ -245,6 +253,8 @@ impl Config {
             stripe_automatic_tax: p(&get, "STRIPE_AUTOMATIC_TAX", "false")?,
             billing_enforced: p(&get, "BILLING_ENFORCED", "false")?,
             human_review_enabled: p(&get, "HUMAN_REVIEW_ENABLED", "false")?,
+            crm_export_enabled: crm_enabled,
+            crm_export_bucket: s("CRM_EXPORT_BUCKET", ""),
             signup_allowed_domains: opsagent_core::user::SignupAllowlist::parse(&s(
                 "SIGNUP_ALLOWED_DOMAINS",
                 "",
@@ -565,6 +575,10 @@ mod tests {
         assert!(vars(&[("BILLING_ENFORCED", "yes")]).is_err());
         assert!(!c.human_review_enabled);
         assert!(cfg(&[("HUMAN_REVIEW_ENABLED", "true")]).human_review_enabled);
+        assert!(!c.crm_export_enabled);
+        assert!(vars(&[("CRM_EXPORT_ENABLED", "true")]).is_err());
+        let crm = cfg(&[("CRM_EXPORT_ENABLED", "true"), ("CRM_EXPORT_BUCKET", "b")]);
+        assert!(crm.crm_export_enabled && crm.crm_export_bucket == "b");
         assert!(!c.stripe_configured() && !c.webhook_configured());
         let key = cfg(&[("STRIPE_SECRET_KEY", "sk_test_x")]);
         assert!(key.stripe_configured() && !key.webhook_configured());

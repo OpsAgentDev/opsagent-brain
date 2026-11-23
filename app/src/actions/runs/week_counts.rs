@@ -34,21 +34,29 @@ pub fn mrr_cents(by_tier: &[(String, i64)]) -> i64 {
 const SOURCE_LEN: usize = 32;
 const SOURCES_SHOWN: usize = 10;
 
+/// One `utm_source` as a safe key: lowercase, `[a-z0-9_.-]` only, 32 characters, `other` when
+/// nothing is left. Also the contacts export's `source`.
+pub fn clean_source(src: &str) -> String {
+    let key: String = src
+        .to_lowercase()
+        .chars()
+        .filter(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '.' | '-'))
+        .take(SOURCE_LEN)
+        .collect();
+    if key.is_empty() {
+        "other".into()
+    } else {
+        key
+    }
+}
+
 /// `utm_source` is visitor-written and ends up in a mail an agent reads: lowercase, `[a-z0-9_.-]`
 /// only, 32 characters, `other` when nothing is left. Equal keys merge; the top 10 show, the rest
 /// fold into `other`.
 pub fn tidy_sources(raw: Vec<(String, i64)>) -> Vec<(String, i64)> {
     let mut merged: Vec<(String, i64)> = Vec::new();
     for (src, n) in raw {
-        let mut key: String = src
-            .to_lowercase()
-            .chars()
-            .filter(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '.' | '-'))
-            .take(SOURCE_LEN)
-            .collect();
-        if key.is_empty() {
-            key = "other".into();
-        }
+        let key = clean_source(&src);
         match merged.iter_mut().find(|(k, _)| *k == key) {
             Some((_, m)) => *m += n,
             None => merged.push((key, n)),

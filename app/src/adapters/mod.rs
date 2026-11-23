@@ -10,6 +10,7 @@ pub mod model;
 pub mod pg_queue;
 pub mod rate_limiter;
 pub mod redact;
+pub mod s3;
 pub mod slack;
 pub mod stripe;
 #[cfg(feature = "test-support")]
