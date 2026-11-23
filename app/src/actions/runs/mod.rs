@@ -17,6 +17,7 @@ mod verify_connection;
 mod verify_outcome;
 mod verify_verdict;
 mod watch_scan;
+mod week_counts;
 
 use std::{future::Future, sync::Arc};
 
@@ -39,6 +40,7 @@ pub use revoked_notice::{enqueue_revoked_notice, DeliverRevokedNotice};
 pub use scan_now::ScanNow;
 pub use scheduler_tick::{SchedulerTick, TickReport};
 pub use verify_connection::VerifyConnection;
+pub use week_counts::{WeekCounts, MRR_CASE};
 
 pub struct Runs {
     /// Shared with the workers and the scheduler tick.

@@ -1,7 +1,7 @@
 //! The nightly operator notice, mailed to the contact address once every night: new
 //! sign-ups and waitlist entries over the last 24 hours, then dead jobs and failed runs,
 //! the mail sent on a day near the mail plan's daily stop, and the day's counted failures
-//! (`day_counts`). The subject says whether anything failed.
+//! (`day_counts`). On a Monday (UTC) the mail opens with the week's marketing numbers. The subject says whether anything failed.
 //! Counts and job kinds only: no customer data.
 use std::sync::Arc;
 
@@ -17,6 +17,7 @@ use uuid::Uuid;
 use super::{
     classify::{lerr, LResult},
     one_chunk_run,
+    week_counts::{is_monday, WeekCounts},
 };
 use crate::{
     actions::{ai::CreditTally, day_counts, uow::UnitOfWork},
@@ -50,6 +51,8 @@ pub struct Signups {
 pub trait FailureCounts: Send + Sync {
     async fn since(&self, since: DateTime<Utc>) -> AppResult<Failures>;
     async fn signups_since(&self, since: DateTime<Utc>) -> AppResult<Signups>;
+    /// The 7 days ending at `until`.
+    async fn week_until(&self, until: DateTime<Utc>) -> AppResult<WeekCounts>;
 }
 
 #[derive(Clone)]
@@ -105,7 +108,11 @@ impl OperatorNotice {
         } else {
             "OpsAgent: failures in the last 24 hours"
         };
-        let text = body(&signups, &found, &days);
+        let mut text = body(&signups, &found, &days);
+        if is_monday(run.key.scheduled_at) {
+            let week = self.failures.week_until(run.key.scheduled_at).await;
+            text = format!("{}\n\n{text}", week.map_err(lerr)?.line());
+        }
         let mail = Mail {
             to: self.contact_to.clone(),
             subject: subject.into(),
