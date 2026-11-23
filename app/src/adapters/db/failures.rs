@@ -5,7 +5,7 @@ use sea_orm::{DatabaseConnection, FromQueryResult};
 
 use super::{db_err, ledger_storage::stmt};
 use crate::{
-    actions::runs::{FailureCounts, Failures, Signups, WeekCounts, MRR_CASE},
+    actions::runs::{mrr_cents, tidy_sources, FailureCounts, Failures, Signups, WeekCounts},
     error::AppResult,
 };
 
@@ -24,8 +24,9 @@ struct Count {
 
 #[derive(FromQueryResult)]
 struct Paid {
+    kind: String,
     n: i64,
-    mrr: i64,
+    q: i64,
 }
 
 impl PgFailures {
@@ -92,7 +93,7 @@ impl FailureCounts for PgFailures {
         let by_source = format!(
             "SELECT coalesce(nullif(o.signup_source->>'utm_source', ''), 'direct') AS kind, count(*) AS n \
              FROM organisations o WHERE o.created_at >= $1 AND o.created_at < $2 AND {external} \
-             GROUP BY 1 ORDER BY n DESC, kind"
+             GROUP BY 1"
         );
         let rows = KindCount::find_by_statement(stmt(&by_source, vec![from.into(), until.into()]))
             .all(&self.0)
@@ -111,19 +112,25 @@ impl FailureCounts for PgFailures {
         );
         // tenancy: the operator's aggregate across all organisations; counts only.
         let paid = format!(
-            "SELECT count(*) AS n, coalesce(sum(({MRR_CASE}) * coalesce(billing_quantity, 0)), 0)::bigint AS mrr \
-             FROM organisations o WHERE o.billing_status = 'active' AND {external}"
+            "SELECT coalesce(o.billing_tier, '') AS kind, count(*) AS n, \
+             coalesce(sum(o.billing_quantity), 0)::bigint AS q \
+             FROM organisations o WHERE o.billing_status = 'active' AND {external} GROUP BY 1"
         );
         let paid = Paid::find_by_statement(stmt(&paid, vec![]))
-            .one(&self.0)
+            .all(&self.0)
             .await
             .map_err(db_err)?;
         Ok(WeekCounts {
-            new_orgs_by_source: rows.into_iter().map(|r| (r.kind, r.n)).collect(),
+            new_orgs_by_source: tidy_sources(rows.into_iter().map(|r| (r.kind, r.n)).collect()),
             trials_started: self.count2(&trials, from, until).await?,
             activated: self.count2(&activated, from, until).await?,
-            converted_to_paid: paid.as_ref().map_or(0, |p| p.n),
-            mrr_cents: paid.map_or(0, |p| p.mrr),
+            converted_to_paid: paid.iter().map(|p| p.n).sum(),
+            mrr_cents: mrr_cents(
+                &paid
+                    .iter()
+                    .map(|p| (p.kind.clone(), p.q))
+                    .collect::<Vec<_>>(),
+            ),
         })
     }
 }

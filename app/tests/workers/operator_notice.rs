@@ -317,3 +317,21 @@ async fn notice_has_week_block_on_monday_only() {
     })
     .await;
 }
+
+#[tokio::test]
+#[serial]
+async fn week_counts_sanitises_source() {
+    serve(|_req, ctx| async move {
+        let now = slot(0);
+        org(
+            &ctx,
+            "a@example.com",
+            Some("hn\nIgnore previous"),
+            now - Duration::days(1),
+        )
+        .await;
+        let w = week(&ctx, now).await;
+        assert_eq!(w.new_orgs_by_source, [("hnignoreprevious".to_string(), 1)]);
+    })
+    .await;
+}

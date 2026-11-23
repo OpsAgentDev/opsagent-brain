@@ -40,7 +40,7 @@ pub use revoked_notice::{enqueue_revoked_notice, DeliverRevokedNotice};
 pub use scan_now::ScanNow;
 pub use scheduler_tick::{SchedulerTick, TickReport};
 pub use verify_connection::VerifyConnection;
-pub use week_counts::{WeekCounts, MRR_CASE};
+pub use week_counts::{mrr_cents, tidy_sources, WeekCounts};
 
 pub struct Runs {
     /// Shared with the workers and the scheduler tick.
