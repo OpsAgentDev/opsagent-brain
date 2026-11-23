@@ -33,7 +33,7 @@ pub use full_scan::FullScan;
 pub use full_scan_chunks::Chunk;
 pub use get_run::GetRun;
 pub use list_runs::ListRuns;
-pub use operator_notice::{FailureCounts, Failures, OperatorNotice};
+pub use operator_notice::{FailureCounts, Failures, OperatorNotice, Signups};
 pub use request_manual_scan::{RequestManualScan, WINDOW as SCAN_WINDOW};
 pub use revoked_notice::{enqueue_revoked_notice, DeliverRevokedNotice};
 pub use scan_now::ScanNow;

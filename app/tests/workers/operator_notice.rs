@@ -53,16 +53,26 @@ fn slot(hours_ago: i64) -> DateTime<Utc> {
 
 #[tokio::test]
 #[serial]
-async fn silent_when_healthy_counts_only_the_last_day_and_mails_once() {
+async fn quiet_night_mails_counts_only_the_last_day_and_mails_once() {
     serve(|_req, ctx| async move {
         let mail = prepare(&ctx);
         // Old failures are not this night's news.
         let now = slot(0);
         failed_run(&ctx, "full_scan", now - Duration::hours(30)).await;
         dead_job(&ctx, "verify", now - Duration::hours(30)).await;
+        sql(
+            &ctx,
+            "INSERT INTO waitlist_entries (id, email, created_at) VALUES ($1, 'w@example.com', $2)",
+            vec![Uuid::new_v4().into(), (now - Duration::hours(1)).into()],
+        )
+        .await;
         let quiet = night(&ctx, now).await;
         perform(&ctx, JobKind::OperatorNotice, quiet).await.unwrap();
-        assert!(mail.sent().is_empty());
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].subject, "OpsAgent: nightly notice, nothing failed");
+        assert!(sent[0].text.contains("Waitlist: 1."), "{}", sent[0].text);
+        assert!(sent[0].text.contains("Dead jobs: 0 ()"), "{}", sent[0].text);
 
         failed_run(&ctx, "billing_sync", now - Duration::hours(1)).await;
         failed_run(&ctx, "billing_sync", now - Duration::hours(2)).await;
@@ -70,10 +80,11 @@ async fn silent_when_healthy_counts_only_the_last_day_and_mails_once() {
         let run = night(&ctx, now + Duration::minutes(1)).await;
         perform(&ctx, JobKind::OperatorNotice, run).await.unwrap();
         let sent = mail.sent();
-        assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].to, "info@opsagent.dev");
-        assert!(sent[0].text.contains("Failed runs: 2 (billing_sync 2)"), "{}", sent[0].text);
-        assert!(sent[0].text.contains("Dead jobs: 1 (full_scan 1)"), "{}", sent[0].text);
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1].to, "info@opsagent.dev");
+        assert_eq!(sent[1].subject, "OpsAgent: failures in the last 24 hours");
+        assert!(sent[1].text.contains("Failed runs: 2 (billing_sync 2)"), "{}", sent[1].text);
+        assert!(sent[1].text.contains("Dead jobs: 1 (full_scan 1)"), "{}", sent[1].text);
 
         // A crash after the mail but before the checkpoint: the ledger stops a second one.
         sql(
@@ -90,14 +101,14 @@ async fn silent_when_healthy_counts_only_the_last_day_and_mails_once() {
             .await
             .unwrap();
         assert_eq!(status, RunStatus::Done);
-        assert_eq!(mail.sent().len(), 1);
+        assert_eq!(mail.sent().len(), 2);
     })
     .await;
 }
 
 #[tokio::test]
 #[serial]
-async fn mails_on_a_refused_mail_alone_and_is_silent_below_80_sent() {
+async fn reports_a_refused_mail_alone_and_not_79_sent() {
     serve(|_req, ctx| async move {
         let mail = prepare(&ctx);
         let now = slot(0);
@@ -117,12 +128,14 @@ async fn mails_on_a_refused_mail_alone_and_is_silent_below_80_sent() {
         count("sent", 79).await;
         let quiet = night(&ctx, now).await;
         perform(&ctx, JobKind::OperatorNotice, quiet).await.unwrap();
-        assert!(mail.sent().is_empty());
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 1);
+        assert!(!sent[0].text.contains("Mail on"), "{}", sent[0].text);
 
         count("refused", 1).await;
         let run = night(&ctx, now + Duration::minutes(1)).await;
         perform(&ctx, JobKind::OperatorNotice, run).await.unwrap();
-        let sent = mail.sent();
+        let sent = &mail.sent()[1..];
         assert_eq!(sent.len(), 1);
         let line = format!(
             "Mail on {}: 79 sent, 1 not sent. The Resend plan stops at 100 a day.",
