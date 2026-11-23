@@ -1,5 +1,6 @@
 //! Runs: reading them, manual scans, handing runs to the queue, verify runs and the scheduler tick.
 pub(crate) mod classify;
+mod contacts_export;
 mod denied_scan;
 mod dispatch;
 mod finding_lifecycle;
@@ -29,6 +30,7 @@ use uuid::Uuid;
 use crate::actions::uow::UnitOfWork;
 use classify::{lerr, LResult};
 
+pub use contacts_export::{ContactRows, ContactsExport, ObjectStore, OwnerRow, OBJECT_KEY};
 pub use dispatch::RunDispatcher;
 pub use full_scan::FullScan;
 pub use full_scan_chunks::Chunk;
@@ -40,7 +42,7 @@ pub use revoked_notice::{enqueue_revoked_notice, DeliverRevokedNotice};
 pub use scan_now::ScanNow;
 pub use scheduler_tick::{SchedulerTick, TickReport};
 pub use verify_connection::VerifyConnection;
-pub use week_counts::{mrr_cents, tidy_sources, WeekCounts};
+pub use week_counts::{clean_source, mrr_cents, tidy_sources, WeekCounts};
 
 pub struct Runs {
     /// Shared with the workers and the scheduler tick.
@@ -57,6 +59,7 @@ pub struct Runs {
     pub scan_now: ScanNow,
     pub deliver_revoked_notice: DeliverRevokedNotice,
     pub operator_notice: OperatorNotice,
+    pub contacts_export: ContactsExport,
 }
 
 /// Runs `send` as the single chunk of run `run_id` under its ledger lease; a finished run

@@ -2,6 +2,7 @@
 //! (app-shell.md, jobs).
 //! A handler hands its run to one action; the run's ledger decides retries and resume.
 mod billing_sync;
+mod contacts_export;
 mod deliver_alert;
 mod deliver_briefing;
 mod deliver_review_notice;
@@ -25,6 +26,7 @@ use uuid::Uuid;
 use crate::error::AppResult;
 
 pub use billing_sync::BillingSyncJob;
+pub use contacts_export::ContactsExportJob;
 pub use deliver_alert::DeliverAlertJob;
 pub use deliver_briefing::DeliverBriefingJob;
 pub use deliver_review_notice::DeliverReviewNoticeJob;

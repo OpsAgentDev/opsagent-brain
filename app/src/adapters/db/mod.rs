@@ -25,6 +25,7 @@ mod billing;
 mod chat;
 mod connections;
 mod contact;
+mod contact_rows;
 mod deliveries;
 mod failures;
 mod findings;
@@ -74,6 +75,7 @@ use sea_orm::{
 
 pub use connections::status_of;
 pub use contact::PgContact;
+pub use contact_rows::PgContactRows;
 pub use failures::PgFailures;
 pub use page::page;
 pub use status::PgStatus;

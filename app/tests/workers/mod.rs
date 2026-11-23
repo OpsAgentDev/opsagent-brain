@@ -1,5 +1,6 @@
 mod billing_sync;
 mod cli_start;
+mod contacts_export;
 mod deliver_alert;
 pub mod deliver_briefing;
 mod deliver_fallback;

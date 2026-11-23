@@ -22,12 +22,13 @@ use crate::{
     },
     adapters::{
         client_metadata::HttpClientMetadata,
-        db::{Pg, PgContact, PgFailures, PgStatus, PgWaitlist},
+        db::{Pg, PgContact, PgContactRows, PgFailures, PgStatus, PgWaitlist},
         model::{
             anthropic::AnthropicModels, fake::FakeModels, openai::OpenAiModels, ModelProviders,
         },
         pg_queue::PgQueue,
         rate_limiter::RedisRateLimiter,
+        s3::S3Store,
         slack::{HttpSlack, SlackClient},
         stripe::StripeBilling,
         turnstile::{self, ChallengeVerifier, CloudflareTurnstile, NoChallenge},
@@ -36,9 +37,9 @@ use crate::{
     controllers,
     error::{AppError, AppResult},
     jobs::{
-        BillingGated, BillingSyncJob, DeliverAlertJob, DeliverBriefingJob, DeliverReviewNoticeJob,
-        DeliverRevokedNoticeJob, DeliverWeeklyJob, FullScanJob, JobHandler, OperatorNoticeJob,
-        RetentionJob, Scheduler, VerifyJob, WatchScanJob, WorkerRunner,
+        BillingGated, BillingSyncJob, ContactsExportJob, DeliverAlertJob, DeliverBriefingJob,
+        DeliverReviewNoticeJob, DeliverRevokedNoticeJob, DeliverWeeklyJob, FullScanJob, JobHandler,
+        OperatorNoticeJob, RetentionJob, Scheduler, VerifyJob, WatchScanJob, WorkerRunner,
     },
     mailers::{self, Mailer},
     mcp, middleware,
@@ -509,6 +510,13 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
                 d.mailer.clone(),
                 d.config.contact_to.clone(),
             ),
+            contacts_export: runs::ContactsExport::new(
+                Arc::new(PgContactRows(d.db.clone())),
+                Arc::new(S3Store::new(&d.config.crm_export_bucket)),
+                d.uow.clone(),
+                d.redis.clone(),
+                d.config.crm_export_enabled,
+            ),
             dispatcher,
             scan_now: runs::ScanNow::new(d.uow.clone(), full_scan.clone(), d.clock.clone()),
             watch_scan: full_scan.clone().watch(),
@@ -786,6 +794,7 @@ pub fn worker(state: &AppState) -> WorkerRunner {
             JobKind::DeliverScansFailingNotice,
         )),
         Arc::new(OperatorNoticeJob(Arc::new(runs.operator_notice.clone()))),
+        Arc::new(ContactsExportJob(Arc::new(runs.contacts_export.clone()))),
     ];
     let source = Arc::new(PgQueue(state.db.clone()));
     WorkerRunner::new(source, handlers, &state.config, state.clock.clone())
