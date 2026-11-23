@@ -52,6 +52,7 @@ pub async fn org_id(s: &dyn Repos, slug: &str) -> Uuid {
         timezone: "UTC".into(),
         kek_version: 1,
         wrapped_dek: vec![1, 2, 3],
+        signup_source: None,
     };
     s.orgs().insert(new).await.unwrap().id
 }

@@ -102,6 +102,10 @@ impl<C: Conn> OrganisationsRepo for Pg<C> {
             payment_event_at: Set(None),
             kek_version: Set(Some(new.kek_version)),
             wrapped_dek: Set(Some(new.wrapped_dek)),
+            signup_source: Set(new
+                .signup_source
+                .map(|s| serde_json::to_value(s).map_err(|e| RepoError::Storage(e.to_string())))
+                .transpose()?),
             deleted_at: Set(None),
             billing_status: Set(BillingStatus::None.as_str().into()),
             created_at: Set(now()),

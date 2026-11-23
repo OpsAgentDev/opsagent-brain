@@ -65,6 +65,34 @@ pub struct NewOrganisation {
     pub timezone: String,
     pub kek_version: i32,
     pub wrapped_dek: Vec<u8>,
+    pub signup_source: Option<SignupSource>,
+}
+
+/// Where a sign-up came from. Plain strings, each clamped to `SignupSource::MAX` chars.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SignupSource {
+    pub utm_source: Option<String>,
+    pub utm_medium: Option<String>,
+    pub utm_campaign: Option<String>,
+    pub referrer: Option<String>,
+    pub landing_path: Option<String>,
+}
+
+impl SignupSource {
+    pub const MAX: usize = 200;
+
+    /// Every value cut to `MAX` chars.
+    #[must_use]
+    pub fn clamped(self) -> Self {
+        let cut = |v: Option<String>| v.map(|s| s.chars().take(Self::MAX).collect());
+        Self {
+            utm_source: cut(self.utm_source),
+            utm_medium: cut(self.utm_medium),
+            utm_campaign: cut(self.utm_campaign),
+            referrer: cut(self.referrer),
+            landing_path: cut(self.landing_path),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]

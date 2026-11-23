@@ -5,7 +5,7 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, FixedOffset};
-use opsagent_core::org::{Organisation, OrganisationPatch};
+use opsagent_core::org::{Organisation, OrganisationPatch, SignupSource};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -47,6 +47,29 @@ pub struct NewOrg {
     pub name: String,
     /// IANA zone; default `UTC`.
     pub timezone: Option<String>,
+    /// Where the sign-up came from; each value is cut to 200 characters.
+    pub source: Option<SignupSourceBody>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct SignupSourceBody {
+    pub utm_source: Option<String>,
+    pub utm_medium: Option<String>,
+    pub utm_campaign: Option<String>,
+    pub referrer: Option<String>,
+    pub landing_path: Option<String>,
+}
+
+impl From<SignupSourceBody> for SignupSource {
+    fn from(b: SignupSourceBody) -> Self {
+        Self {
+            utm_source: b.utm_source,
+            utm_medium: b.utm_medium,
+            utm_campaign: b.utm_campaign,
+            referrer: b.referrer,
+            landing_path: b.landing_path,
+        }
+    }
 }
 
 #[utoipa::path(post, path = "/orgs", tag = "orgs", request_body = NewOrg,
@@ -61,6 +84,7 @@ async fn create_org(
         user_id,
         name: body.name,
         timezone: body.timezone.unwrap_or_else(|| "UTC".into()),
+        source: body.source.map(Into::into),
     };
     let org = app.actions.orgs.create_org.run(input).await?;
     Ok((StatusCode::CREATED, Json(view(&org, "owner"))))

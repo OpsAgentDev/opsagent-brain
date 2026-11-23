@@ -85,6 +85,7 @@ pub(crate) mod test_support {
             user_id: owner.id,
             name: name.into(),
             timezone: "UTC".into(),
+            source: None,
         };
         let org = create_org(store).run(input).await.unwrap();
         (owner, org)

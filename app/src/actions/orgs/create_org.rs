@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use opsagent_core::{
     audit::AuditEntry,
-    org::{slugify, NewOrganisation, Organisation, Role},
+    org::{slugify, NewOrganisation, Organisation, Role, SignupSource},
     repo::RepoError,
 };
 use opsagent_secrets::{generate_dek, Kek};
@@ -23,6 +23,7 @@ pub struct CreateOrgInput {
     pub name: String,
     /// IANA zone.
     pub timezone: String,
+    pub source: Option<SignupSource>,
 }
 
 /// Creates an organisation with a fresh wrapped DEK and makes the user its owner.
@@ -54,6 +55,7 @@ impl CreateOrg {
             timezone,
             kek_version: i32::try_from(wrapped.version).map_err(|e| internal(&e))?,
             wrapped_dek: wrapped.blob,
+            signup_source: input.source.map(SignupSource::clamped),
         };
         let tx = self.uow.begin().await?;
         let org = match tx.orgs().insert(new.clone()).await {
@@ -111,6 +113,7 @@ mod tests {
             user_id: owner.id,
             name: "Acme Ltd".into(),
             timezone: "Europe/Berlin".into(),
+            source: None,
         };
         let second = create_org(&store).run(input).await.unwrap();
         let suffix = second.slug.strip_prefix("acme-ltd-").expect(&second.slug);

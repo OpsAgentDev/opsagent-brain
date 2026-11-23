@@ -7399,6 +7399,17 @@
           "name": {
             "type": "string"
           },
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SignupSourceBody",
+                "description": "Where the sign-up came from; each value is cut to 200 characters."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "timezone": {
             "type": [
               "string",
@@ -8393,6 +8404,41 @@
           "url": {
             "type": "string",
             "description": "The hosted Stripe page; it returns to `WEB_BASE_URL/settings/billing?status=…`."
+          }
+        }
+      },
+      "SignupSourceBody": {
+        "type": "object",
+        "properties": {
+          "landing_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "referrer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "utm_campaign": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "utm_medium": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "utm_source": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

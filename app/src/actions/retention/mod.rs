@@ -177,6 +177,7 @@ mod tests {
             timezone: "UTC".into(),
             kek_version: 1,
             wrapped_dek: vec![],
+            signup_source: None,
         };
         let org = store.insert(new).await.unwrap().id;
         store.soft_delete(org, now - Days::days(31)).await.unwrap();

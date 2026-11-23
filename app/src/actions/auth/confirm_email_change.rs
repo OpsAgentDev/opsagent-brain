@@ -452,6 +452,7 @@ mod tests {
             timezone: "UTC".into(),
             kek_version: 1,
             wrapped_dek: vec![1],
+            signup_source: None,
         };
         let org = orgs.insert(new_org).await.unwrap().id;
         let member = orgs.add_member(org, f.user.id, Role::Owner).await.unwrap();

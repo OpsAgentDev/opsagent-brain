@@ -92,6 +92,7 @@ mod tests {
             timezone: "UTC".into(),
             kek_version: 1,
             wrapped_dek: vec![],
+            signup_source: None,
         };
         let id = store.insert(new).await.unwrap().id;
         if let Some(at) = deleted {

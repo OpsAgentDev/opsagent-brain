@@ -22,6 +22,8 @@ pub struct Model {
     #[sea_orm(column_type = "VarBinary(StringLen::None)", nullable)]
     pub wrapped_dek: Option<Vec<u8>>,
     pub deleted_at: Option<DateTimeWithTimeZone>,
+    #[sea_orm(column_type = "JsonBinary", nullable)]
+    pub signup_source: Option<Json>,
     #[sea_orm(column_type = "Text", nullable)]
     pub stripe_subscription_id: Option<String>,
     #[sea_orm(column_type = "Text")]

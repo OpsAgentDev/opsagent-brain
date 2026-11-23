@@ -25,6 +25,7 @@ async fn world(s: &dyn Repos, seed: &dyn Seed) -> (Uuid, Uuid) {
             timezone: "UTC".into(),
             kek_version: 1,
             wrapped_dek: vec![1],
+            signup_source: None,
         })
         .await
         .unwrap();
