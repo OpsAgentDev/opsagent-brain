@@ -277,7 +277,7 @@
         "tags": [
           "auth"
         ],
-        "summary": "Changes the signed-in user's name; nothing else is changeable here.",
+        "summary": "Changes the signed-in user's name and/or marketing opt-in; nothing else is changeable here.",
         "operationId": "auth_update_me",
         "requestBody": {
           "content": {
@@ -309,7 +309,7 @@
             }
           },
           "422": {
-            "description": "`validation`: not a usable name",
+            "description": "`validation`: not a usable name, or nothing to change",
             "content": {
               "application/json": {
                 "schema": {
@@ -7248,7 +7248,8 @@
         "required": [
           "id",
           "email",
-          "has_passkey"
+          "has_passkey",
+          "marketing_ok"
         ],
         "properties": {
           "email": {
@@ -7261,6 +7262,10 @@
           "id": {
             "type": "string",
             "format": "uuid"
+          },
+          "marketing_ok": {
+            "type": "boolean",
+            "description": "Whether the user opted in to hear about other Binary Labs products (off by default)."
           },
           "name": {
             "type": [
@@ -7280,12 +7285,19 @@
       },
       "MePatch": {
         "type": "object",
-        "required": [
-          "name"
-        ],
         "properties": {
+          "marketing_ok": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Opt in (true) or out (false) of hearing about other Binary Labs products."
+          },
           "name": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "The new display name: 1 to 80 characters after trimming, no control characters (the\nsign-up rules)."
           }
         }

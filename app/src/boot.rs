@@ -373,6 +373,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
             current_user: auth::CurrentUser::new(d.uow.clone()),
             accept_terms: auth::AcceptTerms::new(d.uow.clone(), d.clock.clone()),
             update_name: auth::UpdateName::new(d.uow.clone()),
+            update_marketing_ok: auth::UpdateMarketingOk::new(d.uow.clone()),
             request_email_change: auth::RequestEmailChange::new(
                 d.uow.clone(),
                 (d.limiter.clone(), d.config.magic_link_hourly_cap),

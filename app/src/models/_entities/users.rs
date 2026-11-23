@@ -20,6 +20,7 @@ pub struct Model {
     pub updated_at: DateTimeWithTimeZone,
     pub deleted_at: Option<DateTimeWithTimeZone>,
     pub terms_accepted_at: Option<DateTimeWithTimeZone>,
+    pub marketing_ok: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

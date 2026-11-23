@@ -1081,6 +1081,53 @@ async fn the_signed_in_user_can_change_their_name() {
     .await;
 }
 
+/// `marketing_ok` is off by default and `PATCH /v1/auth/me` flips it, alone or with the name.
+#[tokio::test]
+#[serial]
+async fn settings_marketing_ok_defaults_false() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        sign_in(&req, &mail, "pat@example.com").await;
+        let me = req.get("/v1/auth/me").await.json::<Value>();
+        assert_eq!(me["marketing_ok"], false);
+        let _ = ctx;
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn settings_marketing_ok_round_trips() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let token = sign_in(&req, &mail, "pat@example.com").await;
+        let patch = |body: Value| {
+            req.patch("/v1/auth/me")
+                .json(&body)
+                .add_header("X-CSRF-Token", &token)
+        };
+        let res = patch(json!({ "marketing_ok": true })).await;
+        assert_eq!(res.status_code(), 200, "{}", res.text());
+        assert_eq!(res.json::<Value>()["marketing_ok"], true);
+        assert_eq!(
+            req.get("/v1/auth/me").await.json::<Value>()["marketing_ok"],
+            true
+        );
+        // The name alone leaves the opt-in alone.
+        let res = patch(json!({ "name": "Pat" })).await;
+        assert_eq!(res.json::<Value>()["marketing_ok"], true);
+        let res = patch(json!({ "marketing_ok": false })).await;
+        assert_eq!(res.json::<Value>()["marketing_ok"], false);
+        assert_eq!(
+            req.get("/v1/auth/me").await.json::<Value>()["marketing_ok"],
+            false
+        );
+        assert_eq!(patch(json!({})).await.status_code(), 422);
+        let _ = ctx;
+    })
+    .await;
+}
+
 /// The code mailed last (the subject's last word).
 fn last_code(mail: &opsagent_brain::mailers::CaptureMailer) -> String {
     let m = mail.sent().pop().expect("no mail sent");

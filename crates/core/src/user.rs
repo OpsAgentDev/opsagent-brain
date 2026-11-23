@@ -102,6 +102,8 @@ pub struct User {
     pub created_at: DateTime<Utc>,
     /// When the user agreed to the Terms and the Privacy Policy; `None` until they do.
     pub terms_accepted_at: Option<DateTime<Utc>>,
+    /// Opted in to hear about other Binary Labs products; false until the user ticks it.
+    pub marketing_ok: bool,
 }
 
 /// An unspent, unexpired link whose mailed code can still be tried.
@@ -183,6 +185,8 @@ pub trait UsersRepo: Send + Sync {
     async fn set_name_if_missing(&self, id: Uuid, name: &PersonName) -> RepoResult<()>;
     /// Renames the user; an unknown id is a no-op.
     async fn set_name(&self, id: Uuid, name: &PersonName) -> RepoResult<()>;
+    /// Sets the marketing opt-in; an unknown id is a no-op.
+    async fn set_marketing_ok(&self, id: Uuid, marketing_ok: bool) -> RepoResult<()>;
     /// Stores `at` only while the user has not accepted the Terms; a later call keeps the first
     /// time and an unknown id is a no-op.
     // shortcut: no terms version stored, add terms_version when the Terms change materially
