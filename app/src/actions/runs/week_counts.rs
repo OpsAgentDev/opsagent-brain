@@ -7,7 +7,7 @@ use opsagent_core::billing::Tier;
 /// The 7 days ending at the notice time. Internal organisations (owner `@opsagent.dev`) excluded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct WeekCounts {
-    /// Organisations created in the window by `utm_source`; no source counts as `direct`.
+    /// Organisations created in the window by `utm_source`; no source counts as `unknown`.
     pub new_orgs_by_source: Vec<(String, i64)>,
     /// Trials whose start (trial end minus the 14 days) fell in the window.
     pub trials_started: i64,
@@ -73,7 +73,7 @@ impl WeekCounts {
             .map(|(s, n)| format!("{s} {n}"))
             .collect();
         format!(
-            "Week: orgs {} | trials {} | activated {} | paid {} | MRR ${}",
+            "Week: new orgs by source {} | trials started {} | activated {} | paying now {} | MRR ${}",
             if orgs.is_empty() {
                 "none".into()
             } else {
@@ -96,14 +96,14 @@ mod tests {
     #[test]
     fn line_matches_the_brief_and_monday_is_utc() {
         let w = WeekCounts {
-            new_orgs_by_source: vec![("hn".into(), 2), ("direct".into(), 1)],
+            new_orgs_by_source: vec![("hn".into(), 2), ("unknown".into(), 1)],
             trials_started: 3,
             activated: 1,
             ..Default::default()
         };
         assert_eq!(
             w.line(),
-            "Week: orgs hn 2, direct 1 | trials 3 | activated 1 | paid 0 | MRR $0"
+            "Week: new orgs by source hn 2, unknown 1 | trials started 3 | activated 1 | paying now 0 | MRR $0"
         );
         assert!(is_monday(
             Utc.with_ymd_and_hms(2026, 11, 23, 23, 59, 0).unwrap()

@@ -233,11 +233,11 @@ async fn week_counts_groups_by_source() {
         let w = week(&ctx, now).await;
         assert_eq!(
             w.new_orgs_by_source,
-            [("hn".to_string(), 2), ("direct".to_string(), 1)]
+            [("hn".to_string(), 2), ("unknown".to_string(), 1)]
         );
         assert_eq!(
             w.line(),
-            "Week: orgs hn 2, direct 1 | trials 0 | activated 0 | paid 0 | MRR $0"
+            "Week: new orgs by source hn 2, unknown 1 | trials started 0 | activated 0 | paying now 0 | MRR $0"
         );
     })
     .await;
@@ -309,7 +309,9 @@ async fn notice_has_week_block_on_monday_only() {
         }
         let sent = mail.sent();
         assert!(
-            sent[0].text.starts_with("Week: orgs hn 1 | trials 0"),
+            sent[0]
+                .text
+                .starts_with("Week: new orgs by source hn 1 | trials started 0"),
             "{}",
             sent[0].text
         );

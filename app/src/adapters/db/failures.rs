@@ -91,7 +91,7 @@ impl FailureCounts for PgFailures {
              WHERE m.organisation_id = o.id AND m.role = 'owner' AND lower(u.email) LIKE '%@opsagent.dev')";
         // tenancy: the operator's aggregate across all organisations; counts and sources only.
         let by_source = format!(
-            "SELECT coalesce(nullif(o.signup_source->>'utm_source', ''), 'direct') AS kind, count(*) AS n \
+            "SELECT coalesce(nullif(o.signup_source->>'utm_source', ''), 'unknown') AS kind, count(*) AS n \
              FROM organisations o WHERE o.created_at >= $1 AND o.created_at < $2 AND {external} \
              GROUP BY 1"
         );
