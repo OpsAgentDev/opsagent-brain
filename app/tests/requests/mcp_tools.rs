@@ -4,12 +4,13 @@ use axum_test::TestServer;
 use chrono::{Duration, Utc};
 use opsagent_brain::models::_entities::connections;
 use opsagent_core::finding::{Evidence, FindingDraft, FindingKey, Severity};
+use opsagent_core::oauth::SCOPE_READ_WRITE;
 use sea_orm::{entity::prelude::*, ActiveModelTrait, ConnectionTrait, Set};
 use serde_json::{json, Value};
 use serial_test::serial;
 
 use super::{
-    mcp_auth::{agent, call, member_of, mint, Agent},
+    mcp_auth::{agent, call, member_of, mint, mint_scoped, rpc, Agent},
     support::*,
 };
 
@@ -119,9 +120,13 @@ async fn get_finding_other_org_is_not_found() {
 async fn run_check_twice_in_an_hour_is_scan_too_soon() {
     serve(|req, app| async move {
         let (a, conn, _) = world(&req, &app, "scan@example.com").await;
+        // run_check is a write tool: it needs a grant approved for changes.
+        let token = mint_scoped(&app, a.org, a.member, Duration::hours(1), SCOPE_READ_WRITE)
+            .await
+            .1;
         let args = json!({"connection": conn});
         // A pending connection cannot be scanned.
-        let got = call(&req, &a.token, "run_check", args.clone()).await;
+        let got = call(&req, &token, "run_check", args.clone()).await;
         assert_eq!(result(&got)["code"], "connection_blocked", "{got}");
         let mut c: connections::ActiveModel = connections::Entity::find_by_id(conn)
             .one(&app.db)
@@ -132,10 +137,10 @@ async fn run_check_twice_in_an_hour_is_scan_too_soon() {
         c.status = Set("connected".into());
         c.external_account_id = Set(Some("acct-scan".into()));
         c.update(&app.db).await.unwrap();
-        let first = call(&req, &a.token, "run_check", args.clone()).await;
+        let first = call(&req, &token, "run_check", args.clone()).await;
         assert_eq!(first["result"]["isError"], false, "{first}");
         let run = result(&first)["run_id"].clone();
-        let second = call(&req, &a.token, "run_check", args).await;
+        let second = call(&req, &token, "run_check", args).await;
         assert_eq!(second["result"]["isError"], true, "{second}");
         assert_eq!(result(&second)["code"], "scan_too_soon");
         let at: chrono::DateTime<Utc> = result(&second)["last_scan_at"]
@@ -144,7 +149,7 @@ async fn run_check_twice_in_an_hour_is_scan_too_soon() {
             .parse()
             .unwrap();
         assert!(Utc::now() - at < Duration::minutes(1), "{second}");
-        let scan = call(&req, &a.token, "get_scan", json!({"run_id": run})).await;
+        let scan = call(&req, &token, "get_scan", json!({"run_id": run})).await;
         assert_eq!(result(&scan)["id"], run, "{scan}");
         assert_eq!(result(&scan)["job_type"], "full_scan");
     })
@@ -207,14 +212,6 @@ async fn unknown_tool_remediate_errors() {
             .map(|t| t["name"].as_str().unwrap())
             .collect();
         assert_eq!(names.len(), 12, "{names:?}");
-        let rc = list["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["name"] == "run_check")
-            .unwrap();
-        assert_eq!(rc["annotations"]["idempotentHint"], false);
-        assert_eq!(rc["annotations"]["readOnlyHint"], true);
     })
     .await;
 }
@@ -238,6 +235,54 @@ async fn injection_text_is_returned_as_data() {
             serde_json::from_str::<Value>(echoed).unwrap(),
             *result(&detail)
         );
+    })
+    .await;
+}
+
+/// Every tool declares its annotations; a new tool fails here until it is added to the table.
+/// Destructive means it may overwrite or delete (MCP spec), meaningful only for write tools.
+#[tokio::test]
+#[serial]
+async fn every_tool_declares_its_annotations() {
+    // (name, readOnly, destructive, idempotent, openWorld)
+    const TABLE: [(&str, bool, bool, bool, bool); 12] = [
+        ("list_connections", true, false, true, false),
+        ("list_findings", true, false, true, false),
+        ("get_finding", true, false, true, false),
+        ("get_scan", true, false, true, false),
+        ("list_resources", true, false, true, false),
+        ("get_cost_anomalies", true, false, true, false),
+        ("run_check", false, false, false, true),
+        ("accept_finding", false, true, true, false),
+        ("snooze_finding", false, true, true, false),
+        ("reopen_finding", false, true, true, false),
+        ("connect_cloud_account", false, false, false, true),
+        ("verify_connection", false, true, true, true),
+    ];
+    serve(|req, app| async move {
+        let (a, _) = agent(&req, &app, "ann-table@example.com", "Ann").await;
+        let body: Value = rpc(&req, Some(&a.token), "tools/list", json!({}))
+            .await
+            .json();
+        let tools = body["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), TABLE.len(), "tool without a table row");
+        for (name, ro, destructive, idem, open) in TABLE {
+            let t = tools.iter().find(|t| t["name"] == name).expect(name);
+            assert!(
+                t["title"].as_str().is_some_and(|s| !s.is_empty()),
+                "{name} has no title"
+            );
+            assert_eq!(
+                t["annotations"],
+                json!({
+                    "readOnlyHint": ro,
+                    "destructiveHint": destructive,
+                    "idempotentHint": idem,
+                    "openWorldHint": open,
+                }),
+                "{name}"
+            );
+        }
     })
     .await;
 }

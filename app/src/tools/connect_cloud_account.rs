@@ -42,6 +42,8 @@ impl Tool for ConnectCloudAccountTool {
             input_schema: schema_of::<Args>(),
             access: Access::Write,
             idempotent: false,
+            destructive: false,
+            open_world: true,
         }
     }
 

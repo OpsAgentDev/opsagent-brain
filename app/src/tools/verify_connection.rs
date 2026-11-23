@@ -44,6 +44,8 @@ impl Tool for VerifyConnectionTool {
             input_schema: schema_of::<Args>(),
             access: Access::Write,
             idempotent: true,
+            destructive: true,
+            open_world: true,
         }
     }
 

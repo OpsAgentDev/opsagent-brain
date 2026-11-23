@@ -100,6 +100,10 @@ pub struct ToolSpec {
     pub input_schema: Value,
     pub access: Access,
     pub idempotent: bool,
+    /// MCP `destructiveHint`: may delete or overwrite (only meaningful for write tools).
+    pub destructive: bool,
+    /// MCP `openWorldHint`: calls outside services such as the customer's cloud.
+    pub open_world: bool,
 }
 
 #[async_trait]
@@ -415,6 +419,8 @@ mod tests {
                 input_schema: serde_json::json!({"type": "object"}),
                 access: Access::Read,
                 idempotent: true,
+                destructive: false,
+                open_world: false,
             }
         }
         async fn call(&self, _: &Caller, _: Value) -> Result<Value, ToolError> {
