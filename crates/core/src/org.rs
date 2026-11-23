@@ -81,10 +81,18 @@ pub struct SignupSource {
 impl SignupSource {
     pub const MAX: usize = 200;
 
-    /// Every value cut to `MAX` chars.
+    /// Every value stripped of control characters (NUL breaks jsonb), cut to `MAX` chars; empty is `None`.
     #[must_use]
     pub fn clamped(self) -> Self {
-        let cut = |v: Option<String>| v.map(|s| s.chars().take(Self::MAX).collect());
+        let cut = |v: Option<String>| {
+            v.map(|s| {
+                s.chars()
+                    .filter(|c| !c.is_control())
+                    .take(Self::MAX)
+                    .collect::<String>()
+            })
+            .filter(|s| !s.is_empty())
+        };
         Self {
             utm_source: cut(self.utm_source),
             utm_medium: cut(self.utm_medium),
@@ -233,7 +241,19 @@ pub fn valid_name(raw: &str) -> Result<String, &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{org_web_base, slugify, valid_name, Role};
+    use super::{org_web_base, slugify, valid_name, Role, SignupSource};
+
+    #[test]
+    fn clamped_drops_control_chars_and_empties() {
+        let s = SignupSource {
+            utm_source: Some("a\u{0}b\n".into()),
+            utm_medium: Some("\u{0}".into()),
+            ..Default::default()
+        }
+        .clamped();
+        assert_eq!(s.utm_source.as_deref(), Some("ab"));
+        assert_eq!(s.utm_medium, None);
+    }
 
     #[test]
     fn org_web_base_prefixes_the_slug_and_drops_a_trailing_slash() {

@@ -535,6 +535,23 @@ async fn create_org_stores_source() {
 
 #[tokio::test]
 #[serial]
+async fn create_org_with_nul_source() {
+    serve(|req, ctx| async move {
+        let mail = prepare(&ctx);
+        let token = sign_in(&req, &mail, "owner@example.com").await;
+        let res = req
+            .post("/v1/orgs")
+            .add_header("X-CSRF-Token", &token)
+            .json(&json!({"name": "Acme", "source": {"utm_source": "a\u{0}b"}}))
+            .await;
+        assert_eq!(res.status_code(), 201, "{}", res.text());
+        assert_eq!(source_of(&ctx).await["utm_source"], "ab");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn truncates_long_source() {
     serve(|req, ctx| async move {
         let mail = prepare(&ctx);
