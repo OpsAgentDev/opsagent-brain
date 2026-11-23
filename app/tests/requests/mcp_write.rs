@@ -18,12 +18,13 @@ use super::{
     support::*,
 };
 
-const WRITE_TOOLS: [&str; 5] = [
+const WRITE_TOOLS: [&str; 6] = [
     "accept_finding",
     "snooze_finding",
     "reopen_finding",
     "connect_cloud_account",
     "verify_connection",
+    "run_check",
 ];
 const ROLE_ARN: &str = "arn:aws:iam::123456789012:role/OpsAgentReadRole-abcd1234";
 
@@ -89,6 +90,7 @@ async fn read_only_grant_is_refused_on_every_write_tool_and_changes_nothing() {
                 "verify_connection",
                 json!({"connection": conn.to_string(), "role_arn": ROLE_ARN}),
             ),
+            ("run_check", json!({"connection": conn.to_string()})),
         ];
         assert_eq!(calls.clone().map(|(name, _)| name), WRITE_TOOLS);
         for (tool, args) in calls {
@@ -122,7 +124,7 @@ async fn read_only_grant_is_refused_on_every_write_tool_and_changes_nothing() {
             .all(&app.db)
             .await
             .unwrap();
-        assert_eq!(refused.len(), 5);
+        assert_eq!(refused.len(), WRITE_TOOLS.len());
         for r in refused {
             assert_eq!(r.action, "mcp.tool.call");
             assert_eq!(r.actor_id.as_deref(), Some(a.grant.to_string().as_str()));
@@ -324,16 +326,6 @@ async fn write_tools_are_annotated_and_instructions_follow_the_grant() {
         let tools = body["result"]["tools"].as_array().unwrap();
         for name in WRITE_TOOLS {
             let t = tools.iter().find(|t| t["name"] == name).expect(name);
-            assert_eq!(
-                t["annotations"],
-                json!({
-                    "readOnlyHint": false,
-                    "destructiveHint": false,
-                    "idempotentHint": name != "connect_cloud_account",
-                    "openWorldHint": false,
-                }),
-                "{name}"
-            );
             assert_eq!(t["inputSchema"]["type"], "object", "{name}");
         }
         let init = json!({

@@ -59,6 +59,8 @@ impl Tool for GetCostAnomaliesTool {
             input_schema: schema_of::<Args>(),
             access: Access::Read,
             idempotent: true,
+            destructive: false,
+            open_world: false,
         }
     }
 

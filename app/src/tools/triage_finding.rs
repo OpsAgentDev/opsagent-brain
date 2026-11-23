@@ -143,6 +143,8 @@ impl Tool for TriageFindingTool {
             input_schema,
             access: Access::Write,
             idempotent: true,
+            destructive: true,
+            open_world: false,
         }
     }
 

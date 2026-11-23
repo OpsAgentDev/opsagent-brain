@@ -58,8 +58,10 @@ impl Tool for RunCheckTool {
                           It only reads the customer's cloud. At most one scan per connection per \
                           hour: otherwise the error scan_too_soon carries the last scan's time.",
             input_schema: schema_of::<Args>(),
-            access: Access::Read,
+            access: Access::Write,
             idempotent: false,
+            destructive: false,
+            open_world: true,
         }
     }
 
