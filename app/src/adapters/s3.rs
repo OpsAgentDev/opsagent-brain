@@ -38,8 +38,13 @@ impl ObjectStore for S3Store {
             .body(body.into())
             .send()
             .await
-            // Provider error text can name the account (logging.md): the caller logs a code.
-            .map_err(|_| AppError::Internal("s3 put failed".into()))?;
+            .map_err(|e| {
+                // The error's code only (AccessDenied, NoSuchBucket); its text can name the account.
+                use aws_sdk_s3::error::ProvideErrorMetadata;
+                let kind = e.code().unwrap_or("unknown");
+                tracing::error!(s3_error_kind = kind, "contacts export s3 put failed");
+                AppError::Internal("s3 put failed".into())
+            })?;
         Ok(())
     }
 }

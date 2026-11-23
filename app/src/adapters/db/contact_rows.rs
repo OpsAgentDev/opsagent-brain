@@ -14,6 +14,7 @@ pub struct PgContactRows(pub DatabaseConnection);
 
 #[derive(FromQueryResult)]
 struct Row {
+    user_id: Uuid,
     email: String,
     name: Option<String>,
     org_id: Uuid,
@@ -33,7 +34,7 @@ impl ContactRows for PgContactRows {
         // tenancy: the operator's export across all organisations, one row per owner;
         // @opsagent.dev owners are left out. The opt-out is the global `unsubscribed`
         // suppression `/unsubscribe` writes, keyed by the SHA-256 of the lower-cased email.
-        let sql = "SELECT u.email, u.name, o.id AS org_id, o.name AS org_name, \
+        let sql = "SELECT u.id AS user_id, u.email, u.name, o.id AS org_id, o.name AS org_name, \
              o.created_at AS org_created_at, o.deleted_at IS NOT NULL AS org_deleted, \
              o.billing_tier, o.billing_status, o.signup_source->>'utm_source' AS utm_source, \
              u.marketing_ok, \
@@ -51,6 +52,7 @@ impl ContactRows for PgContactRows {
         Ok(rows
             .into_iter()
             .map(|r| OwnerRow {
+                user_id: r.user_id,
                 email: r.email,
                 name: r.name,
                 org_id: r.org_id,

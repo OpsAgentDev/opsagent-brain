@@ -26,6 +26,7 @@ const HEADER: &str = "email,name,company,product,external_id,kind,plan,status,si
 /// An organisation owner as the database holds them, before the export's mapping.
 #[derive(Debug, Clone)]
 pub struct OwnerRow {
+    pub user_id: Uuid,
     pub email: String,
     pub name: Option<String>,
     pub org_id: Uuid,
@@ -127,17 +128,30 @@ fn status(o: &OwnerRow) -> &'static str {
     }
     match o.billing_status.as_str() {
         "active" => "active",
-        "past_due" => "past_due",
-        "paused" | "canceled" | "trial_ended" => "canceled",
+        "past_due" | "paused" => "past_due",
+        "canceled" | "trial_ended" => "canceled",
         _ => "trial",
     }
 }
 
-/// One CSV cell: control characters stripped, a leading `= + - @` defused with a `'`, quoted
-/// when it holds a comma or a quote.
-fn cell(v: &str) -> String {
-    let mut s: String = v.chars().filter(|c| !c.is_control()).collect();
-    if s.starts_with(['=', '+', '-', '@']) {
+/// Unicode format characters (category Cf: bidi overrides, zero-width, BOM).
+/// shortcut: the Cf ranges by hand, no unicode-table dependency; upgrade if a new one slips in.
+fn is_format(c: char) -> bool {
+    matches!(c, '\u{AD}' | '\u{600}'..='\u{605}' | '\u{61C}' | '\u{6DD}' | '\u{70F}'
+        | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}'
+        | '\u{FFF9}'..='\u{FFFB}' | '\u{E0001}' | '\u{E0020}'..='\u{E007F}')
+}
+
+/// One CSV cell: control and format characters stripped, a leading `= + - @` defused with a `'`
+/// unless `defuse` is off (the email and source columns are already safe), quoted when it holds
+/// a comma or a quote.
+fn cell(v: &str, defuse: bool) -> String {
+    let mut s: String = v
+        .chars()
+        .filter(|c| !c.is_control() && !is_format(*c))
+        .collect();
+    if defuse && s.starts_with(['=', '+', '-', '@']) {
         s.insert(0, '\'');
     }
     if s.contains([',', '"']) {
@@ -159,7 +173,7 @@ fn line(o: &OwnerRow) -> String {
         blank(o.name.as_deref().unwrap_or("")),
         blank(&o.org_name),
         "opsagent".into(),
-        o.org_id.to_string(),
+        format!("{}:{}", o.org_id, o.user_id),
         "customer".into(),
         o.billing_tier.clone().unwrap_or_else(|| "trial".into()),
         status(o).into(),
@@ -168,7 +182,14 @@ fn line(o: &OwnerRow) -> String {
         o.marketing_ok.to_string(),
         o.opted_out.to_string(),
     ];
-    fields.map(|f| cell(&f)).join(",")
+    // email (join key) and source (already `[a-z0-9_.-]`) are not defused.
+    let safe = |i: usize| i == 0 || i == 9;
+    fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| cell(f, !safe(i)))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// The whole file: the header, then a row per owner, each ended by a newline.

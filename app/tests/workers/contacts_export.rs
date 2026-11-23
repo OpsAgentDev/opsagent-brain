@@ -86,6 +86,16 @@ async fn owner(
     org_name: &str,
     source: Option<&str>,
 ) -> Uuid {
+    owner_ids(ctx, email, name, org_name, source).await.0
+}
+
+async fn owner_ids(
+    ctx: &TestApp,
+    email: &str,
+    name: Option<&str>,
+    org_name: &str,
+    source: Option<&str>,
+) -> (Uuid, Uuid) {
     let (org, user) = (Uuid::new_v4(), Uuid::new_v4());
     let src = source.map(|s| serde_json::json!({ "utm_source": s }));
     sql(
@@ -106,7 +116,7 @@ async fn owner(
         vec![Uuid::new_v4().into(), org.into(), user.into()],
     )
     .await;
-    org
+    (org, user)
 }
 
 async fn export(ctx: &TestApp, store: &Arc<FakeStore>, at: DateTime<Utc>) -> RunStatus {
@@ -121,7 +131,7 @@ async fn export(ctx: &TestApp, store: &Arc<FakeStore>, at: DateTime<Utc>) -> Run
 #[serial]
 async fn exports_owner_rows_in_column_order() {
     serve(|_req, ctx| async move {
-        let org = owner(&ctx, "Ann@Example.com", Some("Ann Lee"), "Acme, Inc", Some("HN")).await;
+        let (org, ann) = owner_ids(&ctx, "Ann@Example.com", Some("Ann Lee"), "Acme, Inc", Some("HN")).await;
         sql(
             &ctx,
             "UPDATE organisations SET billing_status = 'active', billing_tier = 'team' WHERE id = $1;",
@@ -134,7 +144,7 @@ async fn exports_owner_rows_in_column_order() {
             vec![],
         )
         .await;
-        let bare = owner(&ctx, "bob@example.com", None, "Bob Co", None).await;
+        let (bare, bobu) = owner_ids(&ctx, "bob@example.com", None, "Bob Co", None).await;
         // A member who is not an owner has no row.
         let (member, bob) = (Uuid::new_v4(), Uuid::new_v4());
         sql(&ctx, "INSERT INTO users (id, email) VALUES ($1, 'm@example.com')", vec![member.into()]).await;
@@ -151,8 +161,8 @@ async fn exports_owner_rows_in_column_order() {
         assert_eq!(rows.remove(0), HEADER);
         rows.sort();
         let mut want = vec![
-            format!("ann@example.com,Ann Lee,\"Acme, Inc\",opsagent,{org},customer,team,active,2026-11-10T08:30:05Z,hn,true,false"),
-            format!("bob@example.com,,Bob Co,opsagent,{bare},customer,trial,trial,2026-11-10T08:30:05Z,unknown,false,false"),
+            format!("ann@example.com,Ann Lee,\"Acme, Inc\",opsagent,{org}:{ann},customer,team,active,2026-11-10T08:30:05Z,hn,true,false"),
+            format!("bob@example.com,,Bob Co,opsagent,{bare}:{bobu},customer,trial,trial,2026-11-10T08:30:05Z,unknown,false,false"),
         ];
         want.sort();
         assert_eq!(rows, want);
@@ -164,12 +174,12 @@ async fn exports_owner_rows_in_column_order() {
 #[serial]
 async fn escapes_formula_cells() {
     serve(|_req, ctx| async move {
-        let org = owner(
+        let (org, u) = owner_ids(
             &ctx,
-            "evil@example.com",
-            Some("=HYPERLINK(\"http://x\",\"c\")"),
+            "+evil@example.com",
+            Some("=HYPERLINK(\"http://x\",\"c\")\u{202E}"),
             "+cmd|' /C calc'!A0\u{7}",
-            Some("@x"),
+            Some("-x"),
         )
         .await;
         let store = Arc::new(FakeStore::default());
@@ -177,10 +187,9 @@ async fn escapes_formula_cells() {
         let file = store.file();
         let row = file.lines().nth(1).unwrap();
         let want = format!(
-            "evil@example.com,\"'=HYPERLINK(\"\"http://x\"\",\"\"c\"\")\",'+cmd|' /C calc'!A0,opsagent,{org},customer,trial,trial,2026-11-10T08:30:05Z,x,false,false"
+            "+evil@example.com,\"'=HYPERLINK(\"\"http://x\"\",\"\"c\"\")\",'+cmd|' /C calc'!A0,opsagent,{org}:{u},customer,trial,trial,2026-11-10T08:30:05Z,-x,false,false"
         );
         assert_eq!(row, want);
-        // The `@` of a source is not in `[a-z0-9_.-]`, so it is stripped, not defused.
         assert_eq!(file.lines().count(), 2);
     })
     .await;
@@ -232,14 +241,14 @@ async fn excludes_internal() {
 #[serial]
 async fn deleted_org_blanked() {
     serve(|_req, ctx| async move {
-        let org = owner(&ctx, "d@example.com", Some("Dee"), "Dee Co", Some("hn")).await;
+        let (org, u) = owner_ids(&ctx, "d@example.com", Some("Dee"), "Dee Co", Some("hn")).await;
         sql(&ctx, "UPDATE organisations SET deleted_at = now() WHERE id = $1", vec![org.into()]).await;
         let store = Arc::new(FakeStore::default());
         export(&ctx, &store, monday()).await;
         let row = store.file().lines().nth(1).unwrap().to_owned();
         assert_eq!(
             row,
-            format!("d@example.com,,,opsagent,{org},customer,trial,deleted,2026-11-10T08:30:05Z,hn,false,false")
+            format!("d@example.com,,,opsagent,{org}:{u},customer,trial,deleted,2026-11-10T08:30:05Z,hn,false,false")
         );
     })
     .await;
@@ -283,6 +292,40 @@ async fn rerun_same_week_overwrites() {
         // The same run again is a duplicate delivery: it writes nothing more.
         export(&ctx, &store, monday() + Duration::days(1)).await;
         assert_eq!(*store.puts.lock().unwrap(), 2);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn two_owners_get_distinct_external_ids() {
+    serve(|_req, ctx| async move {
+        let (org, first) = owner_ids(&ctx, "one@example.com", Some("One"), "Duo", None).await;
+        let second = Uuid::new_v4();
+        sql(
+            &ctx,
+            "INSERT INTO users (id, email) VALUES ($1, 'two@example.com')",
+            vec![second.into()],
+        )
+        .await;
+        sql(
+            &ctx,
+            "INSERT INTO members (id, organisation_id, user_id, role) VALUES ($1, $2, $3, 'owner')",
+            vec![Uuid::new_v4().into(), org.into(), second.into()],
+        )
+        .await;
+        let store = Arc::new(FakeStore::default());
+        export(&ctx, &store, monday()).await;
+        let file = store.file();
+        let ids: Vec<&str> = file
+            .lines()
+            .skip(1)
+            .map(|l| l.split(',').nth(4).unwrap())
+            .collect();
+        assert_eq!(ids.len(), 2, "{file}");
+        assert_ne!(ids[0], ids[1]);
+        assert!(ids.contains(&format!("{org}:{first}").as_str()), "{file}");
+        assert!(ids.contains(&format!("{org}:{second}").as_str()), "{file}");
     })
     .await;
 }
