@@ -209,6 +209,7 @@ async fn initialize_and_list_tools() {
         assert_eq!(
             t["annotations"],
             json!({
+                "title": "List connections",
                 "readOnlyHint": true,
                 "destructiveHint": false,
                 "idempotentHint": true,
