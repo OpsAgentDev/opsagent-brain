@@ -273,8 +273,13 @@ async fn every_tool_declares_its_annotations() {
                 "{name} has no title"
             );
             assert_eq!(
+                t["annotations"]["title"], t["title"],
+                "{name}: annotations.title must equal title (the directory reads it)"
+            );
+            assert_eq!(
                 t["annotations"],
                 json!({
+                    "title": t["title"],
                     "readOnlyHint": ro,
                     "destructiveHint": destructive,
                     "idempotentHint": idem,

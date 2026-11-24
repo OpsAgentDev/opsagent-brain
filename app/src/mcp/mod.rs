@@ -81,13 +81,14 @@ fn to_mcp(s: ToolSpec) -> McpTool {
     };
     let mut t = McpTool::new(s.name, s.description, schema);
     t.title = Some(s.title.into());
-    t.annotations = Some(
-        ToolAnnotations::new()
-            .read_only(s.access == Access::Read)
-            .destructive(s.destructive)
-            .idempotent(s.idempotent)
-            .open_world(s.open_world),
-    );
+    // The directory reads `annotations.title`, not only the top-level `title`.
+    let mut a = ToolAnnotations::new()
+        .read_only(s.access == Access::Read)
+        .destructive(s.destructive)
+        .idempotent(s.idempotent)
+        .open_world(s.open_world);
+    a.title = Some(s.title.into());
+    t.annotations = Some(a);
     t
 }
 
