@@ -155,3 +155,34 @@ fn public_cluster_and_disk_snapshots_are_critical_like_instance_snapshots() {
         .next_step
         .contains("modify-snapshot-attribute"));
 }
+
+/// Contract with opsagent-web's free security group tool (tests/fixtures/admin-ports.json there is the same
+/// file): both must treat exactly these ports as admin or database ports.
+#[test]
+fn admin_ports_match_the_web_tool_fixture() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/admin-ports.json")).unwrap();
+    let admin: Vec<u16> = fixture["adminPorts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_u64().unwrap() as u16)
+        .collect();
+    let sg = |port: u16| serde_json::json!({"service":"sg","open_world_ports":[port],"attached_to":"instance"});
+    let flagged = |port: u16| {
+        let d = run(&PublicExposure, &[res("sg", sg(port))], &[]);
+        d.iter().any(|d| d.key.variant == "sg_open_admin_port")
+    };
+    assert!(
+        admin.iter().all(|p| flagged(*p)),
+        "every fixture port is flagged"
+    );
+    // Everything else in 1..=65535 is not an admin port; sampled at the ports the web tool says are normal.
+    assert!([80u16, 443, 8080, 8443].iter().all(|p| !flagged(*p)));
+    let flagged_count = (1u16..=65535).filter(|p| flagged(*p)).count();
+    assert_eq!(
+        flagged_count,
+        admin.len(),
+        "no port outside the fixture is flagged"
+    );
+}
