@@ -1,0 +1,16 @@
+{
+  "_note": "Same file as opsagent-brain crates/checks/tests/fixtures/admin-ports.json. Change both together.",
+  "adminPorts": [
+    22,
+    3389,
+    3306,
+    5432,
+    1433,
+    27017,
+    6379,
+    9200,
+    5601,
+    11211,
+    2375
+  ]
+}
