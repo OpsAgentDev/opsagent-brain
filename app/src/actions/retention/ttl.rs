@@ -9,7 +9,7 @@ use crate::error::AppResult;
 /// Rows of `t` expiring (or observed) before this instant are deleted.
 pub(super) fn cutoff(t: TtlTable, now: DateTime<Utc>) -> DateTime<Utc> {
     let days = match t {
-        TtlTable::ResourceHistory | TtlTable::ApiCallsRaw => 90,
+        TtlTable::ResourceHistory | TtlTable::ApiCallsRaw | TtlTable::CostDaily => 90,
         TtlTable::Evidence | TtlTable::EmailSuppressions => 0,
         TtlTable::Sessions => 1,
         TtlTable::MagicLinks | TtlTable::OauthConsentRequests | TtlTable::OauthAccessTokens => 7,
@@ -90,6 +90,7 @@ mod tests {
             (TtlTable::EmailSuppressions, 0),
             (TtlTable::ChatSessions, 30),
             (TtlTable::AiUsage, 395),
+            (TtlTable::CostDaily, 90),
         ];
         assert_eq!(want.map(|w| w.0), TtlTable::ALL);
         for (t, days) in want {

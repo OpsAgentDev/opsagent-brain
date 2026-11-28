@@ -21,8 +21,8 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::{
-    denied_scan::enqueue_verify_after_denied_scan, finding_lifecycle, full_scan::ScanProfile,
-    watch_scan, FullScan, RunDispatcher,
+    cost_window, denied_scan::enqueue_verify_after_denied_scan, finding_lifecycle,
+    full_scan::ScanProfile, watch_scan, FullScan, RunDispatcher,
 };
 use crate::{
     actions::day_counts::Counted,
@@ -285,17 +285,26 @@ impl Scan<'_> {
         let cost_read = if watch {
             Ok(vec![])
         } else {
-            k.cost_daily(self.cr, 30).await
+            k.cost_daily(self.cr, cost_window::READ_DAYS).await
         };
         let cost_failed = cost_read.is_err();
-        let cost = cost_read.unwrap_or_else(|e| {
+        let read = cost_read.unwrap_or_else(|e| {
             // Cost visibility is optional (PRD 7.3): cost checks see no rows.
             let (code, _) = classify(&e);
             tracing::warn!(code, run = %run_id, "full_scan: cost unavailable");
             vec![]
         });
+        let cost = cost_window::for_checks(&read);
         let tx = self.fs.uow.begin().await.map_err(lerr)?;
         tx.ledger().hold_fence(run_id, fence).await?;
+        if !watch && !cost_failed {
+            // Keyed upsert: a re-run finalize restates the same rows.
+            let stored = cost_window::to_stored(&read);
+            let put = tx
+                .resources()
+                .replace_costs(c.organisation_id, c.id, &stored, now);
+            put.await.map_err(lerr)?;
+        }
         if !partial && !watch {
             let gone = tx
                 .resources()

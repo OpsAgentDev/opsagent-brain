@@ -24,10 +24,12 @@ pub enum TtlTable {
     /// On `last_message_at`; messages go with their session.
     ChatSessions,
     AiUsage,
+    /// On `day`.
+    CostDaily,
 }
 
 impl TtlTable {
-    pub const ALL: [TtlTable; 12] = [
+    pub const ALL: [TtlTable; 13] = [
         Self::ResourceHistory,
         Self::Evidence,
         Self::ApiCallsRaw,
@@ -40,6 +42,7 @@ impl TtlTable {
         Self::EmailSuppressions,
         Self::ChatSessions,
         Self::AiUsage,
+        Self::CostDaily,
     ];
 
     /// The table's name in storage, also its key in the run's stats.
@@ -57,6 +60,7 @@ impl TtlTable {
             Self::EmailSuppressions => "email_suppressions",
             Self::ChatSessions => "chat_sessions",
             Self::AiUsage => "ai_usage",
+            Self::CostDaily => "cost_daily",
         }
     }
 }

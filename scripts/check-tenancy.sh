@@ -14,7 +14,7 @@ import pathlib, re, sys
 # email_suppressions mixes global rows (unsubscribes, organisation_id NULL) and per-organisation
 # rows (ignored); its queries must still name organisation_id, as the NULL-or-org filter does.
 TENANT = ["ai_credit_grants", "ai_notices", "ai_usage", "audit_events", "chat_messages", "chat_sessions",
-          "connections", "deliveries", "email_suppressions", "explanations", "findings", "human_review_requests",
+          "connections", "cost_daily", "deliveries", "email_suppressions", "explanations", "findings", "human_review_requests",
           "integrations", "invites", "members", "model_keys", "oauth_access_tokens", "oauth_grants", "oauth_refresh_tokens",
           "recipients", "resources", "runs", "schedules"]
 tables = "|".join(TENANT)

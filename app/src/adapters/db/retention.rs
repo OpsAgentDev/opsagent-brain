@@ -46,6 +46,8 @@ fn expiry_column(t: TtlTable) -> &'static str {
         TtlTable::Sessions => "expiry_date",
         TtlTable::ChatSessions => "last_message_at",
         TtlTable::AiUsage => "created_at",
+        // A date, compared with the cutoff instant as midnight.
+        TtlTable::CostDaily => "day::timestamptz",
         _ => "expires_at",
     }
 }
@@ -105,7 +107,7 @@ macro_rules! orphans {
 /// Every tenant table, children before parents (the foreign keys), each delete scoped to
 /// organisation $1; `members` and `users` follow (`PURGE_MEMBERS`), then the organisation.
 /// The orphaned users' own rows go here, while their memberships still identify them.
-const PURGE: [(&str, &str); 35] = [
+const PURGE: [(&str, &str); 36] = [
     ("audit_events", "DELETE FROM audit_events WHERE organisation_id = $1"),
     ("side_effects", "DELETE FROM side_effects WHERE run_id IN (SELECT id FROM runs WHERE organisation_id = $1)"),
     ("api_call_stats", "DELETE FROM api_call_stats WHERE run_id IN (SELECT id FROM runs WHERE organisation_id = $1)"),
@@ -132,6 +134,7 @@ const PURGE: [(&str, &str); 35] = [
     ("oauth_access_tokens", "DELETE FROM oauth_access_tokens WHERE organisation_id = $1"),
     ("oauth_refresh_tokens", "DELETE FROM oauth_refresh_tokens WHERE organisation_id = $1"),
     ("oauth_grants", "DELETE FROM oauth_grants WHERE organisation_id = $1"),
+    ("cost_daily", "DELETE FROM cost_daily WHERE organisation_id = $1"),
     ("connection_credentials", "DELETE FROM connection_credentials WHERE connection_id IN \
       (SELECT id FROM connections WHERE organisation_id = $1)"),
     ("connection_verifications", "DELETE FROM connection_verifications WHERE connection_id IN \

@@ -3424,6 +3424,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rmcp",
+ "rust_decimal",
  "rustls",
  "schemars",
  "sea-orm",

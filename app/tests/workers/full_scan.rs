@@ -27,7 +27,7 @@ use opsagent_core::{
     run::{RunKey, RunStatus},
 };
 use opsagent_ledger::{harness, Checkpoint, LedgerError, RunChunkedOptions, Storage};
-use sea_orm::{entity::prelude::*, Set};
+use sea_orm::{entity::prelude::*, DbBackend, Set, Statement};
 use serde_json::{json, Value};
 use serial_test::serial;
 use uuid::Uuid;
@@ -703,7 +703,7 @@ async fn partial_inventory_resolves_nothing() {
 }
 
 /// Comparable projection of a connection's rows (no ids, timestamps or connection id).
-async fn snapshot(ctx: &TestApp, conn: Uuid, run: Uuid) -> (Vec<Value>, Vec<Value>) {
+async fn snapshot(ctx: &TestApp, conn: Uuid, run: Uuid) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
     let mut res: Vec<Value> = resources::Entity::find()
         .filter(resources::Column::ConnectionId.eq(conn))
         .all(&ctx.db)
@@ -741,7 +741,88 @@ async fn snapshot(ctx: &TestApp, conn: Uuid, run: Uuid) -> (Vec<Value>, Vec<Valu
     }
     res.sort_by_key(|v| v.to_string());
     fs.sort_by_key(|v| v.to_string());
-    (res, fs)
+    let costs = cost_rows(ctx, conn)
+        .await
+        .into_iter()
+        .map(|r| json!(r))
+        .collect();
+    (res, fs, costs)
+}
+
+/// The connection's stored spend as `(day, service, amount)`, by day then service.
+pub async fn cost_rows(ctx: &TestApp, conn: Uuid) -> Vec<(String, String, String)> {
+    let q = "SELECT day::text AS day, service, amount_usd::text AS usd FROM cost_daily \
+             WHERE connection_id = $1 ORDER BY day, service";
+    let st = Statement::from_sql_and_values(DbBackend::Postgres, q, [conn.into()]);
+    let rows = ctx.db.query_all_raw(st).await.unwrap();
+    let get = |r: &QueryResult, c: &str| r.try_get::<String>("", c).unwrap();
+    rows.iter()
+        .map(|r| (get(r, "day"), get(r, "service"), get(r, "usd")))
+        .collect()
+}
+
+/// The 60 stored days of `noisy`: the fixture's 60 rows, as stored.
+fn noisy_costs() -> Vec<(String, String, String)> {
+    let v = noisy_json();
+    let rows = v["cost_daily"].as_array().unwrap();
+    assert_eq!(rows.len(), 60);
+    let amount = |r: &Value| format!("{:.4}", r["amount_usd"].as_f64().unwrap());
+    let row = |r: &Value| {
+        (
+            r["date"].as_str().unwrap().to_owned(),
+            "ec2".to_owned(),
+            amount(r),
+        )
+    };
+    rows.iter().map(row).collect()
+}
+
+#[tokio::test]
+#[serial]
+async fn a_full_scan_stores_60_days_once_per_key_and_check_01_still_sees_30() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        scan(&ctx, conn, 0, &noisy()).await;
+        assert_eq!(cost_rows(&ctx, conn).await, noisy_costs());
+        // Check 01 reads the newest 30 days only: the same findings as `expected()`, which
+        // feeds the checks 30 days, and the one spike day in them.
+        let got: BTreeSet<_> = all_findings(&ctx, conn)
+            .await
+            .into_iter()
+            .filter(|f| f.check_id == "01")
+            .map(|f| (f.resource_identity, f.variant))
+            .collect();
+        let want: BTreeSet<_> = expected()
+            .await
+            .into_iter()
+            .filter(|e| e.0 == "01")
+            .map(|e| (e.1, e.2))
+            .collect();
+        assert_eq!(got, want);
+        assert!(got.contains(&("cost:2026-09-28".into(), "cost_anomaly".into())));
+
+        // A later nightly scan restates the same keys and AWS's revision overwrites.
+        let revised = fixture(|v| v["cost_daily"][59]["amount_usd"] = json!(123.5));
+        scan(&ctx, conn, 1, &revised).await;
+        let mut want = noisy_costs();
+        want[59].2 = "123.5000".into();
+        assert_eq!(cost_rows(&ctx, conn).await, want);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_failed_cost_read_stores_no_spend() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        scan(&ctx, conn, 0, &noisy()).await;
+        assert_eq!(cost_rows(&ctx, conn).await.len(), 60);
+        // The read fails: nothing is written, and the earlier days stay.
+        scan(&ctx, conn, 1, &rigged(Some(Fault::Error))).await;
+        assert_eq!(cost_rows(&ctx, conn).await, noisy_costs());
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -783,6 +864,8 @@ async fn kill_and_resume_after_every_chunk_matches_uninterrupted() {
         assert_eq!(k.sims.load(SeqCst), 1);
         assert_eq!(run_row(&ctx, rb).await.status, "done");
         assert_eq!(snapshot(&ctx, a, ra).await, snapshot(&ctx, b, rb).await);
+        // The spend of 60 days, written once whatever the kills.
+        assert_eq!(cost_rows(&ctx, b).await, noisy_costs());
 
         let ev = finding_events::Entity::find()
             .filter(finding_events::Column::RunId.eq(rb))

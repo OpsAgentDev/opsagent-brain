@@ -227,6 +227,12 @@ impl Seed for PgSeed {
                   VALUES ($1, $2, $3, 't', $4, $4)",
                  vec![id.into(), o.into(), member.into(), at.into()])
             }
+            TtlTable::CostDaily => {
+                let c = self.connection(o).await;
+                ("INSERT INTO cost_daily (organisation_id, connection_id, day, service, amount_usd) \
+                  VALUES ($1, $2, $3::timestamptz::date, 's', 1)",
+                 vec![o.into(), c.into(), at.into()])
+            }
             TtlTable::AiUsage => (
                 "INSERT INTO ai_usage (id, organisation_id, purpose, provider, model, key_source, input_tokens, \
                  output_tokens, cache_read_tokens, cache_write_tokens, credits, created_at) \

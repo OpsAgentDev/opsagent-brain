@@ -443,6 +443,7 @@ pub fn build_actions(d: &Deps, urls: &OAuthUrls) -> Actions {
         },
         resources: resources::Resources {
             list_resources: resources::ListResources::new(d.uow.clone()),
+            get_costs: resources::GetCosts::new(d.uow.clone()),
         },
         connections: connections::Connections {
             create_connection: connections::CreateConnection::new(

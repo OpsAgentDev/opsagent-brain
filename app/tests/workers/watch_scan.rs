@@ -24,7 +24,7 @@ use sea_orm::entity::prelude::*;
 use serial_test::serial;
 use uuid::Uuid;
 
-use super::full_scan::{fixture, noisy, scan, without_snapshot};
+use super::full_scan::{cost_rows, fixture, noisy, scan, without_snapshot};
 use crate::requests::support::*;
 
 async fn connection(req: &axum_test::TestServer, ctx: &TestApp) -> Uuid {
@@ -321,6 +321,21 @@ async fn watch_scan_leaves_no_resource_history() {
         assert_eq!(outcome(&r), ("done", None));
         assert_eq!(rows(r.id).await, 0);
         assert_eq!(rows(full).await, before);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn watch_scan_stores_no_spend() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx).await;
+        scan(&ctx, conn, 0, &noisy()).await;
+        let before = cost_rows(&ctx, conn).await;
+        assert_eq!(before.len(), 60);
+        let revised = fixture(|v| v["cost_daily"][59]["amount_usd"] = serde_json::json!(999.0));
+        watch_run(&ctx, conn, 0, &watch(&ctx, revised)).await;
+        assert_eq!(cost_rows(&ctx, conn).await, before);
     })
     .await;
 }

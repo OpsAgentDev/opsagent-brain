@@ -1,6 +1,7 @@
 //! Runs: reading them, manual scans, handing runs to the queue, verify runs and the scheduler tick.
 pub(crate) mod classify;
 mod contacts_export;
+mod cost_window;
 mod denied_scan;
 mod dispatch;
 mod finding_lifecycle;

@@ -2,11 +2,12 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use opsagent_core::{
     repo::{PageOf, PageRequest, RepoError, RepoResult},
     resource::{
-        CallCount, Provider, Resource, ResourceFilter, ResourceKind, ResourceRow, ResourcesRepo,
+        CallCount, CostDay, Provider, Resource, ResourceFilter, ResourceKind, ResourceRow,
+        ResourcesRepo,
     },
 };
 use sea_orm::{
@@ -50,6 +51,9 @@ fn contains(q: &str) -> LikeExpr {
         .replace('_', "\\_");
     LikeExpr::new(format!("%{escaped}%"))
 }
+
+/// Rows per `cost_daily` insert: 3 bind values each, far under Postgres' 65535 cap.
+const COST_ROWS_PER_INSERT: usize = 500;
 
 /// Upserts one resource and its history row for `run_id`; true when it is new, came back, or
 /// changed. `prev` reads the row as it was before this statement.
@@ -266,6 +270,69 @@ impl<C: Conn> ResourcesRepo for Pg<C> {
             .map_err(db_err)?;
         }
         Ok(())
+    }
+
+    async fn replace_costs(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        rows: &[CostDay],
+        now: DateTime<Utc>,
+    ) -> RepoResult<()> {
+        for chunk in rows.chunks(COST_ROWS_PER_INSERT) {
+            let tuples: Vec<String> = (0..chunk.len())
+                .map(|i| {
+                    format!(
+                        "($1, $2, ${}, ${}, ${}, $3)",
+                        4 + 3 * i,
+                        5 + 3 * i,
+                        6 + 3 * i
+                    )
+                })
+                .collect();
+            let sql = format!(
+                "INSERT INTO cost_daily (organisation_id, connection_id, day, service, amount_usd, updated_at) \
+                 VALUES {} ON CONFLICT (connection_id, day, service) DO UPDATE SET \
+                 amount_usd = EXCLUDED.amount_usd, updated_at = EXCLUDED.updated_at",
+                tuples.join(", ")
+            );
+            let mut values = vec![organisation_id.into(), connection_id.into(), now.into()];
+            for r in chunk {
+                values.extend([r.day.into(), r.service.clone().into(), r.amount_usd.into()]);
+            }
+            self.db()
+                .execute_raw(stmt(&sql, values))
+                .await
+                .map_err(db_err)?;
+        }
+        Ok(())
+    }
+
+    async fn costs(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        since: NaiveDate,
+    ) -> RepoResult<Vec<CostDay>> {
+        let rows = self
+            .db()
+            .query_all_raw(stmt(
+                "SELECT day, service, amount_usd FROM cost_daily \
+                 WHERE organisation_id = $1 AND connection_id = $2 AND day >= $3 \
+                 ORDER BY day, service",
+                vec![organisation_id.into(), connection_id.into(), since.into()],
+            ))
+            .await
+            .map_err(db_err)?;
+        rows.iter()
+            .map(|r| {
+                Ok(CostDay {
+                    day: r.try_get("", "day").map_err(db_err)?,
+                    service: r.try_get("", "service").map_err(db_err)?,
+                    amount_usd: r.try_get("", "amount_usd").map_err(db_err)?,
+                })
+            })
+            .collect()
     }
 }
 
