@@ -5,6 +5,7 @@ pub mod billing;
 pub mod chat;
 pub mod connections;
 pub mod contact;
+pub mod costs;
 pub mod deliveries;
 pub mod findings;
 pub mod health;

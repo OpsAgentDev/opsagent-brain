@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fmt};
 use uuid::Uuid;
@@ -157,6 +158,30 @@ pub trait ResourcesRepo: Send + Sync {
         region: &str,
         calls: &[CallCount],
     ) -> RepoResult<()>;
+    /// Upserts one connection's daily spend by `(day, service)`; a re-run restates the same
+    /// rows and a revised amount overwrites. `rows` holds one entry per `(day, service)`.
+    async fn replace_costs(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        rows: &[CostDay],
+        now: DateTime<Utc>,
+    ) -> RepoResult<()>;
+    /// The connection's stored spend on or after `since`, ordered by day then service.
+    async fn costs(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        since: NaiveDate,
+    ) -> RepoResult<Vec<CostDay>>;
+}
+
+/// One service's spend on one day (unblended, USD), stored to four decimals.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CostDay {
+    pub day: NaiveDate,
+    pub service: String,
+    pub amount_usd: Decimal,
 }
 
 /// Inventory calls of one chunk by service, region and outcome (`ok` or `error`).

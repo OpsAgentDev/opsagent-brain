@@ -41,6 +41,7 @@ mod m20261121_000038_audit_org_time_index;
 mod m20261121_000039_magic_link_new_email;
 mod m20261123_000040_org_signup_source;
 mod m20261123_000041_user_marketing_ok;
+mod m20261128_000042_cost_daily;
 
 pub struct Migrator;
 
@@ -87,6 +88,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261121_000039_magic_link_new_email::Migration),
             Box::new(m20261123_000040_org_signup_source::Migration),
             Box::new(m20261123_000041_user_marketing_ok::Migration),
+            Box::new(m20261128_000042_cost_daily::Migration),
             // inject-above (do not remove this comment)
         ]
     }

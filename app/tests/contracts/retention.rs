@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, DurationRound, Utc};
 use opsagent_brain::adapters::memory::RunLink;
 use opsagent_core::{
     oauth::{AccessToken, ClientKind, ConsentRequest, Grant, OAuthClient, RefreshToken, SCOPE},
@@ -154,7 +154,8 @@ contract_suite! {
 
     async fn ttl_deletes_only_rows_past_cutoff(s, seed) {
         let o = org_id(s, "acme").await;
-        let cutoff = now();
+        // A UTC midnight, so a date-valued expiry column (`cost_daily.day`) tells the rows apart.
+        let cutoff = now().duration_trunc(Duration::days(1)).unwrap();
         for t in TtlTable::ALL {
             for at in [cutoff - Duration::seconds(1), cutoff, cutoff + Duration::hours(1)] {
                 seed.expiring(o, t, at).await;

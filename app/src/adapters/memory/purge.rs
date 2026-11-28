@@ -144,6 +144,7 @@ impl MemState {
             "findings",
             drain(&mut s.findings, |f| f.finding.organisation_id == org),
         );
+        put("cost_daily", drain(&mut s.costs, |c| c.0 == org));
         put(
             "resources",
             drain(&mut s.resources, |r| r.organisation_id == org),

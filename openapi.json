@@ -3215,6 +3215,55 @@
         }
       }
     },
+    "/orgs/{org}/connections/{id}/costs": {
+      "get": {
+        "tags": [
+          "costs"
+        ],
+        "summary": "Stored daily spend per service for the newest 60 days, and the days check 01 flagged.",
+        "operationId": "costs_show",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organisation slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CostSeries"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs/{org}/connections/{id}/reconnect": {
       "post": {
         "tags": [
@@ -6396,6 +6445,61 @@
           }
         }
       },
+      "CostDayOut": {
+        "type": "object",
+        "description": "One service's spend on one day.",
+        "required": [
+          "day",
+          "service",
+          "amount_usd"
+        ],
+        "properties": {
+          "amount_usd": {
+            "type": "string",
+            "description": "Unblended cost in USD, four decimals.",
+            "example": "12.3400"
+          },
+          "day": {
+            "type": "string",
+            "format": "date"
+          },
+          "service": {
+            "type": "string",
+            "description": "The provider's service name, as Cost Explorer reports it."
+          }
+        }
+      },
+      "CostSeries": {
+        "type": "object",
+        "required": [
+          "days",
+          "flagged"
+        ],
+        "properties": {
+          "days": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CostDayOut"
+            },
+            "description": "Up to 60 days ending on `newest_day`, by day then service; capped at 5000 rows, the\noldest days dropped first."
+          },
+          "flagged": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FlaggedDay"
+            },
+            "description": "Days within that window which check 01 flagged, by day."
+          },
+          "newest_day": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "The newest day stored; null when no spend is stored yet (a new account, Cost Explorer\nnot enabled, or a failed read)."
+          }
+        }
+      },
       "CreatedConnection": {
         "type": "object",
         "required": [
@@ -6846,6 +6950,29 @@
           },
           "variant": {
             "type": "string"
+          }
+        }
+      },
+      "FlaggedDay": {
+        "type": "object",
+        "description": "A day check 01 flagged as a cost spike.",
+        "required": [
+          "day",
+          "finding_id",
+          "status"
+        ],
+        "properties": {
+          "day": {
+            "type": "string",
+            "format": "date"
+          },
+          "finding_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "description": "The finding's status: `open`, `resolved`, `accepted`, `snoozed` or `flapping`."
           }
         }
       },

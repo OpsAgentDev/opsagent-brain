@@ -38,6 +38,15 @@ const DELETE_EXPIRED_CLIENTS: &str = "WITH doomed AS ( \
   g AS (DELETE FROM oauth_grants WHERE id IN (SELECT id FROM dead)) \
   DELETE FROM oauth_clients WHERE client_id IN (SELECT client_id FROM doomed)";
 
+/// `col < cutoff` for table `t`; `cost_daily.day` is a date, compared with the cutoff's UTC
+/// date (the session time zone does not matter and an index on `day` still serves it).
+fn expired(t: TtlTable) -> String {
+    match t {
+        TtlTable::CostDaily => "day < ($1::timestamptz AT TIME ZONE 'UTC')::date".into(),
+        _ => format!("{} < $1", expiry_column(t)),
+    }
+}
+
 /// The column each table expires on.
 fn expiry_column(t: TtlTable) -> &'static str {
     match t {
@@ -46,6 +55,7 @@ fn expiry_column(t: TtlTable) -> &'static str {
         TtlTable::Sessions => "expiry_date",
         TtlTable::ChatSessions => "last_message_at",
         TtlTable::AiUsage => "created_at",
+        TtlTable::CostDaily => "day",
         _ => "expires_at",
     }
 }
@@ -105,7 +115,7 @@ macro_rules! orphans {
 /// Every tenant table, children before parents (the foreign keys), each delete scoped to
 /// organisation $1; `members` and `users` follow (`PURGE_MEMBERS`), then the organisation.
 /// The orphaned users' own rows go here, while their memberships still identify them.
-const PURGE: [(&str, &str); 35] = [
+const PURGE: [(&str, &str); 36] = [
     ("audit_events", "DELETE FROM audit_events WHERE organisation_id = $1"),
     ("side_effects", "DELETE FROM side_effects WHERE run_id IN (SELECT id FROM runs WHERE organisation_id = $1)"),
     ("api_call_stats", "DELETE FROM api_call_stats WHERE run_id IN (SELECT id FROM runs WHERE organisation_id = $1)"),
@@ -132,6 +142,7 @@ const PURGE: [(&str, &str); 35] = [
     ("oauth_access_tokens", "DELETE FROM oauth_access_tokens WHERE organisation_id = $1"),
     ("oauth_refresh_tokens", "DELETE FROM oauth_refresh_tokens WHERE organisation_id = $1"),
     ("oauth_grants", "DELETE FROM oauth_grants WHERE organisation_id = $1"),
+    ("cost_daily", "DELETE FROM cost_daily WHERE organisation_id = $1"),
     ("connection_credentials", "DELETE FROM connection_credentials WHERE connection_id IN \
       (SELECT id FROM connections WHERE organisation_id = $1)"),
     ("connection_verifications", "DELETE FROM connection_verifications WHERE connection_id IN \
@@ -170,11 +181,10 @@ impl<C: Conn> RetentionRepo for Pg<C> {
         cutoff: DateTime<Utc>,
         batch: u64,
     ) -> RepoResult<u64> {
-        let (t, col) = (table.name(), expiry_column(table));
+        let (t, due) = (table.name(), expired(table));
         // tenancy: global TTL; every organisation's expired rows go, by age alone.
-        let sql = format!(
-            "DELETE FROM {t} WHERE ctid IN (SELECT ctid FROM {t} WHERE {col} < $1 LIMIT $2)"
-        );
+        let sql =
+            format!("DELETE FROM {t} WHERE ctid IN (SELECT ctid FROM {t} WHERE {due} LIMIT $2)");
         let done = self
             .db()
             .execute_raw(stmt(&sql, vec![cutoff.into(), (batch as i64).into()]))

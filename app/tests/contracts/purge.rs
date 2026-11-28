@@ -264,6 +264,7 @@ async fn seed_everything(seed: &super::PgSeed, o: Uuid, client: &str, email: &st
          INSERT INTO api_calls_raw (id, run_id, provider, service, action, outcome) VALUES (gen_random_uuid(), '{run}', 'fake', 's', 'a', 'ok');
          INSERT INTO resources (id, organisation_id, connection_id, kind, identity) VALUES ('{res}', '{o}', '{c}', 'k', '{res}');
          INSERT INTO resource_history (id, resource_id, run_id) VALUES (gen_random_uuid(), '{res}', '{run}');
+         INSERT INTO cost_daily (organisation_id, connection_id, day, service, amount_usd) VALUES ('{o}', '{c}', current_date, 'ec2', 1.5);
          INSERT INTO findings (id, organisation_id, connection_id, check_id, resource_identity, severity, title, first_seen_run_id, last_seen_run_id)
            VALUES ('{fin}', '{o}', '{c}', '01', '{res}', 'low', 't', '{run}', '{run}');
          INSERT INTO finding_events (id, finding_id, run_id, event_type) VALUES (gen_random_uuid(), '{fin}', '{run}', 'opened');
@@ -356,7 +357,7 @@ async fn purge_removes_every_row_of_old_deleted_org() {
     let st = sea_orm::Statement::from_string(sea_orm::DbBackend::Postgres, cols);
     let tables = seed.raw().query_all_raw(st).await.unwrap();
     // A new tenant table fails here: add it to the purge (`PURGE`) and to `seed_everything`.
-    assert_eq!(tables.len(), 24);
+    assert_eq!(tables.len(), 25);
     for r in tables {
         let t: String = r.try_get("", "t").unwrap();
         let q = format!("SELECT count(*) AS n FROM {t} WHERE organisation_id = '{doomed}'");

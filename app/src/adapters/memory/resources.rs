@@ -1,9 +1,12 @@
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use opsagent_core::{
     repo::{Cursor, PageOf, PageRequest, RepoResult},
-    resource::{CallCount, Provider, Resource, ResourceFilter, ResourceRow, ResourcesRepo},
+    resource::{
+        CallCount, CostDay, Provider, Resource, ResourceFilter, ResourceRow, ResourcesRepo,
+    },
 };
+use rust_decimal::RoundingStrategy;
 use uuid::Uuid;
 
 use super::{page, MemState, MemStore};
@@ -225,5 +228,52 @@ impl ResourcesRepo for MemStore {
         _calls: &[CallCount],
     ) -> RepoResult<()> {
         Ok(())
+    }
+
+    async fn replace_costs(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        rows: &[CostDay],
+        _now: DateTime<Utc>,
+    ) -> RepoResult<()> {
+        let mut s = self.state();
+        for r in rows {
+            // As numeric(14,4): half away from zero to four decimals, shown with all four.
+            let rounding = RoundingStrategy::MidpointAwayFromZero;
+            let mut amount_usd = r.amount_usd.round_dp_with_strategy(4, rounding);
+            amount_usd.rescale(4);
+            let row = CostDay {
+                amount_usd,
+                ..r.clone()
+            };
+            let key = (organisation_id, connection_id, r.day, &r.service);
+            let found = s
+                .costs
+                .iter_mut()
+                .find(|(o, c, d)| (*o, *c, d.day, &d.service) == key);
+            match found {
+                Some(m) => m.2 = row,
+                None => s.costs.push((organisation_id, connection_id, row)),
+            }
+        }
+        Ok(())
+    }
+
+    async fn costs(
+        &self,
+        organisation_id: Uuid,
+        connection_id: Uuid,
+        since: NaiveDate,
+    ) -> RepoResult<Vec<CostDay>> {
+        let mut out: Vec<CostDay> = self
+            .state()
+            .costs
+            .iter()
+            .filter(|(o, c, d)| *o == organisation_id && *c == connection_id && d.day >= since)
+            .map(|m| m.2.clone())
+            .collect();
+        out.sort_by(|a, b| (a.day, &a.service).cmp(&(b.day, &b.service)));
+        Ok(out)
     }
 }

@@ -602,6 +602,156 @@
   ],
   "cost_daily": [
     {
+      "date": "2026-08-02",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-03",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-04",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-05",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-06",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-07",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-08",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-09",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-10",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-11",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-12",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-13",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-14",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-15",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-16",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-17",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-18",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-19",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-20",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-21",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-22",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-23",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-24",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-25",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-26",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-27",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-28",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-29",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-30",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
+      "date": "2026-08-31",
+      "service": "ec2",
+      "amount_usd": 80.0
+    },
+    {
       "date": "2026-09-01",
       "service": "ec2",
       "amount_usd": 100.0

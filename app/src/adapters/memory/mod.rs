@@ -164,6 +164,8 @@ pub struct MemState {
     effects_done_at: HashMap<(Uuid, String), DateTime<Utc>>,
     findings: Vec<findings::FindingRow>,
     resources: Vec<resources::ResourceMem>,
+    /// `(organisation_id, connection_id, spend)` rows of `cost_daily`.
+    costs: Vec<(Uuid, Uuid, opsagent_core::resource::CostDay)>,
     recipients: Vec<MemRecipient>,
     suppressions: Vec<SuppressionRow>,
     integrations: Vec<Integration>,

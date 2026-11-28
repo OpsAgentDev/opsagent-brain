@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use opsagent_brain::actions::uow::Repos;
 use opsagent_core::{
     org::NewOrganisation,
     repo::PageRequest,
-    resource::{Provider, Resource, ResourceFilter, ResourceKind},
+    resource::{CostDay, Provider, Resource, ResourceFilter, ResourceKind},
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -141,5 +141,44 @@ contract_suite! {
         let exact = |i: &str| ResourceFilter { identity: Some(i.into()), ..Default::default() };
         assert_eq!(found(exact("snap-public")).await, ["snap-public"]);
         assert!(found(exact("snap")).await.is_empty(), "no substring match");
+    }
+
+    async fn costs_upsert_by_day_and_service_and_stay_in_their_tenant(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let day = |n| NaiveDate::from_ymd_opt(2026, 10, n).unwrap();
+        let cost = |n, service: &str, usd: &str| CostDay {
+            day: day(n),
+            service: service.into(),
+            amount_usd: usd.parse().unwrap(),
+        };
+        let first = [cost(1, "ec2", "1.5"), cost(2, "ec2", "2"), cost(2, "s3", "0.00005")];
+        s.resources().replace_costs(org, conn, &first, now()).await.unwrap();
+        // A re-run restates the same keys; a revised amount overwrites.
+        let again = [cost(2, "ec2", "2.25"), cost(3, "ec2", "3")];
+        s.resources().replace_costs(org, conn, &again, now()).await.unwrap();
+        s.resources().replace_costs(org, conn, &again, now()).await.unwrap();
+        let got = s.resources().costs(org, conn, day(1)).await.unwrap();
+        // Four decimals, half away from zero.
+        let want = [cost(1, "ec2", "1.5"), cost(2, "ec2", "2.25"), cost(2, "s3", "0.0001"), cost(3, "ec2", "3")];
+        assert_eq!(got, want);
+        let shown: Vec<_> = got.iter().map(|c| c.amount_usd.to_string()).collect();
+        assert_eq!(shown, ["1.5000", "2.2500", "0.0001", "3.0000"]);
+        assert_eq!(s.resources().costs(org, conn, day(3)).await.unwrap(), [cost(3, "ec2", "3")]);
+        // Another organisation, or another connection, sees none of it.
+        let (other, other_conn) = world(s, seed).await;
+        assert!(s.resources().costs(other, conn, day(1)).await.unwrap().is_empty());
+        assert!(s.resources().costs(org, other_conn, day(1)).await.unwrap().is_empty());
+        assert!(s.resources().costs(other, other_conn, day(1)).await.unwrap().is_empty());
+        s.resources().replace_costs(org, conn, &[], now()).await.unwrap();
+    }
+
+    async fn costs_beyond_one_insert_are_all_stored(s, seed) {
+        let (org, conn) = world(s, seed).await;
+        let day = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+        let rows: Vec<CostDay> = (0..1200)
+            .map(|i| CostDay { day, service: format!("svc-{i:04}"), amount_usd: i.into() })
+            .collect();
+        s.resources().replace_costs(org, conn, &rows, now()).await.unwrap();
+        assert_eq!(s.resources().costs(org, conn, day).await.unwrap(), rows);
     }
 }

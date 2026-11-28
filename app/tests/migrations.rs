@@ -209,11 +209,11 @@ async fn jobs_table_has_spec_columns_and_both_partial_indexes() {
     exec(&db, free).await.unwrap();
     exec(&db, free).await.unwrap();
 
-    // Eighteen steps: jobs is followed by the oauth, magic-link return_to, waitlist, contact,
+    // Nineteen steps: jobs is followed by the oauth, magic-link return_to, waitlist, contact,
     // sign-in, urgent-alerts, resource-history index, retention, audit-purge, billing,
     // dashboard-ai, ai-connections, human-reviews, human-review-payment, magic-link-name,
     // findings-list-order, cancel-at-period-end and waitlist-announced migrations, and the later ones.
-    Migrator::down(&db, Some(29)).await.unwrap();
+    Migrator::down(&db, Some(30)).await.unwrap();
     assert!(exec(&db, "SELECT 1 FROM jobs").await.is_err());
     Migrator::up(&db, None).await.unwrap();
 }
@@ -226,7 +226,7 @@ async fn ai_connections_migration_keeps_key_as_primary_and_moves_ceiling() {
     let db = migration::sea_orm::Database::connect(&url).await.unwrap();
     Migrator::fresh(&db).await.unwrap();
     // Back to before 000023, with a key that carries a ceiling.
-    Migrator::down(&db, Some(17)).await.unwrap();
+    Migrator::down(&db, Some(18)).await.unwrap();
     let org = "'00000000-0000-0000-0000-0000000000c1'";
     exec(
         &db,
