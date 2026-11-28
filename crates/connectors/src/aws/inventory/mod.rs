@@ -414,6 +414,9 @@ pub async fn inventory(
     out.record("iam", "global", users);
     let found = gate(roles && want("iam_role"), iam_roles(&iam, &global)).await;
     out.record("iam_role", "global", found);
+    if want("iam_role") && !roles {
+        out.result.skipped.push("iam_role".into());
+    }
     if want("s3") {
         let mut errs = vec![];
         let r = s3_buckets(session, &global, &mut errs).await;

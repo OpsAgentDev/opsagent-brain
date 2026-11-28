@@ -419,9 +419,11 @@ fn older_versions_allow_every_connector_call_but_the_simulated_reads() {
             v == "3" || v == "4" || v == "10",
             "{v}"
         );
-        // Version 1 held iam:ListRoles already; versions 2 and 3 do not.
-        assert_eq!(reads_iam_roles(v), v == "1" || v == "4" || v == "10", "{v}");
+        // Version 1 held iam:ListRoles, but its stack may since have been updated to 2 or 3
+        // while the recorded version stayed "1": only 4 and later are read without asking.
+        assert_eq!(reads_iam_roles(v), v == "4" || v == "10", "{v}");
     }
+    assert!(!reads_iam_roles(""), "a missing recorded version is asked");
 }
 
 /// What the second promise review found in version 1 (MVP live list 11.1, 11.2).

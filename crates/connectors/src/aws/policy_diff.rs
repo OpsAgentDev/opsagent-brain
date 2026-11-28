@@ -35,13 +35,12 @@ pub fn reads_cluster_snapshot_sharing(template_version: &str) -> bool {
     template_version.parse::<u32>().is_ok_and(|v| v >= 3)
 }
 
-/// First version whose role holds `iam:ListRoles` (the trust policies check 14 reads). Version
-/// 1 held it too; versions 2 and 3 did not, so a connection made with one of them is asked by
-/// simulation instead (`simulate::allows`), never by a call that may be denied.
+/// First version whose role is known to hold `iam:ListRoles` (the trust policies check 14
+/// reads). Version 1 held it too, but a stack updated to version 2 or 3 keeps the recorded "1"
+/// and lost it, so every older or unrecorded version is asked by simulation instead
+/// (`simulate::allows`), never by a call that may be denied.
 pub fn reads_iam_roles(template_version: &str) -> bool {
-    template_version
-        .parse::<u32>()
-        .is_ok_and(|v| v == 1 || v >= 4)
+    template_version.parse::<u32>().is_ok_and(|v| v >= 4)
 }
 
 fn template_yaml(version: &str) -> Result<&'static str> {

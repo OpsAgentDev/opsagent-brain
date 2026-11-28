@@ -41,38 +41,122 @@ fn page(roles: Vec<Role>, marker: Option<&'static str>) -> impl Fn() -> ListRole
     }
 }
 
+/// A document `decode_doc` cannot read: the URL-decoded text is not JSON.
+fn broken_role(name: &str) -> Role {
+    Role::builder()
+        .path("/")
+        .role_name(name)
+        .role_id("AROA")
+        .arn(format!("arn:aws:iam::123456789012:role/{name}"))
+        .create_date(aws_smithy_types::DateTime::from_secs(0))
+        .assume_role_policy_document("%7Bnot-json")
+        .build()
+        .unwrap()
+}
+
+/// One page, or two when `second` is given (the first points at it with a marker).
+fn list(first: Vec<Role>, second: Option<Vec<Role>>) -> aws_sdk_iam::Client {
+    let one = mock!(aws_sdk_iam::Client::list_roles)
+        .then_output(page(first, second.is_some().then_some("m1")));
+    let Some(second) = second else {
+        return mock_client!(aws_sdk_iam, RuleMode::Sequential, [&one]);
+    };
+    let two = mock!(aws_sdk_iam::Client::list_roles)
+        .match_requests(|r| r.marker() == Some("m1"))
+        .then_output(page(second, None));
+    mock_client!(aws_sdk_iam, RuleMode::Sequential, [&one, &two])
+}
+
 #[tokio::test]
-async fn roles_are_paged_decoded_and_the_two_private_kinds_skipped() {
-    let first = mock!(aws_sdk_iam::Client::list_roles).then_output(page(
+async fn roles_are_paged_and_decoded_and_none_is_skipped_by_its_name() {
+    let iam = list(
         vec![
             role("legacy-open", "/", OPEN),
-            role(
-                "AWSServiceRoleForX",
-                "/aws-service-role/x.amazonaws.com/",
-                OPEN,
-            ),
+            role("lookalike", "/aws-service-role/x.amazonaws.com/", OPEN),
         ],
-        Some("m1"),
-    ));
-    let second = mock!(aws_sdk_iam::Client::list_roles)
-        .match_requests(|r| r.marker() == Some("m1"))
-        .then_output(page(
-            vec![
-                role("OpsAgentReadRole-abcd1234", "/", "{}"),
-                role("deploy", "/ci/", OPEN),
-            ],
-            None,
-        ));
-    let iam = mock_client!(aws_sdk_iam, RuleMode::Sequential, [&first, &second]);
+        Some(vec![
+            role("OpsAgentReadRole-lookalike", "/", OPEN),
+            role("deploy", "/ci/", OPEN),
+        ]),
+    );
     let r = iam_roles(&iam, &T).await.unwrap();
     let names: Vec<_> = r.iter().map(|r| r.name.as_str()).collect();
-    assert_eq!(names, ["legacy-open", "deploy"]);
-    assert_eq!(r[1].identity, "arn:aws:iam::123456789012:role/ci/deploy");
     assert_eq!(
-        r[0].attributes,
-        json!({"service": "iam_role", "path": "/", "trust_policy": serde_json::from_str::<serde_json::Value>(OPEN).unwrap()})
+        names,
+        [
+            "legacy-open",
+            "lookalike",
+            "OpsAgentReadRole-lookalike",
+            "deploy"
+        ]
     );
-    assert_eq!(r[1].attributes["path"], "/ci/");
+    assert_eq!(r[3].identity, "arn:aws:iam::123456789012:role/ci/deploy");
+    assert_eq!(r[3].attributes["path"], "/ci/");
+    assert_eq!(r[0].attributes["service"], "iam_role");
+    // Only the parts a check reads are kept: no Version, no Sid.
+    assert_eq!(
+        r[0].attributes["trust_policy"],
+        json!({"Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Principal": {"AWS": "*"}}]})
+    );
+}
+
+/// A real-looking ExternalId, as in OpsAgent's own role.
+const SECRET: &str = "ext-9f3a7c1e5b2d4a60";
+
+fn trust_with(condition: serde_json::Value) -> String {
+    json!({"Version": "2012-10-17", "Statement": [{
+        "Sid": "S1", "Effect": "Allow", "Action": "sts:AssumeRole",
+        "NotAction": "s3:GetObject",
+        "Principal": {"AWS": "arn:aws:iam::999999999999:role/opsagent-outbound"},
+        "Resource": "*", "Condition": condition
+    }]})
+    .to_string()
+}
+
+#[tokio::test]
+async fn an_external_id_is_never_stored_but_wildcards_and_empties_stay() {
+    let secret_doc = trust_with(json!({
+        "StringEquals": {"sts:ExternalId": SECRET, "aws:PrincipalOrgID": "o-1"},
+        "ForAnyValue:StringLike": {"STS:EXTERNALID": [SECRET, "*", ""]},
+        "StringNotEquals": {"sts:ExternalId": SECRET},
+        "StringLike": {"sts:ExternalId": "*"},
+        "Null": {"sts:ExternalId": "false"},
+    }));
+    let iam = list(
+        vec![role("OpsAgentReadRole-abcd1234", "/", &secret_doc)],
+        None,
+    );
+    let r = iam_roles(&iam, &T).await.unwrap();
+    let stored = serde_json::to_string(&r).unwrap();
+    assert!(!stored.contains(SECRET), "{stored}");
+    let c = &r[0].attributes["trust_policy"]["Statement"][0]["Condition"];
+    assert_eq!(c["StringEquals"]["sts:ExternalId"], "[redacted]");
+    assert_eq!(c["StringEquals"]["aws:PrincipalOrgID"], "o-1");
+    assert_eq!(
+        c["ForAnyValue:StringLike"]["STS:EXTERNALID"],
+        json!(["[redacted]", "*", ""])
+    );
+    assert_eq!(c["StringNotEquals"]["sts:ExternalId"], "[redacted]");
+    assert_eq!(c["StringLike"]["sts:ExternalId"], "*");
+    // Any operator: even one that never counts as an external id is redacted.
+    assert_eq!(c["Null"]["sts:ExternalId"], "[redacted]");
+    let st = &r[0].attributes["trust_policy"]["Statement"][0];
+    assert!(st.get("Sid").is_none() && st.get("Resource").is_none());
+    assert_eq!(st["NotAction"], "s3:GetObject");
+}
+
+/// One broken document must not fail the whole read: that role is kept with no policy.
+#[tokio::test]
+async fn an_undecodable_trust_policy_is_stored_as_null_and_the_rest_are_read() {
+    let iam = list(
+        vec![broken_role("broken"), role("legacy-open", "/", OPEN)],
+        None,
+    );
+    let r = iam_roles(&iam, &T).await.unwrap();
+    assert_eq!(r.len(), 2);
+    assert!(r[0].attributes["trust_policy"].is_null());
+    assert_eq!(r[0].name, "broken");
+    assert!(r[1].attributes["trust_policy"]["Statement"].is_array());
 }
 
 /// IAM answers `code` (None: an empty success) and counts its requests; EC2 answers an empty
@@ -149,6 +233,36 @@ async fn roles_off_makes_no_call_and_no_partial_error() {
     .unwrap();
     assert!(r.partial_errors.is_empty(), "{:?}", r.partial_errors);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+    // The scan is told the read was wanted but not made, so findings from an earlier read stay.
+    assert_eq!(r.skipped, ["iam_role"]);
+    // Not wanted (a watch scan), or made: nothing skipped.
+    let ebs_only = Scope {
+        regions: vec!["eu-west-1".into()],
+        services: vec!["ebs_snapshot".into()],
+    };
+    let r = inventory(
+        &session(&calls, None),
+        "aws",
+        "123456789012",
+        &ebs_only,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(r.skipped.is_empty());
+    let r = inventory(
+        &session(&calls, None),
+        "aws",
+        "123456789012",
+        &scope(),
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(r.skipped.is_empty());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

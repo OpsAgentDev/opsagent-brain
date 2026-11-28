@@ -146,3 +146,15 @@ fn an_unavailable_roles_read_is_silent() {
     parts.unavailable.insert("iam_role".into());
     assert!(run_with(&parts, &TrustPolicies, &rs, &[]).is_empty());
 }
+
+#[test]
+fn a_finding_never_quotes_a_condition_value() {
+    let secret = "ext-9f3a7c1e5b2d4a60";
+    let cond = json!({"Null": {"sts:ExternalId": secret}});
+    let mut st = allow(json!({"AWS":"444455556666"}));
+    st["Condition"] = cond;
+    let d = run(&TrustPolicies, &[role(&arn("v"), policy(vec![st]))], &[]);
+    assert_eq!(d.len(), 1);
+    let all = serde_json::to_string(&d).unwrap();
+    assert!(!all.contains(secret), "{all}");
+}

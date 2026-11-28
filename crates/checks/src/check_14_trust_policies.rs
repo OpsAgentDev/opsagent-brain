@@ -9,6 +9,8 @@ use std::collections::BTreeSet;
 /// `tests/fixtures/trust-policy-cases.json` pins the cases both must agree on.
 pub struct TrustPolicies;
 
+// shortcut: a role whose trust policy could not be decoded is stored with a null policy and is
+// skipped here, not reported; upgrade to an info finding if customers ask which roles went unread.
 // shortcut: federated principals (GitHub OIDC without a `sub` condition), `NotPrincipal` and
 // the customer's other connected accounts are not judged (spec trust-policy-check.md section 5).
 // shortcut: one finding per variant per role, not per statement: the finding key has no
@@ -98,7 +100,7 @@ impl Trust {
         let own = account_of(&r.identity);
         let mut t = Self::default();
         for st in list(&r.attributes["trust_policy"]["Statement"]) {
-            if st["Effect"] != "Allow" || !list(&st["Action"]).iter().any(|a| assumes(a)) {
+            if st["Effect"] != "Allow" || !allows_assume(st) {
                 continue;
             }
             let principals = match &st["Principal"] {
@@ -133,21 +135,66 @@ fn list(v: &Value) -> Vec<&Value> {
     }
 }
 
-fn assumes(action: &Value) -> bool {
-    action.as_str().is_some_and(|a| {
-        ["*", "sts:*", "sts:assumerole"]
+const ASSUME: &str = "sts:assumerole";
+
+/// True when the statement's `Action` patterns match `sts:AssumeRole`, or its `NotAction`
+/// patterns do not. `sts:AssumeRoleWithWebIdentity` and `...WithSAML` are other actions.
+fn allows_assume(st: &Value) -> bool {
+    let hit = |v: &Value| {
+        list(v)
             .iter()
-            .any(|x| a.eq_ignore_ascii_case(x))
-    })
+            .any(|a| a.as_str().is_some_and(|p| glob(p, ASSUME)))
+    };
+    if st.get("NotAction").is_some() {
+        return !hit(&st["NotAction"]);
+    }
+    hit(&st["Action"])
 }
 
-/// Any condition operator on the `sts:ExternalId` key, in any case.
+/// IAM wildcard match, case-insensitive: `*` is any run, `?` is one character.
+fn glob(pattern: &str, text: &str) -> bool {
+    let (p, t) = (pattern.to_ascii_lowercase().into_bytes(), text.as_bytes());
+    let (mut pi, mut ti, mut star) = (0, 0, None);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == b'?' || p[pi] == t[ti]) {
+            (pi, ti) = (pi + 1, ti + 1);
+        } else if pi < p.len() && p[pi] == b'*' {
+            (star, pi) = (Some((pi, ti)), pi + 1);
+        } else if let Some((sp, st)) = star {
+            (pi, ti, star) = (sp + 1, st + 1, Some((sp, st + 1)));
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|b| *b == b'*')
+}
+
+/// A condition that makes the caller present a fixed `sts:ExternalId`: a positive operator
+/// (`StringEquals`, `StringEqualsIgnoreCase` or `StringLike`, optionally under `ForAnyValue:`
+/// or `ForAllValues:`) on that key with only non-empty literal values. `Null`, every `Not*`
+/// operator, `...IfExists` and a wildcard or empty value let a caller in without one.
 fn has_external_id(cond: &Value) -> bool {
+    let positive = |op: &str| {
+        let op = op.to_ascii_lowercase();
+        let op = op
+            .strip_prefix("foranyvalue:")
+            .or_else(|| op.strip_prefix("forallvalues:"))
+            .unwrap_or(&op);
+        ["stringequals", "stringequalsignorecase", "stringlike"].contains(&op)
+    };
+    let literal = |v: &Value| {
+        v.as_str()
+            .is_some_and(|s| !s.is_empty() && !s.contains(['*', '?']))
+    };
     cond.as_object().is_some_and(|ops| {
-        ops.values().any(|op| {
-            op.as_object().is_some_and(|keys| {
-                keys.keys()
-                    .any(|k| k.eq_ignore_ascii_case("sts:externalid"))
+        ops.iter().filter(|(op, _)| positive(op)).any(|(_, keys)| {
+            keys.as_object().is_some_and(|keys| {
+                keys.iter().any(|(k, v)| {
+                    let values = list(v);
+                    k.eq_ignore_ascii_case("sts:externalid")
+                        && !values.is_empty()
+                        && values.into_iter().all(literal)
+                })
             })
         })
     })

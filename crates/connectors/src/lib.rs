@@ -140,6 +140,10 @@ pub struct ServiceError {
 pub struct InventoryResult {
     pub resources: Vec<Resource>,
     pub partial_errors: Vec<ServiceError>,
+    /// Services the scope asked for that were not read because the role is not known to hold
+    /// the permission (a role made before the template that added it). Not an error: the scan
+    /// must still not resolve what an earlier read found.
+    pub skipped: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
