@@ -54,9 +54,9 @@ async fn insecure_exact_set() {
 
 #[tokio::test]
 async fn clean_and_noisy_are_empty() {
-    for account in ["clean", "noisy"] {
-        let (r, c) = load(account).await;
-        assert!(run(&TrustPolicies, &r, &c).is_empty(), "{account}");
+    for fixture in ["clean", "noisy"] {
+        let (r, c) = load(fixture).await;
+        assert!(run(&TrustPolicies, &r, &c).is_empty(), "{fixture} fixture has findings");
     }
 }
 
@@ -156,5 +156,5 @@ fn a_finding_never_quotes_a_condition_value() {
     let d = run(&TrustPolicies, &[role(&arn("v"), policy(vec![st]))], &[]);
     assert_eq!(d.len(), 1);
     let all = serde_json::to_string(&d).unwrap();
-    assert!(!all.contains(secret), "{all}");
+    assert!(!all.contains(secret), "a finding quotes the condition value");
 }
