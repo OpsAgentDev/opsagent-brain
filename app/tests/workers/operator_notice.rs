@@ -45,6 +45,16 @@ async fn dead_job(ctx: &TestApp, kind: &str, locked: DateTime<Utc>) {
     .await;
 }
 
+async fn skipped_run(ctx: &TestApp, job: &str, finished: DateTime<Utc>) {
+    sql(
+        ctx,
+        "INSERT INTO runs (id, job_type, scheduled_at, status, finished_at, partial_reason) \
+         VALUES ($1, $2, $3, 'skipped', $3, 'billing')",
+        vec![Uuid::new_v4().into(), job.into(), finished.into()],
+    )
+    .await;
+}
+
 fn slot(hours_ago: i64) -> DateTime<Utc> {
     (Utc::now() - Duration::hours(hours_ago))
         .duration_trunc(Duration::seconds(1))
@@ -102,6 +112,35 @@ async fn quiet_night_mails_counts_only_the_last_day_and_mails_once() {
             .unwrap();
         assert_eq!(status, RunStatus::Done);
         assert_eq!(mail.sent().len(), 2);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn reports_scans_skipped_for_billing_instead_of_a_quiet_night() {
+    serve(|_req, ctx| async move {
+        let mail = prepare(&ctx);
+        let now = slot(0);
+        // Outside the window: not this night's news.
+        skipped_run(&ctx, "watch_scan", now - Duration::hours(30)).await;
+        skipped_run(&ctx, "full_scan", now - Duration::hours(1)).await;
+        skipped_run(&ctx, "watch_scan", now - Duration::hours(1)).await;
+        let run = night(&ctx, now).await;
+        perform(&ctx, JobKind::OperatorNotice, run).await.unwrap();
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            sent[0].subject,
+            "OpsAgent: nightly notice, scans skipped for billing"
+        );
+        assert!(
+            sent[0]
+                .text
+                .contains("Scans skipped for billing: 2 (full_scan 1, watch_scan 1)"),
+            "{}",
+            sent[0].text
+        );
     })
     .await;
 }

@@ -1,7 +1,7 @@
 //! The nightly operator notice, mailed to the contact address once every night: new
 //! sign-ups and waitlist entries over the last 24 hours, then dead jobs and failed runs,
-//! the mail sent on a day near the mail plan's daily stop, and the day's counted failures
-//! (`day_counts`). On a Monday (UTC) the mail opens with the week's marketing numbers. The subject says whether anything failed.
+//! the mail sent on a day near the mail plan's daily stop, the day's counted failures
+//! (`day_counts`), and scans skipped for billing (a read-only organisation). On a Monday (UTC) the mail opens with the week's marketing numbers. The subject says whether anything failed.
 //! Counts and job kinds only: no customer data.
 use std::sync::Arc;
 
@@ -30,6 +30,8 @@ use crate::{
 pub struct Failures {
     pub dead_jobs: Vec<(String, i64)>,
     pub failed_runs: Vec<(String, i64)>,
+    /// Runs skipped because the organisation has no plan (`partial_reason = billing`).
+    pub skipped_billing: Vec<(String, i64)>,
 }
 
 impl Failures {
@@ -103,10 +105,13 @@ impl OperatorNotice {
         let mut days: Vec<String> = mail_days.iter().map(|d| d.line()).collect();
         let counted = day_counts::lines(&*self.mail_counts, today).await;
         days.extend(counted.map_err(lerr)?);
-        let subject = if found.is_empty() && days.is_empty() {
-            "OpsAgent: nightly notice, nothing failed"
-        } else {
+        let subject = if !found.is_empty() || !days.is_empty() {
             "OpsAgent: failures in the last 24 hours"
+        } else if !found.skipped_billing.is_empty() {
+            // Not a failure, but scans did not run: it must not read as a quiet night.
+            "OpsAgent: nightly notice, scans skipped for billing"
+        } else {
+            "OpsAgent: nightly notice, nothing failed"
         };
         let mut text = body(&signups, &found, &days);
         if is_monday(run.key.scheduled_at) {
@@ -159,12 +164,13 @@ fn line(label: &str, by_kind: &[(String, i64)]) -> String {
 fn body(s: &Signups, f: &Failures, days: &[String]) -> String {
     let days: String = days.iter().map(|d| format!("{d}\n")).collect();
     format!(
-        "In the last 24 hours:\n\nSign-ups: {} users, {} organisations. Waitlist: {}.\n{}\n{}\n{days}\nDetails are in the logs.",
+        "In the last 24 hours:\n\nSign-ups: {} users, {} organisations. Waitlist: {}.\n{}\n{}\n{}\n{days}\nDetails are in the logs.",
         s.users,
         s.organisations,
         s.waitlist,
         line("Dead jobs", &f.dead_jobs),
-        line("Failed runs", &f.failed_runs)
+        line("Failed runs", &f.failed_runs),
+        line("Scans skipped for billing", &f.skipped_billing)
     )
 }
 
@@ -182,6 +188,7 @@ mod tests {
         let f = Failures {
             dead_jobs: vec![k("full_scan", 2), k("verify", 1)],
             failed_runs: vec![],
+            skipped_billing: vec![],
         };
         let text = body(&Signups::default(), &f, &[]);
         assert!(
@@ -189,8 +196,9 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Failed runs: 0 ()"), "{text}");
+        assert!(text.contains("Scans skipped for billing: 0 ()"), "{text}");
         assert!(
-            text.ends_with("Failed runs: 0 ()\n\nDetails are in the logs."),
+            text.ends_with("Scans skipped for billing: 0 ()\n\nDetails are in the logs."),
             "{text}"
         );
         assert!(
