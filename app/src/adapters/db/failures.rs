@@ -66,6 +66,7 @@ impl FailureCounts for PgFailures {
         let failed = "SELECT job_type AS kind, count(*) AS n FROM runs \
              WHERE status = 'failed' AND finished_at >= $1 GROUP BY job_type ORDER BY job_type";
         // A skipped run (no plan) is not a failure, but it means nothing was scanned.
+        // tenancy: the operator's aggregate across all organisations; counts and kinds only.
         let skipped = "SELECT job_type AS kind, count(*) AS n FROM runs \
              WHERE status = 'skipped' AND partial_reason = 'billing' AND finished_at >= $1 \
              GROUP BY job_type ORDER BY job_type";
