@@ -11,6 +11,8 @@ use crate::{
 
 /// Days of spend the page shows, ending on the newest stored day.
 const WINDOW_DAYS: u64 = 60;
+/// Most rows one response carries; past it the oldest days are dropped (newest kept).
+const MAX_ROWS: usize = 5000;
 /// Before every stored row: spend is kept 90 days (retention.md), so this reaches all of it.
 const BEFORE_ALL: NaiveDate = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
 /// Check 01 and the variant of its daily cost findings.
@@ -18,6 +20,18 @@ const COST_CHECK: &str = "01";
 const COST_VARIANT: &str = "cost_anomaly";
 /// Findings read per page; the loop follows the cursor to the end.
 const FINDINGS_PER_PAGE: u64 = 200;
+
+/// Keeps the newest `WINDOW_DAYS` days ending on `newest` (all of them when `None`), by day then
+/// service, and at most `MAX_ROWS` rows: the oldest days are dropped first.
+fn newest_window(days: &mut Vec<CostDay>, newest: Option<NaiveDate>) {
+    if let Some(n) = newest {
+        let from = n - Days::new(WINDOW_DAYS - 1);
+        days.retain(|d| d.day >= from);
+    }
+    if days.len() > MAX_ROWS {
+        days.drain(..days.len() - MAX_ROWS);
+    }
+}
 
 /// A day check 01 flagged as a cost spike, whatever its finding's status.
 #[derive(Debug, Clone, PartialEq)]
@@ -55,9 +69,8 @@ impl GetCosts {
             .costs(organisation_id, connection_id, BEFORE_ALL)
             .await?;
         let newest_day = days.iter().map(|d| d.day).max();
-        // No data: no window, so every flagged day shows.
         let from = newest_day.map(|n| n - Days::new(WINDOW_DAYS - 1));
-        days.retain(|d| from.is_none_or(|f| d.day >= f));
+        newest_window(&mut days, newest_day);
         let flagged = self.flagged(organisation_id, connection_id, from).await?;
         Ok(Costs {
             newest_day,
@@ -107,5 +120,40 @@ impl GetCosts {
         }
         out.sort_by_key(|f| f.day);
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cost(day: NaiveDate, service: usize) -> CostDay {
+        CostDay {
+            day,
+            service: format!("svc-{service:04}"),
+            amount_usd: 1.into(),
+        }
+    }
+
+    #[test]
+    fn keeps_the_newest_60_days_and_caps_the_rows_oldest_first() {
+        let newest = NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
+        let day = |back: u64| newest - Days::new(back);
+        // 70 days of 100 services: the window keeps 60 days (6000 rows), the cap 5000 of them.
+        let mut days: Vec<_> = (0..70)
+            .rev()
+            .flat_map(|back| (0..100).map(move |s| cost(day(back), s)))
+            .collect();
+        newest_window(&mut days, Some(newest));
+        assert_eq!(days.len(), MAX_ROWS);
+        assert_eq!(days.last().unwrap().day, newest);
+        assert_eq!(days[0].day, day(49));
+        // Under the cap, only the 60-day window applies.
+        let mut few: Vec<_> = (0..70).rev().map(|back| cost(day(back), 0)).collect();
+        newest_window(&mut few, Some(newest));
+        assert_eq!((few.len(), few[0].day), (60, day(59)));
+        let mut none = vec![];
+        newest_window(&mut none, None);
+        assert!(none.is_empty());
     }
 }

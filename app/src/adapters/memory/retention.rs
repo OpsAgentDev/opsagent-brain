@@ -8,6 +8,7 @@ use opsagent_core::{
     model::{AiProvider, Usage},
     oauth::ClientKind,
     repo::{RepoError, RepoResult},
+    resource::CostDay,
     retention::{DueOrg, PurgeCounts, RetentionRepo, TtlTable, ACCOUNT_DELETED, ORG_PURGED},
     run::{RunKey, RunStatus},
 };
@@ -85,8 +86,8 @@ fn usage_row() -> UsageRow {
 // shortcut: expiring rows are modelled apart from the typed rows (magic links, invites, ...),
 // as one expiry instant per row; model them on the typed rows if a test needs both.
 impl MemStore {
-    /// Adds one `table` row expiring (or observed) at `at`; chat sessions and AI usage are
-    /// typed rows of a made-up organisation.
+    /// Adds one `table` row expiring (or observed) at `at`; chat sessions, AI usage and spend
+    /// are typed rows of a made-up organisation.
     pub fn seed_expiring(&self, table: TtlTable, at: DateTime<Utc>) {
         let mut s = self.state();
         match table {
@@ -99,6 +100,15 @@ impl MemStore {
                 last_message_at: at,
             }),
             TtlTable::AiUsage => s.ai.usage.push((usage_row(), at)),
+            TtlTable::CostDaily => s.costs.push((
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                CostDay {
+                    day: at.date_naive(),
+                    service: "s".into(),
+                    amount_usd: Decimal::ONE,
+                },
+            )),
             _ => s.expiring.push((table, at)),
         }
     }
@@ -119,6 +129,7 @@ impl MemStore {
         match table {
             TtlTable::ChatSessions => s.chat_sessions.len() as u64,
             TtlTable::AiUsage => s.ai.usage.len() as u64,
+            TtlTable::CostDaily => s.costs.len() as u64,
             _ => s.expiring.iter().filter(|r| r.0 == table).count() as u64,
         }
     }
@@ -272,6 +283,16 @@ impl RetentionRepo for MemStore {
             TtlTable::AiUsage => {
                 s.ai.usage.retain(|&(_, at)| {
                     let drop = left > 0 && at < cutoff;
+                    left -= u64::from(drop);
+                    !drop
+                });
+                return Ok(batch - left);
+            }
+            TtlTable::CostDaily => {
+                // As Pg: a day expires when it is before the cutoff's UTC date.
+                let cutoff_day = cutoff.date_naive();
+                s.costs.retain(|(_, _, c)| {
+                    let drop = left > 0 && c.day < cutoff_day;
                     left -= u64::from(drop);
                     !drop
                 });

@@ -230,7 +230,7 @@ impl Seed for PgSeed {
             TtlTable::CostDaily => {
                 let c = self.connection(o).await;
                 ("INSERT INTO cost_daily (organisation_id, connection_id, day, service, amount_usd) \
-                  VALUES ($1, $2, $3::timestamptz::date, 's', 1)",
+                  VALUES ($1, $2, ($3::timestamptz AT TIME ZONE 'UTC')::date, 's', 1)",
                  vec![o.into(), c.into(), at.into()])
             }
             TtlTable::AiUsage => (

@@ -84,6 +84,24 @@ async fn series_is_the_newest_60_days_and_flags_the_spike() {
 
 #[tokio::test]
 #[serial]
+async fn a_credit_comes_back_negative() {
+    serve(|req, ctx| async move {
+        let (_, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;
+        let credit = "INSERT INTO cost_daily (organisation_id, connection_id, day, service, amount_usd) \
+                      SELECT organisation_id, id, '2026-09-30', 'Credit', -5 FROM connections WHERE id = $1";
+        exec(&ctx, credit, conn).await;
+        let res = req.get(&format!("/v1/orgs/{org}/connections/{conn}/costs")).await;
+        let body: Value = res.json();
+        assert_eq!(
+            body["days"],
+            json!([{"day": NEWEST_DAY, "service": "Credit", "amount_usd": "-5.0000"}])
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn no_spend_stored_is_an_empty_series() {
     serve(|req, ctx| async move {
         let (_, org, conn) = connected(&req, &ctx, "o@example.com", "noisy").await;

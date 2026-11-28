@@ -32,7 +32,8 @@ pub struct CostSeries {
     /// The newest day stored; null when no spend is stored yet (a new account, Cost Explorer
     /// not enabled, or a failed read).
     pub newest_day: Option<NaiveDate>,
-    /// Up to 60 days ending on `newest_day`, by day then service.
+    /// Up to 60 days ending on `newest_day`, by day then service; capped at 5000 rows, the
+    /// oldest days dropped first.
     pub days: Vec<CostDayOut>,
     /// Days within that window which check 01 flagged, by day.
     pub flagged: Vec<FlaggedDay>,

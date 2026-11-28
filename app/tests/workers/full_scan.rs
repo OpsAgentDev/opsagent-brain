@@ -777,15 +777,30 @@ fn noisy_costs() -> Vec<(String, String, String)> {
     rows.iter().map(row).collect()
 }
 
+/// `noisy` with a huge spend on two of the older 30 days (08-30 and 08-31): the 30-day
+/// baseline of check 01's spike on 09-28 reaches them, so check 01 loses that finding if it
+/// is fed all 60 days instead of the newest 30.
+fn noisy_with_old_spikes() -> FakeConnector {
+    fixture(|v| {
+        for i in [28, 29] {
+            v["cost_daily"][i]["amount_usd"] = json!(100_000.0);
+        }
+    })
+}
+
 #[tokio::test]
 #[serial]
 async fn a_full_scan_stores_60_days_once_per_key_and_check_01_still_sees_30() {
     serve(|req, ctx| async move {
         let conn = connection(&req, &ctx, "o@example.com").await;
-        scan(&ctx, conn, 0, &noisy()).await;
-        assert_eq!(cost_rows(&ctx, conn).await, noisy_costs());
+        scan(&ctx, conn, 0, &noisy_with_old_spikes()).await;
+        let mut stored = noisy_costs();
+        for i in [28, 29] {
+            stored[i].2 = "100000.0000".into();
+        }
+        assert_eq!(cost_rows(&ctx, conn).await, stored);
         // Check 01 reads the newest 30 days only: the same findings as `expected()`, which
-        // feeds the checks 30 days, and the one spike day in them.
+        // feeds the checks the fixture's newest 30 days, and the one spike day in them.
         let got: BTreeSet<_> = all_findings(&ctx, conn)
             .await
             .into_iter()
@@ -806,6 +821,27 @@ async fn a_full_scan_stores_60_days_once_per_key_and_check_01_still_sees_30() {
         scan(&ctx, conn, 1, &revised).await;
         let mut want = noisy_costs();
         want[59].2 = "123.5000".into();
+        assert_eq!(cost_rows(&ctx, conn).await, want);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn credits_are_stored_negative_and_an_oversized_amount_is_skipped_not_fatal() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        let odd = fixture(|v| {
+            v["cost_daily"][58]["amount_usd"] = json!(-12.5);
+            v["cost_daily"][59]["amount_usd"] = json!(1.0e12);
+        });
+        let run = scan(&ctx, conn, 0, &odd).await;
+        // The scan completes with its findings; only the oversized day has no row.
+        assert_eq!(run_row(&ctx, run).await.status, "done");
+        assert!(!all_findings(&ctx, conn).await.is_empty());
+        let mut want = noisy_costs();
+        want[58].2 = "-12.5000".into();
+        want.pop();
         assert_eq!(cost_rows(&ctx, conn).await, want);
     })
     .await;

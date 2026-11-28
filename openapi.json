@@ -6481,7 +6481,7 @@
             "items": {
               "$ref": "#/components/schemas/CostDayOut"
             },
-            "description": "Up to 60 days ending on `newest_day`, by day then service."
+            "description": "Up to 60 days ending on `newest_day`, by day then service; capped at 5000 rows, the\noldest days dropped first."
           },
           "flagged": {
             "type": "array",

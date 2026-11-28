@@ -8,7 +8,7 @@ use std::{
 use chrono::{DateTime, Duration, Utc};
 use opsagent_checks::{Check, CheckCtx, MetricStore};
 use opsagent_connectors::{
-    Connector, Credentials, InventoryResult, Result as ConnResult, Scope, SimulationResult,
+    Connector, CostRow, Credentials, InventoryResult, Result as ConnResult, Scope, SimulationResult,
 };
 use opsagent_core::run::RunKey;
 use opsagent_core::{
@@ -294,17 +294,9 @@ impl Scan<'_> {
             tracing::warn!(code, run = %run_id, "full_scan: cost unavailable");
             vec![]
         });
-        let cost = cost_window::for_checks(&read);
+        let cost = cost_window::for_checks(&read, now.date_naive());
         let tx = self.fs.uow.begin().await.map_err(lerr)?;
         tx.ledger().hold_fence(run_id, fence).await?;
-        if !watch && !cost_failed {
-            // Keyed upsert: a re-run finalize restates the same rows.
-            let stored = cost_window::to_stored(&read);
-            let put = tx
-                .resources()
-                .replace_costs(c.organisation_id, c.id, &stored, now);
-            put.await.map_err(lerr)?;
-        }
         if !partial && !watch {
             let gone = tx
                 .resources()
@@ -386,6 +378,9 @@ impl Scan<'_> {
                 .await?;
         }
         tx.commit().await.map_err(lerr)?;
+        if !watch && !cost_failed {
+            self.store_costs(fence, &read, now).await;
+        }
         // shortcut: a finalize re-run after a crash here counts again; the notice is a prompt to read the logs, not a ledger.
         let failed = stats["check_errors"].as_array().map_or(0, Vec::len);
         let counter = &self.fs.counter;
@@ -398,6 +393,29 @@ impl Scan<'_> {
 }
 
 impl Scan<'_> {
+    /// The Spend page's rows, upserted in their own fenced transaction after the scan's
+    /// findings are committed: the spend is optional, so a failed write is logged (no amounts,
+    /// no provider text) and the run still completes. Keyed, so a re-run restates the same rows.
+    async fn store_costs(&self, fence: u64, read: &[CostRow], now: DateTime<Utc>) {
+        let stored = cost_window::to_stored(read);
+        if stored.is_empty() {
+            return;
+        }
+        let c = self.c;
+        let write = async {
+            let tx = self.fs.uow.begin().await.map_err(lerr)?;
+            tx.ledger().hold_fence(self.run_id, fence).await?;
+            let put = tx
+                .resources()
+                .replace_costs(c.organisation_id, c.id, &stored, now);
+            put.await.map_err(lerr)?;
+            tx.commit().await.map_err(lerr)
+        };
+        if write.await.is_err() {
+            tracing::warn!(run = %self.run_id, "full_scan: spend not stored");
+        }
+    }
+
     /// The stats of this watch run's finalize when an earlier attempt already committed it
     /// (the worker died before its checkpoint). Its transaction forgot the run's resource
     /// history, so running it again would see no resource and resolve every watch finding:
