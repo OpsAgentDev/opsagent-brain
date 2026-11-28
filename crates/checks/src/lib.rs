@@ -9,6 +9,7 @@ pub mod check_07_gpu;
 pub mod check_11_encryption;
 pub mod check_12_hardening;
 pub mod check_13_credentials;
+pub mod check_14_trust_policies;
 pub mod ctx;
 
 pub use ctx::{Check, CheckCtx, MetricStore};
@@ -26,5 +27,6 @@ pub fn all() -> Vec<Box<dyn Check>> {
         Box::new(check_11_encryption::EncryptionAtRest),
         Box::new(check_12_hardening::InstanceHardening),
         Box::new(check_13_credentials::CredentialDepth),
+        Box::new(check_14_trust_policies::TrustPolicies),
     ]
 }

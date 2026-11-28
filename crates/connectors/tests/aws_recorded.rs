@@ -768,6 +768,7 @@ mod auth {
             "123456789012",
             &scope(&["us-east-1", "eu-west-1"]),
             true,
+            false,
         )
         .await
         .unwrap_err();
@@ -782,6 +783,7 @@ mod auth {
             "123456789012",
             &scope(&["us-east-1", "eu-west-1"]),
             true,
+            false,
         )
         .await
         .unwrap();
@@ -801,6 +803,7 @@ mod auth {
             "123456789012",
             &scope(&["eu-west-1"]),
             true,
+            false,
         )
         .await
         .unwrap_err();

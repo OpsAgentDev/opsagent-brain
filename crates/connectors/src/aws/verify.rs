@@ -13,7 +13,7 @@ pub const VERIFY_ACTIONS: &[&str] = &[
 ];
 
 /// IAM returns policy documents URL-encoded.
-fn decode_doc(doc: &str) -> Result<Value> {
+pub(crate) fn decode_doc(doc: &str) -> Result<Value> {
     let doc = urlencoding::decode(doc).map_err(|e| ConnectorError::Provider(e.to_string()))?;
     serde_json::from_str(&doc).map_err(|e| ConnectorError::Provider(e.to_string()))
 }

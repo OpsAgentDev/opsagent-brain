@@ -15,13 +15,17 @@ pub const TEMPLATE_V2_YAML: &str =
     include_str!("../../../../templates/aws/opsagent-read-role-v2.yaml");
 pub const TEMPLATE_V3_YAML: &str =
     include_str!("../../../../templates/aws/opsagent-read-role-v3.yaml");
+pub const TEMPLATE_V4_YAML: &str =
+    include_str!("../../../../templates/aws/opsagent-read-role-v4.yaml");
 
 /// The version new connections and Reconnect launch. Older ones stay valid for the
 /// connections made with them.
+// shortcut: stays "3" while v4 is embedded but not yet uploaded to the templates bucket
+// (spec trust-policy-check.md section 3); the next PR sets it to "4".
 pub const TEMPLATE_VERSION: &str = "3";
 
-/// Every version, oldest first; the last is `TEMPLATE_VERSION`.
-const VERSIONS: [&str; 3] = ["1", "2", "3"];
+/// Every version, oldest first; the last is the newest embedded, `TEMPLATE_VERSION` or ahead of it.
+const VERSIONS: [&str; 4] = ["1", "2", "3", "4"];
 
 /// First version whose role holds `rds:DescribeDBClusterSnapshotAttributes` (who an Aurora
 /// cluster snapshot is shared with). A connection made with an older one is asked by
@@ -31,11 +35,21 @@ pub fn reads_cluster_snapshot_sharing(template_version: &str) -> bool {
     template_version.parse::<u32>().is_ok_and(|v| v >= 3)
 }
 
+/// First version whose role holds `iam:ListRoles` (the trust policies check 14 reads). Version
+/// 1 held it too; versions 2 and 3 did not, so a connection made with one of them is asked by
+/// simulation instead (`simulate::allows`), never by a call that may be denied.
+pub fn reads_iam_roles(template_version: &str) -> bool {
+    template_version
+        .parse::<u32>()
+        .is_ok_and(|v| v == 1 || v >= 4)
+}
+
 fn template_yaml(version: &str) -> Result<&'static str> {
     match version {
         "1" => Ok(TEMPLATE_V1_YAML),
         "2" => Ok(TEMPLATE_V2_YAML),
         "3" => Ok(TEMPLATE_V3_YAML),
+        "4" => Ok(TEMPLATE_V4_YAML),
         other => Err(tpl_err(format!("unknown template version {other:?}"))),
     }
 }

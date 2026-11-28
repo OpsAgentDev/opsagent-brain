@@ -1,6 +1,6 @@
 use opsagent_connectors::aws::policy_diff::{
     render_template, substitute, RenderedRole, TemplateParams, TEMPLATE_V1_YAML, TEMPLATE_V2_YAML,
-    TEMPLATE_V3_YAML, TEMPLATE_VERSION,
+    TEMPLATE_V3_YAML, TEMPLATE_V4_YAML, TEMPLATE_VERSION,
 };
 use opsagent_connectors::ConnectorError;
 use serde_json::{json, Value};
@@ -9,11 +9,13 @@ use std::collections::BTreeSet;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../templates/aws");
 
-/// Every version stays in the repo and in the bucket; the last is the current one.
-const VERSIONS: [(&str, &str); 3] = [
+/// Every version stays in the repo and in the bucket; the last is the newest, which is the
+/// current one once it is in the bucket (`TEMPLATE_VERSION`).
+const VERSIONS: [(&str, &str); 4] = [
     ("1", TEMPLATE_V1_YAML),
     ("2", TEMPLATE_V2_YAML),
     ("3", TEMPLATE_V3_YAML),
+    ("4", TEMPLATE_V4_YAML),
 ];
 
 fn file(version: &str, ext: &str) -> String {
@@ -51,7 +53,7 @@ fn by_sid<'a>(s: &'a [Value], sid: &str) -> Option<&'a Value> {
 }
 
 #[test]
-fn embedded_templates_are_the_files_and_the_last_is_current() {
+fn embedded_templates_are_the_files_and_the_current_is_one_of_them() {
     for (version, embedded) in VERSIONS {
         assert_eq!(embedded, file(version, "yaml"), "v{version}");
         let y: serde_norway::Value = serde_norway::from_str(embedded).unwrap();
@@ -59,9 +61,9 @@ fn embedded_templates_are_the_files_and_the_last_is_current() {
         assert_eq!(p["Default"].as_str(), Some(version));
         assert_eq!(p["AllowedValues"][0].as_str(), Some(version));
     }
-    assert_eq!(VERSIONS[VERSIONS.len() - 1].0, TEMPLATE_VERSION);
+    assert!(VERSIONS.iter().any(|(v, _)| *v == TEMPLATE_VERSION));
     assert!(matches!(
-        render_template("4", &params(None)),
+        render_template("5", &params(None)),
         Err(ConnectorError::Template(_))
     ));
 }
@@ -87,9 +89,11 @@ fn versions_share_parameters_outputs_trust_and_denies() {
     for key in ["Parameters", "Conditions", "Outputs"] {
         assert_eq!(part(TEMPLATE_V1_YAML, key), part(TEMPLATE_V2_YAML, key));
         assert_eq!(part(TEMPLATE_V2_YAML, key), part(TEMPLATE_V3_YAML, key));
+        assert_eq!(part(TEMPLATE_V3_YAML, key), part(TEMPLATE_V4_YAML, key));
     }
     assert_eq!(rendered("1"), rendered("2"));
     assert_eq!(rendered("2"), rendered("3"));
+    assert_eq!(rendered("3"), rendered("4"));
 }
 
 #[test]
@@ -314,12 +318,16 @@ fn actions(s: &[Value], effect: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// The current template allows exactly the calls the connector can make: one missing breaks a
+/// The newest template allows exactly the calls the connector can make: one missing breaks a
 /// scan, one more is a grant nobody uses. A new SDK call is added to its session list
 /// (`aws::session_actions`) and to the template.
 #[test]
-fn current_template_allows_exactly_the_connector_calls() {
-    let s = stmts(&render_current(&params(None)).unwrap().policies);
+fn newest_template_allows_exactly_the_connector_calls() {
+    let s = stmts(
+        &render_template(VERSIONS[VERSIONS.len() - 1].0, &params(None))
+            .unwrap()
+            .policies,
+    );
     let (allow, deny) = (actions(&s, "Allow"), actions(&s, "Deny"));
     let used: BTreeSet<String> = opsagent_connectors::aws::session_actions()
         .map(str::to_owned)
@@ -372,19 +380,47 @@ fn version_3_adds_only_the_cluster_snapshot_sharing_read_to_version_2() {
     );
 }
 
-/// A connection made with version 1 or 2 keeps working: its role holds every call the
-/// connector makes for it, which is every call but the cluster snapshot sharing read (which it
-/// never makes without a simulation allowing it: `reads_cluster_snapshot_sharing`).
+/// The one read version 4 adds, and nothing else: every role's trust policy (check 14).
+const ROLE_TRUST: [&str; 1] = ["iam:ListRoles"];
+
 #[test]
-fn version_2_allows_every_connector_call_but_the_cluster_snapshot_sharing_read() {
-    let s = stmts(&render_template("2", &params(None)).unwrap().policies);
-    let allow = actions(&s, "Allow");
-    for a in opsagent_connectors::aws::session_actions() {
-        assert_eq!(allow.contains(a), !SNAPSHOT_SHARING.contains(&a), "{a}");
+fn version_4_adds_only_the_role_trust_read_to_version_3() {
+    let allow = |v: &str| {
+        actions(
+            &stmts(&render_template(v, &params(None)).unwrap().policies),
+            "Allow",
+        )
+    };
+    let (three, four) = (allow("3"), allow("4"));
+    assert!(three.is_subset(&four));
+    let added: Vec<_> = four.difference(&three).map(String::as_str).collect();
+    assert_eq!(added, ROLE_TRUST);
+}
+
+/// A connection made with version 2 or 3 keeps working: its role holds every call the connector
+/// makes for it, which is every call but the ones it never makes without a simulation allowing
+/// them (`reads_cluster_snapshot_sharing`, `reads_iam_roles`).
+#[test]
+fn older_versions_allow_every_connector_call_but_the_simulated_reads() {
+    for (v, missing) in [
+        ("2", vec![SNAPSHOT_SHARING[0], ROLE_TRUST[0]]),
+        ("3", vec![ROLE_TRUST[0]]),
+    ] {
+        let s = stmts(&render_template(v, &params(None)).unwrap().policies);
+        let allow = actions(&s, "Allow");
+        for a in opsagent_connectors::aws::session_actions() {
+            assert_eq!(allow.contains(a), !missing.contains(&a), "v{v} {a}");
+        }
     }
-    for v in ["1", "2", "3", "10"] {
-        let reads = opsagent_connectors::aws::policy_diff::reads_cluster_snapshot_sharing(v);
-        assert_eq!(reads, v == "3" || v == "10", "{v}");
+    use opsagent_connectors::aws::policy_diff::{reads_cluster_snapshot_sharing, reads_iam_roles};
+    for v in ["1", "2", "3", "4", "10"] {
+        assert_eq!(
+            reads_cluster_snapshot_sharing(v),
+            v == "3" || v == "4" || v == "10",
+            "{v}"
+        );
+        // Version 1 held iam:ListRoles already; versions 2 and 3 do not.
+        assert_eq!(reads_iam_roles(v), v == "1" || v == "4" || v == "10", "{v}");
     }
 }
 
