@@ -20,9 +20,7 @@ pub const TEMPLATE_V4_YAML: &str =
 
 /// The version new connections and Reconnect launch. Older ones stay valid for the
 /// connections made with them.
-// shortcut: stays "3" while v4 is embedded but not yet uploaded to the templates bucket
-// (spec trust-policy-check.md section 3); the next PR sets it to "4".
-pub const TEMPLATE_VERSION: &str = "3";
+pub const TEMPLATE_VERSION: &str = "4";
 
 /// Every version, oldest first; the last is the newest embedded, `TEMPLATE_VERSION` or ahead of it.
 const VERSIONS: [&str; 4] = ["1", "2", "3", "4"];
