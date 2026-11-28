@@ -242,7 +242,7 @@ async fn owner_connects_and_verifies_a_cloud_account_and_a_member_cannot() {
         let url = c["launch_url"].as_str().unwrap();
         assert!(url.starts_with("https://console.aws.amazon.com/cloudformation/home"));
         assert!(url.contains("param_ExternalId="), "{url}");
-        assert_eq!(c["template_version"], "3");
+        assert_eq!(c["template_version"], "4");
         assert!(c["next_step"]
             .as_str()
             .unwrap()
