@@ -165,11 +165,13 @@ impl Scan<'_> {
             _ => json!({}),
         };
         let down = match &inv {
-            Ok(inv) => inv
-                .partial_errors
-                .iter()
-                .map(|e| (e.service.clone(), e.region.clone()))
-                .collect(),
+            Ok(inv) => {
+                let failed = inv.partial_errors.iter();
+                let down = failed.map(|e| (e.service.clone(), e.region.clone()));
+                // A skipped read is unavailable too, but not a failure: the run stays whole.
+                let skipped = inv.skipped.iter().map(|s| (s.clone(), region.to_owned()));
+                down.chain(skipped).collect()
+            }
             Err(_) => BTreeSet::from([(svc.to_owned(), region.to_owned())]),
         };
         self.unavailable(&mut stats, down).await?;
@@ -355,7 +357,12 @@ impl Scan<'_> {
             if cost_failed && !check_errors.contains(&COST_CHECK) {
                 check_errors.push(COST_CHECK);
             }
-            finding_lifecycle::apply(&*tx, c, run_id, &drafts, &check_errors, now, partial)
+            let unresolved = [
+                &check_errors[..],
+                &finding_lifecycle::unread_checks(&unavailable),
+            ]
+            .concat();
+            finding_lifecycle::apply(&*tx, c, run_id, &drafts, &unresolved, now, partial)
                 .await
                 .map_err(lerr)?;
             let rows = tx.findings().posture_rows(c.organisation_id, c.id);

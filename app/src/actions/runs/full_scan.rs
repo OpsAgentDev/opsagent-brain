@@ -344,6 +344,9 @@ fn lease_key(connection_id: Uuid, job: JobKind) -> String {
     format!("lease:conn:{connection_id}:{}", job.as_str())
 }
 
+/// The region of the chunk standing for a service the connector skipped (`InventoryResult::skipped`).
+const SKIPPED_REGION: &str = "skipped";
+
 /// The chunk list (`service@region`, then `simulate` and `finalize`; a watch scan has no
 /// `simulate`) from one inventory call over the profile's services.
 /// shortcut: re-run on every (re)start, which doubles the AWS calls; upgrade to a declared
@@ -376,6 +379,8 @@ async fn discover(
                 .iter()
                 .map(|e| (e.service.as_str(), e.region.as_str())),
         )
+        // A skipped read gets a chunk of its own, so the run records it as unavailable.
+        .chain(inv.skipped.iter().map(|s| (s.as_str(), SKIPPED_REGION)))
         .map(|(s, r)| format!("{s}@{r}"))
         .collect::<BTreeSet<_>>()
         .into_iter()

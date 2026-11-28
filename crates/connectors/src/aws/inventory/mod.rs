@@ -6,6 +6,7 @@ mod backup;
 mod ec2;
 mod gpu;
 mod iam;
+mod iam_roles;
 mod logging;
 mod logs;
 mod rds;
@@ -19,6 +20,7 @@ pub use ec2::{
 };
 pub use gpu::{gpu_utilisation, training_jobs};
 pub use iam::{credential_report, credential_report_users, iam_users};
+pub use iam_roles::iam_roles;
 pub use logging::{cloudtrails, guardduty};
 pub use logs::log_groups;
 pub use rds::{rds_cluster_snapshots, rds_clusters, rds_instances, rds_snapshots};
@@ -55,6 +57,7 @@ pub const INVENTORY_ACTIONS: &[&str] = &[
     "iam:GenerateCredentialReport",
     "iam:GetCredentialReport",
     "iam:ListAttachedUserPolicies",
+    "iam:ListRoles",
     "iam:SimulatePrincipalPolicy",
     "cloudtrail:DescribeTrails",
     "cloudtrail:GetTrailStatus",
@@ -77,6 +80,11 @@ pub const INVENTORY_ACTIONS: &[&str] = &[
 /// True when `scope` includes the cluster snapshots, whose sharing needs the v3 read.
 pub fn reads_cluster_snapshots(scope: &Scope) -> bool {
     scope.services.is_empty() || scope.services.iter().any(|s| s == "rds_cluster_snapshot")
+}
+
+/// True when `scope` includes the role trust policies, which need the `iam:ListRoles` read.
+pub fn reads_roles(scope: &Scope) -> bool {
+    scope.services.is_empty() || scope.services.iter().any(|s| s == "iam_role")
 }
 
 /// Account and region a call is made in; builds ARNs and `Resource`s.
@@ -375,7 +383,8 @@ async fn protection_and_ml(
 }
 
 /// Full inventory for a session. `sharing`: the role may read who cluster snapshots are shared with
-/// (`policy_diff::reads_cluster_snapshot_sharing`). Per-service failures land in `partial_errors`; see
+/// (`policy_diff::reads_cluster_snapshot_sharing`). `roles`: it may list roles
+/// (`policy_diff::reads_iam_roles`). Per-service failures land in `partial_errors`; see
 /// `auth_failure` for when the whole call fails with `ConnectorError::Auth`.
 pub async fn inventory(
     session: &SdkConfig,
@@ -383,6 +392,7 @@ pub async fn inventory(
     account: &str,
     scope: &Scope,
     sharing: bool,
+    roles: bool,
 ) -> Result<InventoryResult> {
     let want = |s: &str| scope.services.is_empty() || scope.services.iter().any(|x| x == s);
     let mut out = Collect::default();
@@ -402,6 +412,11 @@ pub async fn inventory(
     let iam = aws_sdk_iam::Client::new(session);
     let users = gate(want("iam"), iam_users(&iam, &global)).await;
     out.record("iam", "global", users);
+    let found = gate(roles && want("iam_role"), iam_roles(&iam, &global)).await;
+    out.record("iam_role", "global", found);
+    if want("iam_role") && !roles {
+        out.result.skipped.push("iam_role".into());
+    }
     if want("s3") {
         let mut errs = vec![];
         let r = s3_buckets(session, &global, &mut errs).await;

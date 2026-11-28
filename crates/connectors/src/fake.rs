@@ -123,6 +123,7 @@ impl Connector for FakeConnector {
         Ok(InventoryResult {
             resources: out,
             partial_errors: vec![],
+            skipped: vec![],
         })
     }
 

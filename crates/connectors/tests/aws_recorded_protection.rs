@@ -937,7 +937,7 @@ async fn failed_coverage_read_in_ebs_chunk_is_a_backup_partial_error() {
         regions: vec!["eu-west-1".into()],
         services: vec!["ebs".into()],
     };
-    let r = inventory(&session, "aws", "123456789012", &scope, true)
+    let r = inventory(&session, "aws", "123456789012", &scope, true, false)
         .await
         .unwrap();
     assert_eq!(r.partial_errors.len(), 1, "{:?}", r.partial_errors);

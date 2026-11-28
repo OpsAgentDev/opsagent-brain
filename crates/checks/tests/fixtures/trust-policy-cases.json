@@ -1,0 +1,1054 @@
+[
+  {
+    "name": "a bare * principal",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": "*"
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      }
+    ]
+  },
+  {
+    "name": "AWS: *",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      }
+    ]
+  },
+  {
+    "name": "AWS: [*]",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": [
+              "*"
+            ]
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      }
+    ]
+  },
+  {
+    "name": "an empty Condition does not count",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "*"
+          },
+          "Condition": {}
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      }
+    ]
+  },
+  {
+    "name": "a * principal behind a condition",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "*"
+          },
+          "Condition": {
+            "StringEquals": {
+              "aws:PrincipalOrgID": "o-1"
+            }
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal_conditional",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "a * principal with sts:* and a lower-case action",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:GetObject",
+            "STS:Assumerole"
+          ],
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      }
+    ]
+  },
+  {
+    "name": "a * principal with the * action",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "*",
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      }
+    ]
+  },
+  {
+    "name": "a single statement that is an object, not a list",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": {
+        "Effect": "Allow",
+        "Action": "sts:AssumeRole",
+        "Principal": {
+          "AWS": "*"
+        }
+      }
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      }
+    ]
+  },
+  {
+    "name": "an account id with no external id",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "an account principal, array form",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": [
+              "arn:aws:iam::444455556666:root"
+            ]
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "several foreign accounts are one finding",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": [
+              "444455556666",
+              "arn:aws:iam::777788889999:role/x"
+            ]
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "a foreign account whose condition is not an external id",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "StringEquals": {
+              "aws:PrincipalOrgID": "o-1"
+            }
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "a foreign account on a gov partition ARN",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "arn:aws-us-gov:iam::444455556666:root"
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "a role holding all three kinds",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "*"
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "*"
+          },
+          "Condition": {
+            "StringEquals": {
+              "aws:PrincipalOrgID": "o-1"
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      },
+      {
+        "variant": "any_principal_conditional",
+        "severity": "medium"
+      },
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "the role's own account",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "arn:aws:iam::123456789012:root"
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "the role's own account as a bare id",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "123456789012"
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "an external id (StringEquals)",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "StringEquals": {
+              "sts:ExternalId": "x"
+            }
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "an external id (any operator, any case)",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "StringLike": {
+              "STS:ExternalId": "x"
+            }
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "a service principal",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "Service": "ec2.amazonaws.com"
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "a federated principal",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRoleWithWebIdentity",
+          "Principal": {
+            "Federated": "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "a Deny statement",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Deny",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "an action that is not an assume",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "no statements",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": []
+    },
+    "expect": []
+  },
+  {
+    "name": "a glob action that matches sts:AssumeRole",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:Assume*",
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      }
+    ]
+  },
+  {
+    "name": "a glob action with ? and mixed case",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "STS:AssumeRol?",
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      }
+    ]
+  },
+  {
+    "name": "a list action holding sts:*",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:GetObject",
+            "sts:*"
+          ],
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      }
+    ]
+  },
+  {
+    "name": "a glob action that is not an assume",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRoleWith*",
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "a list action with no assume",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:*",
+            "ec2:Describe*"
+          ],
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "NotAction that leaves sts:AssumeRole allowed",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "NotAction": "s3:GetObject",
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      }
+    ]
+  },
+  {
+    "name": "NotAction that excludes sts:AssumeRole",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "NotAction": [
+            "sts:AssumeRole"
+          ],
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "NotAction with a glob that excludes sts:AssumeRole",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "NotAction": "sts:*",
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "an external id under ForAnyValue:StringEquals",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "ForAnyValue:StringEquals": {
+              "sts:ExternalId": "x1"
+            }
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "an external id under StringEqualsIgnoreCase with a list of values",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "StringEqualsIgnoreCase": {
+              "sts:ExternalId": [
+                "x1",
+                "x2"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "a Null operator on sts:ExternalId is not an external id",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "Null": {
+              "sts:ExternalId": "false"
+            }
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "StringNotEquals on sts:ExternalId is not an external id",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "StringNotEquals": {
+              "sts:ExternalId": "x1"
+            }
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "StringEqualsIfExists on sts:ExternalId is not an external id",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "StringEqualsIfExists": {
+              "sts:ExternalId": "x1"
+            }
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "a wildcard StringLike on sts:ExternalId is not an external id",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "StringLike": {
+              "sts:ExternalId": "*"
+            }
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "a wildcard inside a list of external ids is not an external id",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "StringLike": {
+              "sts:ExternalId": [
+                "x1",
+                "ab?"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "an empty external id value is not an external id",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "StringEquals": {
+              "sts:ExternalId": ""
+            }
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "an empty list of external ids is not an external id",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "StringEquals": {
+              "sts:ExternalId": []
+            }
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "a role named like a service-linked role is still judged",
+    "role_arn": "arn:aws:iam::123456789012:role/aws-service-role/evil",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      }
+    ]
+  },
+  {
+    "name": "a role named like OpsAgent's read role is still judged",
+    "role_arn": "arn:aws:iam::123456789012:role/OpsAgentReadRole-lookalike",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "*"
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "any_principal",
+        "severity": "critical"
+      }
+    ]
+  },
+  {
+    "name": "ForAllValues:StringEquals on sts:ExternalId is vacuous, not an external id",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "ForAllValues:StringEquals": {
+              "sts:ExternalId": "x1"
+            }
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "ForAnyValue:StringEquals on sts:ExternalId is an external id",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "ForAnyValue:StringEquals": {
+              "sts:ExternalId": "x1"
+            }
+          }
+        }
+      ]
+    },
+    "expect": []
+  },
+  {
+    "name": "a wildcard stored as the bare * is not an external id",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "StringLike": {
+              "sts:ExternalId": "*"
+            }
+          }
+        }
+      ]
+    },
+    "expect": [
+      {
+        "variant": "foreign_account_no_external_id",
+        "severity": "medium"
+      }
+    ]
+  },
+  {
+    "name": "a redacted external id counts",
+    "role_arn": "arn:aws:iam::123456789012:role/r",
+    "trust_policy": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "AWS": "444455556666"
+          },
+          "Condition": {
+            "StringEquals": {
+              "sts:ExternalId": "[redacted]"
+            }
+          }
+        }
+      ]
+    },
+    "expect": []
+  }
+]

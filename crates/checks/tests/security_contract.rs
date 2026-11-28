@@ -1,4 +1,4 @@
-//! Checks 11 to 13 end to end on the fake connector, through `all()` as the scan runs them.
+//! Checks 11 to 14 end to end on the fake connector, through `all()` as the scan runs them.
 mod common;
 use common::*;
 use opsagent_checks::all;
@@ -9,7 +9,7 @@ fn all_returns_ids_in_order() {
     let ids: Vec<_> = all().iter().map(|c| c.id()).collect();
     assert_eq!(
         ids,
-        ["01", "02", "03", "04", "05", "06", "07", "11", "12", "13"]
+        ["01", "02", "03", "04", "05", "06", "07", "11", "12", "13", "14"]
     );
 }
 
@@ -20,13 +20,17 @@ async fn security_set(
     let mut out = vec![];
     for ch in all()
         .iter()
-        .filter(|c| ["11", "12", "13"].contains(&c.id()))
+        .filter(|c| ["11", "12", "13", "14"].contains(&c.id()))
     {
         for (i, v, s) in set(&run(ch.as_ref(), &r, &c)) {
             out.push((ch.id().to_owned(), i, v, s));
         }
     }
     out
+}
+
+fn role(name: &str) -> String {
+    format!("arn:aws:iam::123456789012:role/{name}")
 }
 
 fn row(
@@ -53,6 +57,19 @@ async fn security_checks_run_on_the_fake_connector() {
         row("13", "user-stale-pw", "stale_password", Low),
         row("13", "user-two-keys", "two_active_keys", Low),
         row("13", "user-unused-key", "key_never_used", Medium),
+        row("14", &role("legacy-open"), "any_principal", Critical),
+        row(
+            "14",
+            &role("open-with-condition"),
+            "any_principal_conditional",
+            Medium,
+        ),
+        row(
+            "14",
+            &role("vendor-monitoring"),
+            "foreign_account_no_external_id",
+            Medium,
+        ),
     ];
     want.sort();
     let mut got = security_set("insecure").await;

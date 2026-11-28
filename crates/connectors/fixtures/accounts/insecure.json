@@ -323,6 +323,115 @@
         "encrypted": false
       },
       "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "identity",
+      "identity": "arn:aws:iam::123456789012:role/legacy-open",
+      "name": "legacy-open",
+      "tags": {},
+      "attributes": {
+        "service": "iam_role",
+        "path": "/",
+        "trust_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "identity",
+      "identity": "arn:aws:iam::123456789012:role/open-with-condition",
+      "name": "open-with-condition",
+      "tags": {},
+      "attributes": {
+        "service": "iam_role",
+        "path": "/",
+        "trust_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "aws:PrincipalOrgID": "o-1"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "identity",
+      "identity": "arn:aws:iam::123456789012:role/vendor-monitoring",
+      "name": "vendor-monitoring",
+      "tags": {},
+      "attributes": {
+        "service": "iam_role",
+        "path": "/",
+        "trust_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": "arn:aws:iam::444455556666:root"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "insecure",
+      "region": "local",
+      "kind": "identity",
+      "identity": "arn:aws:iam::123456789012:role/app-instance",
+      "name": "app-instance",
+      "tags": {},
+      "attributes": {
+        "service": "iam_role",
+        "path": "/",
+        "trust_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ec2.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
     }
   ],
   "cost_daily": [

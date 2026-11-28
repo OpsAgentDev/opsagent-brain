@@ -214,7 +214,7 @@ mod snapshots {
             services: services.iter().map(|s| s.to_string()).collect(),
         };
         let both = scope(&["ebs_snapshot", "rds_cluster_snapshot"]);
-        let r = inventory(&session, "aws", "123456789012", &both, true)
+        let r = inventory(&session, "aws", "123456789012", &both, true, false)
             .await
             .expect("a denied optional read is partial, not a failed connection");
         let mut got: Vec<_> = r
@@ -227,7 +227,7 @@ mod snapshots {
         // The disk snapshots were read and are not public.
         assert_eq!(r.resources.len(), 1);
         // The same role, connection recorded before version 3: no such read, nothing partial.
-        let r = inventory(&session, "aws", "123456789012", &both, false)
+        let r = inventory(&session, "aws", "123456789012", &both, false, false)
             .await
             .unwrap();
         assert!(r.partial_errors.is_empty(), "{:?}", r.partial_errors);
@@ -444,7 +444,7 @@ mod older_roles {
     use super::*;
     use aws_sdk_iam::operation::simulate_principal_policy::SimulatePrincipalPolicyOutput;
     use aws_sdk_iam::types::{EvaluationResult, PolicyEvaluationDecisionType as D};
-    use opsagent_connectors::aws::simulate::allows_cluster_snapshot_sharing;
+    use opsagent_connectors::aws::simulate::{allows, SHARING_ACTION};
 
     const ROLE: &str = "arn:aws:iam::123456789012:role/OpsAgentReadRole-abcd1234";
 
@@ -470,9 +470,9 @@ mod older_roles {
 
     #[tokio::test]
     async fn a_role_is_asked_by_simulation() {
-        assert!(allows_cluster_snapshot_sharing(&simulated(D::Allowed), ROLE).await);
+        assert!(allows(&simulated(D::Allowed), ROLE, SHARING_ACTION).await);
         // A version 2 role: the read is not in its policy.
-        assert!(!allows_cluster_snapshot_sharing(&simulated(D::ImplicitDeny), ROLE).await);
+        assert!(!allows(&simulated(D::ImplicitDeny), ROLE, SHARING_ACTION).await);
     }
 
     #[tokio::test]
@@ -485,6 +485,6 @@ mod older_roles {
             )
         });
         let iam = mock_client!(aws_sdk_iam, RuleMode::Sequential, [&rule]);
-        assert!(!allows_cluster_snapshot_sharing(&iam, ROLE).await);
+        assert!(!allows(&iam, ROLE, SHARING_ACTION).await);
     }
 }

@@ -18,15 +18,19 @@ pub const RESTORE_ACTIONS: &[&str] = &[
 /// template version 3 do not hold.
 pub const SHARING_ACTION: &str = "rds:DescribeDBClusterSnapshotAttributes";
 
-/// True when `role_arn`'s own policies allow `SHARING_ACTION`. A simulation, not a call that
-/// fails: a role that lacks it leaves no denied request in the customer's CloudTrail. A role
-/// that cannot be simulated, or any error, answers false: those snapshots go unread rather
-/// than failing the scan.
-pub async fn allows_cluster_snapshot_sharing(iam: &aws_sdk_iam::Client, role_arn: &str) -> bool {
+/// The read of every role's trust policy, which roles made with template version 2 or 3 do not
+/// hold.
+pub const ROLES_ACTION: &str = "iam:ListRoles";
+
+/// True when `role_arn`'s own policies allow `action`. A simulation, not a call that fails: a
+/// role that lacks it leaves no denied request in the customer's CloudTrail. A role that
+/// cannot be simulated, or any error, answers false: those reads go unmade rather than
+/// failing the scan.
+pub async fn allows(iam: &aws_sdk_iam::Client, role_arn: &str, action: &str) -> bool {
     let sent = iam
         .simulate_principal_policy()
         .policy_source_arn(role_arn)
-        .action_names(SHARING_ACTION)
+        .action_names(action)
         .send()
         .await;
     sent.is_ok_and(|out| {

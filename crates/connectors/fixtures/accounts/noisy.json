@@ -546,6 +546,58 @@
         "median_runtime_s": null
       },
       "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "identity",
+      "identity": "arn:aws:iam::123456789012:role/same-account-trust",
+      "name": "same-account-trust",
+      "tags": {},
+      "attributes": {
+        "service": "iam_role",
+        "path": "/",
+        "trust_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": "arn:aws:iam::123456789012:root"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "provider": "fake",
+      "account": "noisy",
+      "region": "local",
+      "kind": "identity",
+      "identity": "arn:aws:iam::123456789012:role/app-instance",
+      "name": "app-instance",
+      "tags": {},
+      "attributes": {
+        "service": "iam_role",
+        "path": "/",
+        "trust_policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ec2.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      },
+      "observed_at": "2026-10-01T00:00:00Z"
     }
   ],
   "cost_daily": [

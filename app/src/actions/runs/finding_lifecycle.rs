@@ -14,6 +14,20 @@ use uuid::Uuid;
 use super::watch_scan;
 use crate::actions::uow::Repos;
 
+/// The check whose input is a service the run may not have read, and that service. A read
+/// that is skipped (the role is not known to hold its permission) is not a partial run, so
+/// nothing else holds the check's open findings: they must not resolve from a read never made.
+const NEEDS_READ: [(&str, &str); 1] = [("14", "iam_role")];
+
+/// The checks of `NEEDS_READ` whose service is in `unavailable`.
+pub(super) fn unread_checks(unavailable: &BTreeSet<String>) -> Vec<&'static str> {
+    NEEDS_READ
+        .iter()
+        .filter(|(_, service)| unavailable.contains(*service))
+        .map(|(check, _)| *check)
+        .collect()
+}
+
 /// Applies one run's drafts. Every unseen finding resolves, except those of checks whose
 /// capability was partial: a partial scan resolves nothing for a partial capability. `partial`
 /// is run-wide today (no check reports which capability it lacked), so every check counts as
@@ -209,6 +223,38 @@ mod tests {
             assert_eq!(f.status, if held { "open" } else { "resolved" });
             assert_eq!(f.last_seen_run_id, Some(first));
         }
+    }
+
+    #[tokio::test]
+    async fn an_open_trust_finding_stays_open_when_the_roles_read_was_skipped() {
+        let store = MemStore::default();
+        let c = connected(&store, Uuid::new_v4()).await;
+        let now = Utc::now();
+        let open = [draft(&c, "14")];
+        apply(&store, &c, Uuid::new_v4(), &open, &[], now, false)
+            .await
+            .unwrap();
+        // A full scan of a role that may not list roles: no iam_role resource, no draft, not partial.
+        let skipped = BTreeSet::from(["iam_role".to_owned()]);
+        assert_eq!(unread_checks(&skipped), ["14"]);
+        apply(
+            &store,
+            &c,
+            Uuid::new_v4(),
+            &[],
+            &unread_checks(&skipped),
+            now,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(status(&store, &c).await, "open");
+        // The same run with the read made resolves what is gone.
+        assert!(unread_checks(&BTreeSet::new()).is_empty());
+        apply(&store, &c, Uuid::new_v4(), &[], &[], now, false)
+            .await
+            .unwrap();
+        assert_eq!(status(&store, &c).await, "resolved");
     }
 
     /// A critical open-admin-port draft (a watch variant) for security group `identity`,
