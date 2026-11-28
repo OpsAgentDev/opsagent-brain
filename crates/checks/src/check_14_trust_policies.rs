@@ -170,16 +170,14 @@ fn glob(pattern: &str, text: &str) -> bool {
 }
 
 /// A condition that makes the caller present a fixed `sts:ExternalId`: a positive operator
-/// (`StringEquals`, `StringEqualsIgnoreCase` or `StringLike`, optionally under `ForAnyValue:`
-/// or `ForAllValues:`) on that key with only non-empty literal values. `Null`, every `Not*`
+/// (`StringEquals`, `StringEqualsIgnoreCase` or `StringLike`, optionally under `ForAnyValue:`) on that key with only non-empty literal values. `Null`, every `Not*`
 /// operator, `...IfExists` and a wildcard or empty value let a caller in without one.
 fn has_external_id(cond: &Value) -> bool {
     let positive = |op: &str| {
         let op = op.to_ascii_lowercase();
-        let op = op
-            .strip_prefix("foranyvalue:")
-            .or_else(|| op.strip_prefix("forallvalues:"))
-            .unwrap_or(&op);
+        // `ForAllValues:` is vacuously true when the key is absent from the request, so it
+        // enforces nothing and does not count.
+        let op = op.strip_prefix("foranyvalue:").unwrap_or(&op);
         ["stringequals", "stringequalsignorecase", "stringlike"].contains(&op)
     };
     let literal = |v: &Value| {

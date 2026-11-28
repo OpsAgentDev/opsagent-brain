@@ -163,6 +163,8 @@ pub enum Fault {
     Simulate,
     /// A cloudtrail partial error (one trail's status unreadable); the trails still return.
     TrailStatus,
+    /// The roles read is wanted but not made: no `iam_role` resources, `skipped` names it.
+    SkipRoles,
 }
 
 /// An AWS-style error whose message names the customer role, as real ones do.
@@ -241,6 +243,14 @@ impl Connector for Rigged {
                     code: Some("AccessDenied".into()),
                     message: "status".into(),
                 });
+                Ok(inv)
+            }
+            Some(Fault::SkipRoles)
+                if s.services.is_empty() || s.services.iter().any(|x| x == "iam_role") =>
+            {
+                inv.resources
+                    .retain(|r| r.attributes["service"] != "iam_role");
+                inv.skipped.push("iam_role".into());
                 Ok(inv)
             }
             _ => Ok(inv),
@@ -359,6 +369,40 @@ impl Check for Flaky {
             evidence: vec![],
         }]
     }
+}
+
+/// Test-only check "14" that reports one open trust finding on a role.
+struct Seed14;
+impl Check for Seed14 {
+    fn id(&self) -> &'static str {
+        "14"
+    }
+    fn supported(&self) -> &[Provider] {
+        &[Provider::Fake]
+    }
+    fn required(&self) -> &[Capability] {
+        &[]
+    }
+    fn run(&self, cx: &CheckCtx) -> Vec<FindingDraft> {
+        vec![FindingDraft {
+            key: FindingKey {
+                connection_id: cx.connection_id,
+                check_id: "14".into(),
+                resource_identity: "arn:aws:iam::123456789012:role/open".into(),
+                variant: "any_principal".into(),
+            },
+            severity: Low,
+            title: "open role".into(),
+            summary: "open role".into(),
+            next_step: "none".into(),
+            cost_monthly_usd: None,
+            evidence: vec![],
+        }]
+    }
+}
+
+fn with_seed14() -> Vec<Box<dyn Check>> {
+    vec![Box::new(Seed14)]
 }
 
 fn with_flaky() -> Vec<Box<dyn Check>> {
@@ -698,6 +742,36 @@ async fn partial_inventory_resolves_nothing() {
             .try_get("", "n")
             .unwrap();
         assert!(errors >= 1);
+    })
+    .await;
+}
+
+/// A role that may not list roles skips the read: not a partial run, and the open trust
+/// finding of an earlier scan is not resolved by a read that was never made.
+#[tokio::test]
+#[serial]
+async fn a_skipped_roles_read_leaves_open_trust_findings_open_and_the_run_whole() {
+    serve(|req, ctx| async move {
+        let conn = connection(&req, &ctx, "o@example.com").await;
+        let first = new_run(&ctx, conn, 0).await;
+        let seeded = full_scan(&ctx, &noisy()).with_checks(with_seed14);
+        seeded
+            .run(first, RunChunkedOptions::default())
+            .await
+            .unwrap();
+        let role = "arn:aws:iam::123456789012:role/open";
+        assert_eq!(finding(&ctx, conn, role).await.status, "open");
+        let r2 = scan(&ctx, conn, 1, &rigged(Some(Fault::SkipRoles))).await;
+        let r = run_row(&ctx, r2).await;
+        assert_eq!(
+            (r.status.as_str(), r.partial_reason.as_deref()),
+            ("done", None)
+        );
+        assert_eq!(r.checkpoint["stats"]["partial"], json!(false));
+        assert_eq!(finding(&ctx, conn, role).await.status, "open");
+        // The same scan with the read made (nothing skipped) resolves it: no such role any more.
+        scan(&ctx, conn, 2, &noisy()).await;
+        assert_eq!(finding(&ctx, conn, role).await.status, "resolved");
     })
     .await;
 }

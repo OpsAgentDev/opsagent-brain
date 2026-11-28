@@ -120,6 +120,7 @@ async fn an_external_id_is_never_stored_but_wildcards_and_empties_stay() {
         "ForAnyValue:StringLike": {"STS:EXTERNALID": [SECRET, "*", ""]},
         "StringNotEquals": {"sts:ExternalId": SECRET},
         "StringLike": {"sts:ExternalId": "*"},
+        "StringEqualsIgnoreCase": {"sts:ExternalId": ["ext-9f3a7c*", "ext-9?3a"]},
         "Null": {"sts:ExternalId": "false"},
     }));
     let iam = list(
@@ -129,6 +130,11 @@ async fn an_external_id_is_never_stored_but_wildcards_and_empties_stay() {
     let r = iam_roles(&iam, &T).await.unwrap();
     let stored = serde_json::to_string(&r).unwrap();
     assert!(!stored.contains(SECRET), "{stored}");
+    // A wildcard value keeps no literal part either.
+    assert!(
+        !stored.contains("9f3a7c") && !stored.contains("ext-9"),
+        "{stored}"
+    );
     let c = &r[0].attributes["trust_policy"]["Statement"][0]["Condition"];
     assert_eq!(c["StringEquals"]["sts:ExternalId"], "[redacted]");
     assert_eq!(c["StringEquals"]["aws:PrincipalOrgID"], "o-1");
@@ -138,6 +144,10 @@ async fn an_external_id_is_never_stored_but_wildcards_and_empties_stay() {
     );
     assert_eq!(c["StringNotEquals"]["sts:ExternalId"], "[redacted]");
     assert_eq!(c["StringLike"]["sts:ExternalId"], "*");
+    assert_eq!(
+        c["StringEqualsIgnoreCase"]["sts:ExternalId"],
+        json!(["*", "*"])
+    );
     // Any operator: even one that never counts as an external id is redacted.
     assert_eq!(c["Null"]["sts:ExternalId"], "[redacted]");
     let st = &r[0].attributes["trust_policy"]["Statement"][0];

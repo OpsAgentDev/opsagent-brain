@@ -64,8 +64,8 @@ fn minimal_trust(doc: &Value) -> Value {
 }
 
 /// `{operator: {key: value}}`: every value of an `sts:ExternalId` key (any operator, any key
-/// case) that is a non-empty literal becomes `[redacted]`. An empty value or one with `*` or
-/// `?` carries no secret and stays, because the check needs to see it.
+/// case) that is a non-empty literal becomes `[redacted]`, and one with `*` or `?` becomes `*`.
+/// An empty value carries no secret and stays; the check needs to see all three.
 fn redact_external_ids(cond: &mut Value) {
     let ops = cond
         .as_object_mut()
@@ -83,12 +83,12 @@ fn redact_external_ids(cond: &mut Value) {
 }
 
 fn redact_value(v: &mut Value) {
-    let secret = match v {
-        Value::String(s) => !s.is_empty() && !s.contains(['*', '?']),
-        Value::Number(_) => true,
-        _ => false,
-    };
-    if secret {
-        *v = Value::String("[redacted]".into());
+    match v {
+        // A wildcard keeps no literal part (`ext-9f3a*` could hold most of a secret): it is
+        // stored as the bare `*`, which the check still reads as a wildcard.
+        Value::String(s) if s.contains(['*', '?']) => *s = "*".into(),
+        Value::String(s) if !s.is_empty() => *s = "[redacted]".into(),
+        Value::Number(_) => *v = Value::String("[redacted]".into()),
+        _ => {}
     }
 }
